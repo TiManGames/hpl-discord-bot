@@ -8,12 +8,17 @@ import {
   isTransientAuth,
   DEFAULT_RETRY_AFTER_S,
 } from './retry.js';
+import { pruneOldToolResults } from './prune.js';
 
 // Model name for the orchestration path (matches base-ai-agent's setup — the
 // plain orchestration model name, NOT a foundation-models "anthropic--" id).
 const MODEL_ID = process.env.AICORE_MODEL ?? 'anthropic--claude-4.6-sonnet';
 const RESOURCE_GROUP = process.env.AICORE_RESOURCE_GROUP ?? 'default';
 const MAX_STEPS = 40;
+
+// Keep the N most recent read_file results at full text; stub older ones to save
+// input tokens (they are re-sent on every step otherwise). See src/prune.ts.
+const KEEP_RECENT_READS = Number(process.env.AICORE_KEEP_RECENT_READS ?? 4);
 
 // How many times to retry the whole call on a 429, honouring x-retry-after.
 const MAX_RATE_LIMIT_RETRIES = 5;
@@ -93,6 +98,11 @@ async function generateOnce(
     // Disable the SDK's exponential backoff — it ignores SAP's x-retry-after
     // header and retries too early. runAgent() does header-aware retries instead.
     maxRetries: 0,
+    // Before each step, stub old read_file outputs so they aren't re-sent at full
+    // text on every step. Keeps the newest KEEP_RECENT_READS verbatim.
+    prepareStep: ({ messages: stepMessages }) => ({
+      messages: pruneOldToolResults(stepMessages, KEEP_RECENT_READS),
+    }),
     onStepFinish: (step) => {
       stepNum++;
       const toolCalls = step.toolCalls.map((t) => `${t.toolName}(${JSON.stringify(t.input)})`);
