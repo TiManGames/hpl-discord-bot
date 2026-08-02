@@ -14,6 +14,9 @@ import { getSession, setSession, hasSession, appendUserMessage, appendAssistantM
 import { runAgent } from './agent.js';
 import { buildFileManifest } from './tools.js';
 
+export const UNMAPPED_CHANNEL_RESPONSE =
+  'Please ask me a question in one of the appropriate modding channels: hpl2, hpl3-soma, hpl3-rebirth and hpl3-bunker.';
+
 function log(level: 'INFO' | 'WARN' | 'ERROR', msg: string, extra?: unknown): void {
   const ts = new Date().toISOString();
   const line = `[${ts}] [${level}] ${msg}`;
@@ -67,11 +70,16 @@ export function startBot(token: string): void {
   client.login(token);
 }
 
-async function handleChannelMention(message: Message, botId: string): Promise<void> {
+export async function handleChannelMention(message: Message, botId: string): Promise<void> {
   const channelName = (message.channel as { name?: string }).name ?? message.channelId;
   const game = resolveGame(message);
   if (!game) {
-    log('WARN', `Channel "${channelName}" is not mapped to any game — ignoring. Set CHANNEL_MAP in .env to add it.`);
+    try {
+      await message.reply(UNMAPPED_CHANNEL_RESPONSE);
+      log('INFO', `Replied to mention in unmapped channel "${channelName}" with the channel guidance message`);
+    } catch (err) {
+      log('WARN', `Failed to reply to mention in unmapped channel "${channelName}"`, err);
+    }
     return;
   }
 

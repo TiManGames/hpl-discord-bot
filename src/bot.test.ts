@@ -1,5 +1,42 @@
-import { describe, it, expect } from 'vitest';
-import { splitForDiscord, normalizeSpacing } from './bot.js';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import type { Message } from 'discord.js';
+
+vi.mock('./agent.js', () => ({ runAgent: vi.fn() }));
+
+import { runAgent } from './agent.js';
+import {
+  handleChannelMention,
+  normalizeSpacing,
+  splitForDiscord,
+  UNMAPPED_CHANNEL_RESPONSE,
+} from './bot.js';
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
+
+describe('handleChannelMention', () => {
+  it('sends the hardcoded guidance reply without starting a thread or calling the LLM', async () => {
+    const reply = vi.fn().mockResolvedValue(undefined);
+    const startThread = vi.fn();
+    const message = {
+      channel: { name: 'general', id: 'general' },
+      channelId: 'general',
+      reply,
+      startThread,
+    } as unknown as Message;
+
+    await handleChannelMention(message, 'bot-id');
+
+    expect(reply).toHaveBeenCalledOnce();
+    expect(reply).toHaveBeenCalledWith(UNMAPPED_CHANNEL_RESPONSE);
+    expect(UNMAPPED_CHANNEL_RESPONSE).toBe(
+      'Please ask me a question in one of the appropriate modding channels: hpl2, hpl3-soma, hpl3-rebirth and hpl3-bunker.',
+    );
+    expect(startThread).not.toHaveBeenCalled();
+    expect(runAgent).not.toHaveBeenCalled();
+  });
+});
 
 // Count of ``` fences in a string.
 function fenceCount(s: string): number {
