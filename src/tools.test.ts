@@ -64,10 +64,28 @@ describe('read_file sandbox', () => {
 });
 
 describe('buildFileManifest', () => {
-  it('lists all files as sorted POSIX relative paths', () => {
+  it('groups files under directory headers, root files bare', () => {
     const manifest = buildFileManifest(docsRoot);
     const lines = manifest.split('\n');
-    expect(lines).toEqual(['root.md', 'wiki/HPL2/Areas.md']);
+    // Root file has no header; nested file sits under its dir header, indented.
+    expect(lines).toEqual([
+      'root.md',
+      'wiki/HPL2/',
+      '  Areas.md',
+    ]);
+  });
+
+  it('a read path can be reconstructed from header + filename', () => {
+    // header "wiki/HPL2/" + "Areas.md" → "wiki/HPL2/Areas.md", which read_file accepts.
+    const manifest = buildFileManifest(docsRoot);
+    expect(manifest).toContain('wiki/HPL2/');
+    expect(manifest).toContain('  Areas.md');
+  });
+
+  it('does not repeat the directory prefix on every file line', () => {
+    const manifest = buildFileManifest(docsRoot);
+    // The long prefix appears once (as the header), not inlined on the file line.
+    expect(manifest).not.toContain('wiki/HPL2/Areas.md');
   });
 
   it('excludes .gitkeep placeholder files', () => {

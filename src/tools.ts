@@ -40,13 +40,23 @@ export const fileTools = (docsRoot: string) => ({
 // ─── File-tree manifest (injected into the system prompt) ─────────────────────
 
 /**
- * Recursively list every file under docsRoot as newline-separated relative
- * paths (POSIX separators). Returned to the model so it knows exactly what
- * documentation exists without calling a directory-listing tool.
+ * List every file under docsRoot, grouped by directory. Instead of repeating the
+ * full path on every line (which for deep trees like HPL3 wastes thousands of
+ * tokens re-writing the same long prefix hundreds of times), each directory is
+ * printed once as a header followed by its bare filenames.
+ *
+ * Example output:
+ *   wiki/HPL3/Amnesia The Bunker/Scripting/Scripting Api/
+ *     Entity.md
+ *     Map.md
+ *
+ * Read paths are still full paths (directory header + "/" + filename), so the
+ * read_file tool contract is unchanged.
  */
 export function buildFileManifest(docsRoot: string): string {
   const root = resolve(docsRoot);
-  const files: string[] = [];
+  // dir (POSIX, relative to root; '' = root) -> filenames
+  const byDir = new Map<string, string[]>();
 
   const walk = (dir: string): void => {
     let entries;
@@ -61,14 +71,30 @@ export function buildFileManifest(docsRoot: string): string {
       if (e.isDirectory()) {
         walk(full);
       } else {
-        files.push(relative(root, full).split(sep).join('/'));
+        const relDir = relative(root, dir).split(sep).join('/');
+        const list = byDir.get(relDir) ?? [];
+        list.push(e.name);
+        byDir.set(relDir, list);
       }
     }
   };
 
   walk(root);
-  files.sort();
-  return files.join('\n');
+  if (byDir.size === 0) return '';
+
+  const dirs = [...byDir.keys()].sort();
+  const lines: string[] = [];
+  for (const dir of dirs) {
+    const files = byDir.get(dir)!.sort();
+    if (dir === '') {
+      // Root-level files: list with no header.
+      for (const f of files) lines.push(f);
+    } else {
+      lines.push(`${dir}/`);
+      for (const f of files) lines.push(`  ${f}`);
+    }
+  }
+  return lines.join('\n');
 }
 
 // ─── Sandboxed file operations ───────────────────────────────────────────────

@@ -208,9 +208,13 @@ function loadSystemPrompt(skillDir: string, docsRoot: string): string {
   return (
     `${base}\n\n` +
     `<available_files>\n` +
-    `The following documentation files are available. Use the read_file tool ` +
-    `with any of these exact paths to read them. Read multiple files in parallel ` +
-    `in a single step when you need several.\n\n` +
+    `Documentation files, grouped by directory. A line ending in "/" is a ` +
+    `directory header; the indented lines under it are the files in that ` +
+    `directory. To read a file, pass its FULL path to the read_file tool by ` +
+    `joining the directory header and the filename, e.g. header ` +
+    `"wiki/HPL3/Areas/" + file "Doors.md" → read_file("wiki/HPL3/Areas/Doors.md"). ` +
+    `Files with no header are at the docs root (use the bare filename). Read ` +
+    `multiple files in parallel in a single step when you need several.\n\n` +
     `${manifest}\n` +
     `</available_files>`
   );
