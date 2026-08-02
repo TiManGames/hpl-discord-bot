@@ -1,0 +1,371 @@
+#include "interfaces/Agent_SwimBot.hps"
+#include "helpers/helper_map.hps"
+#include "helpers/helper_audio.hps"
+#include "helpers/helper_modules.hps"
+
+enum eCuteBotState
+{
+	eCuteBotState_Idle,
+	eCuteBotState_Swarm,
+}
+
+enum eCuteBotSpeed
+{
+	eCuteBotSpeed_Default,
+	eCuteBotSpeed_Playing,
+}
+
+//-------------------------------------------------------
+
+const tString gsMoveLoopSound = "NPC_Kate/CUTEBOT/cutebot_engine/cutebot_engine";
+const tString gsIdleLoopSound = "";
+const float gfMoveLoopSoundMinSpeed =0.1f;
+	
+//-------------------------------------------------------
+
+class cScrAgentCuteBot : cScrAgentSwimBot
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		cScrAgentSwimBot::Init();
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// LOADING
+	/////////////////////////////////////////
+	
+	void SetupCharBody()
+	{
+		cScrAgentSwimBot::SetupCharBody();
+		
+		iCharacterBody@ pCharBody = mBaseObj.GetCharBody();
+		
+		pCharBody.SetMass(10);
+		
+		pCharBody.SetMaxPositiveMoveSpeed(eCharDir_Forward,1.25f);
+		pCharBody.SetMoveAcc(eCharDir_Forward,0.7f);
+		pCharBody.SetMoveDeacc(eCharDir_Forward,0.8f);
+		pCharBody.SetMoveOppositeDirAccMul(eCharDir_Forward,1);
+		
+		pCharBody.SetEntityPitchAmount(0.45f);
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld @apWorld,  cResourceVarsObject@ apVars,  cResourceVarsObject@ apInstanceVars)
+	{
+		cScrAgentSwimBot::SetupAfterLoad(apWorld, apVars, apInstanceVars);
+		
+		/////////////////////////////////
+		// Genral Setup
+		DisableMovementAnimations();
+		
+		msLoopSound_Move = gsMoveLoopSound;
+		msLoopSound_Idle = gsIdleLoopSound;
+		mfLoopSoundMinMoveSpeed = gfMoveLoopSoundMinSpeed;
+		mbBubbleEffectsActive = true;
+		
+		mpForceEmitter.SetActive(true);
+		mpForceEmitter.SetRadius(1.4f);
+		
+		iCharacterBody@ pCharBody = mBaseObj.GetCharBody();
+		mvCurrentTarget = pCharBody.GetPosition() + pCharBody.GetForward();
+		
+		
+		/////////////////////////////////
+		// Mover
+		mpMover.SetMaxForwardSpeed(1.25);
+		mpMover.SetMaxBackwardSpeed(1);
+		
+		mpMover.SetBankingAngleMul(0.6f);
+		mpMover.SetBankingMaxAngle(cMath_ToRad(65));
+		mpMover.SetBankingSpeedMul(5.0f);
+		mpMover.SetBankingMaxSpeed(1.2f);
+		
+		mpMover.SetTurnMinBreakAngle(cMath_ToRad(90) );
+		mpMover.SetTurnBreakMul(0);
+		mpMover.SetTurnSpeedMul(1);
+		mpMover.SetTurnMaxSpeed(6);
+		
+		/////////////////////////////////
+		// Speed States
+		mpMover.AddSpeedState(eCuteBotSpeed_Default);
+		//mpMover.SetSpeedState_Forward(gfFollowSpeed);
+		
+		mpMover.AddSpeedState(eCuteBotSpeed_Playing);
+		mpMover.SetSpeedState_Forward(3.0);
+		
+		/////////////////////////////////
+		// States
+		mpStateMachine.AddState("Idle", eCuteBotState_Idle);
+		mpStateMachine.AddState("Swarm", eCuteBotState_Swarm);
+	}
+	
+	//------------------------------------------------------------
+	
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnUpdate(float afTimeStep)
+	{
+		cScrAgentSwimBot::OnUpdate(afTimeStep);
+		
+		SetupSwarmPoint();
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetProperties()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void BeforeEntityDestruction()
+	{
+		cScrAgentSwimBot::BeforeEntityDestruction();
+	}
+		
+	//------------------------------------------------------------
+	
+	void OnStartMove()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnConnectionStateChange(iLuxEntity@ apEntity,int alState)
+	{
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// STATES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetDefaultDistortion()
+	{
+		DistortionEffect_AddInstance(mBaseObj.GetID(), 20, 2, 0.2f);
+	}
+	
+	//------------------------------------------------------------
+	
+		///////////////////////////////////
+		// STATE: Idle
+		///////////////////////////////////
+	
+		//------------------------------------------------------------
+		
+		void State_Idle_Enter()
+		{
+			mpMover.SetSpeedState(eCuteBotSpeed_Default);
+			
+			SetDefaultDistortion();
+		}
+	
+		//------------------------------------------------------------
+	
+		///////////////////////////////////
+		// STATE: Swarm
+		///////////////////////////////////
+	
+		//------------------------------------------------------------
+		
+		void State_Swarm_Enter()
+		{
+			mpMover.SetSpeedState(eCuteBotSpeed_Default);
+			mpStateMachine.AddTimer(0, 0);
+			
+			SetDefaultDistortion();
+		}
+		
+		//------------------------------------------------------------
+		
+		void State_Swarm_TimerUp(uint64 alId) 
+		{
+			cVector3f vPlayerPos = cLux_GetPlayer().GetCharacterBody().GetPosition();
+			if(	cMath_Vector3Dist(mvSwarmPoint, vPlayerPos)<15 &&
+				mBaseObj.GetDistanceToPlayer()<8)
+			{
+				UpdatewarmTarget(vPlayerPos,3, 2);
+				mpMover.SetSpeedState(eCuteBotSpeed_Playing);
+			}
+			else
+			{
+				UpdatewarmTarget(mvSwarmPoint,5, 1);
+				mpMover.SetSpeedState(eCuteBotSpeed_Default);
+			}
+			
+			mpPathfinder.MoveTo(mvCurrentTarget, 0, false);
+			
+			mpStateMachine.AddTimer(0, 0.5);
+		}
+	
+		//------------------------------------------------------------
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPERS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void UpdatewarmTarget(const cVector3f& in avSwarmPoint, float afRepulseLength, float afAttractMul)
+	{
+		iCharacterBody@ pCharBody = mBaseObj.GetCharBody();
+		cVector3f vToSwarmPoint = avSwarmPoint - pCharBody.GetPosition();
+		
+		if(vToSwarmPoint.Length()<afRepulseLength)
+		{
+			float fLength = vToSwarmPoint.Length();
+			vToSwarmPoint.Normalize();
+			vToSwarmPoint *= (1 - fLength/afRepulseLength)*-8;
+		}
+		else
+		{
+			vToSwarmPoint *= afAttractMul;
+		}
+		
+		
+		mvCurrentTarget = mBaseObj.GetPosition() + GetWanderAdd(3,2)+vToSwarmPoint; 
+	}	
+	
+	//------------------------------------------------------------
+	
+	cVector3f GetWanderAdd(float afLength, float afRadius)
+	{
+		cVector2f vSeed = cMath_RandRectVector2f(cVector2f(0),cVector2f(1));
+		cVector3f vForce = cMath_Vector3SphereSurfacePoint(vSeed, afRadius);
+		iCharacterBody@ pCharBody = mBaseObj.GetCharBody();
+
+		return pCharBody.GetForward()*afLength + vForce;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupSwarmPoint()
+	{
+		if(msSwarmPoint == "") return;
+		
+		mpStateMachine.ChangeState(eCuteBotState_Swarm);
+		
+		iLuxEntity @pEntity = cLux_GetCurrentMap().GetEntityByName(msSwarmPoint);
+		msSwarmPoint = "";
+		
+		if(pEntity is null){
+			Error("Could not find swarm point '"+msSwarmPoint+"' for SwimBot Cute.");
+			return;
+		}
+		
+		mvSwarmPoint = pEntity.GetPosition();
+	}
+	
+	//----------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnSetActive(bool abX)
+	{
+		cScrAgentSwimBot::OnSetActive(abX);
+		
+		if(abX==false)
+			DistortionEffect_RemoveInstance(mBaseObj.GetID());
+	}
+	
+	//------------------------------------------------------------
+	
+	void GiveDamage(float afAmount, int alStrength, const tString&in asType, const tString&in asSource)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnHealthChange()
+	{
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	bool CanInteract(int alType, iPhysicsBody@ apBody)
+	{
+		return false;
+	}
+	
+	//------------------------------------------------------------
+		
+	bool OnInteract(int alType, iPhysicsBody@ apBody, const cVector3f &in avFocusPos, const tString&in asData)
+	{
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL FUNCS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetSwarmPoint()
+	{
+		msSwarmPoint = cScript_GetGlobalArgString(0);
+		SetupSwarmPoint();
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	tString msSwarmPoint;
+	cVector3f mvSwarmPoint;
+	cVector3f mvCurrentTarget;
+		
+	//------------------------------------------------------------
+}

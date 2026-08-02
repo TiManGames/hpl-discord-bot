@@ -1,0 +1,16 @@
+{{ScriptingStub}}
+
+Have some helpful descriptions to add to this class? Edit this page and add your insight to the Wiki!
+
+==Fields==
+
+cLuxCharMover_SpeedState has no public fields.
+
+==Functions==
+
+cLuxCharMover_SpeedState has no public functions
+
+{{ReferencesSection}}
+
+{{HPL3SOMAScriptingCategories}}
+__FORCETOC__

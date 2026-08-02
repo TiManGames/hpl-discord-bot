@@ -1,0 +1,36 @@
+{{ScriptingStub}}
+
+Have some helpful descriptions to add to this class? Edit this page and add your insight to the Wiki!
+
+==Fields==
+cClothEntityIterator has no public fields.
+
+==Functions==
+{{CodeDocSummaryTop|Return Type|Function And Description}}
+{{CodeDocSummaryItem|bool|[[#HasNext|HasNext]]()|}}
+{{CodeDocSummaryItem|[[../cClothEntity|cClothEntity]]|[[#Next|Next]]()|}}
+{{CodeDocSummaryItem|[[../cClothEntity|cClothEntity]]|[[#PeekNext|PeekNext]]()|}}
+{{CodeDocSummaryBottom}}
+
+==Details==
+{{CodeDocDetailTop|HasNext}}
+<syntaxhighlight lang="c++">bool HasNext()</syntaxhighlight>
+{{CodeDocDetailBody|}}
+{{CodeDocDetailReturn|bool|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Next}}
+<syntaxhighlight lang="c++">cClothEntity@ Next()</syntaxhighlight>
+{{CodeDocDetailBody|}}
+{{CodeDocDetailReturn|cClothEntity@|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|PeekNext}}
+<syntaxhighlight lang="c++">cClothEntity@ PeekNext()</syntaxhighlight>
+{{CodeDocDetailBody|}}
+{{CodeDocDetailReturn|cClothEntity@|}}
+{{CodeDocDetailBottom}}
+
+{{ReferencesSection}}
+
+{{HPL3SOMAScriptingCategories}}

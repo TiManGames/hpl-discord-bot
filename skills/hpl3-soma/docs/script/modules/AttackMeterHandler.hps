@@ -1,0 +1,1330 @@
+#include "interfaces/UserModule_Interface.hps"
+#include "modules/ModuleInterfaces.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_audio.hps"
+#include "helpers/helper_player.hps"
+#include "helpers/helper_modules.hps"
+#include "base/Base_Types.hps"
+
+/////////////////////////////////////////
+// SETTINGS
+/////////////////////////////////////////
+
+//------------------------------------------------------------
+
+const tString gsBurstStartSound = "";
+const tString gsLoopSound = "Player/UI/glitch_loop";
+const tString gsDamageHitSound = "Player/reaction/damage";
+const tString gsDamageHitSoundUnderwater = "Player/reaction/damage";
+const tString gsDamageBlackOutSound = "Player/UI/blackout_hit";
+const tString gsDamageBlackOutSoundUnderwater = "Player/UI/blackout_hit";
+const tString gsDamageWakeUpSound = "Player/UI/death_drone";
+const tString gsDamageWakeUpTinnitusSound = "Player/UI/death_tinnitus";
+const tString gsDamageDeathSound = "Player/UI/death_hit";
+const tString gsDamageDeathSoundUnderwater = "Player/UI/death_hit";
+
+//------------------------------------------------------------
+
+class cAttackInstance
+{
+	tID m_idEntity;
+	float mfStartDistance;
+	float mfEndDistance;
+	float mfDamage;
+	bool mbFatal;
+	bool mbFastNonLookDamage;
+	bool mbInstantKnockOut;
+}
+//------------------------------------------------------------
+
+class cScrAttackMeterHandler : iScrUserModule, iScrUserModule_Interface, iScrAttackMeterHandler_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// USER SETTINGS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void LoadUserConfig()
+	{
+	
+	}
+	void SaveUserConfig()
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ENTER MAP
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+		mfWakeUpEffectCount=0;
+		
+		mlBreathId =-1;
+		mlHearbeatId = -1;
+		
+		msPlayerTeleportPos="";
+		msAfterDamageCallback="";
+		msCustomDamageCallback="";
+	}
+	
+	void OnMapLeave(cLuxMap @apMap)
+	{
+		Reset();
+	}
+	
+	//------------------------------------------------------------
+	
+	void PreloadData(cLuxMap@ apMap)
+	{
+		apMap.PreloadMaterial("damage_steam_screen.mat");
+	}
+
+	void CreateWorldEntities(cLuxMap @apMap)
+	{
+		
+	}
+	void DestroyWorldEntities(cLuxMap @apMap)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL FUNCTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void AddInstance(tID a_idEntity, float afStartDistance, float afEndDistance, float afDamage, bool abFatal = false, bool abFastNonLookDamage = false, bool abInstantKnockOut=false)
+	{
+		for(int i=0; i<mvInstances.size();++i)
+		{
+			if(mvInstances[i].m_idEntity == a_idEntity)
+			{
+				mvInstances[i].mfStartDistance = afStartDistance;
+				mvInstances[i].mfEndDistance = afEndDistance;
+				mvInstances[i].mfDamage = afDamage;
+				mvInstances[i].mbFatal = abFatal;
+				mvInstances[i].mbFastNonLookDamage = abFastNonLookDamage;
+				mvInstances[i].mbInstantKnockOut = abInstantKnockOut;
+				return;
+			}
+		}
+		
+		cAttackInstance instance;
+		instance.m_idEntity = a_idEntity;
+		instance.mfStartDistance = afStartDistance;
+		instance.mfEndDistance = afEndDistance;
+		instance.mfDamage = afDamage;
+		instance.mbFatal = abFatal;
+		instance.mbFastNonLookDamage = abFastNonLookDamage;
+		instance.mbInstantKnockOut = abInstantKnockOut;
+		
+		mvInstances.push_back(instance);
+	}
+	
+	//------------------------------------------------------------
+	
+	void RemoveInstance(tID a_idEntity)
+	{
+		for(int i=0; i<mvInstances.size();++i)
+		{
+			if(mvInstances[i].m_idEntity == a_idEntity)
+			{
+				mvInstances[i] = mvInstances[mvInstances.size()-1];
+				mvInstances.pop_back();
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	bool IsActive()
+	{
+		return mfAmount>0;
+	}
+	
+	//------------------------------------------------------------
+	
+	void AutoDamage(float afTime, float afDamage, bool abFatal)
+	{
+		mfAutoDamageTime = afTime;
+		mfAutoDamageCount = 0;
+		mbAutoDamageFatal = abFatal;
+		mfAutoDamageAmount = afDamage;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetPlayerIsRecovering()
+	{
+		return mbPlayerIsRecovering || cLux_GetGodModeActivated();
+	}
+	
+	//------------------------------------------------------------
+		
+	void SetPlayerIsRecovering(bool abX)
+	{
+		mbPlayerIsRecovering=abX;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetCustomDamageCallback(const tString& in asCallback)
+	{
+		msCustomDamageCallback = asCallback;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetAfterDamageCallback(const tString& in asCallback)
+	{
+		msAfterDamageCallback = asCallback;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetAttackerTeleportPosition(const tString& in asPosition)
+	{
+		msAttackerTeleportPos = asPosition;
+	}
+	
+	const tString& GetAttackerTeleportPosition()
+	{
+		return msAttackerTeleportPos;
+	}
+	
+	//------------------------------------------------------------
+	
+	void BreakAttackDamageSequence()
+	{
+		mbBreakAttackDamageSequence=true;	
+	}
+	
+	//------------------------------------------------------------
+	
+	void ContinueAttackDamageSequence()
+	{
+		StartAfterDamageSequence();
+	}
+	
+	//------------------------------------------------------------
+	
+	float GetTimeSinceLastKnockDown()
+	{
+		return mfTimeSinceLastKnockDown;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Reset()
+	{		
+		mfAmount =0;
+		mfEffectT=0;
+		mfEffectBurstCount=0;
+		mfEffectTAdd =1;
+		
+		mbBreakAttackDamageSequence=false;
+		
+		mfAutoDamageCount=-1;
+		mfAutoDamageTime =-1;
+		
+		mfWakeUpEffectCount=0;
+		
+		mfTimeSinceLastKnockDown = 999999.0f;
+		
+		mlHearbeatId = -1;
+		mlBreathId =-1;
+		
+		mfNormalDamageHitCount=0;
+		
+		mbPlayerIsRecovering = false;
+		
+		msAfterDamageCallback = "";
+		msCustomDamageCallback="";
+		
+		Effect_ChromaticAberration_SetDirect(0, 0, 0, cVector2f_Zero);
+		Effect_ImageTrail_SetDirectAmount(0);
+		mbEffectsRunning = false;
+		
+		if(mpSound !is null && cSound_IsValid(mpSound, mlSoundId))
+		{
+			mpSound.Stop(false);
+			@mpSound = null;
+		}
+	}
+	
+	//------------------------------------------------------------
+
+	void Update(float afTimeStep)
+	{	
+		cLuxMap@ pMap = cLux_GetCurrentMap();
+		if (pMap is null || pMap.IsActive() == false)
+			return;
+			
+		if(mfTimeSinceLastKnockDown < 999999.0f)
+		{
+			mfTimeSinceLastKnockDown += afTimeStep;
+		}
+		
+		UpdateAmount(afTimeStep);
+		UpdateDamage(afTimeStep);
+		UpdateEffects(afTimeStep);
+		UpdateLoopSound(afTimeStep);
+	}
+	
+	void VariableUpdate(float afDeltaTime)
+	{
+	}
+
+	//------------------------------------------------------------
+	
+	void UpdateAmount(float afTimeStep)
+	{
+		bool bIncreased = false;
+		
+		/////////////////////////
+		// If there is an auto Damage in place we skip the instances
+		if(mfAutoDamageTime>=0)
+		{
+			mfAutoDamageCount += afTimeStep;
+			if(mfAutoDamageCount>=mfAutoDamageTime) mfAutoDamageCount=mfAutoDamageTime;
+			
+			float fGoalAmount;
+			
+			if(mfAutoDamageTime==0)
+				fGoalAmount=1;
+			else
+				fGoalAmount = mfAutoDamageCount/mfAutoDamageTime;
+			
+			mfAmount = cMath_IncreaseTo(mfAmount, afTimeStep*8.0f, fGoalAmount);
+			
+			return;
+		}
+		
+		/////////////////////////
+		// Check to see if any needs to be removed.
+		for(int i=0; i<mvInstances.size();)
+		{
+			cAttackInstance @pInstance = mvInstances[i];
+			
+			iLuxEntity@ pEntity = cLux_ID_Entity(pInstance.m_idEntity);
+			
+			if(pInstance.m_idEntity != tID_Invalid && (pEntity is null || pEntity.IsActive()==false))
+			{
+				mvInstances[i] = mvInstances[mvInstances.size()-1];
+				mvInstances.pop_back();
+			}
+			else
+			{
+				++i;
+			}
+		}
+				
+		/////////////////////////
+		// Fade Amount to new value
+		if(mbPlayerIsRecovering==false)
+		{
+			float fGoalAmount =0;
+			cVector3f vPlayerPos = cLux_GetPlayer().GetCharacterBody().GetPosition();
+			cVector3f vCamFwd = cLux_GetPlayer().GetCamera().GetForward();
+			bool bLookingAtNearest=false;
+			
+			for(int i=0; i<mvInstances.size();++i)
+			{
+				cAttackInstance @pInstance = mvInstances[i];
+				iLuxEntity@ pEntity = cLux_ID_Entity(pInstance.m_idEntity);
+			
+				float fDist = cMath_Vector3Dist(vPlayerPos, pEntity.GetPosition());
+				if(fDist > pInstance.mfStartDistance) continue;
+				fDist = cMath_Max(fDist, pInstance.mfEndDistance);
+				
+				
+			
+				float fX = 1.0f - (fDist - pInstance.mfEndDistance) / (pInstance.mfStartDistance - pInstance.mfEndDistance);
+				
+				if(fX > fGoalAmount)
+				{
+					fGoalAmount = fX;
+
+					cVector3f vToSource = pEntity.GetPosition() - vPlayerPos;
+					vToSource.Normalize();
+					
+					bLookingAtNearest = pInstance.mbFastNonLookDamage || cMath_Vector3Dot(vToSource, vCamFwd) > -0.2f;
+				}
+			}
+			
+			float fSpeed = bLookingAtNearest ? 4.0f : 0.25f; //If looking at the Damagemeter instance, increase much faster.
+			mfAmount = cMath_IncreaseTo(mfAmount, afTimeStep*fSpeed, fGoalAmount);
+			bIncreased = true;
+		}
+		else if(mfAmount>0)
+		{
+			mfAmount -= 1.0f*afTimeStep;
+			if(mfAmount<0.0f)
+			{
+				mfAmount = 0.0f;	
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	float mfAppliedDamage;
+	float mfAppliedDamageMinHealth;
+	
+	float mfNormalDamageHitCount=0;
+	
+	bool mbDoKnockOutDamage=false;
+	
+	array<cVector3f> mvTightSpotRayEnd;///DEBUG
+	array<cVector3f> mvTightSpotRayStart;///DEBUG
+	
+	void UpdateDamage(float afTimeStep)
+	{
+		if(cLux_GetGodModeActivated()) return;
+		
+		if(mfAmount<1.0f || mbPlayerIsRecovering || cLux_GetPlayer().IsDead())
+			return;
+			
+		//////////////////////////////
+		// Update counters
+		if(mfNormalDamageHitCount>0)
+		{
+			mfNormalDamageHitCount-=afTimeStep;
+		}
+			
+		//////////////////////////////
+		// Setup variables
+		mbWakeUpPaused = false;
+		mbDoKnockOutDamage=false;
+		
+		/////////////////////
+		// Set up variables
+		mKillingEntityID = tID_Invalid;
+		mfAppliedDamage=0;
+		mfAppliedDamageMinHealth = 0;
+		
+		msCurrentCustomCallback="";
+		msCurrentDamageCallback="";
+		msCurrentAttackerTeleportPos="";
+		
+		bool bAutoDamage=false;
+		
+		////////////////////////
+		// Damage by an entiy
+		if(mfAutoDamageTime<0)
+		{
+			cVector3f vPlayerPos = cLux_GetPlayer().GetCharacterBody().GetPosition();
+		
+			for(int i=0; i<mvInstances.size();++i)
+			{
+				cAttackInstance @pInstance = mvInstances[i];
+				
+				iLuxEntity@ pEntity = cLux_ID_Entity(pInstance.m_idEntity);
+				
+				float fDist = cMath_Vector3Dist(vPlayerPos, pEntity.GetPosition());
+				if (fDist <= pInstance.mfEndDistance)			
+				{
+					mfAppliedDamage = pInstance.mfDamage;
+					mfAppliedDamageMinHealth = pInstance.mbFatal ? 0 : 0.1f;
+					mKillingEntityID = pInstance.m_idEntity;
+					mbDoKnockOutDamage = pInstance.mbInstantKnockOut;
+					break;
+				}
+			}
+		}
+		////////////////////////
+		// Damaged by an auto damage
+		else
+		{
+			bAutoDamage = true;
+			mfAppliedDamage = mfAutoDamageAmount;
+			mfAppliedDamageMinHealth = mbAutoDamageFatal ? 0 : 0.1f;
+			mfAutoDamageTime=-1;
+			mfAutoDamageCount=-1;
+		}
+		
+		////////////////////////
+		// Setup enity stuff
+		if(mKillingEntityID != tID_Invalid)
+		{
+			iLuxEntity@ pEntity = cLux_ID_Entity(mKillingEntityID);
+			
+			cScript_RunGlobalFunc(pEntity.GetName(), "", "_Global_Attacker_GetCustomCallback");
+			msCurrentCustomCallback = cScript_GetGlobalReturnString();
+			
+			cScript_RunGlobalFunc(pEntity.GetName(), "", "_Global_Attacker_GetDamageCallback");
+			msCurrentDamageCallback = cScript_GetGlobalReturnString();
+			
+			cScript_RunGlobalFunc(pEntity.GetName(), "", "_Global_Attacker_GetTeleportPos");
+			msCurrentAttackerTeleportPos = cScript_GetGlobalReturnString();
+		}
+		
+		////////////////////////
+		// Setup current teleport pos and callbacks
+		if(msCurrentCustomCallback=="") msCurrentCustomCallback = msCustomDamageCallback;
+		if(msCurrentDamageCallback=="") msCurrentDamageCallback = msAfterDamageCallback;
+		if(msCurrentAttackerTeleportPos=="") msCurrentAttackerTeleportPos = msAttackerTeleportPos;
+		
+		//////////////////////
+		// Default Damage Start
+		if(msCurrentCustomCallback=="")
+		{
+			//////////////////////////////
+			// Player setup	
+			mbPlayerIsRecovering = true;
+					
+			//////////////////////////////
+			// Call the entity callback
+			if(mKillingEntityID != tID_Invalid)
+			{
+				tString sEntityName = cLux_ID_Entity(mKillingEntityID).GetName();
+			
+				cScript_RunGlobalFunc(sEntityName, "", "_Global_PlayerStartDamageCallback");
+			}
+			
+			//////////////////////////////
+			// Check if using knockout damage
+			if(	mbDoKnockOutDamage ==false)
+			{
+				/////////////////////////////////
+				//If close to a normal hit
+				if(mfNormalDamageHitCount>0)
+				{
+					mbDoKnockOutDamage=true;
+				}
+				
+				/////////////////////////////////
+				//If auto damage was used.
+				if(bAutoDamage)
+					mbDoKnockOutDamage=true;
+				
+				
+				/////////////////////////////////
+				//If not moving fast enough	
+				if(cLux_GetPlayer().GetAverageMoveSpeed() < 3.5f)
+				{
+					mbDoKnockOutDamage=true;
+				}
+				
+				/////////////////////////////////
+				//If in a right corner
+				if(mbDoKnockOutDamage==false)
+				{
+					iCharacterBody @pCharBody =cLux_GetPlayer().GetCharacterBody();
+					
+					const float fDistance = 1.9f;
+					int lCollideCount =0;
+					for(int i=0; i<8; ++i)
+					{
+						cVector3f vDir = cMath_MatrixMul(cMath_MatrixRotateY(i*cMath_PiMul2/8.0f), cVector3f(1,0,0));
+						cVector3f vPos = pCharBody.GetPosition();
+						
+						
+						mvTightSpotRayStart.push_back(vPos);
+						mvTightSpotRayEnd.push_back(vPos+vDir*fDistance);
+					
+						if(cLux_GetClosestCharCollider(vPos, vDir,fDistance,false, null))
+							lCollideCount++;
+					}
+					if(lCollideCount>=4)
+					{
+						mbDoKnockOutDamage=true;
+					}
+				}
+			}
+			
+			//////////////////////////////
+			// Set player state
+			cLux_GetPlayer().ChangeState(ePlayerState_Normal);
+			
+			//////////////////////////////
+			// Start sequence
+			if(mbDoKnockOutDamage)
+			{
+				mfTimeSinceLastKnockDown=0;
+				
+				mfNormalDamageHitCount=0;
+				
+				Effect_Shake_Start(1.55, 0.3, 0.1, 0.0, cVector3f(1, 0.8f, 0));
+				Effect_Rumble_Start(3.5, 1.5, 0.1, 0.7);
+				
+				Sound_FadeGlobalVolume(0.0f, 0.2f, eSoundEntryType_WorldAll);
+				Sound_FadeGlobalVolume(0.0f, 0.2f, eSoundEntryType_GuiWorld);
+				
+				Music_FadeVolumeMul(0.0, 0.2f);
+								
+				Player_SetMoveSpeedMul(0.2);
+				Player_SetLookSpeedMul(0.3f);
+			
+				Effect_Screen_Start("damage_steam_screen.mat", cVector2f(0.5, 0.5), cVector2f(1.8, 1.8), 1, 0, 0.5f, 2.0f);
+					
+				mBaseObj.Timer_Add(0,0.5f,"PlayerDamage_Step0_KnockOutFadeOut");
+				
+				// Log event
+				iLuxEntity@ pEntity = cLux_ID_Entity(mKillingEntityID);
+			}
+			else
+			{
+				mfNormalDamageHitCount = 20.0f; //If hit again with in this time, always do knockout!
+				
+				/////////////////////////
+				// Effects
+				Effect_Shake_Start(1.55, 0.8, 0.1, 0.3, cVector3f(1, 0.8f, 0));
+				Effect_Rumble_Start(1.4, 0.7);
+				
+				Effect_VideoDistortion_Start(1.0f, 5, 0.1, 3.0f);
+				
+				Player_SetMoveSpeedMul(0.5);
+				
+				/////////////////////////
+				// Damage effects
+				Effect_Screen_Start("damage_steam_screen.mat", cVector2f(0.5, 0.5), cVector2f(1.8, 1.8), 1, 0, 20.0f, 6.f);
+			
+				/////////////////////////
+				// Damage
+				mfAppliedDamage *=0.5f;
+				if(mfAppliedDamage>0.15) mfAppliedDamage = 0.15f;
+				
+				////////////////////////////////////
+				//Push player away
+				if(mKillingEntityID != tID_Invalid && Player_GetUnderwater()==false)
+				{
+					cVector3f vSourcePos =  cLux_ID_Entity(mKillingEntityID).GetPosition();
+					cVector3f vDir = cLux_GetPlayer().GetCharacterBody().GetPosition() - vSourcePos;
+					vDir.y=0;
+					vDir.Normalize();
+					cLux_AddDebugMessage("ONGROUND: "+cLux_GetPlayer().GetCharacterBody().IsOnGround());
+					if(cLux_GetPlayer().GetCharacterBody().IsOnGround())
+						Player_AddContinuosBodyForce(vDir*500, 0.25f);
+					else
+						Player_AddContinuosBodyForce(vDir*150, 0.25f);
+				}
+			
+				mBaseObj.Timer_Add(0,0.25f,"PlayerDamage_Step1_Setup");
+			}
+			
+			//////////////////////
+			// Sounds
+			{
+				///////////////////////////////
+				// Death
+				if(mfAppliedDamage >= cLux_GetPlayer().GetHealth())
+				{
+					if(Player_GetUnderwater())
+						Sound_PlayGui(gsDamageDeathSound, 1.0f);
+					else
+						Sound_PlayGui(gsDamageDeathSoundUnderwater, 1.0f);
+				}
+				///////////////////////////////
+				// Knock Down
+				else if(mbDoKnockOutDamage)
+				{
+					if(Player_GetUnderwater())
+						Sound_PlayGui(gsDamageBlackOutSoundUnderwater, 1.0f);
+					else
+						Sound_PlayGui(gsDamageBlackOutSound, 1.0f);
+				}
+				///////////////////////////////
+				// "Normal" Damage
+				else
+				{
+					if(Player_GetUnderwater())
+						Sound_PlayGui(gsDamageHitSoundUnderwater, 1.0f);
+					else
+						Sound_PlayGui(gsDamageHitSound, 1.0f);
+				}
+					
+			}
+		}
+		//////////////////////
+		// Custom Damage Start
+		else
+		{
+			////////////////////////////////
+			// Get the source
+			tString sSource = "";
+			if(mKillingEntityID != tID_Invalid)
+			{
+				sSource = cLux_ID_Entity(mKillingEntityID).GetName();
+			}
+			
+			////////////////////////////////
+			// Run the callback
+			cLuxMap @pMap = cLux_GetCurrentMap();
+			if(pMap.ScriptPrepare("void "+msCurrentCustomCallback+"(const tString& in asSource)"))
+			{
+				pMap.SetArgString(0, sSource);
+				pMap.ScriptExecute();
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void PlayerDamage_Step0_KnockOutFadeOut(uint64 alTimer)
+	{	
+		Player_StopDatamining();	
+		Effect_Fade_Out(0.1f);
+		mBaseObj.Timer_Add(0,0.1f,"PlayerDamage_Step1_Setup");
+	}
+	
+	//------------------------------------------------------------
+	
+	void PlayerDamage_Step1_Setup(uint64 alTimer)
+	{
+		//////////////////////////////
+		// Apply damage
+		float fMinHealth = cLux_GetExplorationModeActive() ? 0.75f : mfAppliedDamageMinHealth;
+		Player_AddHealth(-mfAppliedDamage, fMinHealth);
+		if(Player_IsDead()) return;
+						
+		/////////////////////////////////
+		// Callbacks		
+		{
+			////////////////////////
+			// Get Entity
+			tString sEntityName = "";
+			if (mKillingEntityID != tID_Invalid) sEntityName = cLux_ID_Entity(mKillingEntityID).GetName();
+				
+			cLuxMap @pMap = cLux_GetCurrentMap();
+					
+			//////////////////////////////
+			// Call the entity callback
+			if(mKillingEntityID != tID_Invalid)
+			{
+				cScript_SetGlobalArgBool(0, mbDoKnockOutDamage);
+				cScript_RunGlobalFunc(sEntityName, "", "_Global_PlayerAfterDamageCallback");
+			}
+					
+			///////////////
+			// If there's a after Damage callback, call that
+			if (msCurrentDamageCallback!="")
+			{
+				if(pMap.ScriptPrepare("void "+msCurrentDamageCallback+"(const tString &in asSource)"))
+				{
+					pMap.SetArgString(0, sEntityName);
+					pMap.ScriptExecute();
+				}
+			}
+		}
+		
+		if(mbBreakAttackDamageSequence)
+		{
+			mbBreakAttackDamageSequence=false;
+			return;
+		}
+		
+		StartAfterDamageSequence();
+	}
+	
+	//------------------------------------------------------------
+		
+	void StartAfterDamageSequence()
+	{
+		////////////////////////////////////
+		//Knock out specifics
+		if(mbDoKnockOutDamage)
+		{
+			////////////////////////////////////
+			//Teleport attack
+			TeleportAttackerToNewPos();
+			
+			////////////////////////////////////
+			//Player setup
+			Player_FadeRollTo(78, 10,100);
+		
+			Player_SetForceCrawling(true);
+			Player_SetCrouching(true, true, true);
+			Player_SetStandDisabled(true);
+			
+			cLux_GetPlayer().SetVisibilityMaxRange(eVisibilityType_Damage, 0);
+			
+			/////////////////////////////////
+			// Next Step
+			mBaseObj.Timer_Add(0, 2.5f,"PlayerDamage_KnockDown_Step2_WakeUp");
+		}
+		else
+		{
+			/////////////////////////////////
+			// Next Step
+			mBaseObj.Timer_Add(0, 3.5f,"PlayerDamage_Hit_Step2_End");
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void PlayerDamage_Hit_Step2_End(uint64 alTimer)
+	{
+		mbPlayerIsRecovering =false;
+		Player_FadeMoveSpeedMulTo(1.0f, 3);
+	}
+		
+		
+	//------------------------------------------------------------
+	
+	float mfPitchMinLimit;
+	float mfPitchMaxLimit;
+	int mlDOFId;
+		
+	void PlayerDamage_KnockDown_Step2_WakeUp(uint64 alTimer)
+	{
+		//////////////////////////////
+		//Check if player should be woken up.
+		if (mbWakeUpPaused)
+		{
+			mBaseObj.Timer_Add(0, 0.2f,"PlayerDamage_Step3_WakeUp");
+			return;
+		}
+		mbWakeUpPaused = false;
+		
+		/////////////////////////
+		// Wake up the player
+		mfAmount = 0.0f;
+		
+		/////////////////////////
+		// Player
+		Player_SetActive(true);
+		Player_FadeFOVMulTo(1.0f, 100);
+		Player_FadeAspectMulTo(1.0f, 100);
+		Player_SetLookSpeedMul(0.4f);
+		
+		cLux_GetPlayer().SetVisibilityMaxRange(eVisibilityType_Damage, -1);
+			
+		//////////////////////////
+		// Camera Limits
+		cCamera@ pCam = cLux_GetPlayer().GetCamera();
+				
+		mfPitchMinLimit = pCam.GetPitchMinLimit();
+		mfPitchMaxLimit = pCam.GetPitchMaxLimit();
+		
+		pCam.SetYawLimits(	pCam.GetYaw() - cMath_ToRad(15), 
+							pCam.GetYaw() + cMath_ToRad(15));
+		
+		pCam.SetPitchLimits(pCam.GetPitch()-cMath_ToRad(15), 
+							pCam.GetPitch()+cMath_ToRad(15));
+		
+		/////////////////////////
+		// Effects
+		if(mbDoKnockOutDamage)
+			Effect_Fade_In(4.0f);
+		
+		
+		Sound_FadeGlobalVolume(1.00f, 6.0f, eSoundEntryType_WorldAll);
+		Sound_FadeGlobalVolume(1.0f, 5.0f, eSoundEntryType_GuiWorld);
+		Music_FadeVolumeMul(1.0, 5.0f);
+		Sound_FadeInGui(gsDamageWakeUpSound,1,5);
+		Sound_FadeInGui(gsDamageWakeUpTinnitusSound,1,5);
+		mlDOFId = Effect_DoF_Start(0.1, 1, 1, -1);
+		Effect_ChromaticAberration_StartAnim(3, 0.08f, 3, cVector2f(1,0.3f));
+		
+		Emotion_StopHeartbeat(1);
+		Emotion_StartBackgroundBreath(eBreathType_Fear, 0.7f, 0, 2.5f+6.0f);
+		
+		mfWakeUpEffectCount = 1.0f;
+		mfWakeUpEffectDecSpeed =0;
+						
+		/////////////////////////
+		// Damage effects
+		Effect_Screen_Start("damage_steam_screen.mat", cVector2f(0.5, 0.5), cVector2f(1.8, 1.8), 1, 0, 20.0f, 6.f);
+			
+		/////////////////////////
+		// Next step
+		mBaseObj.Timer_Add(0, 0.1f,"PlayerDamage_KnockDown_Step4_Crawl");
+	}
+	
+	//------------------------------------------------------------
+	
+	void PlayerDamage_KnockDown_Step4_Crawl(uint64 alTimer)
+	{
+		float fDuration = cMath_RandRectf(0.5, 1);
+		
+		/////////////////////////
+		// Effects
+		Effect_DoF_FadeOut(mlDOFId, fDuration);
+		mfWakeUpEffectDecSpeed = 1.0f / fDuration;
+		
+		/////////////////////////
+		// Player
+		Player_SetMoveSpeedMul(0.4);
+		Player_SetLookSpeedMul(1.0f);
+		Player_SetAfterDamageCrawl(true);
+		
+		Emotion_StartHeartbeat(0.95f, 1.0f, 0, fDuration, 3, 20);
+		
+		//////////////////////////
+		// Camera offsets reset
+		Player_FadeRollTo(0, 8, 30);
+		
+		cLux_AddTodoMessage("SOUND: Player rolls from side and onto belly.");
+		
+		//////////////////////////
+		// Camera Limits
+		cLux_GetPlayer().GetCamera().SetPitchLimits(mfPitchMinLimit, mfPitchMaxLimit);
+		cLux_GetPlayer().GetCamera().SetYawLimits(0, 0);
+		
+		/////////////////////////
+		// Next step
+		mBaseObj.Timer_Add(0, fDuration,"PlayerDamage_KnockDown_Step5_Stand");
+	}
+	
+	//------------------------------------------------------------
+	
+	void PlayerDamage_KnockDown_Step5_Stand(uint64 alTimer)
+	{
+		Player_SetSlowStandupMotion(true);
+		Player_SetStandDisabled(false);
+		Player_SetCrouching(false);
+		Player_SetStandDisabled(true);
+		Player_FadeMoveSpeedMulTo(1.0f, 3.0f);	
+		Player_SetAfterDamageCrawl(false);
+		
+		cLux_GetPlayer().ChangeState(ePlayerState_Normal);
+		
+		Player_SetForceCrawling(false);
+		Sound_StopGui(gsDamageWakeUpTinnitusSound,7);
+		
+		/////////////////////////
+		// Next step
+		mBaseObj.Timer_Add(0, 3,"PlayerDamage_KnockDown_Step6_AfterStand");
+	}
+	
+	//------------------------------------------------------------
+	
+	void PlayerDamage_KnockDown_Step6_AfterStand(uint64 alTimer)
+	{
+		Player_SetStandDisabled(false);
+		Player_SetSlowStandupMotion(false);
+		
+		/////////////////////////
+		// Next step
+		mBaseObj.Timer_Add(0, 4,"PlayerDamage_KnockDown_Step7_StopSequence");
+	}
+	
+	//------------------------------------------------------------
+	
+	void PlayerDamage_KnockDown_Step7_StopSequence(uint64 alTimer)
+	{
+		mbPlayerIsRecovering = false;
+		
+		Sound_StopGui(gsDamageWakeUpSound,10);
+	}
+	
+	//------------------------------------------------------------
+	
+	void TeleportPlayerToNewPos()
+	{
+		if(msPlayerTeleportPos == "") return;
+	
+		array<iLuxEntity@> vTeleportPoints;
+		cLux_GetCurrentMap().GetEntityArray(msPlayerTeleportPos,eLuxEntityType_Area, "", vTeleportPoints);
+				
+		if(vTeleportPoints.size()==0)
+		{
+			Error("Could not find player teleport area(s) '"+msPlayerTeleportPos+"' for DamageMeter.");
+			return;
+		}
+		
+		int lX = cMath_RandRectl(0, vTeleportPoints.size()-1);
+		iLuxEntity@ pTeleportEnt = vTeleportPoints[lX];
+		cVector3f vPos = pTeleportEnt.GetPosition();
+		
+		cLux_GetPlayer().GetCharacterBody().SetFeetPosition(vPos+cVector3f(0,0.05,0), false);
+		
+		cLux_GetPlayer().GetCharacterBody().SetYaw(cMath_RandRectf(0, cMath_PiMul2));
+	}
+	
+	//------------------------------------------------------------
+	
+	void TeleportAttackerToNewPos()
+	{
+		if(msCurrentAttackerTeleportPos=="") return;
+		if(mKillingEntityID == tID_Invalid) return;
+		
+		iLuxEntity@ pDamageEnt = cLux_ID_Entity(mKillingEntityID);
+		if(pDamageEnt.GetEntityType() != eLuxEntityType_Agent) return;
+		
+		//cLux_AddDebugMessage("Teleport to: "+msCurrentAttackerTeleportPos);
+		
+		array<iLuxEntity@> vTeleportPoints;
+		cLux_GetCurrentMap().GetEntityArray(msCurrentAttackerTeleportPos,eLuxEntityType_Area, "", vTeleportPoints);
+				
+		if(vTeleportPoints.size()==0)
+		{
+			Error("Could not find Attacker teleport area(s) '"+msCurrentAttackerTeleportPos+"' for DamageMeter.");
+			return;
+		}
+		
+		iLuxEntity@ pTeleportEnt=null;
+		float fMinDist=99999;
+		cVector3f vPlayerPos = cLux_GetPlayer().GetCharacterBody().GetPosition();
+		for(int i=0; i<vTeleportPoints.size(); ++i)
+		{
+			iLuxEntity@ pEnt = vTeleportPoints[i];
+			
+			float fDist2D = cMath_Vector2DistXZ(pEnt.GetPosition(), vPlayerPos);
+			float fDist3D = cMath_Vector3Dist(pEnt.GetPosition(), vPlayerPos);
+			fDist3D +=  cMath_RandRectf(0, 8); //So the position is not always the same.
+			
+			//cLux_AddDebugMessage(pEnt.GetName()+" 2D: "+fDist2D+" 3D: "+fDist3D+ " true3D: "+cMath_Vector3Dist(pEnt.GetPosition(), vPlayerPos));
+			
+			if(fDist2D > 12.5f && fDist3D < fMinDist)
+			{
+				fMinDist = fDist3D;
+				//cLux_AddDebugMessage("PICKED!");
+				@pTeleportEnt = pEnt;
+			}
+		}
+		
+		if(pTeleportEnt is null)
+		{
+			//if non was found, just take the one furthest away.
+			for(int i=0; i<vTeleportPoints.size(); ++i)
+			{
+				iLuxEntity@ pEnt = vTeleportPoints[i];
+				
+				float fDist3D = cMath_Vector3Dist(pEnt.GetPosition(), vPlayerPos);
+				
+				if(fDist3D < fMinDist)
+				{
+					fMinDist = fDist3D;
+					@pTeleportEnt = pEnt;
+				}	
+			}
+		}
+		
+		if(pTeleportEnt !is null)
+		{
+			cLuxAgent @pAgent = cLux_ToAgent(pDamageEnt);
+			pAgent.GetCharBody().SetFeetPosition(pTeleportEnt.GetPosition()+cVector3f(0,0.05,0), false);						
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void RunStartDamageCallbacks()
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	float mfEffectT=0;
+	float mfEffectTAdd=1;
+	float mfEffectBurstCount=0;
+	bool mbEffectsRunning=false;
+	
+	void UpdateEffects(float afTimeStep)
+	{
+		cLuxPlayer@ pPlayer = cLux_GetPlayer();
+		
+		////////////////////////////
+		// Noting happening, return and fade effect if needed.
+		if(mfAmount<=0)
+		{
+			//////////////////////////
+			// Reset anything running
+			if(mbEffectsRunning)
+			{
+				Effect_ChromaticAberration_SetDirect(0, 0, 0, cVector2f_Zero);
+				Effect_ImageTrail_SetDirectAmount(0);
+				
+				cSound_FadeGlobalVolume(1.0f, 1.0f, eSoundEntryType_WorldAll,
+											eScriptGlobalVolume_AttackMeter, false);
+				
+				pPlayer.FadeCameraAspectMulTo(1.0f, 3.0f);
+				pPlayer.FadeCameraFOVMulTo(1.0f, 3.0f);
+				
+				if(mlHearbeatId>=0)
+				{
+					Emotion_StopHeartbeat(mlHearbeatId);
+					mlHearbeatId = -1;
+				}
+				
+				mbEffectsRunning = false;
+				
+				if(mlBreathId==-1)
+					mlBreathId = Emotion_StartBackgroundBreath(eBreathType_Fear, 0.6f, 1, cMath_RandRectf(10, 18), 0.2, 8);
+			}
+			
+			//////////////////////////
+			// Wake up effect (when crawling after Damage)
+			if(mfWakeUpEffectCount>0)
+			{
+				mfWakeUpEffectCount -= mfWakeUpEffectDecSpeed*afTimeStep;
+				if(mfWakeUpEffectCount<0) mfWakeUpEffectCount=0;
+				
+				Effect_ImageTrail_SetDirectAmount(cMath_Easing(eEasing_QuartOut,mfWakeUpEffectCount)*0.8f);
+			}
+			
+			
+			return;
+		}
+		
+		///////////////////////////
+		// Set up variables
+		mfWakeUpEffectCount =0;
+		
+		////////////////////////////
+		// Check if burst is ready
+		if(mfEffectBurstCount > 0)
+		{
+			if(mfAmount>0.05f)
+				mfEffectBurstCount -= afTimeStep;
+			
+			if(mfEffectBurstCount<=0)
+			{
+				Effect_Shake_Start(0.005+0.35*mfAmount, 0.1, 0.5, 0.3f, cVector3f(1,0.3f,0));
+				
+				if(gsBurstStartSound!="")
+					Sound_PlayGui(gsBurstStartSound, cMath_Min(1.0f, mfAmount+0.2f));
+			}
+			else
+			{
+				return;
+			}
+		}
+		
+		////////////////////////////
+		// Update T
+		bool bEndBurst=false;
+		mfEffectT += mfEffectTAdd*afTimeStep*3.8f* (mfEffectTAdd>0 ? 2 : 1);
+		if(mfEffectT > 1)
+		{
+			mfEffectT = 1;
+			mfEffectTAdd = -1;
+		}
+		if(mfEffectT < 0)
+		{
+			mfEffectT = 0;
+			mfEffectTAdd = 1;
+			bEndBurst = true;
+		}
+		
+		////////////////
+		// Stop breathing
+		if(mfAmount>0.2f && mlBreathId>=0)
+		{
+			Emotion_StopBackgroundBreath(mlBreathId);
+			mlBreathId=-1;
+		}
+		
+		////////////////
+		// Heartbeat
+		{
+			float fTimeBetweenBeats = 0.6f - mfAmount*0.25f;
+			float fVolume =  cMath_Min(0.9f + mfAmount, 1.0f);
+
+			if(mlHearbeatId<0)
+				mlHearbeatId = Emotion_StartHeartbeat(fTimeBetweenBeats, fVolume, 1, -1, 0.1, 19);
+			else
+				Emotion_SetHeartbeatProperties(mlHearbeatId, fTimeBetweenBeats, fVolume);
+		}
+		
+		////////////////
+		// Sound
+		{
+			cSound_FadeGlobalVolume(1.0f - mfAmount*0.8f, 4.0f, eSoundEntryType_WorldAll,
+									eScriptGlobalVolume_AttackMeter, false);
+		}
+		
+		////////////////
+		// Aspect
+		{
+			float fT = 	(cMath_SigmoidCurve(mfEffectT)*0.2 - 0.15) + 
+						cMath_Sin(mfEffectT*30)*0.025f +
+						cMath_Sin(mfEffectT*80)*0.0125f;
+			fT *= mfAmount*1.4;
+			pPlayer.FadeCameraAspectMulTo(1.0f + fT, 30.0f);
+		}
+		
+		////////////////
+		// Screen Effects
+		{
+			float fT = 	cMath_SigmoidCurve(mfEffectT);
+			
+			Effect_ChromaticAberration_SetDirect(0.025*fT*mfAmount, 90, 0, cVector2f_Zero);
+			Effect_ImageTrail_SetDirectAmount(0.25f+ 1.5f*fT*mfAmount);
+			mbEffectsRunning =true;
+		}
+		
+		////////////////////////////
+		// End burst
+		if(bEndBurst)
+		{
+			mfEffectBurstCount = cMath_RandRectf(0.5, 2) - mfAmount;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateLoopSound(float afTimeStep)
+	{
+		if(gsLoopSound=="") return;
+		
+		////////////////////////////
+		// No sound playing
+		if(mfAmount <=0 || mbPlayerIsRecovering)
+		{
+			if(mpSound !is null  && cSound_IsValid(mpSound, mlSoundId))
+			{
+				mpSound.FadeOut(3);
+				@mpSound = null;
+			}
+			return;
+		}
+		
+		////////////////////////////
+		// Start sound (if needed)
+		if(mpSound is null || cSound_IsValid(mpSound, mlSoundId)==false)
+		{
+			cLuxSoundExtraData data;
+			if(cLux_PlayGuiSoundDataEx(gsLoopSound, eSoundEntryType_Gui, 1.0f, false, data))
+			{
+				@mpSound = data.mpSoundEntry;
+				if(mpSound !is null)
+				{
+					mlSoundId = mpSound.GetId();
+					mpSound.SetParam("LoopIntensity", 0);
+				}
+			}
+			else
+			{
+				@mpSound = null;
+			}
+		}
+		
+		////////////////////////////
+		// Update sound
+		if(mpSound !is null)
+		{
+			mpSound.SetParam("LoopIntensity", mfAmount);
+			//mpSound.FadeVolumeMulTo(cMath_Sqrt(mfAmount), 0.5f);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void PostUpdate(float afTimeStep)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnDraw(float){}
+	void OnPostRender(float){}
+	void OnEnterContainer(const tString&in){}
+	void OnLeaveContainer(const tString&in){}
+	void AppGotInputFocus(){}
+	void AppLostInputFocus(){}	
+	void OnAction(int alAction, bool abPressed){}
+	void OnAnalogInput(int alAnalogId, const cVector3f &in avAmount){}
+	void OnExitPressed(){}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPER METHODS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		apSet.DrawFont(tWString("Attack Amount: " + mfAmount), apFont, cVector3f(5,afStartY,0), cVector2f(14), cColor(1,1) );
+		afStartY += 14;
+		
+		return afStartY;
+	}
+	
+	/*void OnRenderSolid(cRendererCallbackFunctions@ apFunctions)
+	{
+		for(int i=0; i<mvTightSpotRayStart.size();++i)
+		{
+			apFunctions.GetLowLevelGfx().DrawLine(mvTightSpotRayStart[i], mvTightSpotRayEnd[i], cColor(1,1));
+		}
+	}*/
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	[volatile] cSoundEntry@ mpSound=null;
+	[nosave] int mlSoundId;
+	
+	float mfAmount=0;
+	bool mbPlayerIsRecovering=false;
+	
+	float mfAutoDamageTime=-1;
+	float mfAutoDamageAmount=0;
+	float mfAutoDamageCount=-1;
+	bool mbAutoDamageFatal=false;
+	
+	float mfTimeSinceLastKnockDown = 999999.0f;
+	
+	float mfWakeUpEffectCount=0;
+	float mfWakeUpEffectDecSpeed;
+	
+	array<cAttackInstance> mvInstances;
+	
+	bool mbWakeUpPaused=false;
+	
+	int mlHearbeatId=-1;
+	int mlBreathId=-1;
+	
+	tString msAfterDamageCallback = "";
+	tID mKillingEntityID = tID_Invalid;
+	bool mbReloadCheckPointDeath=false;
+			
+	tString msCustomDamageCallback;
+	tString msPlayerTeleportPos;
+	tString msAttackerTeleportPos;
+	
+	bool mbBreakAttackDamageSequence=false;
+	
+	tString msCurrentCustomCallback;
+	tString msCurrentDamageCallback;
+	tString msCurrentAttackerTeleportPos;
+	
+	//------------------------------------------------------------
+}

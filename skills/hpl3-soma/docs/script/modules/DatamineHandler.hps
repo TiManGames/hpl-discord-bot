@@ -1,0 +1,1266 @@
+#include "interfaces/UserModule_Interface.hps"
+#include "modules/ModuleInterfaces.hps"
+#include "base/InputHandler_Types.hps"
+#include "helpers/helper_player.hps"
+#include "helpers/helper_audio.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_font.hps"
+
+//------------------------------------------------------------
+class cScrDataminePage
+{
+	tString msSubject;
+	tString msTextCategory;
+	tString msTextEntry;
+	tString msImage;
+}
+
+//------------------------------------------------------------
+
+class cScrDatamineAnimNode
+{
+	cVector3f mvPosition;
+	float mfTimeToNode;
+	eEasing mEasing;
+}
+
+//------------------------------------------------------------
+	
+class cScrDatamineAudioSource
+{
+	tID m_idEntity;
+	tString msVoiceCharacter;
+	tString msCharacterImage;
+	tID m_idPS;
+	bool mbActive = false;
+	float mfVisible =0;
+	array<cScrDatamineAnimNode> mvAnimNodes;
+	int mlPrevAnimNode=-1;
+	int mlCurrentAnimNode=-1;
+	float mfNodeT;
+	cVector3f mvAreaBasePos;
+}
+
+
+//------------------------------------------------------------
+
+/////////////////////////////////////////
+// SETTINGS
+/////////////////////////////////////////
+
+//------------------------------------------------------------
+
+///////////////////
+//Sound variables
+float gfMusicDuckingTarget = 0.25;
+
+
+//------------------------------------------------------------
+
+///////////////////
+//Beep constants
+const float gfDatamineBeepFrequency = 0.5f;
+const float gfDatamineBeepMinDist = 2.f;
+const float gfDatamineBeepMaxDist = 10.f;
+const tString gsDatamineBlackboxBeep = "Player/UI/Blackbox/hunt";//"Player/UI/blackbox_sonar";
+
+////////////////////////
+// Datamining constants
+const tString gsDatamineDatamineStart = "Player/UI/Blackbox/start";
+const tString gsDatamineDatamineEnd = "Player/UI/Blackbox/end";
+const tString gsDatamineDatamineLoop = "";
+const tString gsDatamineDataminingLoop = "Player/UI/Blackbox/loop";
+const tString gsDatamineDatamineSuccess = "";
+const tString gsDatamineNearLoop = "Player/UI/Blackbox/hunt";
+const float gfDatamineSpeed = 0.5f;
+const tString gsDatamineStaticLoop = "Player/UI/Blackbox/static";
+
+const tString gsDatamineResultOverlayGfx = "graphics/imgui/datamine/datamine_overlay.tga";
+
+//------------------------------------------------------------
+
+const bool gbDatamineSourceUsesParticles = false;
+
+//------------------------------------------------------------
+
+class cScrDatamineHandler : iScrUserModule, iScrUserModule_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// USER SETTINGS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void LoadUserConfig()
+	{
+	
+	}
+	void SaveUserConfig()
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ENTER MAP
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+	}
+	
+	void OnMapLeave(cLuxMap @apMap)
+	{
+		//////////////////////////////////////
+		// Call reset when we leave the map so that you don't get spammed with errors when using submaps
+		Reset();
+	}
+	
+	//------------------------------------------------------------
+	
+	void PreloadData(cLuxMap @apMap)
+	{
+		if(gbDatamineSourceUsesParticles)
+		{
+			apMap.PreloadParticleSystem("voice_origin_normal.ps");
+			apMap.PreloadParticleSystem("voice_origin_active.ps");
+		}
+	}
+
+	void CreateWorldEntities(cLuxMap @apMap)
+	{
+	}
+	
+	void DestroyWorldEntities(cLuxMap @apMap)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL FUNCTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_BeginDatamining()
+	{	
+		// If already datamining, cancel it
+		if (m_idDataminingEntity != tID_Invalid)
+		{
+			cLux_AddDebugMessage("Stop at get go");
+			StopDatamining();
+			return;
+		}
+		
+		/////////////////////
+		// Entity
+		m_idDataminingEntity = cScript_GetGlobalArgID(0);
+		iLuxEntity@ pEntity = cLux_ID_Entity(m_idDataminingEntity);
+		pEntity.SetIsInteractedWith(true);
+		
+		/////////////////////
+		// Callbacks
+		msDatamineSubjectCallback = cScript_GetGlobalArgString(1);
+		msDatamineDoneCallback = cScript_GetGlobalArgString(2);
+		
+		/////////////////////
+		// RangeArea
+		msRangeArea = cScript_GetGlobalArgString(3);
+		iLuxEntity@ pRangeArea = cLux_GetCurrentMap().GetEntityByName(msRangeArea,eLuxEntityType_Area);
+		if(pRangeArea !is null)
+			m_idRangeArea = pRangeArea.GetID();
+		else
+		{
+			m_idRangeArea = tID_Invalid;
+			Error("Could not find range area '"+msRangeArea+"' for datamine entity '"+pEntity.GetName()+"'");
+		}
+		
+		/////////////////////
+		// Stop all voices?
+		mbStopAllVoices = cScript_GetGlobalArgBool(4);
+		
+		/////////////////////
+		// Pages
+		tString sFirstSubject = "";
+		mlLastVoicedPage = -1;
+		int lPageCount = cScript_GetGlobalArgInt(5);
+		for (int i = 0; i < lPageCount; i++)
+		{
+			cScrDataminePage page;
+			page.msSubject = cScript_GetGlobalArgString(i*4 + 6);
+			page.msTextCategory = cScript_GetGlobalArgString(i*4 + 7);
+			page.msTextEntry = cScript_GetGlobalArgString(i*4 + 8);
+			page.msImage = cScript_GetGlobalArgString(i*4 + 9);
+			mvDataminePages.push_back(page);
+			
+			if (page.msSubject != "")
+				mlLastVoicedPage = i;
+
+			if(sFirstSubject == "")
+			{
+				sFirstSubject = page.msSubject;
+			}
+		}
+		
+		////////////////////////////////
+		// Set new pitch & yaw limits
+		cCamera@ pCam = cLux_GetPlayer().GetCamera();
+		
+		mfPitchMinLimit = pCam.GetPitchMinLimit();
+		mfPitchMaxLimit = pCam.GetPitchMaxLimit();
+		
+		pCam.SetYawLimits(	pCam.GetYaw() - cMath_ToRad(15), 
+							pCam.GetYaw() + cMath_ToRad(15));
+		
+		pCam.SetPitchLimits(pCam.GetPitch()-cMath_ToRad(15), 
+							pCam.GetPitch()+cMath_ToRad(15));
+				
+		/////////////////////
+		// Player		
+		Player_SetMoveSpeedMul(0.3);
+		Player_SetRunSpeedMul(0);
+		Player_SetLookSpeedMul(1);
+		//Player_SetJumpDisabled(true);
+		Player_SetCrouchActionDisabled(true);
+		
+		//////////////////////////
+		// Turn off interaction
+		cLux_GetPlayer().ChangeState(ePlayerState_Null);
+		
+		/////////////////////
+		// Rumble
+		Effect_Rumble_Start(0.5, 2, 0.2, 1);
+		
+		/////////////////////
+		// Start sound
+		cLux_PlayGuiSoundData(gsDatamineDatamineStart, eSoundEntryType_Gui, 1, true);
+		Sound_FadeInGui(gsDatamineDataminingLoop,1,1);
+		
+		if (gsDatamineDatamineLoop!="")
+		{
+			/////////////////////
+			// Loop sound
+			cSoundEntity@ pSound = cLux_GetCurrentMap().GetWorld().CreateSoundEntity("DatamineHandler_DatamineLoop", gsDatamineDatamineLoop, true);
+			pEntity.GetAttachEntity().AddChild(pSound);
+			pSound.SetScriptableIsSaved(false);
+			pSound.FadeIn(2);
+			m_idDataminingSoundLoop = pSound.GetID();
+		}
+		
+		/////////////////////
+		// Set up variable
+		mbInsideRangeArea = true;
+		
+		/////////////////////
+		// Make sure scene has right volume
+		cLux_AddDebugMessage("sub: " + sFirstSubject + " " + lPageCount);
+		msVoiceScene = Voice_GetSubjectSceneName(sFirstSubject);
+		cLux_AddDebugMessage("scene: " + msVoiceScene);
+		Voice_SetFocusScene(msVoiceScene);
+		Voice_FadeSceneVolumeTo(msVoiceScene, 1,0);
+		
+		Effect_VideoDistortion_EnableAll(false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_AddDatamine()
+	{
+		tID idEntity = cScript_GetGlobalArgID(0);
+		if(idEntity==tID_Invalid)
+		{
+			Error("Tried to add datamine with invalid(null) id");
+			return;
+		}
+		
+		bool bIsBlackbox = cScript_GetGlobalArgBool(1);
+		if (bIsBlackbox)
+		{
+			for (uint i = 0; i < mvBlackboxes.length(); i++)
+			{
+				if (mvBlackboxes[i]==idEntity) return;
+			}
+			mvBlackboxes.push_back(idEntity);
+		}
+		else
+		{
+			for (uint i = 0; i < mvDatamines.length(); i++)
+			{
+				if (mvDatamines[i]==idEntity) return;
+			}
+			mvDatamines.push_back(idEntity);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_RemoveBeep()
+	{
+		tID idEntity = cScript_GetGlobalArgID(0);
+		RemoveDatamine(idEntity);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_StopDatamining()
+	{
+		if (m_idDataminingEntity == tID_Invalid) return;	
+		StopDatamining();
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+		//mvBlackboxes.resize(0);
+		//mvDatamines.resize(0);
+
+		mfPulseAmountDir =1;
+		mfPulseAmount=0;
+		
+		mfEffectMul =0;
+		mfNearEffectsAmount =0;
+		mfDataminingProgress=0;
+		mfFOVEffectExpansion =0;
+		mfLoadingEffectAmount=0;
+		
+		mbInsideRangeArea =true;
+		
+		mbUpdatedEffects = false;
+		
+		@mpNearSoundLoop = null;
+		@mpStaticSoundLoop = null;
+		
+		m_idDataminingSoundLoop = tID_Invalid;
+		
+		
+		mvAudioSources.resize(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetActive(bool abX)
+	{
+	}
+	
+	//------------------------------------------------------------
+
+	void Update(float afTimeStep)
+	{	
+		//////////////////////////
+		// Datamining
+		bool bLoading = false;
+		if (m_idDataminingEntity != tID_Invalid)
+		{
+			////////////////////////////////////
+			// In Progress
+			if (mfDataminingProgress < 1.f)
+			{
+				bLoading = true;
+				mfDataminingProgress += afTimeStep*gfDatamineSpeed;
+				
+				mfLoadingEffectAmount += afTimeStep*gfDatamineSpeed;
+				if(mfLoadingEffectAmount>1) mfLoadingEffectAmount=1;
+				
+				//////////////////////////
+				// Datamining done
+				if (mfDataminingProgress > 1.f) 
+				{
+					Effect_Rumble_Start(0.46, 1.0, 0.6, 0.3);
+					
+					RemoveDatamine(m_idDataminingEntity);
+					
+					//////////////////////////
+					// Get Audio sources
+					GetAllAudioSources();
+					
+					//////////////////////////
+					// Set up voice orign particles
+					if(gbDatamineSourceUsesParticles)
+					{
+						for(int i=0; i<mvAudioSources.size(); ++i)
+						{
+							iLuxEntity @pEnt = cLux_ID_Entity(mvAudioSources[i].m_idEntity);
+							cParticleSystem @pPS = pEnt.CreateParticleSystem("VoiceOrigin", "voice_origin_normal", true, true);
+							
+							if(pPS !is null)	mvAudioSources[i].m_idPS = pPS.GetID();
+							else				mvAudioSources[i].m_idPS = tID_Invalid;
+						}
+					}
+							
+					//////////////////////////
+					// Effects
+					cLux_PlayGuiSoundData(gsDatamineDatamineSuccess, eSoundEntryType_Gui, 1, true);
+					if (m_idDataminingSoundLoop != tID_Invalid)
+					{
+						cLux_ID_SoundEntity(m_idDataminingSoundLoop).FadeOut(2);
+						m_idDataminingSoundLoop = tID_Invalid;
+					}
+					
+					//////////////////////////
+					// Camera Look Limits
+					/*pCam.SetYawLimits(	pCam.GetYaw() - cMath_ToRad(45), 
+										pCam.GetYaw() + cMath_ToRad(45));
+
+					pCam.SetPitchLimits(pCam.GetPitch()-cMath_ToRad(55), 
+										pCam.GetPitch()+cMath_ToRad(55));*/
+					
+					cLux_GetPlayer().GetCamera().SetPitchLimits(mfPitchMinLimit, mfPitchMaxLimit);
+					cLux_GetPlayer().GetCamera().SetYawLimits(0, 0);
+		
+					
+					//////////////////////////
+					// Report back to entity
+					iLuxEntity@ pEntity = cLux_ID_Entity(m_idDataminingEntity);
+					cScript_RunGlobalFunc(pEntity.GetName(), "", "_Global_AfterScan");
+					
+					//////////////////////////
+					// Present results
+					if (mvDataminePages.length() > 0)
+					{
+						mfDataminingProgress = 1.f;
+						
+						mlCurrentDataminePage = -1;
+						msVoiceScene = "";
+						
+						NextPage();
+					}
+					
+					//////////////////////////
+					// No pages, just leave
+					else
+					{
+						Error("The datamine " + pEntity.GetName() + " has no pages to display!");
+						StopDatamining();
+					}
+				}
+			}
+			////////////////////////////////////
+			// Loading Completed
+			else
+			{
+				///////////////////////////////////////////////////
+				// Check if there's no point to stay on the page
+				cScrDataminePage currentPage = mvDataminePages[mlCurrentDataminePage];
+				if (msVoiceScene != "" && !Voice_SceneIsActive(msVoiceScene) && 
+					currentPage.msImage == "" && currentPage.msTextCategory == "")
+				{
+					NextPage();
+				}
+			}
+		}
+		
+		//////////////////////////
+		// Check if in range
+		//////////////////////////
+		if(mfDataminingProgress>=1)
+		{
+			//////////////////////////////////
+			// Check if inside range
+			
+			cVector3f vAreaSize(5,5,5);
+			cMatrixf mtxAreaTransform = cMath_MatrixTranslate(cLux_ID_Entity(m_idDataminingEntity).GetPosition());
+			if(m_idRangeArea != tID_Invalid)
+			{
+				iLuxEntity@ pEntity = cLux_ID_Entity(m_idRangeArea);
+				cLuxArea@ pArea = cLux_ToArea(pEntity);
+				
+				vAreaSize = pArea.GetSize();
+				mtxAreaTransform = pArea.GetMatrix();
+			}
+			
+			cVector3f vLocalCamPos = cLux_GetPlayer().GetCharacterBody().GetPosition();
+			vLocalCamPos = cMath_MatrixMul(cMath_MatrixInverse(mtxAreaTransform), vLocalCamPos);
+						
+			bool bInsideRange;
+			float fOutsideAmount=0;
+			if(	cMath_Abs(vLocalCamPos.x) > vAreaSize.x/2 ||
+				cMath_Abs(vLocalCamPos.y) > vAreaSize.y/2 ||
+				cMath_Abs(vLocalCamPos.z) > vAreaSize.z/2) 
+			{
+				bInsideRange = false;
+				
+				fOutsideAmount = cMath_Vector3MaxElement(cMath_Vector3Abs(vLocalCamPos) - vAreaSize*0.5);
+			}
+			else
+			{
+				bInsideRange = true;
+			}
+			
+			//////////////////////////////////
+			// Fade the volume
+			const float fMaxOutDist = 1.5f;
+			{
+				/////////////////////////////
+				// Completely outside
+				if(fOutsideAmount> fMaxOutDist)
+				{
+					StopDatamining();
+				}
+				//////////////////////////////
+				// Inside
+				else if(bInsideRange && mbInsideRangeArea==false)
+				{
+					Voice_FadeSceneVolumeTo(msVoiceScene, 1, 0.5f);
+										
+					if(mpStaticSoundLoop !is null && cSound_IsValid(mpStaticSoundLoop, mlStaticSoundLoopId))
+					{
+						mpStaticSoundLoop.FadeOut(1);
+					}
+				}
+				/////////////////////////////
+				// Partially outside
+				else if(bInsideRange==false)
+				{
+					mfAtBorderRumbleCount+= afTimeStep;
+					if(mfAtBorderRumbleCount>0.3)
+					{
+						mfAtBorderRumbleCount=0;
+						
+						float fT = fOutsideAmount/fMaxOutDist;
+						Effect_Rumble_Start(0.2+fT*0.2, 0.5);
+					}
+					
+					Voice_FadeSceneVolumeTo(msVoiceScene, 1.0f-fOutsideAmount/fMaxOutDist, 0.5f);
+					
+					if(cSound_IsValid(mpStaticSoundLoop, mlStaticSoundLoopId)==false)
+					{
+						cLuxSoundExtraData extraData;
+						if(cLux_PlayGuiSoundDataEx(gsDatamineStaticLoop, eSoundEntryType_Gui, 1.0f, true, extraData))
+						{
+							@mpStaticSoundLoop = extraData.mpSoundEntry;
+							mlStaticSoundLoopId = mpStaticSoundLoop.GetId();
+						}
+					}
+					if(mpStaticSoundLoop !is null)
+						mpStaticSoundLoop.FadeVolumeMulTo(fOutsideAmount/fMaxOutDist, 2);
+				}
+				mbInsideRangeArea = bInsideRange;
+			}
+		}
+		
+		//////////////////////////
+		// Particles
+		//////////////////////////
+		
+		mfIdleSourceMovementT += afTimeStep;
+		
+		if(gbDatamineSourceUsesParticles && mfDataminingProgress>=1)
+		{
+			for(int i=0; i<mvAudioSources.size(); ++i)
+			{
+				cScrDatamineAudioSource @pSource = @mvAudioSources[i];
+				
+				cParticleSystem @pPS = cLux_ID_ParticleSystem(pSource.m_idPS);
+				tString sNewParticle = "";
+							
+				//////////////////////////
+				// Speaking, Active Particle
+				if(Voice_CharacterIsSpeaking(pSource.msVoiceCharacter))
+				{
+					if(pSource.mbActive==false)
+					{
+						pSource.mbActive = true;
+						sNewParticle = "voice_origin_active";
+					}
+				}
+				//////////////////////////
+				// Silent, Normal Particle
+				else
+				{
+					if(pSource.mbActive)
+					{
+						pSource.mbActive = false;
+						sNewParticle = "voice_origin_normal";
+					}
+				}
+				
+				//////////////////////////////
+				// Kill and then create new
+				if(sNewParticle != "")
+				{
+					if(pPS !is null) pPS.Kill();
+					iLuxEntity @pEnt = cLux_ID_Entity(mvAudioSources[i].m_idEntity);
+					@pPS = pEnt.CreateParticleSystem("VoiceOrigin",sNewParticle, true, true);
+					
+					if(pPS !is null) 	pSource.m_idPS = pPS.GetID();
+					else				pSource.m_idPS = tID_Invalid;
+				}
+				
+				//////////////////////////////
+				// Local Idle Movement
+				{
+					float fX = cGenerate_GetNoisePerlin2D(cVector2f(i, mfIdleSourceMovementT));
+					float fY = cGenerate_GetNoisePerlin2D(cVector2f(i*13, mfIdleSourceMovementT));
+					float fZ = cGenerate_GetNoisePerlin2D(cVector2f(i*43, mfIdleSourceMovementT));
+									
+					cVector3f vPSPos;
+					vPSPos.x = fX*0.25f;
+					vPSPos.y = fY*0.25f;
+					vPSPos.z = fZ*0.25f;
+					
+					pPS.SetPosition(vPSPos);
+				}
+				
+				//////////////////////////////
+				// Area movement
+				if(pSource.mvAnimNodes.size() > pSource.mlCurrentAnimNode+1)
+				{
+					int lEnd = pSource.mvAnimNodes.size()-1;
+					float fTimeToNode = pSource.mvAnimNodes[pSource.mlCurrentAnimNode+1].mfTimeToNode;
+					eEasing easing  = pSource.mvAnimNodes[pSource.mlCurrentAnimNode+1].mEasing;
+					
+					pSource.mfNodeT += 1.0f/fTimeToNode * afTimeStep;
+					if(pSource.mfNodeT>=1.0f)
+					{
+						pSource.mlCurrentAnimNode++;
+						
+						if(lEnd == pSource.mlCurrentAnimNode)
+						{
+							pSource.mfNodeT=0;
+						}
+						else
+						{
+							pSource.mfNodeT = pSource.mfNodeT - 1.0f;
+						}
+					}
+					
+					int lCurr = pSource.mlCurrentAnimNode;
+										
+					cVector3f vP0 = lCurr>0 ? 	pSource.mvAnimNodes[lCurr-1].mvPosition :
+												pSource.mvAreaBasePos;
+					cVector3f vP1 = lCurr>=0 ?	pSource.mvAnimNodes[lCurr].mvPosition :
+												pSource.mvAreaBasePos;
+					cVector3f vP2 = lCurr>=lEnd ? 	pSource.mvAnimNodes[lEnd].mvPosition :
+													pSource.mvAnimNodes[lCurr+1].mvPosition;
+					cVector3f vP3 = lCurr+1>=lEnd ? 	pSource.mvAnimNodes[lEnd].mvPosition :
+														pSource.mvAnimNodes[lCurr+2].mvPosition;
+														
+					//cLux_AddDebugMessage("Curr: "+lCurr+" End:"+lEnd);
+					
+					float fT = cMath_Easing(easing, pSource.mfNodeT);
+					
+					//TODO: Proper spline!
+					cVector3f vPos;
+					vPos.x = cMath_InterpolateCubic(vP0.x, vP1.x, vP2.x, vP3.x, fT);
+					vPos.y = cMath_InterpolateCubic(vP0.y, vP1.y, vP2.y, vP3.y, fT);
+					vPos.z = cMath_InterpolateCubic(vP0.z, vP1.z, vP2.z, vP3.z, fT);
+										
+					cLux_ID_Entity(pSource.m_idEntity).SetPosition(vPos);
+				}
+			}
+		}
+		
+		//////////////////////////
+		// Effects
+		//////////////////////////
+		
+		// TEMP: If the deathmeter is running, make sure we do not update any effects!
+		if(AttackMeter_IsActive())
+		{
+			if(mbUpdatedEffects)
+			{
+				Effect_ChromaticAberration_SetDirect(0,0);
+				Player_FadeFOVMulTo(0,0.1);
+				Effect_RadialBlur_SetDirect(0,0,0);
+				Sound_FadeGlobalVolume(1, 1);
+				Music_FadeVolumeMul(1, 1);
+				mbUpdatedEffects = false;
+			}
+		}
+		else if(mfEffectMul>0 || mfDataminingProgress>0 || mfNearEffectsAmount>0 || 
+				mfLoadingEffectAmount>0 || mfFOVEffectExpansion>0)
+		{
+			mbUpdatedEffects = false;
+			
+			////////////////////
+			// Amount Update
+			mfEffectMul = cMath_IncreaseTo(mfEffectMul, afTimeStep*0.5, mfDataminingProgress);
+			
+			if(bLoading==false)
+			{
+				mfLoadingEffectAmount -= afTimeStep;
+				if(mfLoadingEffectAmount<0) mfLoadingEffectAmount=0;
+			}
+			
+			///////////////////
+			// FOV Expansion
+			if(mfDataminingProgress>=1)
+			{
+				mfFOVEffectExpansion = cMath_IncreaseTo(mfFOVEffectExpansion, afTimeStep*0.24f,1);
+			}
+			else
+			{
+				mfFOVEffectExpansion = cMath_IncreaseTo(mfFOVEffectExpansion, afTimeStep*0.75f, 0);
+			}
+					
+			////////////////////
+			// FOV
+			float fFov = cMath_Max(0.0f, mfEffectMul - mfPulseAmount*0.1);
+			float fFovMul = 1.0f -  cMath_Easing(eEasing_CircInOut, fFov)*0.2f + 
+							cMath_Easing(eEasing_CircInOut, mfFOVEffectExpansion)*0.2f;
+			float fFovMulFadeSpeed = 20.0f;
+			
+			if (EyeTracking_IsEnvironmentReactive() && mfEffectMul >= 1.0f)
+			{
+				iLuxEntity@ pEntity = cLux_ID_Entity(m_idDataminingEntity);
+				if (pEntity !is null && EyeTracking_IsEntityBeingLookedAt(pEntity.GetID()))
+				{
+					fFovMul -= 0.15f;
+				}		
+				fFovMulFadeSpeed = 1.0f;
+			}
+			
+			Player_FadeFOVMulTo(fFovMul, fFovMulFadeSpeed);
+			
+			////////////////////
+			// Sound
+			Sound_FadeGlobalVolume(1.0 - mfEffectMul*0.9f, 0.01f, eSoundEntryType_WorldAll);
+			Music_FadeVolumeMul(1.0 - mfEffectMul*(1.0f-gfMusicDuckingTarget), 0.01);
+			
+			////////////////////
+			// Radial Blur
+			float fAlphaMul = 1.0f - cMath_Easing(eEasing_Linear, mfPulseAmount)*0.6;
+			Effect_RadialBlur_SetDirect(0.2*mfEffectMul*fAlphaMul + mfLoadingEffectAmount*0.4f, 
+										cMath_Max(1.0f - 0.6f*mfEffectMul- mfLoadingEffectAmount*0.4f, 0.0f), 
+										(mfEffectMul)*fAlphaMul);
+										
+			////////////////////
+			// Chromatic
+			float fChromMul = (0.5 + cMath_Easing(eEasing_BounceInOut, mfPulseAmount)*0.5) *mfEffectMul*mfEffectMul;
+			Effect_ChromaticAberration_SetDirect(fChromMul*0.008, 90*mfPulseAmount);
+			
+			////////////////////
+			// Pulsing
+			mfPulseAmount += afTimeStep*mfPulseAmountDir*(0.5f + mfNearEffectsAmount*0.8f);
+			if(mfPulseAmountDir>0 && mfPulseAmount >= 1)
+			{
+				mfPulseAmount = 1;
+				mfPulseAmountDir = -1;
+			}
+			if(mfPulseAmountDir<0 && mfPulseAmount <= 0)
+			{
+				mfPulseAmount = 0;
+				mfPulseAmountDir = 1;
+			}
+		}
+		else
+		{
+			if(mbUpdatedEffects)
+			{
+				Effect_ChromaticAberration_SetDirect(0,0);
+				Player_FadeFOVMulTo(0,0.1);
+				Effect_RadialBlur_SetDirect(0,0,0);
+				Sound_FadeGlobalVolume(1, 1);
+				Music_FadeVolumeMul(1, 1);
+				mbUpdatedEffects = false;
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void PostUpdate(float afTimeStep)
+	{
+	}
+	
+	void VariableUpdate(float afDeltaTime)
+	{
+	}
+
+	//------------------------------------------------------------
+	
+	void OnAction(int alAction, bool abPressed)
+	{
+		if (tID_Invalid == m_idDataminingEntity) return;
+		
+		////////////////////////////////////
+		// Skip line
+		if((alAction == eAction_Interact) && cLux_ScriptDebugOn())
+		{			
+			Voice_AdvanceFromCurrentSound(msVoiceScene);
+		}
+			
+		/////////////////////////
+		// Cancel the data mining
+		if ((alAction == eAction_InteractCancel) && abPressed)
+		{
+			StopDatamining();
+		}
+		
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	
+	
+	//------------------------------------------------------------
+	
+	void OnGui(float afTimeStep)
+	{					
+		if(mfDataminingProgress<=0) return;
+				
+		//////////////////////////
+		// Set up basic variables
+		cCamera @pCam = cLux_GetPlayer().GetCamera();
+			
+		//TODO: The closer the clearer!
+		
+		//////////////////////////
+		// Iterate Audio Sources
+		for(int i=0; i<mvAudioSources.size(); ++i)
+		{
+			cScrDatamineAudioSource@ pSource = @mvAudioSources[i];
+			if(Voice_CharacterIsSpeaking(pSource.msVoiceCharacter))
+			{
+				pSource.mfVisible += afTimeStep*2;
+				if(pSource.mfVisible>1) pSource.mfVisible=1;
+			}
+			else
+			{
+				pSource.mfVisible -= afTimeStep*1;
+				if(pSource.mfVisible<0) pSource.mfVisible=0;
+				if(pSource.mfVisible == 0) continue;
+			}
+			pSource.mfVisible = 1;
+			
+			iLuxEntity @pEnt = cLux_ID_Entity(pSource.m_idEntity);
+								
+			////////////////////////////
+			// Check interception
+			cVector3f vToEnt = cMath_Vector3Normalize(pEnt.GetPosition() - pCam.GetPosition());			
+			
+			float fDot = cMath_Vector3Dot(vToEnt, pCam.GetForward());
+			
+			////////////////////////////
+			// Draw the current source.
+			float fDotCutOff = 0.5f;
+			/*//if(fDot > fDotCutOff)
+			{
+				////////////////////////////
+				// Get the postion
+				cVector3f vPos = cMath_MatrixMul(pCam.GetViewMatrix(), pEnt.GetPosition());
+				vPos = cMath_MatrixMulDivideW(pCam.GetProjectionMatrix(), vPos);
+				
+				vPos.z=0;
+				vPos.x = vPos.x*cLux_GetHudVirtualSize().x/2 + cLux_GetHudVirtualCenterSize().x/2;
+				vPos.y = vPos.y*-cLux_GetHudVirtualSize().y/2 + cLux_GetHudVirtualCenterSize().y/2;
+				
+				vPos = cVector3f(550, 300,0);
+				
+				float fSizeMul = 1.0f / cMath_Vector3Dist(pCam.GetPosition(), pEnt.GetPosition());
+											
+				////////////////////////////
+				// Calculate Amount values
+				float fAmount = pSource.mfVisible;//cMath_Easing(eEasing_QuintIn, (fDot-fDotCutOff) / (1.0f-fDotCutOff) *mfDataminingProgress*mfDataminingProgress);
+					
+				////////////////////////////
+				// Draw pic
+				cVector2f vCharSize = cVector2f(100, 150)*1.5;//*fSizeMul*1.5f;
+				cVector3f vCharPos = vPos;
+				vCharPos.x -= vCharSize.x/2;
+				vCharPos.y -= vCharSize.y/2;
+				
+				cImGuiGfx charGfx = cImGuiGfx(pSource.msCharacterImage, eGuiMaterial_Additive, eImGuiGfx_Texture);
+				
+				float fCol = 0.05*mfDataminingProgress +fAmount*0.95;
+				fCol *= pSource.mfVisible;
+				
+				Depth_ImGui_DrawLineDistortedGfx(charGfx,vCharPos, vCharSize, 
+												cColor(fCol,1), 
+												1.0f - fAmount*0.95f*pSource.mfVisible, //Size
+												1.0f - fAmount*0.5f,//Speed
+												i*13);
+				Depth_ImGui_DrawLineDistortedGfx(charGfx,vCharPos, vCharSize, 
+												cColor(fCol*0.3,1), 
+												1.0f - fAmount*0.25f*pSource.mfVisible, //Size
+												1.0f - fAmount*0.5f,//Speed
+												i*113);
+				
+				////////////////////////////
+				// Draw text
+				if(false)
+				{
+					//cVector3f vTextPos = vPos;
+					cVector3f vTextPos = cVector3f(515, 300+180,0);
+					
+					cImGuiFont font = cImGuiFont(Helper_Font_GetFontName(eLuxFontType_Sansation_Large), cVector2f(18));
+					font.mColor.a = fAmount*fAmount*fAmount;
+					
+						
+					ImGui_DrawFontW(pSource.msVoiceCharacter, font, vTextPos, eFontAlign_Center);
+				}
+			}*/
+		}
+	}	
+	
+	//------------------------------------------------------------
+	
+	void OnDraw(float){}
+	void OnPostRender(float){}
+	void OnEnterContainer(const tString&in){}
+	void OnLeaveContainer(const tString&in){}
+	void AppGotInputFocus(){}
+	void AppLostInputFocus(){}	
+	void OnAnalogInput(int alAnalogId, const cVector3f &in avAmount){}
+	void OnExitPressed(){}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPER METHODS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	iLuxEntity@ GetClosestEntity(const array<tID> &in avEntities)
+	{
+		cVector3f vCamPos = cLux_GetPlayer().GetCamera().GetPosition();
+		cVector3f vEntityPos;
+		float fClosest = 1000000;
+		iLuxEntity@ pClosestEntity = null;
+		for (uint i = 0; i < avEntities.length(); i++)
+		{
+			iLuxEntity@ pEntity = cLux_ID_Entity(avEntities[i]);
+			if (pEntity is null)
+			{
+				// This can happen when using submaps.
+				continue;
+			}
+			vEntityPos = pEntity.GetPosition();
+			float fDist = cMath_Vector3DistSqr(vCamPos, vEntityPos);
+			if (fDist < fClosest)
+			{
+				fClosest = fDist;
+				@pClosestEntity = pEntity;
+			}
+		}
+		return pClosestEntity;
+	}
+	
+	//------------------------------------------------------------
+	
+	void StopDatamining()
+	{	
+		Effect_Rumble_Start(0.6, 1.0f);
+							
+		Effect_VideoDistortion_EnableAll(true);
+		
+		iLuxEntity@ pEntity = cLux_ID_Entity(m_idDataminingEntity);
+		pEntity.SetIsInteractedWith(false);
+		
+		Sound_StopGui(gsDatamineDataminingLoop,2);
+		Sound_StopGui(gsDatamineDatamineStart,1);
+		cLux_PlayGuiSoundData(gsDatamineDatamineEnd, eSoundEntryType_Gui, 1, true);
+		
+		mvDataminePages.resize(0);
+		m_idDataminingEntity = tID_Invalid;
+		mfDataminingProgress = 0;
+		m_idRangeArea = tID_Invalid;
+		
+		Player_FadeMoveSpeedMulTo(1, 1);
+		Player_FadeRunSpeedMulTo(1, 1);
+		Player_FadeLookSpeedMulTo(1, 1);
+		
+		cLux_GetPlayer().GetCamera().SetPitchLimits(mfPitchMinLimit, mfPitchMaxLimit);
+		cLux_GetPlayer().GetCamera().SetYawLimits(0, 0);
+		
+		cLux_GetPlayer().ChangeState(ePlayerState_Normal);
+	
+		Voice_FadeSceneVolumeTo(msVoiceScene, 1,0);
+		
+		if(mpStaticSoundLoop !is null && cSound_IsValid(mpStaticSoundLoop, mlStaticSoundLoopId))
+		{
+			mpStaticSoundLoop.FadeOut(1);
+			@mpStaticSoundLoop = null;
+		}
+		
+		Player_SetCrouchActionDisabled(false);
+		
+		if (m_idDataminingSoundLoop != tID_Invalid) 
+			cLux_ID_SoundEntity(m_idDataminingSoundLoop).FadeOut(2);
+			
+		cLux_AddDebugMessage("msVoiceScene "+msVoiceScene);
+		if (msVoiceScene != "")
+		{
+			if (Voice_SceneIsActive(msVoiceScene))
+				Voice_Stop(msVoiceScene);
+
+			Voice_SetFocusScene("");
+		}
+		
+		for(int i=0; i<mvAudioSources.size(); ++i)
+		{
+			iLuxEntity@ pEnt = cLux_ID_Entity(mvAudioSources[i].m_idEntity);
+			
+			cParticleSystem @pPS = cLux_ID_ParticleSystem(mvAudioSources[i].m_idPS);
+			if(pPS !is null)
+			{
+				//pPS.SetPosition(pPS.GetWorldPosition());
+				pPS.GetEntityParent().RemoveChild(pPS);
+				pPS.Kill();	
+			} 
+			
+			pEnt.SetPosition(mvAudioSources[i].mvAreaBasePos);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void RemoveDatamine(tID a_idEntity)
+	{
+		for (int i = 0; i < mvBlackboxes.length(); i++)
+		{
+			if (mvBlackboxes[i]!=a_idEntity) continue;
+			
+			mvBlackboxes.removeAt(i);
+			return;
+		}
+	
+		for (int i = 0; i < mvDatamines.length(); i++)
+		{
+			if (mvDatamines[i]!=a_idEntity) continue;
+			
+			mvDatamines.removeAt(i);
+			return;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void NextPage()
+	{
+		mlCurrentDataminePage++;
+		
+		/////////////////////////
+		// Passed last page
+		if (mlCurrentDataminePage >= mvDataminePages.length())
+		{
+			/////////////////////////
+			// Callback
+			cLuxMap@ pMap = cLux_GetCurrentMap();
+			if (msDatamineDoneCallback != "" && 
+				pMap.ScriptPrepare("void " + msDatamineDoneCallback + "(const tString &in asEntity)"))
+			{
+				tString sName = cLux_ID_Entity(m_idDataminingEntity).GetName();
+				pMap.SetArgString(0, sName);
+				pMap.ScriptExecute();
+			}
+			/////////////////////////
+			
+			
+			
+			StopDatamining();
+		}
+		
+		else
+		{
+			/////////////////////
+			// Voice Subject
+			cScrDataminePage@ pPage = mvDataminePages[mlCurrentDataminePage];
+			if (pPage.msSubject != "")
+			{
+				if (msVoiceScene != "")
+					Voice_Stop(msVoiceScene);
+				if (mbStopAllVoices)
+					Voice_StopAll();
+				
+				tString sCallback = "";
+				if (mlCurrentDataminePage == mlLastVoicedPage)
+					sCallback = msDatamineSubjectCallback;
+					
+				Voice_Play(pPage.msSubject, -1, sCallback);
+				
+				msVoiceScene = Voice_GetSubjectSceneName(pPage.msSubject);
+				Voice_SetFocusScene(msVoiceScene);
+			}
+			
+			///////////////////////////////////////////////////////
+			// Check if there is nothing to display on this page
+/*			if (pPage.msImage == "" && pPage.msTextCategory == "")
+			{
+				NextPage();
+			}*/
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void GetAllAudioSources()
+	{
+		mvAudioSources.resize(0);
+		
+		array<tID> vSources;
+		cLux_GetCurrentMap().GetEntityArrayID("*", eLuxEntityType_Area, "cScrDatamineAudioSource", vSources);
+		for(int i=0;i<vSources.size(); ++i)
+		{
+			//////////////////////////
+			// Check if it belongs to this Data mine
+			cScript_RunGlobalFunc(cLux_ID_Area(vSources[i]).GetName(), "", "_Global_GetDatamineName");
+			if(cScript_GetGlobalReturnString() == cLux_ID_Entity(m_idDataminingEntity).GetName())
+			{
+				//////////////////////////
+				// Add the audio source
+				cScrDatamineAudioSource source;
+				source.m_idEntity = vSources[i];
+				
+				cScript_RunGlobalFunc(cLux_ID_Area(vSources[i]).GetName(), "", "_Global_GetVoiceCharacter");
+				source.msVoiceCharacter = cScript_GetGlobalReturnString();
+				
+				cScript_RunGlobalFunc(cLux_ID_Area(vSources[i]).GetName(), "", "_Global_GetCharacterImage");
+				source.msCharacterImage = cScript_GetGlobalReturnString();
+				
+				source.mvAreaBasePos = cLux_ID_Area(vSources[i]).GetPosition();
+				
+				//////////////////////////
+				// Get animation if any.
+				cScript_RunGlobalFunc(cLux_ID_Area(vSources[i]).GetName(), "", "_Global_AnimNodeBaseName");
+				tString sAnimNodeBase = cScript_GetGlobalReturnString();
+				if(sAnimNodeBase != "")
+				{
+					int lCount=1;
+					tString sAnimNode = sAnimNodeBase +"_"+lCount;
+					iLuxEntity@ pNode = cLux_GetCurrentMap().GetEntityByName(sAnimNode, eLuxEntityType_Area, "cScrDatamineAnimNode");
+					while(pNode !is null)
+					{
+						cScrDatamineAnimNode node;
+						
+						cScript_RunGlobalFunc(sAnimNode, "", "_Global_GetTimeToNode");
+						node.mfTimeToNode = cScript_GetGlobalReturnFloat();
+						
+						cScript_RunGlobalFunc(sAnimNode, "", "_Global_GetEasingFunc");
+						node.mEasing = eEasing(cScript_GetGlobalReturnInt());
+						
+						node.mvPosition = pNode.GetPosition();
+						
+						source.mvAnimNodes.push_back(node);
+						
+						++lCount;
+						sAnimNode = sAnimNodeBase +"_"+lCount;
+						@pNode = cLux_GetCurrentMap().GetEntityByName(sAnimNode, eLuxEntityType_Area, "cScrDatamineAnimNode");
+					}
+				}
+				
+				
+				mvAudioSources.push_back(source);
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{		
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnRenderSolid(cRendererCallbackFunctions@ apFunctions)
+	{
+		if(true)return;
+		
+		for(int i=0; i<mvAudioSources.size(); ++i)
+		{
+			cScrDatamineAudioSource@ pSource = @mvAudioSources[i];
+			iLuxEntity @pEntity = cLux_ID_Entity(mvAudioSources[i].m_idEntity);
+			
+			for(int j=0; j<pSource.mvAnimNodes.size(); ++j)
+			{
+				cScrDatamineAnimNode@ pNode = @pSource.mvAnimNodes[j];
+				
+				apFunctions.GetLowLevelGfx().DrawSphere(pNode.mvPosition, 0.3, cColor(10,0,10,1));
+			}
+			
+			apFunctions.GetLowLevelGfx().DrawSphere(pEntity.GetPosition(), 0.3, cColor(10,1));
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	array<tID> mvDatamines;
+	array<tID> mvBlackboxes;
+	array<cScrDatamineAudioSource> mvAudioSources;
+	float mfBeepCounter = 1;
+	
+	tID m_idDataminingSoundLoop = tID_Invalid;
+	
+	[volatile] cSoundEntry@ mpNearSoundLoop = null;
+	[volatile] int mlNearSoundLoopId=-1;
+	
+	[volatile] cSoundEntry@ mpStaticSoundLoop = null;
+	[volatile] int mlStaticSoundLoopId=-1;
+	
+	tID m_idDataminingEntity = tID_Invalid;
+	float mfDataminingProgress = 0;
+	float mfFOVEffectExpansion=0; //Starts to increase when mfDataminingProgress>=1
+	
+	float mfPitchMinLimit;
+	float mfPitchMaxLimit;
+	
+	tString msDatamineSubjectCallback;
+	tString msDatamineDoneCallback;
+	array<cScrDataminePage> mvDataminePages;
+	int mlCurrentDataminePage = 0;
+	
+	tString msVoiceScene;
+	int mlLastVoicedPage;
+	
+	float mfAtBorderRumbleCount=0;
+	
+	bool mbInsideRangeArea;
+	
+	float mfEffectMul = 0;
+	
+	[nosave] float mfIdleSourceMovementT=0;
+	
+	float mfNearEffectsAmount=0;
+	float mfLoadingEffectAmount=0;
+	
+	tString msRangeArea;
+	tID m_idRangeArea= tID_Invalid;
+	
+	float mfPulseAmount;
+	float mfPulseAmountDir;
+	
+	bool mbUpdatedEffects = false;
+	bool mbStopAllVoices = false;
+}

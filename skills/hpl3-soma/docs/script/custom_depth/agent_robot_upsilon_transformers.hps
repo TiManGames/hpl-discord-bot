@@ -1,0 +1,611 @@
+#include "agents/Agent_Humanoid.hps"
+
+#include "helper/helper_effects.hps"
+#include "custom_depth/helper_custom_depth.hps"
+
+/////////////////////////////////////////
+// SETTINGS
+/////////////////////////////////////////
+
+//------------------------------------------------------------
+
+const tString gsTransformerBotFollowMusic = "NPC_crawler_stalk";
+const float gfTransformerBotFollowMusicVolume = 0.75f;
+
+const tString gsTransformerBotHuntMusic = "NPC_crawler_attack";
+const float gfTransformerBotHuntMusicVolume = 0.85f;
+
+//-------------------------------------------------------
+//{BARKS
+
+const tString gsTransformerBotIdleSound = "";
+const cVector2f gfTransformerBotIdleSoundMinMax = cVector2f(5, 10);
+
+const tString gsTransformerBotFollowSound = "";
+const cVector2f gfTransformerBotFollowSoundMinMax = cVector2f(5, 10);
+
+const tString gsTransformerBotHuntSound = "";
+const cVector2f gfTransformerBotHuntSoundMinMax = cVector2f(5, 10);
+
+//}ENDBARKS
+//-------------------------------------------------------
+	
+enum eTransformerBotState
+{
+	eTransformerBotState_Idle,
+	eTransformerBotState_Follow,
+	eTransformerBotState_Hunt,
+};
+
+enum eTransformerBotSpeed
+{
+	eTransformerBotSpeed_SlowWalk,
+	eTransformerBotSpeed_Walk,
+	eTransformerBotSpeed_FastWalk,
+	eTransformerBotSpeed_SlowRun,
+	eTransformerBotSpeed_Run,
+}
+
+enum eTransformerBotBark
+{
+	eTransformerBotBark_Silent,
+	eTransformerBotBark_GiveUp,
+	eTransformerBotBark_Follow,
+	eTransformerBotBark_Hunt,
+}
+
+//------------------------------------------------------------
+	
+class cScrAgentRobotUpsilonTransformers : cScrAgentHumanoid
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		mBaseObj.SetUpdatePlayerDetection(true);
+		
+		//mTentacles.Init(mBaseObj);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupCharBody()
+	{
+		cScrAgentHumanoid::SetupCharBody();
+		
+		iCharacterBody@ pCharBody = mBaseObj.GetCharBody();
+		
+		pCharBody.SetMass(80);
+		pCharBody.SetMaxPositiveMoveSpeed(eCharDir_Forward,1.0f);
+		pCharBody.SetMoveAcc(eCharDir_Forward,4);
+		pCharBody.SetMoveDeacc(eCharDir_Forward,8);
+		pCharBody.SetAccurateClimbing(true);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		cScrAgentHumanoid::SetupAfterLoad(apWorld, apVars, apInstanceVars);
+		
+		///////////////////////////////
+		//General
+		mBaseObj.SetAlignEntityWithGroundRay(true);
+		mBaseObj.SetFOV(cMath_ToRad(120));
+		mBaseObj.SetSightRange(15.f);
+				
+		///////////////////////////////
+		//Pathfinder setup
+		mpPathfinder.SetMaxHeight(2.f);
+		
+		///////////////////////////////
+		//Mover setup
+		mpMover.SetupWallAvoidance(0.8f, 5.0f, 4);
+		mpMover.SetupDynamicObjectAvoidance(1.7f, 10, 3);
+		
+		mpMover.SetMaxForwardSpeed(1);
+		mpMover.SetMaxBackwardSpeed(1);
+		
+		mpMover.SetStoppedToWalkSpeed(0.05f);
+		mpMover.SetRunToWalkSpeed(1.3);
+		mpMover.SetWalkToRunSpeed(1.5);
+		
+		/////////////////////////////////
+		// Speed States
+		mpMover.AddSpeedState(eTransformerBotSpeed_SlowWalk);
+		mpMover.SetSpeedState_Forward(1.2);
+		
+		mpMover.AddSpeedState(eTransformerBotSpeed_Walk);
+		mpMover.SetSpeedState_Forward(1.2);
+		
+		mpMover.AddSpeedState(eTransformerBotSpeed_FastWalk);
+		mpMover.SetSpeedState_Forward(1.8);
+		
+		mpMover.AddSpeedState(eTransformerBotSpeed_SlowRun);
+		mpMover.SetSpeedState_Forward(3.2);
+		
+		mpMover.AddSpeedState(eTransformerBotSpeed_Run);
+		mpMover.SetSpeedState_Forward(4.5);
+		mpMover.SetSpeedState_TurnMaxSpeed(6);
+		mpMover.SetSpeedState_TurnSpeedMul(10);
+		mpMover.SetSpeedState_TurnBreakMul(0.2);
+		
+		///////////////////////////////
+		//Listener
+		@mpSoundListener = cLux_CreateEntityComponent_SoundListener(mBaseObj);
+		mpSoundListener.LoadFromInstanceVariables(apInstanceVars);
+		mpSoundListener.SetHearRadius(1.0f);
+		
+		/////////////////////////////////
+		// States
+		@mpStateMachine = cLux_CreateEntityComponent_StateMachine(mBaseObj);
+		
+		mpStateMachine.AddState("Idle", eTransformerBotState_Idle);
+		mpStateMachine.AddState("Follow", eTransformerBotState_Follow);
+		
+		mpStateMachine.AddSubState("Hunt", eTransformerBotState_Hunt);
+		
+		/////////////////////////////////
+		// Barks
+		@mpBarkMachine = cLux_CreateEntityComponent_BarkMachine(mBaseObj);
+		mpBarkMachine.SetupVoice("TransformerBot", true, 5, 25, 20);
+		
+		mpBarkMachine.AddState(eTransformerBotBark_Silent);
+		
+		mpBarkMachine.AddState(eTransformerBotBark_GiveUp);
+		mpBarkMachine.SetState_VoiceBark("TransformerBot_GiveUp", 5, 12, true);
+		mpBarkMachine.SetState_SoundBark(gsTransformerBotIdleSound, gfTransformerBotIdleSoundMinMax.x, gfTransformerBotIdleSoundMinMax.y, true);
+		
+		mpBarkMachine.AddState(eTransformerBotBark_Follow);
+		mpBarkMachine.SetState_VoiceBark("TransformerBot_Follow", 5, 10, true);
+		mpBarkMachine.SetState_SoundBark(gsTransformerBotFollowSound, gfTransformerBotFollowSoundMinMax.x, gfTransformerBotFollowSoundMinMax.y, true);
+				
+		mpBarkMachine.AddState(eTransformerBotBark_Hunt);
+		mpBarkMachine.SetState_VoiceBark("TransformerBot_Hunt", 3, 7, true);
+		mpBarkMachine.SetState_SoundBark(gsTransformerBotHuntSound, gfTransformerBotHuntSoundMinMax.x, gfTransformerBotHuntSoundMinMax.y, true);
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnAfterWorldLoad()
+	{
+		cScrAgentHumanoid::OnAfterWorldLoad();
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnUpdate(float afTimeStep)
+	{
+		cScrAgentHumanoid::OnUpdate(afTimeStep);
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetProperties()
+	{
+		cScrAgentHumanoid::ResetProperties();
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnRecieveMessage(int alMessageId, cLuxEntityMessageData @apData)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnSetActive(bool abX)
+	{
+		cScrAgentHumanoid::OnSetActive(abX);
+		if (!abX)
+		{
+			AttackMeter_RemoveInstance(mBaseObj.GetID());
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// STATES
+	/////////////////////////////////////////
+		
+	//------------------------------------------------------------
+	
+		///////////////////////////////////
+		// Default State
+		///////////////////////////////////
+	
+		//------------------------------------------------------------
+		
+		bool State_Default_Message(int alMessageId)
+		{
+			if(alMessageId == eLuxEntityMessage_HitByProp)
+			{
+				cVector3f vX = mpStateMachine.GetCurrentMessageData().mvX;
+				if(vX.x < 1.25f) return false;//Speed
+				if(cLux_GetPlayer().IsDead()) return false;
+				if(mBaseObj.GetSensesActive()==false) return false;
+				
+				mpStateMachine.ChangeState(eTransformerBotState_Hunt);
+					
+				return true;
+			}
+			//////////////////////
+			// Player Dead
+			else if(alMessageId == eLuxEntityMessage_PlayerDead)
+			{
+				Music_RemoveDynamicTrack(mBaseObj.GetID());
+				
+				mpStateMachine.ChangeState(eTransformerBotState_Idle);
+			}
+			//////////////////////
+			// Senses Deactivated
+			else if(alMessageId == eLuxEntityMessage_SensesDeactivated)
+			{
+				Music_RemoveDynamicTrack(mBaseObj.GetID());
+				
+				mpStateMachine.ChangeState(eTransformerBotState_Idle);
+			}
+			
+			
+			return false;
+		}
+		
+		
+		//------------------------------------------------------------
+		
+/*		void State_Default_Update(float afTimeStep)
+		{
+			int lArraySize = mpPathfinder.GetPathNodeArraySize();
+			cLux_AddDebugMessage("lArraySize "+lArraySize);
+		}*/
+	
+		//------------------------------------------------------------
+	
+		///////////////////////////////////
+		// STATE: Idle
+		///////////////////////////////////
+	
+		//------------------------------------------------------------
+		
+		void State_Idle_Enter()
+		{
+			mpMover.SetSpeedState(eTransformerBotSpeed_FastWalk);
+			mBaseObj.SetPlayerDetectedMinTime(1);
+			
+			Music_RemoveDynamicTrack(mBaseObj.GetID());
+			
+			mpStateMachine.AddTimer(0, 0.5f); //Follow player
+		}
+		
+		//------------------------------------------------------------
+		
+		void State_Idle_TimerUp(uint64 alId)
+		{
+			if (alId == 0)
+			{
+				if(cLux_GetPlayer().IsDead() || !mBaseObj.GetSensesActive())
+				{
+					mpStateMachine.AddTimer(0, 0.5f);
+					return;
+				}
+				
+				mpStateMachine.ChangeState(eTransformerBotState_Follow);
+			}
+		}
+		
+		//------------------------------------------------------------
+		
+		void _Global_GiveUp()
+		{
+			mBaseObj.SetSensesActive(false);
+			mpBarkMachine.ChangeState(eTransformerBotBark_GiveUp);
+			mpStateMachine.ChangeState(eTransformerBotState_Idle);
+		}
+		
+		//------------------------------------------------------------
+			
+		
+		///////////////////////////////////
+		// STATE: Follow
+		///////////////////////////////////
+	
+		//------------------------------------------------------------
+		
+		void State_Follow_Enter()
+		{
+			mpMover.SetSpeedState(eTransformerBotSpeed_FastWalk);
+			mpBarkMachine.ChangeState(eTransformerBotBark_Follow);
+			
+			mpStateMachine.AddTimer(0, 0.1f); //update destination
+			mpStateMachine.AddTimer(1, 1); //Dash Attack check
+			mpStateMachine.AddTimer(2, 0.5); // Player looking check
+			
+			mBaseObj.SetFOVMul(3);
+			mBaseObj.SetSightRangeMul(2);
+				
+			MoveTo(mBaseObj.GetPlayerFeetPos());
+			
+			Music_AddDynamicTrack(mBaseObj.GetID(), 0, eMusicPrio_AgentAlert, gsTransformerBotFollowMusic, gfTransformerBotFollowMusicVolume, 3, 3);
+			AttackMeter_AddInstance(mBaseObj.GetID(), 7, 2, 0.2f);
+		}
+
+		//------------------------------------------------------------
+		
+		void State_Follow_Leave()
+		{
+			Music_RemoveDynamicTrack(mBaseObj.GetID());
+			AttackMeter_RemoveInstance(mBaseObj.GetID());
+			
+			mBaseObj.SetFOVMul(1);
+			mBaseObj.SetSightRangeMul(1);
+		}
+		
+		//------------------------------------------------------------
+		
+		void State_Follow_Update(float afTimeStep)
+		{
+		}
+		
+		//------------------------------------------------------------
+		
+		void State_Follow_TimerUp(uint64 alId)
+		{
+			//////////////////////
+			// Update destination 
+			if(alId ==0)
+			{
+				MoveTo(mBaseObj.GetPlayerFeetPos());
+				
+				mpStateMachine.AddTimer(0,0.5f);
+			}
+			//////////////////////
+			// Dash Attack!
+			else if(alId==1)
+			{
+				if(mBaseObj.PlayerIsDetected() && mBaseObj.GetDistanceToPlayer()<5)
+				{
+					StartHunt(3);
+				}
+				else
+				{
+					mpStateMachine.ChangeSubState(-1);
+					mpStateMachine.AddTimer(1,1);
+				}
+			}
+			
+			//////////////////////////////////////////////////
+			// Check if player keeps looking at bot
+			else if(alId==2)
+			{
+				if (mBaseObj.GetEntityIsInPlayerLineOfSight(true))
+					mfLookCount += 0.5f;
+				else
+					mfLookCount = 0;
+					
+				if (mfLookCount > 6)
+				{	
+					cLux_AddDebugMessage("Stupid player, stop looking");
+					StartHunt(6);
+				}
+					
+				mpStateMachine.AddTimer(2,0.5);
+			}
+			//////////////////////////////////////////////////
+			// Check if player is acting stupid
+			else if(alId==3)
+			{
+				if (mBaseObj.GetDistanceToPlayer() > 8)
+				{
+					mpStateMachine.AddTimer(3,1);
+					return;
+				}
+				
+				cLux_AddDebugMessage("Stupid player, get away");
+					
+				StartHunt(6);
+			}
+		}
+
+		//------------------------------------------------------------
+		
+		void StartHunt(float afMinTime)
+		{
+			mpStateMachine.ChangeSubState(eTransformerBotState_Hunt);
+			mpStateMachine.StopTimer(1);
+			mpStateMachine.AddTimer(1,afMinTime);
+		}
+
+		//------------------------------------------------------------
+		
+		bool State_Follow_Message(int alMessageId)
+		{
+			/////////////////////////
+			// End of Path
+			if(alMessageId == eLuxEntityMessage_EndOfPath)
+			{
+				/////////////////////////
+				// Is stuck
+				if(mpStateMachine.GetCurrentMessageData().mlX == 0 && mBaseObj.GetDistanceToPlayer() >= 3)
+				{
+					if(mBaseObj.PlayerIsDetected() == false)
+					{
+						mpMover.SetSpeedState(eTransformerBotSpeed_FastWalk);
+						mpStateMachine.StopTimer(0);
+						mpStateMachine.AddTimer(0, 3.f);
+					}
+				}
+				//////////////////////////
+				//Get new path
+				else
+				{
+					MoveTo(mBaseObj.GetPlayerFeetPos());
+				}
+				return true;
+			}
+			else if (alMessageId == eLuxEntityMessage_PlayerDetected)
+			{
+				mpStateMachine.AddTimer(3, 6);
+			}
+			else if (alMessageId == eLuxEntityMessage_PlayerUndetected)
+			{
+				mpStateMachine.StopTimer(3);
+			}
+			
+			return false;
+		}
+	
+		//------------------------------------------------------------
+		
+		///////////////////////////////////
+		// SUBSTATE: Hunt
+		///////////////////////////////////
+	
+		//------------------------------------------------------------
+		
+		void SubState_Hunt_Enter()
+		{
+			cLux_AddDebugMessage("Close and detected");
+					
+			mpMover.SetSpeedState(eTransformerBotSpeed_Run);
+			mpBarkMachine.ChangeState(eTransformerBotBark_Hunt);
+			
+			Music_AddDynamicTrack(mBaseObj.GetID(), 0, eMusicPrio_AgentHunt, gsTransformerBotHuntMusic, gfTransformerBotHuntMusicVolume, 2, 3);
+		}	
+
+		//------------------------------------------------------------
+		
+		void SubState_Hunt_Leave()
+		{
+			cLux_AddDebugMessage("Lost or far away");
+					
+			mpMover.SetSpeedState(eTransformerBotSpeed_FastWalk);
+			mpBarkMachine.ChangeState(eTransformerBotBark_Follow);
+			
+			Music_RemoveDynamicTrack(mBaseObj.GetID());
+			
+			if (mpStateMachine.GetNextState() != eTransformerBotState_Idle)
+				Music_AddDynamicTrack(mBaseObj.GetID(), 0, eMusicPrio_AgentAlert, gsTransformerBotFollowMusic, gfTransformerBotFollowMusicVolume, 3, 3);
+		}
+		
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPER
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void MoveTo(const cVector3f&in avPos, const tString&in asResultCallback="")
+	{
+		mpMover.SetUseMoveStateAnimations(true);
+		mpPathfinder.MoveTo(avPos, 0, true, asResultCallback, false);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INTERACT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	bool CanInteract(int alType, iPhysicsBody@ apBody)
+	{
+		return false;
+	}
+	
+	//------------------------------------------------------------
+		
+	bool OnInteract(int alType, iPhysicsBody@ apBody, const cVector3f &in avFocusPos, const tString&in asData)
+	{
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	int GetInteractIconId(int alType, iPhysicsBody@ apBody)
+	{
+		return eCrossHairState_Default;
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PLAYER DEATH
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_PlayerStartDamageCallback()
+	{
+		mpPathfinder.Stop();
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_PlayerAfterDamageCallback()
+	{	
+		Music_RemoveDynamicTrack(mBaseObj.GetID());
+		
+		mpStateMachine.ChangeState(eTransformerBotState_Idle);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	void OnRenderSolid(cRendererCallbackFunctions@ apFunctions)
+	{
+		//mTentacles.OnRenderSolid(apFunctions);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	cLuxStateMachine@ mpStateMachine;
+	cLuxSoundListener@ mpSoundListener;
+	cLuxBarkMachine@ mpBarkMachine;
+	
+	//------------------------------------------------------------
+	
+	float mfLookCount = 0;
+	
+	//------------------------------------------------------------
+		
+}	

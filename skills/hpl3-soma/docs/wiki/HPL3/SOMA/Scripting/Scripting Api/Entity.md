@@ -1,0 +1,961 @@
+{{ScriptingStub}}
+
+Have some helpful descriptions to add to this class? Edit this page and add your insight to the Wiki!
+
+==Summary==
+{{CodeDocSummaryTop}}
+{{CodeDocSummaryItem|bool|[[#Entity_AddCollideCallback|Entity_AddCollideCallback]](const [[../../tString|tString]] &in asParentName, const [[../../tString|tString]] &in asChildName, const [[../../tString|tString]] &in asFunction)|Add a callback for when entities (objects, areas etc) collide and/or collides with the player}}
+{{CodeDocSummaryItem|void|[[#Entity_AddForce|Entity_AddForce]](const [[../../tString|tString]] &in asEntityName, const [[../../cVector3f|cVector3f]] &in avForce, bool abLocalSpace, bool abOnlyMainBody)|Adds force to the entity}}
+{{CodeDocSummaryItem|void|[[#Entity_AddForceFromEntity|Entity_AddForceFromEntity]](const [[../../tString|tString]] &in asEntityName, const [[../../tString|tString]] &in asForceEntityName, float afForce, bool abOnlyMainBody)|Adds force to the entity away from another entity}}
+{{CodeDocSummaryItem|void|[[#Entity_AddImpulse|Entity_AddImpulse]](const [[../../tString|tString]] &in asEntityName, const [[../../cVector3f|cVector3f]] &in avImpulse, bool abLocalSpace, bool abOnlyMainBody)|Adds an impulse to the entity}}
+{{CodeDocSummaryItem|void|[[#Entity_AddImpulseFromEntity|Entity_AddImpulseFromEntity]](const [[../../tString|tString]] &in asEntityName, const [[../../tString|tString]] &in asImpulseEntityName, float afImpulse, bool abOnlyMainBody)|Adds an impulse to the entity away from another entity}}
+{{CodeDocSummaryItem|void|[[#Entity_AddTorque|Entity_AddTorque]](const [[../../tString|tString]] &in asEntityName, const [[../../cVector3f|cVector3f]] &in avTorque, bool abLocalSpace, bool abOnlyMainBody)|Adds torque to an entity to provide some angular velocity}}
+{{CodeDocSummaryItem|bool|[[#Entity_AttachToEntity|Entity_AttachToEntity]](const [[../../tString|tString]] &in asName, const [[../../tString|tString]] &in asParentName, const [[../../tString|tString]] &in asParentBodyName, bool abUseRotation, bool abSnapToParent <nowiki>=</nowiki> false, bool abLocked <nowiki>=</nowiki> false)|Attaches the entity to another entity}}
+{{CodeDocSummaryItem|bool|[[#Entity_AttachToSocket|Entity_AttachToSocket]](const [[../../tString|tString]] &in asName, const [[../../tString|tString]] &in asParentName, const [[../../tString|tString]] &in asParentSocketName, bool abUseRotation, bool abSnapToParent <nowiki>=</nowiki> true)|Attaches the entity to another entity}}
+{{CodeDocSummaryItem|void|[[#Entity_CallEntityInteract|Entity_CallEntityInteract]](const [[../../tString|tString]] &in asName, const [[../../tString|tString]] &in asBodyName <nowiki>=</nowiki> "", const [[../../cVector3f|cVector3f]] &in avFocusBodyOffset <nowiki>=</nowiki> cVector3f_Zero, const [[../../tString|tString]] &in asData <nowiki>=</nowiki> "")|Calls OnInteract on the specified entity}}
+{{CodeDocSummaryItem|void|[[#Entity_Connect|Entity_Connect]](const [[../../tString|tString]] &in asName, const [[../../tString|tString]] &in asMainEntity, const [[../../tString|tString]] &in asConnectEntity, bool abInvertStateSent, int alStatesUsed)|Creates a connection between two entities}}
+{{CodeDocSummaryItem|[[../../iLuxEntity|iLuxEntity]]|[[#Entity_CreateAtEntity|Entity_CreateAtEntity]](const [[../../tString|tString]] &in asNewEntityName, const [[../../tString|tString]] &in asEntityFile, const [[../../tString|tString]] &in asTargetEntityName, bool abFullGameSave)|Creates an entity at another entity}}
+{{CodeDocSummaryItem|[[../../iLuxEntity|iLuxEntity]]|[[#Entity_CreateAtEntityExt|Entity_CreateAtEntityExt]](const [[../../tString|tString]] &in asNewEntityName, const [[../../tString|tString]] &in asEntityFile, const [[../../tString|tString]] &in asTargetEntityName, bool abFullGameSave, const [[../../cVector3f|cVector3f]] &in avScale, const [[../../cVector3f|cVector3f]] &in avOffsetPosition, const [[../../cVector3f|cVector3f]] &in avOffsetRotation, bool abLocalOffset)|Creates an entity at another entity with extra options}}
+{{CodeDocSummaryItem|void|[[#Entity_Destroy|Entity_Destroy]](const [[../../tString|tString]] &in asName)|Destroys an entity of a given name}}
+{{CodeDocSummaryItem|bool|[[#Entity_EntityIsInFront|Entity_EntityIsInFront]](const [[../../tString|tString]] &in asTargetEntity, const [[../../tString|tString]] &in asForwardEntity)|Returns true if the specified entity is in front of the other entity}}
+{{CodeDocSummaryItem|bool|[[#Entity_Exists|Entity_Exists]](const [[../../tString|tString]] &in asName)|Check if an entity exists in the level}}
+{{CodeDocSummaryItem|bool|[[#Entity_Exists|Entity_Exists]]([[../../tID|tID]] aID)|Check if an entity exists in the level}}
+{{CodeDocSummaryItem|void|[[#Entity_FadeEffectBaseColor|Entity_FadeEffectBaseColor]](const [[../../tString|tString]] &in asEntityName, const [[../../cColor|cColor]] &in aColor, float afTime)|Fades the base color of the effects}}
+{{CodeDocSummaryItem|void|[[#Entity_FadeProcAnimationSpeed|Entity_FadeProcAnimationSpeed]](const [[../../tString|tString]] &in asEntityName, const [[../../tString|tString]] &in asAnimationName, float afSpeed, float afTime)|Fade the speed of a proc animation}}
+{{CodeDocSummaryItem|bool|[[#Entity_GetAutoSleep|Entity_GetAutoSleep]](const [[../../tString|tString]] &in asName)|Get if an entity automatically falls asleep when it isnt active}}
+{{CodeDocSummaryItem|[[../../cVector3f|cVector3f]]|[[#Entity_GetBodyOffset|Entity_GetBodyOffset]](const [[../../tString|tString]] &in asEntityName)|Returns the offset from centre specified in the }}
+{{CodeDocSummaryItem|bool|[[#Entity_GetCollide|Entity_GetCollide]](const [[../../tString|tString]] &in asEntityA, const [[../../tString|tString]] &in asEntityB)|Checks for collision between two specific entities}}
+{{CodeDocSummaryItem|[[../../cVector3f|cVector3f]]|[[#Entity_GetDeltaToEntity|Entity_GetDeltaToEntity]](const [[../../tString|tString]] &in asEntityA, const [[../../tString|tString]] &in asEntityB)|Gets the direction and distance between two entities}}
+{{CodeDocSummaryItem|bool|[[#Entity_GetVarBool|Entity_GetVarBool]](const [[../../tString|tString]] &in asEntityName, const [[../../tString|tString]] &in asVarName)|Get value of an entity boolean variable}}
+{{CodeDocSummaryItem|[[../../cColor|cColor]]|[[#Entity_GetVarColor|Entity_GetVarColor]](const [[../../tString|tString]] &in asEntityName, const [[../../tString|tString]] &in asVarName)|Get value of an entity color variable}}
+{{CodeDocSummaryItem|float|[[#Entity_GetVarFloat|Entity_GetVarFloat]](const [[../../tString|tString]] &in asEntityName, const [[../../tString|tString]] &in asVarName)|Get value of an entity float variable}}
+{{CodeDocSummaryItem|int|[[#Entity_GetVarInt|Entity_GetVarInt]](const [[../../tString|tString]] &in asEntityName, const [[../../tString|tString]] &in asVarName)|Get value of an entity integer variable}}
+{{CodeDocSummaryItem|[[../../tString|tString]]|[[#Entity_GetVarString|Entity_GetVarString]](const [[../../tString|tString]] &in asEntityName, const [[../../tString|tString]] &in asVarName)|Get value of an entity string variable}}
+{{CodeDocSummaryItem|[[../../cVector2f|cVector2f]]|[[#Entity_GetVarVector2f|Entity_GetVarVector2f]](const [[../../tString|tString]] &in asEntityName, const [[../../tString|tString]] &in asVarName)|Get value of an entity vector2f variable}}
+{{CodeDocSummaryItem|[[../../cVector3f|cVector3f]]|[[#Entity_GetVarVector3f|Entity_GetVarVector3f]](const [[../../tString|tString]] &in asEntityName, const [[../../tString|tString]] &in asVarName)|Get value of an entity vector3f variable}}
+{{CodeDocSummaryItem|void|[[#Entity_IncVarFloat|Entity_IncVarFloat]](const [[../../tString|tString]] &in asEntityName, const [[../../tString|tString]] &in asVarName, float afX)|Add a value to the current value of an entity float variable}}
+{{CodeDocSummaryItem|void|[[#Entity_IncVarInt|Entity_IncVarInt]](const [[../../tString|tString]] &in asEntityName, const [[../../tString|tString]] &in asVarName, int alX)|Add a value to the current value of an entity integer variable}}
+{{CodeDocSummaryItem|void|[[#Entity_IncVarVector2f|Entity_IncVarVector2f]](const [[../../tString|tString]] &in asEntityName, const [[../../tString|tString]] &in asVarName, const [[../../cVector2f|cVector2f]] &in avX)|Add a value to the current value of an entity vector2f variable}}
+{{CodeDocSummaryItem|void|[[#Entity_IncVarVector3f|Entity_IncVarVector3f]](const [[../../tString|tString]] &in asEntityName, const [[../../tString|tString]] &in asVarName, const [[../../cVector3f|cVector3f]] &in avX)|Add a value to the current value of an entity vector3f variable}}
+{{CodeDocSummaryItem|bool|[[#Entity_IsActive|Entity_IsActive]](const [[../../tString|tString]] &in asName)|Get if an entity is active (visible and functioning) or not}}
+{{CodeDocSummaryItem|bool|[[#Entity_IsInPlayerFOV|Entity_IsInPlayerFOV]](const [[../../tString|tString]] &in asEntity)|Returns true if the object is within the player's field of view}}
+{{CodeDocSummaryItem|bool|[[#Entity_IsInteractedWith|Entity_IsInteractedWith]](const [[../../tString|tString]] &in asName)|Checks if the entity is being interacted with}}
+{{CodeDocSummaryItem|bool|[[#Entity_IsOccluder|Entity_IsOccluder]](const [[../../tString|tString]] &in asName)|Get if an entity is an occluder}}
+{{CodeDocSummaryItem|bool|[[#Entity_IsSleeping|Entity_IsSleeping]](const [[../../tString|tString]] &in asName)|Check if an entity is asleep}}
+{{CodeDocSummaryItem|void|[[#Entity_PlaceAtEntity|Entity_PlaceAtEntity]](const [[../../tString|tString]] &in asEntityName, const [[../../tString|tString]] &in asTargetEntity, const [[../../cVector3f|cVector3f]] &in avOffset <nowiki>=</nowiki> cVector3f_Zero, bool abAlignRotation <nowiki>=</nowiki> false, bool abUseEntFileCenter <nowiki>=</nowiki> false)|Places the specified entity at another entity}}
+{{CodeDocSummaryItem|void|[[#Entity_PlayAnimation|Entity_PlayAnimation]](const [[../../tString|tString]] &in asEntityName, const [[../../tString|tString]] &in asAnimation, float afFadeTime <nowiki>=</nowiki> 0.1f, bool abLoop <nowiki>=</nowiki> false, bool abPlayTransition <nowiki>=</nowiki> true, const [[../../tString|tString]] &in asCallback <nowiki>=</nowiki> "")|Plays an animation on the entity}}
+{{CodeDocSummaryItem|bool|[[#Entity_PlayerIsInFront|Entity_PlayerIsInFront]](const [[../../tString|tString]] &in asName)|Returns true if the player is in front of the specified entity}}
+{{CodeDocSummaryItem|void|[[#Entity_PlayProcAnimation|Entity_PlayProcAnimation]](const [[../../tString|tString]] &in asEntityName, const [[../../tString|tString]] &in asAnimation, float afLength, bool abLoop <nowiki>=</nowiki> false, float afAmountFadeTime <nowiki>=</nowiki> 0.1, float afSpeedFadeTime <nowiki>=</nowiki> -1.0f)|Plays a procedural animation on the entity}}
+{{CodeDocSummaryItem|void|[[#Entity_Preload|Entity_Preload]](const [[../../tString|tString]] &in asEntityFile)|Preloads an entity}}
+{{CodeDocSummaryItem|void|[[#Entity_RemoveAllConnections|Entity_RemoveAllConnections]](const [[../../tString|tString]] &in asMainEntity)|Removes all connections on an entity}}
+{{CodeDocSummaryItem|bool|[[#Entity_RemoveCollideCallback|Entity_RemoveCollideCallback]](const [[../../tString|tString]] &in asParentName, const [[../../tString|tString]] &in asChildName)|Remove a callback for when entities (objects, areas etc) collide and/or collide with the player}}
+{{CodeDocSummaryItem|void|[[#Entity_RemoveConnection|Entity_RemoveConnection]](const [[../../tString|tString]] &in asName, const [[../../tString|tString]] &in asMainEntity)|Removes a specific connection on an entity}}
+{{CodeDocSummaryItem|bool|[[#Entity_RemoveEntityAttachment|Entity_RemoveEntityAttachment]](const [[../../tString|tString]] &in asName)|Removes an attachment to another entity if the entity(ies) has one}}
+{{CodeDocSummaryItem|void|[[#Entity_SetActive|Entity_SetActive]](const [[../../tString|tString]] &in asName, bool abActive)|Set if entity is active (visible and functioning) or not}}
+{{CodeDocSummaryItem|void|[[#Entity_SetAnimationMessageEventCallback|Entity_SetAnimationMessageEventCallback]](const [[../../tString|tString]] &in asEntityName, const [[../../tString|tString]] &in asCallbackFunc, bool abAutoRemove)|Sets a callback for the message events in the currently playing animation}}
+{{CodeDocSummaryItem|void|[[#Entity_SetAnimationPaused|Entity_SetAnimationPaused]](const [[../../tString|tString]] &in asEntityName, const [[../../tString|tString]] &in asAnimationName, bool abPaused <nowiki>=</nowiki> true)|Pause or unpause an animation on the specified entity}}
+{{CodeDocSummaryItem|void|[[#Entity_SetAnimationRelativeTimePosition|Entity_SetAnimationRelativeTimePosition]](const [[../../tString|tString]] &in asEntityName, const [[../../tString|tString]] &in asAnimationName, float afTimePos)|Sets the relative time position of a specific animation}}
+{{CodeDocSummaryItem|void|[[#Entity_SetAutoSleep|Entity_SetAutoSleep]](const [[../../tString|tString]] &in asName, bool abX)|Sets if the entity should sleep automatically when it need no updating}}
+{{CodeDocSummaryItem|void|[[#Entity_SetCollide|Entity_SetCollide]](const [[../../tString|tString]] &in asEntityName, bool abActive)|Turn off or on collision for all the bodies in the given entity}}
+{{CodeDocSummaryItem|void|[[#Entity_SetCollideCharacter|Entity_SetCollideCharacter]](const [[../../tString|tString]] &in asEntityName, bool abActive)|Turn off or on character collision for all the bodies in the given entity}}
+{{CodeDocSummaryItem|void|[[#Entity_SetColorMul|Entity_SetColorMul]](const [[../../tString|tString]] &in asEntityName, const [[../../cColor|cColor]] &in aColor)|Set the color mul of the entity}}
+{{CodeDocSummaryItem|void|[[#Entity_SetConnectionStateChangeCallback|Entity_SetConnectionStateChangeCallback]](const [[../../tString|tString]] &in asEntityName, const [[../../tString|tString]] &in asCallback)|Sets the callback for when the connection state changes on an entity}}
+{{CodeDocSummaryItem|void|[[#Entity_SetEffectBaseColor|Entity_SetEffectBaseColor]](const [[../../tString|tString]] &in asEntityName, const [[../../cColor|cColor]] &in aColor)|Sets the base color of the effects}}
+{{CodeDocSummaryItem|void|[[#Entity_SetEffectsActive|Entity_SetEffectsActive]](const [[../../tString|tString]] &in asEntityName, bool abActive, bool abFadeAndPlaySounds)|Activates or deactivates the effects on a entity}}
+{{CodeDocSummaryItem|void|[[#Entity_SetInteractionDisabled|Entity_SetInteractionDisabled]](const [[../../tString|tString]] &in asEntityName, bool abX)|Sets if the player can interact with an entity or not}}
+{{CodeDocSummaryItem|void|[[#Entity_SetIsOccluder|Entity_SetIsOccluder]](const [[../../tString|tString]] &in asName, bool abOccluder)|Set if entity is an occluder}}
+{{CodeDocSummaryItem|void|[[#Entity_SetMaxInteractionDistance|Entity_SetMaxInteractionDistance]](const [[../../tString|tString]] &in asEntityName, float afDistance)|Change the max interaction distance of an entity from the default/entity configured distance}}
+{{CodeDocSummaryItem|void|[[#Entity_SetPlayerInteractCallback|Entity_SetPlayerInteractCallback]](const [[../../tString|tString]] &in asEntityName, const [[../../tString|tString]] &in asCallback, bool abRemoveWhenInteracted)|Sets the callback for when the player interacts with a specific entity}}
+{{CodeDocSummaryItem|void|[[#Entity_SetPlayerLookAtCallback|Entity_SetPlayerLookAtCallback]](const [[../../tString|tString]] &in asEntityName, const [[../../tString|tString]] &in asCallback, bool abRemoveWhenLookedAt <nowiki>=</nowiki> true, bool abCheckCenterOfScreen <nowiki>=</nowiki> true, bool abCheckRayIntersection <nowiki>=</nowiki> true, float afMaxDistance <nowiki>=</nowiki> -1, float afCallbackDelay <nowiki>=</nowiki> 0)|Sets the callback for when the player looks at or turns away from a specific entity}}
+{{CodeDocSummaryItem|void|[[#Entity_SetProcAnimationPaused|Entity_SetProcAnimationPaused]](const [[../../tString|tString]] &in asEntityName, const [[../../tString|tString]] &in asAnimationName, bool abPaused <nowiki>=</nowiki> true)|Pause or unpause a procedural animation on the specified entity}}
+{{CodeDocSummaryItem|void|[[#Entity_SetProcAnimationSpeed|Entity_SetProcAnimationSpeed]](const [[../../tString|tString]] &in asEntityName, const [[../../tString|tString]] &in asAnimationName, float afSpeed)|Sets the speed of a proc animation}}
+{{CodeDocSummaryItem|void|[[#Entity_SetReflectionVisibility|Entity_SetReflectionVisibility]](const [[../../tString|tString]] &in asEntityName, bool abVisibleInReflection, bool abVisibleInWorld)|Sets whether the entity is drawn in reflections or not, and the real world or not}}
+{{CodeDocSummaryItem|void|[[#Entity_SetVarBool|Entity_SetVarBool]](const [[../../tString|tString]] &in asEntityName, const [[../../tString|tString]] &in asVarName, bool abX)|Sets the value of an entity boolean variable}}
+{{CodeDocSummaryItem|void|[[#Entity_SetVarColor|Entity_SetVarColor]](const [[../../tString|tString]] &in asEntityName, const [[../../tString|tString]] &in asVarName, const [[../../cColor|cColor]] &in aX)|Sets the value of an entity color variable}}
+{{CodeDocSummaryItem|void|[[#Entity_SetVarFloat|Entity_SetVarFloat]](const [[../../tString|tString]] &in asEntityName, const [[../../tString|tString]] &in asVarName, float afX)|Sets the value of an entity variable}}
+{{CodeDocSummaryItem|void|[[#Entity_SetVarInt|Entity_SetVarInt]](const [[../../tString|tString]] &in asEntityName, const [[../../tString|tString]] &in asVarName, int alX)|Sets the value of an entity integer variable}}
+{{CodeDocSummaryItem|void|[[#Entity_SetVarString|Entity_SetVarString]](const [[../../tString|tString]] &in asEntityName, const [[../../tString|tString]] &in asVarName, const [[../../tString|tString]] &in asX)|Sets the value of an entity string variable}}
+{{CodeDocSummaryItem|void|[[#Entity_SetVarVector2f|Entity_SetVarVector2f]](const [[../../tString|tString]] &in asEntityName, const [[../../tString|tString]] &in asVarName, const [[../../cVector2f|cVector2f]] &in avX)|Sets the value of an entity vector2f variable}}
+{{CodeDocSummaryItem|void|[[#Entity_SetVarVector3f|Entity_SetVarVector3f]](const [[../../tString|tString]] &in asEntityName, const [[../../tString|tString]] &in asVarName, const [[../../cVector3f|cVector3f]] &in avX)|Sets the value of an entity vector3f variable}}
+{{CodeDocSummaryItem|void|[[#Entity_Sleep|Entity_Sleep]](const [[../../tString|tString]] &in asName)|Forces the entity to sleep (disabling Update/PostUpdate)}}
+{{CodeDocSummaryItem|void|[[#Entity_StopAnimation|Entity_StopAnimation]](const [[../../tString|tString]] &in asEntityName)|Stops any currently playing animation on the specified entity}}
+{{CodeDocSummaryItem|void|[[#Entity_StopProcAnimation|Entity_StopProcAnimation]](const [[../../tString|tString]] &in asEntityName, const [[../../tString|tString]] &in asAnimation, float afFadeTime <nowiki>=</nowiki> 0.1f)|Stops a procedural animation on the specified entity}}
+{{CodeDocSummaryItem|void|[[#Entity_WakeUp|Entity_WakeUp]](const [[../../tString|tString]] &in asName)|Forces the entity to wake up (enabling Update/PostUpdate)}}
+{{CodeDocSummaryBottom}}
+
+==Function Detail==
+{{CodeDocDetailTop|Entity_AddCollideCallback}}
+<syntaxhighlight lang="c++">bool Entity_AddCollideCallback(const tString &in asParentName,
+                               const tString &in asChildName,
+                               const tString &in asFunction)</syntaxhighlight>
+{{CodeDocDetailBody|Add a callback for when entities (objects, areas etc) collide and/or collides with the player.<br/>Collision include "uncolliding" (objects just stopped colliding) as well.<br/>Wildcard(s) * can be used in names to check for collisions.<br/>Syntax for callback function: bool FunctionName(const tString &in asParent, const tString &in asChild, int alState).<br/>- asParent Name of the parent entity in the collision.<br/>- asChild Name of the child entity in the collision.<br/>- alState 1 <nowiki>=</nowiki> colliding, -1 <nowiki>=</nowiki> was colliding in previous frame, not anymore.<br/>Return false <nowiki>=</nowiki> callback is removed, true <nowiki>=</nowiki> callback can trigger again.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asParentName|[[../../tString|tString]]|always "player" for player collisions, else first entity name.}}
+{{CodeDocDetailParam|asChildName|[[../../tString|tString]]|name of the entity or second entity to check for collision.}}
+{{CodeDocDetailParam|asFunction|[[../../tString|tString]]|name of the callback function when something collides/uncollides.}}
+{{CodeDocDetailReturn|bool|.}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_AddForce}}
+<syntaxhighlight lang="c++">void Entity_AddForce(const tString &in asEntityName,
+                     const cVector3f &in avForce,
+                     bool abLocalSpace,
+                     bool abOnlyMainBody)</syntaxhighlight>
+{{CodeDocDetailBody|Adds force to the entity.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity. Wildcard(s) * are supported.}}
+{{CodeDocDetailParam|avForce|[[../../cVector3f|cVector3f]]|force to add.}}
+{{CodeDocDetailParam|abLocalSpace|bool|true <nowiki>=</nowiki> force is added relative to the rotation of the entity - false <nowiki>=</nowiki> force is added in world space}}
+{{CodeDocDetailParam|abOnlyMainBody|bool|true <nowiki>=</nowiki> force is added only to the main body of the entity - false <nowiki>=</nowiki> force is added to all bodies in the entity}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_AddForceFromEntity}}
+<syntaxhighlight lang="c++">void Entity_AddForceFromEntity(const tString &in asEntityName,
+                               const tString &in asForceEntityName,
+                               float afForce,
+                               bool abOnlyMainBody)</syntaxhighlight>
+{{CodeDocDetailBody|Adds force to the entity away from another entity.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity to add force to. Wildcard(s) * are supported.}}
+{{CodeDocDetailParam|asForceEntityName|[[../../tString|tString]]|name of the entity to push away from.}}
+{{CodeDocDetailParam|afForce|float|force magnitude, negative attracts the entity to the force entity.}}
+{{CodeDocDetailParam|abOnlyMainBody|bool|true <nowiki>=</nowiki> force is added only to the main body of the entity - false <nowiki>=</nowiki> force is added to all bodies in the entity}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_AddImpulse}}
+<syntaxhighlight lang="c++">void Entity_AddImpulse(const tString &in asEntityName,
+                       const cVector3f &in avImpulse,
+                       bool abLocalSpace,
+                       bool abOnlyMainBody)</syntaxhighlight>
+{{CodeDocDetailBody|Adds an impulse to the entity.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity. Wildcard(s) * are supported.}}
+{{CodeDocDetailParam|avImpulse|[[../../cVector3f|cVector3f]]|impulse to add.}}
+{{CodeDocDetailParam|abLocalSpace|bool|true <nowiki>=</nowiki> impulse is added relative to the rotation of the entity - false <nowiki>=</nowiki> impulse is added in world space}}
+{{CodeDocDetailParam|abOnlyMainBody|bool|true <nowiki>=</nowiki> impulse is added only to the main body of the entity - false <nowiki>=</nowiki> impulse is added to all bodies in the entity}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_AddImpulseFromEntity}}
+<syntaxhighlight lang="c++">void Entity_AddImpulseFromEntity(const tString &in asEntityName,
+                                 const tString &in asImpulseEntityName,
+                                 float afImpulse,
+                                 bool abOnlyMainBody)</syntaxhighlight>
+{{CodeDocDetailBody|Adds an impulse to the entity away from another entity.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity to add impulse to. Wildcard(s) * are supported.}}
+{{CodeDocDetailParam|asImpulseEntityName|[[../../tString|tString]]|name of the entity to push away from.}}
+{{CodeDocDetailParam|afImpulse|float|impulse magnitude, negative attracts the entity to the impulse entity.}}
+{{CodeDocDetailParam|abOnlyMainBody|bool|true <nowiki>=</nowiki> impulse is added only to the main body of the entity - false <nowiki>=</nowiki> impulse is added to all bodies in the entity}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_AddTorque}}
+<syntaxhighlight lang="c++">void Entity_AddTorque(const tString &in asEntityName,
+                      const cVector3f &in avTorque,
+                      bool abLocalSpace,
+                      bool abOnlyMainBody)</syntaxhighlight>
+{{CodeDocDetailBody|Adds torque to an entity to provide some angular velocity}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity to add impulse to. Wildcard(s) * are supported.}}
+{{CodeDocDetailParam|avTorque|[[../../cVector3f|cVector3f]]|provide a vector3 for the desired direction}}
+{{CodeDocDetailParam|abLocalSpace|bool|use local space for the entity}}
+{{CodeDocDetailParam|abOnlyMainBody|bool|true <nowiki>=</nowiki> impulse is added only to the main body of the entity - false <nowiki>=</nowiki> impulse is added to all bodies in the entity}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_AttachToEntity}}
+<syntaxhighlight lang="c++">bool Entity_AttachToEntity(const tString &in asName,
+                           const tString &in asParentName,
+                           const tString &in asParentBodyName,
+                           bool abUseRotation,
+                           bool abSnapToParent = false,
+                           bool abLocked = false)</syntaxhighlight>
+{{CodeDocDetailBody|Attaches the entity to another entity. If already attached, it will be removed before attaching to new}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asName|[[../../tString|tString]]|the name of the entity to be attached to another, Wildcard(s) * are supported}}
+{{CodeDocDetailParam|asParentName|[[../../tString|tString]]|The entity to attach to.}}
+{{CodeDocDetailParam|asParentBodyName|[[../../tString|tString]]|the local (as it is in ent file) of the body. Use  for just using the main body.}}
+{{CodeDocDetailParam|abUseRotation|bool|if the attached entity should be rotated along witht the parent.}}
+{{CodeDocDetailParam|abSnapToParent|bool|if the attached entity should snap to the center of the body, or if it should use its relative world position as offset}}
+{{CodeDocDetailParam|abLocked|bool|if the attached object should be locked to the parent - fixes precision issues}}
+{{CodeDocDetailReturn|bool|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_AttachToSocket}}
+<syntaxhighlight lang="c++">bool Entity_AttachToSocket(const tString &in asName,
+                           const tString &in asParentName,
+                           const tString &in asParentSocketName,
+                           bool abUseRotation,
+                           bool abSnapToParent = true)</syntaxhighlight>
+{{CodeDocDetailBody|Attaches the entity to another entity. If already attached, it will be removed before attaching to new}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asName|[[../../tString|tString]]|the name of the entity to be attached to another, Wildcard(s) * are supported}}
+{{CodeDocDetailParam|asParentName|[[../../tString|tString]]|The entity to attach to.}}
+{{CodeDocDetailParam|asParentSocketName|[[../../tString|tString]]|the socket setup in the mesh or model editor. this is attached to a bone in the skeleton}}
+{{CodeDocDetailParam|abUseRotation|bool|if the attached entity should be rotated along witht the parent.}}
+{{CodeDocDetailParam|abSnapToParent|bool|if the attached entity should snap to the center of the socket, or if it should use its relative world position as offset}}
+{{CodeDocDetailReturn|bool|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_CallEntityInteract}}
+<syntaxhighlight lang="c++">void Entity_CallEntityInteract(const tString &in asName,
+                               const tString &in asBodyName = "",
+                               const cVector3f &in avFocusBodyOffset = cVector3f_Zero,
+                               const tString &in asData = "")</syntaxhighlight>
+{{CodeDocDetailBody|Calls OnInteract on the specified entity.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asName|[[../../tString|tString]]|name of the entity.}}
+{{CodeDocDetailParam|asBodyName|[[../../tString|tString]]|name of the body to interact with if "" then it's the main body.}}
+{{CodeDocDetailParam|avFocusBodyOffset|[[../../cVector3f|cVector3f]]|focus point on the body.}}
+{{CodeDocDetailParam|asData|[[../../tString|tString]]|optional data needed for interaction.}}
+{{CodeDocDetailReturn|void|true if the position is in front of the entity.}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_Connect}}
+<syntaxhighlight lang="c++">void Entity_Connect(const tString &in asName,
+                    const tString &in asMainEntity,
+                    const tString &in asConnectEntity,
+                    bool abInvertStateSent,
+                    int alStatesUsed)</syntaxhighlight>
+{{CodeDocDetailBody|Creates a connection between two entities.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asName|[[../../tString|tString]]|name of the connection.}}
+{{CodeDocDetailParam|asMainEntity|[[../../tString|tString]]|the entity to add the connection to. Wildcard(s) * are supported.}}
+{{CodeDocDetailParam|asConnectEntity|[[../../tString|tString]]|the entity to connect to the main entity.}}
+{{CodeDocDetailParam|abInvertStateSent|bool|if the state changes should be sent inverted.}}
+{{CodeDocDetailParam|alStatesUsed|int|states sent by main entity, 0 <nowiki>=</nowiki> all states, 1 <nowiki>=</nowiki> only max, -1 <nowiki>=</nowiki> only min.}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_CreateAtEntity}}
+<syntaxhighlight lang="c++">iLuxEntity@ Entity_CreateAtEntity(const tString &in asNewEntityName,
+                                  const tString &in asEntityFile,
+                                  const tString &in asTargetEntityName,
+                                  bool abFullGameSave)</syntaxhighlight>
+{{CodeDocDetailBody|Creates an entity at another entity.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asNewEntityName|[[../../tString|tString]]|the name of the entity to be created.}}
+{{CodeDocDetailParam|asEntityFile|[[../../tString|tString]]|the .ent file of the entity to be created.}}
+{{CodeDocDetailParam|asTargetEntityName|[[../../tString|tString]]|the target entity.}}
+{{CodeDocDetailParam|abFullGameSave|bool|if ALL properties should be saved for the created entity.}}
+{{CodeDocDetailReturn|iLuxEntity@|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_CreateAtEntityExt}}
+<syntaxhighlight lang="c++">iLuxEntity@ Entity_CreateAtEntityExt(const tString &in asNewEntityName,
+                                     const tString &in asEntityFile,
+                                     const tString &in asTargetEntityName,
+                                     bool abFullGameSave,
+                                     const cVector3f &in avScale,
+                                     const cVector3f &in avOffsetPosition,
+                                     const cVector3f &in avOffsetRotation,
+                                     bool abLocalOffset)</syntaxhighlight>
+{{CodeDocDetailBody|Creates an entity at another entity with extra options.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asNewEntityName|[[../../tString|tString]]|the name of the entity to be created.}}
+{{CodeDocDetailParam|asEntityFile|[[../../tString|tString]]|the .ent file of the entity to be created.}}
+{{CodeDocDetailParam|asTargetEntityName|[[../../tString|tString]]|the target entity.}}
+{{CodeDocDetailParam|abFullGameSave|bool|if ALL properties should be saved for the created entity.}}
+{{CodeDocDetailParam|avScale|[[../../cVector3f|cVector3f]]|the scale of the created entity, where cVector3f(1, 1, 1) is the default size.}}
+{{CodeDocDetailParam|avOffsetPosition|[[../../cVector3f|cVector3f]]|an offset from the target object's position.}}
+{{CodeDocDetailParam|avOffsetRotation|[[../../cVector3f|cVector3f]]|an offset from the target object's rotation.}}
+{{CodeDocDetailParam|abLocalOffset|bool|true <nowiki>=</nowiki> offset position and rotation are relative to the target object's rotation, false <nowiki>=</nowiki> offset position and rotation are relative to the world.}}
+{{CodeDocDetailReturn|iLuxEntity@|new iLuxEntity object.}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_Destroy}}
+<syntaxhighlight lang="c++">void Entity_Destroy(const tString &in asName)</syntaxhighlight>
+{{CodeDocDetailBody|Destroys an entity of a given name.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asName|[[../../tString|tString]]|the name of the entity to be destroyed, can contain wildcards to destroy multiple entities.}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_EntityIsInFront}}
+<syntaxhighlight lang="c++">bool Entity_EntityIsInFront(const tString &in asTargetEntity,
+                            const tString &in asForwardEntity)</syntaxhighlight>
+{{CodeDocDetailBody|Returns true if the specified entity is in front of the other entity.<br/>The function assumes the entity's z-axis points forward. Anything less than 90<br/>degrees offset from the forward vector counts as "in front".}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asTargetEntity|[[../../tString|tString]]|name of the entity to check if in front of the other.}}
+{{CodeDocDetailParam|asForwardEntity|[[../../tString|tString]]|name of entity which forward vector and position will be checked against.}}
+{{CodeDocDetailReturn|bool|bool true if the target entity is in front.}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_Exists}}
+<syntaxhighlight lang="c++">bool Entity_Exists(const tString &in asName)</syntaxhighlight>
+{{CodeDocDetailBody|Check if an entity exists in the level.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asName|[[../../tString|tString]]|the name of the entity to search for.}}
+{{CodeDocDetailReturn|bool|if entity exists.}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_Exists}}
+<syntaxhighlight lang="c++">bool Entity_Exists(tID aID)</syntaxhighlight>
+{{CodeDocDetailBody|Check if an entity exists in the level.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|aID|[[../../tID|tID]]|the id of the entity to search for.}}
+{{CodeDocDetailReturn|bool|if entity exists.}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_FadeEffectBaseColor}}
+<syntaxhighlight lang="c++">void Entity_FadeEffectBaseColor(const tString &in asEntityName,
+                                const cColor &in aColor,
+                                float afTime)</syntaxhighlight>
+{{CodeDocDetailBody|Fades the base color of the effects}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the prop. Wildcard(s) * are supported.}}
+{{CodeDocDetailParam|aColor|[[../../cColor|cColor]]|the color all effects will be faded to}}
+{{CodeDocDetailParam|afTime|float|time the fade takes.}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_FadeProcAnimationSpeed}}
+<syntaxhighlight lang="c++">void Entity_FadeProcAnimationSpeed(const tString &in asEntityName,
+                                   const tString &in asAnimationName,
+                                   float afSpeed,
+                                   float afTime)</syntaxhighlight>
+{{CodeDocDetailBody|Fade the speed of a proc animation.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity. Wildcard(s) * are supported.}}
+{{CodeDocDetailParam|asAnimationName|[[../../tString|tString]]|name of the animation.}}
+{{CodeDocDetailParam|afSpeed|float|target speed (measured in full loops per second).}}
+{{CodeDocDetailParam|afTime|float|time to fade over.}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_GetAutoSleep}}
+<syntaxhighlight lang="c++">bool Entity_GetAutoSleep(const tString &in asName)</syntaxhighlight>
+{{CodeDocDetailBody|Get if an entity automatically falls asleep when it isnt active}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asName|[[../../tString|tString]]|Name of the entity.}}
+{{CodeDocDetailReturn|bool|if sleeping or not.}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_GetBodyOffset}}
+<syntaxhighlight lang="c++">cVector3f Entity_GetBodyOffset(const tString &in asEntityName)</syntaxhighlight>
+{{CodeDocDetailBody|Returns the offset from centre specified in the .ent file. Only works for props.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity.}}
+{{CodeDocDetailReturn|cVector3f|the offset}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_GetCollide}}
+<syntaxhighlight lang="c++">bool Entity_GetCollide(const tString &in asEntityA,
+                       const tString &in asEntityB)</syntaxhighlight>
+{{CodeDocDetailBody|Checks for collision between two specific entities. Wildcard(s) * are NOT supported!}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityA|[[../../tString|tString]]|first entity.}}
+{{CodeDocDetailParam|asEntityB|[[../../tString|tString]]|second entity.}}
+{{CodeDocDetailReturn|bool|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_GetDeltaToEntity}}
+<syntaxhighlight lang="c++">cVector3f Entity_GetDeltaToEntity(const tString &in asEntityA,
+                                  const tString &in asEntityB)</syntaxhighlight>
+{{CodeDocDetailBody|Gets the direction and distance between two entities}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityA|[[../../tString|tString]]|entity to calculate delta from}}
+{{CodeDocDetailParam|asEntityB|[[../../tString|tString]]|entity to caluclate delta to}}
+{{CodeDocDetailReturn|cVector3f|delta between the entities, delta <nowiki>=</nowiki> direction * distance <nowiki>=</nowiki> entity_b_pos - entity_a_pos}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_GetVarBool}}
+<syntaxhighlight lang="c++">bool Entity_GetVarBool(const tString &in asEntityName,
+                       const tString &in asVarName)</syntaxhighlight>
+{{CodeDocDetailBody|Get value of an entity boolean variable.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity.}}
+{{CodeDocDetailParam|asVarName|[[../../tString|tString]]|name of the boolean variable.}}
+{{CodeDocDetailReturn|bool|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_GetVarColor}}
+<syntaxhighlight lang="c++">cColor Entity_GetVarColor(const tString &in asEntityName,
+                          const tString &in asVarName)</syntaxhighlight>
+{{CodeDocDetailBody|Get value of an entity color variable.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity.}}
+{{CodeDocDetailParam|asVarName|[[../../tString|tString]]|name of the color variable.}}
+{{CodeDocDetailReturn|cColor|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_GetVarFloat}}
+<syntaxhighlight lang="c++">float Entity_GetVarFloat(const tString &in asEntityName,
+                         const tString &in asVarName)</syntaxhighlight>
+{{CodeDocDetailBody|Get value of an entity float variable.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity.}}
+{{CodeDocDetailParam|asVarName|[[../../tString|tString]]|name of the float variable.}}
+{{CodeDocDetailReturn|float|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_GetVarInt}}
+<syntaxhighlight lang="c++">int Entity_GetVarInt(const tString &in asEntityName,
+                     const tString &in asVarName)</syntaxhighlight>
+{{CodeDocDetailBody|Get value of an entity integer variable.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity.}}
+{{CodeDocDetailParam|asVarName|[[../../tString|tString]]|name of the vector3f variable.}}
+{{CodeDocDetailReturn|int|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_GetVarString}}
+<syntaxhighlight lang="c++">tString Entity_GetVarString(const tString &in asEntityName,
+                            const tString &in asVarName)</syntaxhighlight>
+{{CodeDocDetailBody|Get value of an entity string variable.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity.}}
+{{CodeDocDetailParam|asVarName|[[../../tString|tString]]|name of the string variable.}}
+{{CodeDocDetailReturn|tString|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_GetVarVector2f}}
+<syntaxhighlight lang="c++">cVector2f Entity_GetVarVector2f(const tString &in asEntityName,
+                                const tString &in asVarName)</syntaxhighlight>
+{{CodeDocDetailBody|Get value of an entity vector2f variable.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity.}}
+{{CodeDocDetailParam|asVarName|[[../../tString|tString]]|name of the vector2f variable.}}
+{{CodeDocDetailReturn|cVector2f|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_GetVarVector3f}}
+<syntaxhighlight lang="c++">cVector3f Entity_GetVarVector3f(const tString &in asEntityName,
+                                const tString &in asVarName)</syntaxhighlight>
+{{CodeDocDetailBody|Get value of an entity vector3f variable.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity.}}
+{{CodeDocDetailParam|asVarName|[[../../tString|tString]]|name of the vector3f variable.}}
+{{CodeDocDetailReturn|cVector3f|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_IncVarFloat}}
+<syntaxhighlight lang="c++">void Entity_IncVarFloat(const tString &in asEntityName,
+                        const tString &in asVarName,
+                        float afX)</syntaxhighlight>
+{{CodeDocDetailBody|Add a value to the current value of an entity float variable. Wildcard(s) * are supported for EntityName.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity.}}
+{{CodeDocDetailParam|asVarName|[[../../tString|tString]]|name of the float variable.}}
+{{CodeDocDetailParam|afX|float|value to be added to variable.}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_IncVarInt}}
+<syntaxhighlight lang="c++">void Entity_IncVarInt(const tString &in asEntityName,
+                      const tString &in asVarName,
+                      int alX)</syntaxhighlight>
+{{CodeDocDetailBody|Add a value to the current value of an entity integer variable. Wildcard(s) * are supported for EntityName.	*}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity.}}
+{{CodeDocDetailParam|asVarName|[[../../tString|tString]]|name of the integer variable.}}
+{{CodeDocDetailParam|alX|int|value to be added to variable.}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_IncVarVector2f}}
+<syntaxhighlight lang="c++">void Entity_IncVarVector2f(const tString &in asEntityName,
+                           const tString &in asVarName,
+                           const cVector2f &in avX)</syntaxhighlight>
+{{CodeDocDetailBody|Add a value to the current value of an entity vector2f variable. Wildcard(s) * are supported for EntityName.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity.}}
+{{CodeDocDetailParam|asVarName|[[../../tString|tString]]|name of the vector2f variable.}}
+{{CodeDocDetailParam|avX|[[../../cVector2f|cVector2f]]|value to be added to variable.}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_IncVarVector3f}}
+<syntaxhighlight lang="c++">void Entity_IncVarVector3f(const tString &in asEntityName,
+                           const tString &in asVarName,
+                           const cVector3f &in avX)</syntaxhighlight>
+{{CodeDocDetailBody|Add a value to the current value of an entity vector3f variable. Wildcard(s) * are supported for EntityName.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity.}}
+{{CodeDocDetailParam|asVarName|[[../../tString|tString]]|name of the vector3f variable.}}
+{{CodeDocDetailParam|avX|[[../../cVector3f|cVector3f]]|value to be added to variable.}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_IsActive}}
+<syntaxhighlight lang="c++">bool Entity_IsActive(const tString &in asName)</syntaxhighlight>
+{{CodeDocDetailBody|Get if an entity is active (visible and functioning) or not.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asName|[[../../tString|tString]]|Name of the entity.}}
+{{CodeDocDetailReturn|bool|if active or not.}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_IsInPlayerFOV}}
+<syntaxhighlight lang="c++">bool Entity_IsInPlayerFOV(const tString &in asEntity)</syntaxhighlight>
+{{CodeDocDetailBody|Returns true if the object is within the player's field of view. This does not take into account line of sight.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntity|[[../../tString|tString]]|name of the entity to check.}}
+{{CodeDocDetailReturn|bool|true if the entity is in the player's field of view.}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_IsInteractedWith}}
+<syntaxhighlight lang="c++">bool Entity_IsInteractedWith(const tString &in asName)</syntaxhighlight>
+{{CodeDocDetailBody|Checks if the entity is being interacted with.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asName|[[../../tString|tString]]|name of the entity.}}
+{{CodeDocDetailReturn|bool|if the entity is being interacted with}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_IsOccluder}}
+<syntaxhighlight lang="c++">bool Entity_IsOccluder(const tString &in asName)</syntaxhighlight>
+{{CodeDocDetailBody|Get if an entity is an occluder}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asName|[[../../tString|tString]]|Name of the entity.}}
+{{CodeDocDetailReturn|bool|if entity is an occluder}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_IsSleeping}}
+<syntaxhighlight lang="c++">bool Entity_IsSleeping(const tString &in asName)</syntaxhighlight>
+{{CodeDocDetailBody|Check if an entity is asleep}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asName|[[../../tString|tString]]|Name of the entity.}}
+{{CodeDocDetailReturn|bool|if sleeping or not.}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_PlaceAtEntity}}
+<syntaxhighlight lang="c++">void Entity_PlaceAtEntity(const tString &in asEntityName,
+                          const tString &in asTargetEntity,
+                          const cVector3f &in avOffset = cVector3f_Zero,
+                          bool abAlignRotation = false,
+                          bool abUseEntFileCenter = false)</syntaxhighlight>
+{{CodeDocDetailBody|Places the specified entity at another entity. Optionally aligning its rotation with the target entity.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity.}}
+{{CodeDocDetailParam|asTargetEntity|[[../../tString|tString]]|entity to place at.}}
+{{CodeDocDetailParam|avOffset|[[../../cVector3f|cVector3f]]|world offset from the target entity to place at.}}
+{{CodeDocDetailParam|abAlignRotation|bool|if true the entity will be given the same rotation as the target entity.}}
+{{CodeDocDetailParam|abUseEntFileCenter|bool|if true the entity's center specified in the ent file will be used for placement (only works for props).}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_PlayAnimation}}
+<syntaxhighlight lang="c++">void Entity_PlayAnimation(const tString &in asEntityName,
+                          const tString &in asAnimation,
+                          float afFadeTime = 0.1f,
+                          bool abLoop = false,
+                          bool abPlayTransition = true,
+                          const tString &in asCallback = "")</syntaxhighlight>
+{{CodeDocDetailBody|Plays an animation on the entity<br/>Syntax for callback function: void Func(const tString &in asEntityName, const tString &in asAnimName)}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity. Wildcard(s) * are supported.}}
+{{CodeDocDetailParam|asAnimation|[[../../tString|tString]]|name of the animation to play.}}
+{{CodeDocDetailParam|afFadeTime|float|time to fade in animation.}}
+{{CodeDocDetailParam|abLoop|bool|if the animation should loop.}}
+{{CodeDocDetailParam|abPlayTransition|bool|If a transition animation (given such exist) should be be played before.}}
+{{CodeDocDetailParam|asCallback|[[../../tString|tString]]|(optional) name of callback function.}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_PlayerIsInFront}}
+<syntaxhighlight lang="c++">bool Entity_PlayerIsInFront(const tString &in asName)</syntaxhighlight>
+{{CodeDocDetailBody|Returns true if the player is in front of the specified entity.<br/>The function assumes the entity's z-axis points forward. Anything less than 90<br/>degrees offset from the forward vector counts as "in front".}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asName|[[../../tString|tString]]|name of the entity to check if in front of the other.}}
+{{CodeDocDetailReturn|bool|true if the target entity is in front.}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_PlayProcAnimation}}
+<syntaxhighlight lang="c++">void Entity_PlayProcAnimation(const tString &in asEntityName,
+                              const tString &in asAnimation,
+                              float afLength,
+                              bool abLoop = false,
+                              float afAmountFadeTime = 0.1,
+                              float afSpeedFadeTime = -1.0f)</syntaxhighlight>
+{{CodeDocDetailBody|Plays a procedural animation on the entity}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity. Wildcard(s) * are supported.}}
+{{CodeDocDetailParam|asAnimation|[[../../tString|tString]]|name of the animation to play.}}
+{{CodeDocDetailParam|afLength|float|time it takes to play the animation (can be negative to play it in reverse!)}}
+{{CodeDocDetailParam|abLoop|bool|if the animation should loop.}}
+{{CodeDocDetailParam|afAmountFadeTime|float|time to fade in animation.}}
+{{CodeDocDetailParam|afSpeedFadeTime|float|time to fade in the speed of the animation (use this for looping animations to avoid skipping).}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_Preload}}
+<syntaxhighlight lang="c++">void Entity_Preload(const tString &in asEntityFile)</syntaxhighlight>
+{{CodeDocDetailBody|Preloads an entity}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityFile|[[../../tString|tString]]|name of the entity file to preload}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_RemoveAllConnections}}
+<syntaxhighlight lang="c++">void Entity_RemoveAllConnections(const tString &in asMainEntity)</syntaxhighlight>
+{{CodeDocDetailBody|Removes all connections on an entity.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asMainEntity|[[../../tString|tString]]|the entity to remove all connections on. Wildcard(s) * are supported.}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_RemoveCollideCallback}}
+<syntaxhighlight lang="c++">bool Entity_RemoveCollideCallback(const tString &in asParentName,
+                                  const tString &in asChildName)</syntaxhighlight>
+{{CodeDocDetailBody|Remove a callback for when entities (objects, areas etc) collide and/or collide with the player.<br/>Wildcard(s) * can be used in names.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asParentName|[[../../tString|tString]]|always "player" for player callbacks, else first entity name.}}
+{{CodeDocDetailParam|asChildName|[[../../tString|tString]]|name of the entity or second entity.}}
+{{CodeDocDetailReturn|bool|.}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_RemoveConnection}}
+<syntaxhighlight lang="c++">void Entity_RemoveConnection(const tString &in asName,
+                             const tString &in asMainEntity)</syntaxhighlight>
+{{CodeDocDetailBody|Removes a specific connection on an entity.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asName|[[../../tString|tString]]|name of the connection to remove.}}
+{{CodeDocDetailParam|asMainEntity|[[../../tString|tString]]|the entity to remove the connection from. Wildcard(s) * are supported.}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_RemoveEntityAttachment}}
+<syntaxhighlight lang="c++">bool Entity_RemoveEntityAttachment(const tString &in asName)</syntaxhighlight>
+{{CodeDocDetailBody|Removes an attachment to another entity if the entity(ies) has one.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asName|[[../../tString|tString]]|the name of the entity to be no longer attached to another, Wildcard(s) * are supported}}
+{{CodeDocDetailReturn|bool|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_SetActive}}
+<syntaxhighlight lang="c++">void Entity_SetActive(const tString &in asName,
+                      bool abActive)</syntaxhighlight>
+{{CodeDocDetailBody|Set if entity is active (visible and functioning) or not.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asName|[[../../tString|tString]]|Name of the entity, Wildcard(s) * are supported}}
+{{CodeDocDetailParam|abActive|bool|true <nowiki>=</nowiki> entity becomes active - false <nowiki>=</nowiki> entity becomes inactive}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_SetAnimationMessageEventCallback}}
+<syntaxhighlight lang="c++">void Entity_SetAnimationMessageEventCallback(const tString &in asEntityName,
+                                             const tString &in asCallbackFunc,
+                                             bool abAutoRemove)</syntaxhighlight>
+{{CodeDocDetailBody|Sets a callback for the message events in the currently playing animation.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity. Wildcard(s) * are supported.}}
+{{CodeDocDetailParam|asCallbackFunc|[[../../tString|tString]]|the callback function. Syntx void Func(const tString &in asEntityName, const tString &in asAnimName, int alMessageEventID) (last arg is for future usage)}}
+{{CodeDocDetailParam|abAutoRemove|bool|If the callback is removed once triggered.}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_SetAnimationPaused}}
+<syntaxhighlight lang="c++">void Entity_SetAnimationPaused(const tString &in asEntityName,
+                               const tString &in asAnimationName,
+                               bool abPaused = true)</syntaxhighlight>
+{{CodeDocDetailBody|Pause or unpause an animation on the specified entity.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity. Wildcard(s) * are supported.}}
+{{CodeDocDetailParam|asAnimationName|[[../../tString|tString]]|name of the animation.}}
+{{CodeDocDetailParam|abPaused|bool|true to pause, false to resume}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_SetAnimationRelativeTimePosition}}
+<syntaxhighlight lang="c++">void Entity_SetAnimationRelativeTimePosition(const tString &in asEntityName,
+                                             const tString &in asAnimationName,
+                                             float afTimePos)</syntaxhighlight>
+{{CodeDocDetailBody|Sets the relative time position of a specific animation.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity. Wildcard(s) * are supported.}}
+{{CodeDocDetailParam|asAnimationName|[[../../tString|tString]]|name of the animation.}}
+{{CodeDocDetailParam|afTimePos|float|a value between 0 and 1, where 0 is the start of the animation and 1 is the end.}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_SetAutoSleep}}
+<syntaxhighlight lang="c++">void Entity_SetAutoSleep(const tString &in asName,
+                         bool abX)</syntaxhighlight>
+{{CodeDocDetailBody|Sets if the entity should sleep automatically when it need no updating}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asName|[[../../tString|tString]]|Name of the entity, Wildcard(s) * are supported}}
+{{CodeDocDetailParam|abX|bool|true <nowiki>=</nowiki> Entity will sleep automatically - false <nowiki>=</nowiki> entity will not sleep automatically}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_SetCollide}}
+<syntaxhighlight lang="c++">void Entity_SetCollide(const tString &in asEntityName,
+                       bool abActive)</syntaxhighlight>
+{{CodeDocDetailBody|Turn off or on collision for all the bodies in the given entity.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity. Wildcard(s) * are supported.}}
+{{CodeDocDetailParam|abActive|bool|true <nowiki>=</nowiki> collision on, false <nowiki>=</nowiki> collision off.}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_SetCollideCharacter}}
+<syntaxhighlight lang="c++">void Entity_SetCollideCharacter(const tString &in asEntityName,
+                                bool abActive)</syntaxhighlight>
+{{CodeDocDetailBody|Turn off or on character collision for all the bodies in the given entity.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity. Wildcard(s) * are supported.}}
+{{CodeDocDetailParam|abActive|bool|true <nowiki>=</nowiki> collision on, false <nowiki>=</nowiki> collision off.}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_SetColorMul}}
+<syntaxhighlight lang="c++">void Entity_SetColorMul(const tString &in asEntityName,
+                        const cColor &in aColor)</syntaxhighlight>
+{{CodeDocDetailBody|Set the color mul of the entity}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity. Wildcard(s) * are supported.}}
+{{CodeDocDetailParam|aColor|[[../../cColor|cColor]]|color to set color mul to}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_SetConnectionStateChangeCallback}}
+<syntaxhighlight lang="c++">void Entity_SetConnectionStateChangeCallback(const tString &in asEntityName,
+                                             const tString &in asCallback)</syntaxhighlight>
+{{CodeDocDetailBody|Sets the callback for when the connection state changes on an entity<br/>Syntax for callback function: void FunctionName(string &in asEntityName, int alState).}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|the name of the entity to get the callback. Wildcard(s) * are supported.}}
+{{CodeDocDetailParam|asCallback|[[../../tString|tString]]|the name of the callback function.}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_SetEffectBaseColor}}
+<syntaxhighlight lang="c++">void Entity_SetEffectBaseColor(const tString &in asEntityName,
+                               const cColor &in aColor)</syntaxhighlight>
+{{CodeDocDetailBody|Sets the base color of the effects}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the prop. Wildcard(s) * are supported.}}
+{{CodeDocDetailParam|aColor|[[../../cColor|cColor]]|the color all effects will be multiplied with}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_SetEffectsActive}}
+<syntaxhighlight lang="c++">void Entity_SetEffectsActive(const tString &in asEntityName,
+                             bool abActive,
+                             bool abFadeAndPlaySounds)</syntaxhighlight>
+{{CodeDocDetailBody|Activates or deactivates the effects on a entity.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity. Wildcard(s) * are supported.}}
+{{CodeDocDetailParam|abActive|bool|true <nowiki>=</nowiki> activates effects - false <nowiki>=</nowiki> deactivates effects.}}
+{{CodeDocDetailParam|abFadeAndPlaySounds|bool|if effects should fade in/out and sounds play.}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_SetInteractionDisabled}}
+<syntaxhighlight lang="c++">void Entity_SetInteractionDisabled(const tString &in asEntityName,
+                                   bool abX)</syntaxhighlight>
+{{CodeDocDetailBody|Sets if the player can interact with an entity or not.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity, Wildcard(s) * are supported}}
+{{CodeDocDetailParam|abX|bool|true <nowiki>=</nowiki> interaction disabled - false <nowiki>=</nowiki> interaction enabled.}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_SetIsOccluder}}
+<syntaxhighlight lang="c++">void Entity_SetIsOccluder(const tString &in asName,
+                          bool abOccluder)</syntaxhighlight>
+{{CodeDocDetailBody|Set if entity is an occluder}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asName|[[../../tString|tString]]|Name of the entity, Wildcard(s) * are supported}}
+{{CodeDocDetailParam|abOccluder|bool|true <nowiki>=</nowiki> object is occluder}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_SetMaxInteractionDistance}}
+<syntaxhighlight lang="c++">void Entity_SetMaxInteractionDistance(const tString &in asEntityName,
+                                      float afDistance)</syntaxhighlight>
+{{CodeDocDetailBody|Change the max interaction distance of an entity from the default/entity configured distance.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity, Wildcard(s) * are supported}}
+{{CodeDocDetailParam|afDistance|float|distance in meters that the entity can be interacted from.}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_SetPlayerInteractCallback}}
+<syntaxhighlight lang="c++">void Entity_SetPlayerInteractCallback(const tString &in asEntityName,
+                                      const tString &in asCallback,
+                                      bool abRemoveWhenInteracted)</syntaxhighlight>
+{{CodeDocDetailBody|Sets the callback for when the player interacts with a specific entity.<br/>Syntax for callback function: void FunctionName(string &in asEntityName).}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|the name of the entity to get the callback. Wildcard(s) * are supported.}}
+{{CodeDocDetailParam|asCallback|[[../../tString|tString]]|the name of the callback function.}}
+{{CodeDocDetailParam|abRemoveWhenInteracted|bool|if the callback should be removed after it has been called.}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_SetPlayerLookAtCallback}}
+<syntaxhighlight lang="c++">void Entity_SetPlayerLookAtCallback(const tString &in asEntityName,
+                                    const tString &in asCallback,
+                                    bool abRemoveWhenLookedAt = true,
+                                    bool abCheckCenterOfScreen = true,
+                                    bool abCheckRayIntersection = true,
+                                    float afMaxDistance = -1,
+                                    float afCallbackDelay = 0)</syntaxhighlight>
+{{CodeDocDetailBody|Sets the callback for when the player looks at or turns away from a specific entity.<br/>Syntax for callback function: void FunctionName(const tString &in asEntityName, int alState). alState is 1 if the player looks at the entity and -1 if the player stops looking.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|the name of the entity to get the callback. Wildcard(s) * are supported.}}
+{{CodeDocDetailParam|asCallback|[[../../tString|tString]]|the name of the callback function. If set to  will remove a previously set callback}}
+{{CodeDocDetailParam|abRemoveWhenLookedAt|bool|if the callback should be removed after it has been called.}}
+{{CodeDocDetailParam|abCheckCenterOfScreen|bool|if the entity counts as looked at only when at the center of the screen.}}
+{{CodeDocDetailParam|abCheckRayIntersection|bool|if the entity counts as looked at only if there is a clear line of sight to it. Note that this can return false negatives, especially when not checking center of screen.}}
+{{CodeDocDetailParam|afMaxDistance|float|max distance at which the entity must be for the callback to be triggered.}}
+{{CodeDocDetailParam|afCallbackDelay|float|time the player needs to look at the entity for the entity to trigger (in seconds).}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_SetProcAnimationPaused}}
+<syntaxhighlight lang="c++">void Entity_SetProcAnimationPaused(const tString &in asEntityName,
+                                   const tString &in asAnimationName,
+                                   bool abPaused = true)</syntaxhighlight>
+{{CodeDocDetailBody|Pause or unpause a procedural animation on the specified entity.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity. Wildcard(s) * are supported.}}
+{{CodeDocDetailParam|asAnimationName|[[../../tString|tString]]|name of the animation.}}
+{{CodeDocDetailParam|abPaused|bool|true to pause, false to resume}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_SetProcAnimationSpeed}}
+<syntaxhighlight lang="c++">void Entity_SetProcAnimationSpeed(const tString &in asEntityName,
+                                  const tString &in asAnimationName,
+                                  float afSpeed)</syntaxhighlight>
+{{CodeDocDetailBody|Sets the speed of a proc animation.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity. Wildcard(s) * are supported.}}
+{{CodeDocDetailParam|asAnimationName|[[../../tString|tString]]|name of the animation.}}
+{{CodeDocDetailParam|afSpeed|float|speed to set.}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_SetReflectionVisibility}}
+<syntaxhighlight lang="c++">void Entity_SetReflectionVisibility(const tString &in asEntityName,
+                                    bool abVisibleInReflection,
+                                    bool abVisibleInWorld)</syntaxhighlight>
+{{CodeDocDetailBody|Sets whether the entity is drawn in reflections or not, and the real world or not.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the prop. Wildcard(s) * are supported.}}
+{{CodeDocDetailParam|abVisibleInReflection|bool|whether the entity is drawn in reflections}}
+{{CodeDocDetailParam|abVisibleInWorld|bool|whether the entity is drawn in the real world}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_SetVarBool}}
+<syntaxhighlight lang="c++">void Entity_SetVarBool(const tString &in asEntityName,
+                       const tString &in asVarName,
+                       bool abX)</syntaxhighlight>
+{{CodeDocDetailBody|Sets the value of an entity boolean variable. Wildcard(s) * are supported for EntityName.	*}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity.}}
+{{CodeDocDetailParam|asVarName|[[../../tString|tString]]|name of the boolean variable.}}
+{{CodeDocDetailParam|abX|bool|new value for the variable.}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_SetVarColor}}
+<syntaxhighlight lang="c++">void Entity_SetVarColor(const tString &in asEntityName,
+                        const tString &in asVarName,
+                        const cColor &in aX)</syntaxhighlight>
+{{CodeDocDetailBody|Sets the value of an entity color variable. Wildcard(s) * are supported for EntityName.	*}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity.}}
+{{CodeDocDetailParam|asVarName|[[../../tString|tString]]|name of the color variable.}}
+{{CodeDocDetailParam|aX|[[../../cColor|cColor]]|new value for the variable.}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_SetVarFloat}}
+<syntaxhighlight lang="c++">void Entity_SetVarFloat(const tString &in asEntityName,
+                        const tString &in asVarName,
+                        float afX)</syntaxhighlight>
+{{CodeDocDetailBody|Sets the value of an entity variable. Wildcard(s) * are supported for EntityName.	*}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity.}}
+{{CodeDocDetailParam|asVarName|[[../../tString|tString]]|name of the string variable.}}
+{{CodeDocDetailParam|afX|float|new value for the variable.}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_SetVarInt}}
+<syntaxhighlight lang="c++">void Entity_SetVarInt(const tString &in asEntityName,
+                      const tString &in asVarName,
+                      int alX)</syntaxhighlight>
+{{CodeDocDetailBody|Sets the value of an entity integer variable. Wildcard(s) * are supported for EntityName.	*}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity.}}
+{{CodeDocDetailParam|asVarName|[[../../tString|tString]]|name of the integer variable.}}
+{{CodeDocDetailParam|alX|int|new value for the variable.}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_SetVarString}}
+<syntaxhighlight lang="c++">void Entity_SetVarString(const tString &in asEntityName,
+                         const tString &in asVarName,
+                         const tString &in asX)</syntaxhighlight>
+{{CodeDocDetailBody|Sets the value of an entity string variable. Wildcard(s) * are supported for EntityName.	*}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity.}}
+{{CodeDocDetailParam|asVarName|[[../../tString|tString]]|name of the string variable.}}
+{{CodeDocDetailParam|asX|[[../../tString|tString]]|new value for the variable.}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_SetVarVector2f}}
+<syntaxhighlight lang="c++">void Entity_SetVarVector2f(const tString &in asEntityName,
+                           const tString &in asVarName,
+                           const cVector2f &in avX)</syntaxhighlight>
+{{CodeDocDetailBody|Sets the value of an entity vector2f variable. Wildcard(s) * are supported for EntityName.	*}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity.}}
+{{CodeDocDetailParam|asVarName|[[../../tString|tString]]|name of the vector2f variable.}}
+{{CodeDocDetailParam|avX|[[../../cVector2f|cVector2f]]|new value for the variable.}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_SetVarVector3f}}
+<syntaxhighlight lang="c++">void Entity_SetVarVector3f(const tString &in asEntityName,
+                           const tString &in asVarName,
+                           const cVector3f &in avX)</syntaxhighlight>
+{{CodeDocDetailBody|Sets the value of an entity vector3f variable. Wildcard(s) * are supported for EntityName.	*}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity.}}
+{{CodeDocDetailParam|asVarName|[[../../tString|tString]]|name of the vector3f variable.}}
+{{CodeDocDetailParam|avX|[[../../cVector3f|cVector3f]]|new value for the variable.}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_Sleep}}
+<syntaxhighlight lang="c++">void Entity_Sleep(const tString &in asName)</syntaxhighlight>
+{{CodeDocDetailBody|Forces the entity to sleep (disabling Update/PostUpdate). Has no effect if it is already sleeping}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asName|[[../../tString|tString]]|Name of the entity, Wildcard(s) * are supported}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_StopAnimation}}
+<syntaxhighlight lang="c++">void Entity_StopAnimation(const tString &in asEntityName)</syntaxhighlight>
+{{CodeDocDetailBody|Stops any currently playing animation on the specified entity.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity. Wildcard(s) * are supported.}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_StopProcAnimation}}
+<syntaxhighlight lang="c++">void Entity_StopProcAnimation(const tString &in asEntityName,
+                              const tString &in asAnimation,
+                              float afFadeTime = 0.1f)</syntaxhighlight>
+{{CodeDocDetailBody|Stops a procedural animation on the specified entity.}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asEntityName|[[../../tString|tString]]|name of the entity. Wildcard(s) * are supported.}}
+{{CodeDocDetailParam|asAnimation|[[../../tString|tString]]|name of the entity. Wildcard(s) * are supported.}}
+{{CodeDocDetailParam|afFadeTime|float|the time it takes to fade out.}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}
+
+{{CodeDocDetailTop|Entity_WakeUp}}
+<syntaxhighlight lang="c++">void Entity_WakeUp(const tString &in asName)</syntaxhighlight>
+{{CodeDocDetailBody|Forces the entity to wake up (enabling Update/PostUpdate). Has no effect if it is already awake}}
+{{CodeDocDetailParamStart}}
+{{CodeDocDetailParam|asName|[[../../tString|tString]]|Name of the entity, Wildcard(s) * are supported}}
+{{CodeDocDetailReturn|void|}}
+{{CodeDocDetailBottom}}

@@ -1,0 +1,5283 @@
+#include "interfaces/Map_Interface.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_map.hps"
+#include "helpers/helper_entity.hps"
+#include "helpers/helper_areas.hps"
+#include "helpers/helper_props.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_physics.hps"
+#include "helpers/helper_world_effects.hps"
+#include "helpers/helper_general.hps"
+#include "helpers/helper_sequences.hps"
+#include "helpers/helper_audio.hps"
+#include "helpers/helper_imgui.hps"
+#include "helpers/helper_game.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_ai.hps"
+#include "custom_depth/helper_custom_depth.hps"
+#include "custom_depth/helper_custom_depth_audio.hps"
+#include "custom_depth/helper_custom_depth_imgui.hps"
+#include "inputhandler_types.hps"
+
+//--------------------------------------------------
+
+enum eSimulationTerminalApp
+{
+	eSimulationTerminalApp_Idle,
+	eSimulationTerminalApp_Boot,
+	eSimulationTerminalApp_WorldSetup,
+	eSimulationTerminalApp_MindSetup,
+	eSimulationTerminalApp_Run,
+	eSimulationTerminalApp_Loading,
+}
+
+//--------------------------------------------------
+
+enum eSimulationTerminalState
+{
+	eSimulationTerminalState_Stopped,
+	eSimulationTerminalState_Running,
+	eSimulationTerminalState_Diagnostic,
+	eSimulationTerminalState_Reset,
+}
+
+//--------------------------------------------------
+
+enum eSimulationTerminalModules
+{
+	eSimulationTerminalModules_System_Rigid=1,
+	eSimulationTerminalModules_System_Soft,
+	eSimulationTerminalModules_System_FluidDynamics,
+	eSimulationTerminalModules_System_Buoyancy,
+	eSimulationTerminalModules_System_Atmosphere,
+	eSimulationTerminalModules_System_ScanInterface,
+	eSimulationTerminalModules_System_Heat,
+	eSimulationTerminalModules_System_DynamicLighting,
+	eSimulationTerminalModules_System_BasicVegetation,
+	eSimulationTerminalModules_System_AdvancedVegetation,
+	
+	eSimulationTerminalModules_System_LastEnum,
+	
+	eSimulationTerminalModules_Scene_Plains=eSimulationTerminalModules_System_LastEnum,
+	eSimulationTerminalModules_Scene_Forest,
+	
+	eSimulationTerminalModules_Scene_LastEnum,
+	
+	eSimulationTerminalModules_Object_Humanoid=eSimulationTerminalModules_Scene_LastEnum,
+	eSimulationTerminalModules_Object_Road,
+	eSimulationTerminalModules_Object_Bench,
+	eSimulationTerminalModules_Object_Boat,
+	eSimulationTerminalModules_Object_River,
+	eSimulationTerminalModules_Object_Chair,
+	eSimulationTerminalModules_Object_Cabin,
+	eSimulationTerminalModules_Object_Lake,
+	eSimulationTerminalModules_Object_Flowers,
+	eSimulationTerminalModules_Object_Sun,
+	eSimulationTerminalModules_Object_Moon,
+	eSimulationTerminalModules_Object_Clouds,
+	
+	eSimulationTerminalModules_Object_LastEnum,
+}
+
+//--------------------------------------------------
+
+enum eSimulationModuleType
+{
+	eSimulationModuleType_Null,
+	
+	eSimulationModuleType_LightSource,
+	eSimulationModuleType_Water,
+	eSimulationModuleType_Vegetation,
+	
+	eSimulationModuleType_LastEnum
+}
+
+//--------------------------------------------------
+
+float[] gvArkSimulationSpeeds = {1.0f, 0.75, 0.5, 0.25, 0.1, 0.05, 0.03};
+
+//--------------------------------------------------
+
+enum eScannerState
+{
+	eScannerState_Boot,
+	eScannerState_BodyScan,
+	eScannerState_Brain,
+	eScannerState_Blackbox,
+	eScannerState_ShowReed,
+	eScannerState_Battery,
+	eScannerState_Gel,
+	eScannerState_Flesh
+}
+
+//--------------------------------------------------
+
+enum eMastersTerminalState
+{
+	eMastersTerminalState_Unsent,
+	eMastersTerminalState_MainMenu,
+	eMastersTerminalState_SentItems,
+	eMastersTerminalState_LogEntries,
+}
+
+//--------------------------------------------------
+
+enum eSecurityConsole_State
+{
+	eSecurityConsole_MainMenu,
+	eSecurityConsole_EnterCode,
+	eSecurityConsole_FormatChip,
+}
+ 
+//--------------------------------------------------
+ 
+const tString gsPadCode = "42B";
+
+//--------------------------------------------------
+
+class cScrMap : iScrMap
+{
+	//-------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ==============
+	// MAIN CALLBACKS
+	// ==============
+	//{///////////////////////////////////////
+	
+	//-------------------------------------------------------
+	
+	void Setup()
+	{
+		//Stops spark sound from leaking across map, sets to true when entering office containing spark
+		Light_SetFlickerActive("sleved_open_animated01_1_big", false);
+		Light_SetVisible("sleved_open_animated01_1_big", false);
+	}
+	
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run first time starting map
+	void OnStart()
+	{
+
+		//////////////////////////////////////////
+		// Player setup
+		Player_SetMoveSpeedMul(1); //Might be 0 if preload locked the player
+		
+		Player_SetAmbientLight_Indoors();
+		
+		PlayerHands_SetHandModel_Diving();
+		
+		SetupArkRoom();
+		SetupAirlocks();
+		SetupPanelClamps();
+		SetupProjectors();
+		SetupCatherine();
+		SetupBrandon();
+		
+		bool bDoIntro = true;
+
+		///////////////////////////////////////////
+		// Debug
+		if(cLux_ScriptDebugOn())
+		{
+			bDoIntro = false;
+		}
+		
+		if (bDoIntro)
+		{
+			//Effect_Fade_Out(0.0f);
+			//Effect_Fade_In(5.0f);
+		}
+		
+		//////Level Audio and Preloads	
+		Sound_PreloadCoreSounds();
+		Sound_PreloadCoreInteractions();
+		Sound_PreloadGroup("02_06_theta_tunnels/amb", true);
+		Sound_PreloadGroup("02_06_theta_tunnels/sfx", true);
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when entering map
+	void OnEnter()
+	{
+		GetBase().SetDisplayNameEntry("02-06-theta-tunnels");
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when leaving map
+	void OnLeave()
+	{
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// The player has died.
+	void OnPlayerKilled(int alRecentDeaths, const tString&in asSource)
+	{
+		cLux_AddDebugMessage("OnPlayerKilled");
+		Dialog_StopAll();
+		
+		cLux_AddDebugMessage("OnPlayerKilled "+asSource);
+		if (asSource == "puppet_tunnel")
+		{
+			// We want to transition to 2.7 here as planned.
+			SequencePuppetCapture("");
+			Entity_SetActive("puppet_tunnel",false);
+		}
+		else if (asSource != "")
+		{
+			mlAkersKillCount++;
+			//Map_AddTimer("2_PlayerWakesUpFromDeath", 10, "TimerPlayVoice");
+			
+			if(mlAkersKillCount>=3)
+				Puppet_SetHideAndWaitPaused("puppet_dynamic", true);
+		}
+		
+		else if (asSource == "puppet_elevator")
+		{
+			Music_Stop(1.0f, eMusicPrio_BgAmb);
+		}
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// To get when player makes input (mostly used for debug)
+	void OnAction(int alAction, bool abPressed) 
+	{
+		if(abPressed==false) return;
+		
+		if(alAction == eAction_Test1)
+		{
+			//door_panel_chip_formatted
+			
+			//Tool_PickUp("door_panel_chip_formatted", false, false);
+			
+			//CollideAreaEnableAkers("", "", 1);
+			
+			SetupProjectors();
+			
+			//Puppet_SetAgressionAmount("puppet_dynamic",0.5);
+			
+			/*cLuxClosestEntityData pData;
+			if (!cLux_GetClosestEntity(cLux_GetPlayer().GetCamera().GetPosition(),cLux_GetPlayer().GetCamera().GetForward(),100, 0, false, pData))
+				return;
+				
+			tString sEntity = pData.mpEntity.GetName();
+
+			Button_SetLocked(sEntity, !Button_IsLocked(sEntity), true);
+			Lamp_SetLit(sEntity, !Lamp_GetLit(sEntity), true);
+			SlideDoor_SetClosed(sEntity, false, false);*/
+		}
+		
+		if (alAction == eAction_Test2)
+		{
+			Puppet_SetAgressionAmount("puppet_dynamic",1.0);
+			Puppet_SetComeOutOfHidingTimeMul("puppet_dynamic", 0.3f);
+			//Prop_RotateToSpeed("ScannerArm", 10, 5, true, "");
+		}
+		
+		if (alAction == eAction_Test3)
+		{
+			StopScannerArm();
+		}
+		
+		if (alAction == eAction_Test4)
+		{
+			mbReInit=true;
+			Terminal_SetGuiActive("ARKTerminal", true);
+			StationGui_SetActiveApp("ARKTerminal", eSimulationTerminalApp_WorldSetup);
+		}
+		
+		if (alAction == eAction_Test5)
+		{
+			Voice_Stop("Dialog");
+			Voice_Play("1_ScanningAndSimDone_1");
+			Voice_PlayWhenPossible("1_ScanningAndSimDone_2", "VoiceCondition_ScanningAndSimDone", -1, 0, "VoiceOver_EjectCathTool");
+		}
+		
+		if (alAction == eAction_Test7)
+		{
+			CameraAnimation_Begin("ElevatorBreakAnim", "", true);
+		}
+		
+		if (alAction == eAction_Test8)
+		{
+			for (int i = 1; i <= 4; i++)
+			{
+				cScript_SetGlobalVarBool("PlayerErasedLegacyData_"+i, false);
+			}
+		}
+			
+		
+		if (alAction == eAction_Test9)
+		{
+			security_chip_unformatted_OnPlayerInteract("");
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	bool mbPuppetMusicPlayed = false;
+	void PlayPuppetMusic()
+	{
+		//if (mbPuppetMusicPlayed) return;
+		
+		mbPuppetMusicPlayed = true;
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// This only used for pure debug purposes when info needs to printed.
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afY)
+	{
+		//afY = cLux_DrawDebugText("My Debug value:"+..., afY);
+		return afY;
+	}
+	
+	//} END MAIN CALLBACKS
+
+	//-------------------------------------------------------
+
+	/////////////////////////////////////////
+	// ==============
+	// MAIN FUNCTIONS
+	// ==============
+	//{///////////////////////////////////////
+	
+	//-------------------------------------------------------
+		
+		//-------------------------------------------------------
+
+		//////////////////////////////////////////
+		// MAIN VARIABLES
+		//{////////////////////////////////////////
+		
+		//-------------------------------------------------------
+
+		int mlAkersKillCount = 0;
+		
+		//} END VARIABLES
+		
+		//-------------------------------------------------------
+
+		//////////////////////////////////////////
+		// GENERAL
+		//{////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		void SetupCatherine()
+		{
+			Tool_PickUp("CathTool", false, false);
+		}
+		
+		bool mbLightsOut = false;
+		
+		void SetLevelLights(bool abOn)
+		{
+			cLux_AddTodoMessage("SOUND: Clunk as the lights go off please!");
+			Sound_PlayGui("02_06_theta_tunnels/sweeteners/lights_out",1.0f);
+			
+			Map_AddTimer("StopAmbientMusic", 1.0f, "AmbientMusicHandler");
+			
+			mbLightsOut = true;
+			
+			//////////////////////////////////////
+			// Lights out!
+			cLux_AddDebugMessage("Lights toggled");
+			Lamp_SetLit("fluorescent_tube_curved_special_*",abOn,true);
+			Lamp_SetLit("door_lamp_*",abOn,true);
+			Lamp_SetLit("theta_wall_small_1",abOn,true);
+			/*Light_SetVisible("PointLight_35",abOn);
+			Light_SetVisible("PointLight_36",abOn);
+			Light_SetVisible("SpotLight_26",abOn);*/
+			
+			//Remove ventilation and distant coral spot triggers
+			Entity_SetActive("Area_MindCoralSounds_*", false);
+			Entity_SetActive("Area_CoralSoundsArea_*", false);
+			Map_RemoveTimer("ResetCoralSoundAreas");
+			
+			//////////////////////////////////
+			//Remove music areas for events no longer needed
+			Entity_SetActive("Area_EmptyBedMusicTrigger", false);
+			Entity_SetActive("Area_EmptyBedMusicTrigger_1", false);
+			
+			Light_SetVisible("corridor_amb_*",abOn);
+			Billboard_SetVisible("corridor_billboard_*",abOn);
+			
+			float fBright = 0.007f;
+			if (abOn == false) fBright = 0.0f;
+			
+			Light_SetBrightness("BoxLight_8",fBright);
+		}
+		
+		//-------------------------------------------------------
+		
+		// Temporarily disable control panels while door is opening
+		void SlidingDoorLock(const tString &in asEntity, int alState)
+		{			
+			///////////////////////////////////////////////////////////////
+			// Get wildcard (each door uses similarly named control panels)
+			tString sLastChar = cString_GetLastChar(asEntity);
+			tString sEntity = cString_ReplaceCharTo(asEntity,sLastChar,"*");
+			
+			Entity_SetInteractionDisabled(sEntity,true);	
+			Map_AddTimer(sEntity,0.25,"SlidingDoorUnlock");
+		}
+
+		//-------------------------------------------------------
+		
+		//////////////////////////////////
+		// Re-enable disabled door panels
+		void SlidingDoorUnlock(const tString &in asTimer) 
+		{
+			Entity_SetInteractionDisabled(asTimer,false);
+		}
+		
+		
+		//-------------------------------------------------------
+		
+		//Turns off office sparks when player is not in Brandon office to stop sound leak
+		bool Trigger_OfficeSpark(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if(alState==1)
+			{
+				//Light_SetVisible("sleved_open_animated01_1_big", true);
+				cLux_AddDebugMessage("Turn on office spark");
+				Light_SetFlickerActive("sleved_open_animated01_1_big", true);
+				Sound_Play("sleved_open_animated01_1_spark", 1.0f);
+			}
+			return true;
+		}
+		
+		bool Trigger_OfficeSparkOff(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			cLux_AddDebugMessage("Turn off office spark");
+			Light_SetFlickerActive("sleved_open_animated01_1_big", false);
+			Sound_Stop("sleved_open_animated01_1_spark", 1.0f);
+			Light_SetVisible("sleved_open_animated01_1_big", false);
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		
+		//} END GENERAL
+		
+
+		//////////////////////////////////////////
+		// GENERIC TIMERS
+		//{////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		void Timer_SetEntityActive(const tString &in asTimer)
+		{
+			Entity_SetActive(asTimer, true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void TimerEnableInteraction(const tString &in asTimer)
+		{
+			Entity_SetInteractionDisabled(asTimer, false);
+		}
+		
+		//-------------------------------------------------------
+		
+		void TimerTurnOnEffects(const tString &in asTimer)
+		{
+			Entity_SetEffectsActive(asTimer, true, false);
+		}
+		
+		//-------------------------------------------------------
+		
+		void TimerTurnOffEffects(const tString &in asTimer)
+		{
+			Entity_SetEffectsActive(asTimer, false, false);
+		}
+		
+		//-------------------------------------------------------
+		
+		void TimerSetLampLit(const tString &in asTimer)
+		{
+			Lamp_SetLit(asTimer, true, true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void TimerSetLampFlickerOff(const tString &in asTimer)
+		{
+			Lamp_SetFlickerActive(asTimer, false);
+		}
+		
+		//-------------------------------------------------------
+		
+		void TimerPlayVoice(const tString &in asTimer)
+		{
+			Voice_Play(asTimer);
+		}
+		
+		//} END GENERIC TIMERS
+		
+		//////////////////////////////////////////
+		// CHECKPOINTS 
+		//{////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		//-------------------------------------------------------
+		
+		bool CollideSecurityCheckpoint(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			cLux_AddDebugMessage("Child: " + asChild);
+			Entity_SetActive(asChild,false);
+			CheckPoint_Setup("MainAreaCheckpoint");
+			
+			///////////////////////////////////////////////
+			// Activate event area in case player goes back
+			Entity_SetActive("PuppetRunbyRocketroom",true);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool CollideARKCheckpoint(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Entity_SetActive(asChild,false);
+			CheckPoint_Setup();
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool Trigger_LeftARKRoomCheckpoint(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Map_AddTimer("StartAmbient", cMath_RandRectf(10.f,15.f), "AmbientMusicHandler");
+			//CheckPoint_Setup("MainAreaCheckpoint", "PlayerSpawn_*");
+			
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void MainAreaCheckpoint(int alRecentDeaths, const tString&in asDeathSource)
+		{
+			Entity_SetActive(asDeathSource, false);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool CollideBrandonCheckpoint(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Entity_SetActive(asChild,false);
+			CheckPoint_Setup("MainAreaCheckpoint");
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void FinalDeathCheckpoint(int alRecentDeaths, const tString&in asDeathSource)
+		{
+			cLux_AddDebugMessage("Final Checkpoint - No reload will be issued");
+		}
+		
+		//-------------------------------------------------------
+		
+		void CheckpointTookRepairedChip(int alRecentDeaths, const tString&in asDeathSource)
+		{
+			Entity_SetActive(asDeathSource, false);
+			
+			////////////////////////////////////////////////////////////
+			// If player has died after taking formatted chip - disable the puppet encounters near here
+			Entity_SetActive("Area_SecurityPuppet_*", false);
+			Entity_SetActive("Area_ChemlabPuppet", false);
+		}
+		
+		//} END CHECKPOINTS
+		
+	//} END MAIN FUNCTIONS
+	
+	//-------------------------------------------------------
+
+	/////////////////////////////////////////
+	// ==============
+	// SCENE 1 - SCAN ROOM
+	// ==============
+	//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+		
+		bool mbKnowsAboutScanner = false;
+
+		//-------------------------------------------------------
+
+
+		/////////////////////////////////////////
+		// Scene 1 Event 1 - ARK ROOM
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		bool mbARKCableConnected = false;
+
+		//-------------------------------------------------------
+		
+		void SetupArkRoom()
+		{
+		}
+
+		//-------------------------------------------------------
+
+		bool StickyArea_ARKCable_Attach(const tString &in asStickyArea, const tString &in asBodyName)
+		{
+			
+			Sound_CreateAtEntity("sound_plugin","Entities_Station/tech/plug/electric_cable_plug",asStickyArea,0,false,1.0);
+			mbARKCableConnected = true;
+			
+			if (CathTool_IsInserted("CathTool"))
+			{
+				Map_AddTimer("timer_bootARK",1.5f,"TimerBootArk");
+				Lamp_SetFlickerActive("ARKTerminalLED_1", true);
+				Lamp_SetLit("ARKTerminalLED_2", true, true);
+				Lamp_SetLit("ARKTerminalLED_3", true, true);
+			}
+				
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void TimerBootArk(const tString &in asTimer)
+		{
+			cLux_AddDebugMessage("ARK is Booting");
+			Sound_CreateAtEntity("Ark_Bootup","02_06_theta_tunnels/sfx/ark_sim_boot","Area_Effect_ArkTerminal",0,false,1.0);
+			StationGui_SetActiveApp("ARKTerminal", eSimulationTerminalApp_Boot);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnUseCathTool(const tString &in asTool, const tString &in asEntity)
+		{
+			if (asEntity == "AirlockButton_North_1")
+			{
+				CathTool_UseOnPanel(asTool, asEntity);
+				return false;
+			}
+			if (asEntity == "AirlockButton_North_2")
+			{
+				CathTool_UseOnPanel(asTool, asEntity);
+				return false;
+			}
+			if (asEntity == "Inactive_DoorPanel_AirlockButton_East_1")
+			{
+				CathTool_UseOnPanel(asTool, asEntity);
+				return false;
+			}
+			if (asEntity == "StartCathSlot")
+			{
+				CathTool_Insert(asTool, "StartCathSlot");
+				CathTool_SetHintsCallback(asTool, "GiveCathHints");
+				Terminal_SetGuiActive("CathTerminal", true, 1);
+				Entity_SetActive("CathToolArea", false);
+				Seq_ArkLabPowerOn("");
+				return true;
+			}
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool mbStartedSim = false;
+		bool mbFinishedSim = false;
+		bool mbPlayerScanned = false;
+		tString GiveCathHints(const tString& in asName)
+		{
+			if (mbStartedSim==false)
+			{
+				return "1_CathHint_StartSim";
+			}
+			
+			if (mbFinishedSim==false)
+			{
+				return "1_CathHint_RunDiagOnDummy";
+			}
+			
+			if (mbKnowsAboutScanner==false)
+			{
+				return "1_CathHint_FindScanner";
+			}
+			
+			if (mbPlayerScanned==false)
+			{
+				return "1_CathHint_ScanYourself";
+			}
+			return "";
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event ARK ROOM
+	
+		////////////////////////////////////////////////////////////
+		// Scene 1 - *Turn on power*
+		//{/////////////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mArkLabPowerOnSequence;
+			
+		void Seq_ArkLabPowerOn(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_ArkLabPowerOn", mArkLabPowerOnSequence);
+			
+			if (Sequence_DoStepAndWait(1))
+			{
+				Sound_CreateAtEntity("PowerOnArkLab", "02_06_theta_tunnels/sfx/events/ark_room_powerup", "Player");
+				
+				Dialog_StartConversation("Catherine", "CathTerminal");
+				Dialog_Begin();
+					Dialog_AddBranch("CathPluggedIn");
+						Dialog_AddPause(2);
+						Dialog_AddSubject("1_CathPluggedIn_1", "Subject_PluginDialog");
+				Dialog_End();
+			}
+			
+			else if (Sequence_DoStepAndPause(1))
+			{
+				for (int i = 1; Entity_Exists("ArkTestingLamp_"+i); i++)
+				{
+					float fMinDelay = 0.2*(i-1);
+					LightFlickeringLamp("ArkTestingLamp_"+i, fMinDelay, fMinDelay+0.2, 0.5, 1.5);
+				}
+				
+				for (int i = 1; Entity_Exists("ArkLabLampTop_"+i); i++)
+				{
+					float fMinDelay = 2 + 0.2*(i-1);
+					LightFlickeringLamp("ArkLabLampTop_"+i, fMinDelay, fMinDelay+0.2, 0.5, 1.5);
+				}
+				
+				for (int i = 1; Entity_Exists("ArkLabLampLow_"+i); i++)
+				{
+					float fMinDelay = 4 + 0.4*(i-1);
+					LightFlickeringLamp("ArkLabLampLow_"+i, fMinDelay, fMinDelay+0.25, 0.5, 1.5);
+				}
+				
+				Lamp_SetLit("ArkLabDeskLamp", true, true);
+				
+				Sound_CreateAtEntity("ArkLampSpot", "02_06_theta_tunnels/amb/spots/grid_light", "GridLightSoundSource", 1.0f, true, 1.0f);
+				
+				Button_SetLocked("AirlockButton_North_1", false, true);
+				Button_SetLocked("ScannerDoor_Button", false, true);
+				Entity_SetVarString("Scanner_ExtTerminal", "", "Scanner_Outside_Pending");
+				
+				Terminal_SetGuiActive("ARKTerminal", true, 0.5);
+				Lamp_SetLit("ARKTerminalLED_1", true, true);
+				Lamp_SetLit("ARKTerminalLED_4", true, true);
+				
+				Terminal_SetGuiActive("Scanner_ExtTerminal", true);
+				
+				if (mbARKCableConnected)
+				{
+					Map_AddTimer("timer_bootARK",1.5f,"TimerBootArk");
+					Lamp_SetFlickerActive("ARKTerminalLED_1", true);
+					Lamp_SetLit("ARKTerminalLED_2", true, true);
+					Lamp_SetLit("ARKTerminalLED_3", true, true);
+				}
+			}
+			else if (Sequence_DoStepAndWait(1))
+			{
+				Voice_Play("1_CathPluggedIn_2");
+				Entity_SetActive("ArkPrototypeLookAt", true);
+				CathTool_SetHintsEnabled("CathTool", true);
+			}
+			
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnGuiCathTerminal(const tString&in asEntityName, float afTimeStep)
+		{
+			StationGuiBG_Scanlines();
+			ImGui_DoImageCorrectAspect(cImGuiGfx("catherine_large.tga"), cVector3f(0,0,1), ImGui_NrmSizeGroup(cVector2f(1, 1)));
+		}
+		
+		//-------------------------------------------------------
+		
+		void LookAt_ARKPrototype(const tString &in asEntity, int alState)
+		{
+			Voice_Play("1_LookAtARKPrototype", -1, "", -1);
+		}
+		
+		//-------------------------------------------------------
+		
+		void Subject_PluginDialog(const tString &in asSubject, bool abStartOfSubject)
+		{
+			if (abStartOfSubject) return;
+
+			SequenceStates_Resume("Seq_ArkLabPowerOn");
+		}
+		
+		//-------------------------------------------------------
+		
+		void LightFlickeringLamp(const tString &in asLamp, float afMinDelay, float afMaxDelay, float afMinFlickerTime, float afMaxFlickerTime)
+		{
+			float fDelay = cMath_RandRectf(afMinDelay, afMaxDelay);
+			float fFlickerTime = cMath_RandRectf(afMinFlickerTime, afMaxFlickerTime);
+			
+			Lamp_SetFlickerActive(asLamp, true);
+			Map_AddTimer(asLamp, fDelay, "TimerSetLampLit");
+			Map_AddTimer(asLamp, fDelay + fFlickerTime, "TimerSetLampFlickerOff");
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event Turn on power
+	
+		////////////////////////////////////////////////////////////
+		// Scene 1 - *Run ARK Beta*
+		//{/////////////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		bool VoiceCondition_ScanningAndSimDone(const tString &in asSubject)
+		{
+			bool bReturn = Entity_GetCollide("Player", "ArkAndOmniPanelProximity");
+			return (bReturn==true);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool DialogEvent_ScanningAndSimDone(const tString&in asBranch, const tString&in asBranchSubject, int alLineIndex, const tString&in asNewBranch)
+		{
+			bool bCloseEnough = Entity_GetCollide("Player", "ArkAndOmniPanelProximity");
+			
+			if (bCloseEnough==false)
+			{
+				Voice_PlayWhenPossible("1_ScanningAndSimDone_2", "VoiceCondition_ScanningAndSimDone", -1, 0, "VoiceOver_EjectCathTool");
+			}
+			
+			cLux_AddDebugMessage("DialogEvent_ScanningAndSimDone "+bCloseEnough);
+			return (bCloseEnough==true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void Subject_EjectCathTool(const tString &in asSubject, bool abStartOfSubject)
+		{
+			if (abStartOfSubject) return;
+			
+			VoiceOver_EjectCathTool("", "");
+		}
+		
+		//-------------------------------------------------------
+		
+		void VoiceOver_EjectCathTool(const tString&in asScene, const tString&in asSubject)
+		{
+			Terminal_SetGuiActive("CathTerminal", false, 0.3);
+			CathTool_AllowDetach("CathTool");
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Run ARK Beta
+	
+		////////////////////////////////////////////////////////////
+		// Scene 1 - *Using airlocks from ARK room*
+		//{/////////////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		tString msAirlockEntryDoor = "";
+		tString msAirlockExitDoor = "";
+		tString msAirlockEntryTrigger = "";
+		tString msAirlockLight = "";
+		tString msAirlockScanner = "";
+		int mlAirlockParticleAreas = 32;
+		
+		//-------------------------------------------------------
+			
+		void SetupAirlocks()
+		{
+			Lamp_SetLit("airlock_scanner_north_left",false,false);
+			Lamp_SetLit("airlock_scanner_north_right",false,false);
+			Lamp_SetLit("airlock_scanner_east_left",false,false);
+			Lamp_SetLit("airlock_scanner_east_right",false,false);
+		}
+		
+		//-------------------------------------------------------
+		
+		void AirlockButton(const tString &in asEntity, int alState)
+		{		
+			///////////////////////////////////////////////
+			// Disable exit triggers
+			Entity_SetActive("ArealockExitTrigger_*",false);
+				
+			///////////////////////////////////////////////
+			// Setup how doors should behave based on button pushed
+			if (asEntity == "AirlockButton_North_1")
+			{
+				msAirlockEntryDoor = "NorthAirlock_door_inside";
+				msAirlockEntryTrigger = "Area_AirlockEntry_North_Inside";
+				msAirlockScanner = "airlock_scanner_north";
+			}
+			else if (asEntity == "AirlockButton_North_2")
+			{
+				msAirlockEntryDoor = "NorthAirlock_door_outside";
+				msAirlockEntryTrigger = "Area_AirlockEntry_North_Outside";
+				msAirlockScanner = "airlock_scanner_north";
+			}
+			else if (asEntity == "AirlockButton_East_1")
+			{
+				msAirlockEntryDoor = "EastAirlock_door_inside";
+				msAirlockEntryTrigger = "Area_AirlockEntry_East_Inside";
+				msAirlockScanner = "airlock_scanner_east";
+			}
+			else if (asEntity == "AirlockButton_East_2")
+			{
+				msAirlockEntryDoor = "EastAirlock_door_outside";
+				msAirlockEntryTrigger = "Area_AirlockEntry_East_Outside";
+				msAirlockScanner = "airlock_scanner_east";
+			}
+			
+			if (alState == 1)
+			{
+				///////////////////////////////////////
+				// Activate entry trigger
+				Entity_SetActive(msAirlockEntryTrigger,true);
+				
+				////////////////////////////////////////////////
+				// Open the entry door
+				OpenAirlockDoor(msAirlockEntryDoor);
+			}
+			else
+			{
+				////////////////////////////////////////////////
+				// Close the entry door
+				CloseAirlockDoor(msAirlockEntryDoor);
+			}
+		}
+		
+		//--------------------------------s-----------------------
+		
+		void OpenAirlockDoor(const tString &in asDoorName, bool abInstant=false)
+		{
+			SlideDoor_SetClosed(asDoorName,false,abInstant);
+			
+		}
+		
+		//-------------------------------------------------------
+		
+		void CloseAirlockDoor(const tString &in asDoorName, bool abInstant=false)
+		{
+			SlideDoor_SetClosed(asDoorName,true,abInstant);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool EnterAirLock(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState != 1) return true;
+			
+			///////////////////////////////////////////////////////////////////////////
+			// Disable this trigger so it doesn't get called again during this sequence
+			Entity_SetActive(asChild,false);
+			
+			//////////////////////////////////////////////////
+			// Slow down the player so they can't glitch the air lock
+			Player_SetMoveSpeedMul(0.5);
+			
+			////////////////////////////////////////////////////////////////////
+			// Setup the right airlock doors before running the airlock sequence
+			if (asChild == "Area_AirlockEntry_North_Inside")
+			{
+				msAirlockLight = "Airlock_Light_North";
+				msAirlockEntryDoor = "NorthAirlock_door_inside";
+				msAirlockExitDoor = "NorthAirlock_door_outside";
+			}
+			else if (asChild == "Area_AirlockEntry_North_Outside")
+			{
+				msAirlockLight = "Airlock_Light_North";
+				msAirlockEntryDoor = "NorthAirlock_door_outside";
+				msAirlockExitDoor = "NorthAirlock_door_inside";
+			}
+			else if (asChild == "Area_AirlockEntry_East_Inside")
+			{
+				msAirlockLight = "Airlock_Light_East";
+				msAirlockEntryDoor = "EastAirlock_door_inside";
+				msAirlockExitDoor = "EastAirlock_door_outside";
+			}
+			else if (asChild == "Area_AirlockEntry_East_Outside")
+			{
+				msAirlockLight = "Airlock_Light_East";
+				msAirlockEntryDoor = "EastAirlock_door_outside";
+				msAirlockExitDoor = "EastAirlock_door_inside";
+			}
+			
+			/////////////////////////////////////////////////
+			// Begin Airlock Sequence
+			SequenceAirLock("");
+			
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mAirLockSequence;
+		void SequenceAirLock(const tString &in asTimer)
+		{
+			Sequence_Begin("SequenceAirLock", mAirLockSequence);
+			
+			if (Sequence_DoStepAndWait(3.0f))
+			{
+				///////////////////////////////////
+				// Close the door the player entered from
+				CloseAirlockDoor("*Airlock_door*",false);
+				
+				//////////////////////////////////
+				// Activate Light
+				Light_FadeTo(msAirlockLight,cColor(0.569,1,0.941,1),3,3.0);
+				
+				//////////////////////////////////////////////
+				// Light scanners
+				Lamp_SetLit(msAirlockScanner+"_left",true,true);
+				Lamp_SetLit(msAirlockScanner+"_right",true,true);
+				
+				//////////////////////////////////////////////
+				//Airlock idle sound
+				Sound_CreateAtEntity("AirlockIdle", "Entities_Station/tech/scanner/scan_idle","Player",0.0f,false,1.0f);
+				
+				//////////////////////////////////////////////
+				//Disable crouch
+				Player_SetCrouchDisabled(true);
+			
+			}
+			else if (Sequence_DoStepAndWait(4.0f))
+			{    
+				
+				//////////////////////////////////////////////
+				// Scanner Sound
+				Sound_CreateAtEntity("AirlockScan","Entities_Station/tech/scanner/scan_sequence","Player",0.0f,false,1.0f);
+				
+			
+				/////////////////////////////////////////////
+				// Move Scanners
+				Prop_MoveLinearTo(msAirlockScanner+"_left",msAirlockScanner+"_left_end",1.0f,1.0f,0.1f,true);
+				Prop_MoveLinearTo(msAirlockScanner+"_right",msAirlockScanner+"_right_end",1.0f,1.0f,0.1f,true);
+			}
+			else if (Sequence_DoStepAndWait(4.0f))
+			{
+				//ParticleSystem_Destroy("airlock_steam_*");
+			
+				/////////////////////////////////////////////
+				// Move Scanners
+				Prop_MoveLinearTo(msAirlockScanner+"_left",msAirlockScanner+"_left_start",1.0f,1.0f,0.1f,true);
+				Prop_MoveLinearTo(msAirlockScanner+"_right",msAirlockScanner+"_right_start",1.0f,1.0f,0.1f,true);
+				
+			}
+			else if (Sequence_DoStepAndWait(3.0f))
+			{
+				
+				///////////////////////////////////
+				//End audio
+				Sound_Stop("AirlockIdle", 0.1f);
+				Sound_CreateAtEntity("AirlockIdleEnd","Entities_Station/tech/scanner/scan_stop","Player",0.0f,false,1.0f);
+				
+				///////////////////////////////////
+				// Give the player control back
+				Player_SetMoveSpeedMul(1.0);
+				
+				//////////////////////////////////////////////
+				//Enable crouch
+				Player_SetCrouchDisabled(false);
+				
+				///////////////////////////////////
+				// Open the appropriate door for player to leave air lock
+				OpenAirlockDoor(msAirlockExitDoor);
+				
+				///////////////////////////////////
+				// Fade airlock lights
+				Light_FadeTo("Airlock_Light*",cColor(0,0,0,0),3,3.0);
+				
+				///////////////////////////////////
+				// Enable airlock exit triggers
+				Entity_SetActive("Area_AirlockExitTrigger_*",true);
+				
+				///////////////////////////////////
+				// Turn off scanner effects
+				Lamp_SetLit(msAirlockScanner+"_left",false,true);
+				Lamp_SetLit(msAirlockScanner+"_right",false,true);	
+				
+				
+			}
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		bool ExitAirlock(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState != 1) return true;
+			
+			/////////////////////////////////
+			// Disable all airlock exit areas
+			Entity_SetActive("Area_AirlockExitTrigger_*",false);
+				
+			///////////////////
+			// Close exit doors
+			CloseAirlockDoor(msAirlockExitDoor);		
+			
+			/////////////////////////
+			// Turn buttons back off
+			Button_SetSwitchedOn("AirlockButton_*",false,true);
+			
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		//}END EVENT Airlock
+	
+		/////////////////////////////////////////
+		// Scene 1 - Catherine comments
+		//{//////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		void Interact_CrewPhoto(const tString &in asEntity)
+		{
+			if (CathTool_IsInserted("CathTool")==false)
+				return;
+				
+			if (Voice_Play("1_CathCommentCard")==false)
+				Map_AddTimer("Timer_CrewPhotoComment", 1, "Timer_CrewPhotoComment");
+		}
+		
+		void Timer_CrewPhotoComment(const tString &in asTimer)
+		{
+			if (Entity_IsInteractedWith("photo_theta_personnel_1")==false)
+				return;
+			cLux_AddDebugMessage("Timer_CrewPhotoComment");
+			if (Voice_Play("1_CathCommentCard")==false)
+			{
+				Map_AddTimer("Timer_CrewPhotoComment", 1, "Timer_CrewPhotoComment");
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void Interact_WhiteboardMap(const tString &in asEntity)
+		{
+			if (CathTool_IsInserted("CathTool")==false)
+				return;
+				
+			if (Voice_Play("1_CathCommentMap")==false)
+				Map_AddTimer("Timer_MapComment", 1, "Timer_MapComment");
+		}
+		
+		void Timer_MapComment(const tString &in asTimer)
+		{
+			if (Entity_IsInteractedWith("ZoomArea_1")==false)
+				return;
+
+			if (Voice_Play("1_CathCommentMap")==false)
+			{
+				Map_AddTimer("Timer_MapComment", 1, "Timer_MapComment");
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void Interact_ARKPhoto(const tString &in asEntity)
+		{
+			if (CathTool_IsInserted("CathTool")==false)
+				return;
+				
+			if (Voice_Play("1_CathCommentPhoto")==false)
+				Map_AddTimer("Timer_ARKPhotoComment", 1, "Timer_ARKPhotoComment");
+		}
+		
+		void Timer_ARKPhotoComment(const tString &in asTimer)
+		{
+			if (Entity_IsInteractedWith("photo_ark_1")==false)
+				return;
+				
+			if (Voice_Play("1_CathCommentPhoto")==false)
+			{
+				Map_AddTimer("Timer_ARKPhotoComment", 1, "Timer_ARKPhotoComment");
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event Cath comments.
+		
+			/////////////////////////////////////////
+			// Scene 1 - Body Scanner
+			//{//////////////////////////////////////
+			
+			//-------------------------------------------------------
+			
+			bool mbScannerLookedAt = false;
+			bool mbScanPending = false;
+			bool mbPlayVoiceOnScanDoorButtonPress = true;
+			
+			//-------------------------------------------------------
+			
+			void OnGui_OuterScanTerminal(const tString&in asEntityName, float afTimeStep)
+			{
+				StationGui_BigStatusMessage(Entity_GetVarString(asEntityName, ""), gStationGuiColor_Warning, 2);
+			}
+			
+			//-------------------------------------------------------
+			
+			void OnChange_ScannerDoorButton(const tString &in asEntity, int alState)
+			{
+				MoveObject_SetState("ScannerBridge", alState == 1 ? 1 : 0);
+				
+				if (mbPlayVoiceOnScanDoorButtonPress)
+					Voice_PlayWhenPossible("1_ExaminesScanner", "VoiceCondition_ExaminesScanner", -1, 1, "VoiceOver_ExaminedScanner", 0);
+			}
+			
+			//-------------------------------------------------------
+			
+			void LookAt_Scanner(const tString &in asEntity, int alState)
+			{
+				mbScannerLookedAt = alState==1;
+				if (alState==-1 || CathTool_IsInserted("CathTool")==false)
+					return;
+					
+				Voice_PlayWhenPossible("1_ExaminesScanner", "VoiceCondition_ExaminesScanner", -1, 1, "VoiceOver_ExaminedScanner", 0);
+			}
+			
+			//-------------------------------------------------------
+			
+			bool VoiceCondition_ExaminesScanner(const tString&in asSubject)
+			{
+				if (mbKnowsAboutScanner)
+					return false;
+					
+				if (Doorway_PlayerIsInGroup("Scanner")==false && mbScannerLookedAt==false)
+					return false;
+				
+				mbKnowsAboutScanner = true;
+				Entity_SetPlayerLookAtCallback("ScannerLookAt", "");
+				mbPlayVoiceOnScanDoorButtonPress = false;
+				return true;
+			}
+			
+			//-------------------------------------------------------
+			
+			void VoiceOver_ExaminedScanner(const tString&in asScene, const tString&in asSubject)
+			{
+				if (Doorway_PlayerIsInGroup("Scanner") && Entity_GetCollide("ScanChamberTable", "ScannerTableCheck")==false)
+				{
+					StartScanning();
+				}
+				else
+				{
+					mbScanPending = true;
+					Voice_Play("1_ExaminesScanner_2_Outside", -1, "", 0);
+				}
+			}
+			
+			//-------------------------------------------------------
+			
+			bool Doorway_EnteredScanner(const tString &in asArea, const tString &in asEntity, int alState)
+			{
+				if (mbScanPending == false)
+					return true;
+
+				if (alState == -1 || Entity_GetCollide("ScanChamberTable", "ScannerTableCheck"))
+					return true;
+				
+				StartScanning();
+				return true;
+			}
+			
+			//-------------------------------------------------------
+			
+			bool Trigger_ScanChamberTableInScanner(const tString &in asParent, const tString &in asChild, int alState)
+			{
+				if (mbScanPending == false)
+					return true;
+					
+				if (alState == 1 || Doorway_PlayerIsInGroup("Scanner")==false)
+					return true;
+					
+				StartScanning();
+				return false;
+			}
+			
+			//-------------------------------------------------------
+			
+			void StartScanning()
+			{
+				Entity_SetActive("ScannerTableCheck", false);
+				
+				Terminal_SetGuiActive("Scanner_ExtTerminal", false);
+				Button_SetSwitchedOn("ScannerDoor_Button", false, true);
+				Entity_SetActive("ScannerDoor_Blocker", true);
+				Map_AddTimer("Timer_StartScanningDialog", 2, "Timer_StartScanningDialog");
+			}
+			
+			//-------------------------------------------------------
+			
+			void Timer_StartScanningDialog(const tString &in asTimer)
+			{
+				Entity_SetActive("ScannerDoorway", false);
+				Voice_Stop("Dialog");
+				Voice_Play("1_EnteredScanner", -1, "VoiceOver_EnteredScanner");
+			}
+			
+			//-------------------------------------------------------
+			
+			void VoiceOver_EnteredScanner(const tString&in asScene, const tString&in asSubject)
+			{
+				Button_SetLocked("ScannerButton", false, true);
+			}
+			
+			//-------------------------------------------------------
+			
+			void OnChange_ScannerButton(const tString &in asEntity, int alState)
+			{
+				Seq_ScannerScanning("");
+			}
+			
+			//-------------------------------------------------------
+			
+			cSequenceStatesData mScannerScanningSequence;
+				
+			void Seq_ScannerScanning(const tString &in asTimer)
+			{
+				Sequence_Begin("Seq_ScannerScanning", mScannerScanningSequence);
+					
+				if (Sequence_DoStepAndWait(2))
+				{
+					cLux_AddTodoMessage("Sound: Scanner scanning");
+					Terminal_SetGuiActive("Scanner", true, 1);
+					Prop_RotateToSpeed("ScannerArm", 0.75, 5, true, "");
+				}
+				else if (Sequence_DoStepAndWait(1))
+				{
+					Terminal_IncImGuiStateInt("Scanner", "ScanState", 1);
+				}
+				else if (Sequence_DoStepAndPause(0.5))
+				{
+					Dialog_Begin();
+						Dialog_AddBranch("1_ScannerScanning_1", "1_ScannerScanning_2_NotLooking");
+							Dialog_AddSubject("1_ScannerScanning_1", "Subject_ScannerScanning");
+							Dialog_AddPause(1.5);
+							Dialog_AddEndEvent_Callback("DialogEvent_LookingAtScreen", "1_ScannerScanning_2_Looking");
+						Dialog_AddBranchAndSubject("1_ScannerScanning_2_NotLooking", "1_ScannerScanning_3");
+						Dialog_AddBranchAndSubject("1_ScannerScanning_2_Looking", "1_ScannerScanning_3");
+						Dialog_AddBranchAndSubject("1_ScannerScanning_3", "", "Subject_ScannerScanning");
+					Dialog_End(); 
+				}
+				else if (Sequence_DoStepAndPause(0.1))
+				{
+					Terminal_IncImGuiStateInt("Scanner", "ScanState", 1);
+				}
+				else if (Sequence_DoStepAndPause(0.1))
+				{
+					Terminal_IncImGuiStateInt("Scanner", "ScanState", 1);
+				}
+				else if (Sequence_DoStepAndPause(0.1))
+				{
+					Terminal_IncImGuiStateInt("Scanner", "ScanState", 1);
+				}
+				else if (Sequence_DoStepAndPause(0.1))
+				{
+					Terminal_IncImGuiStateInt("Scanner", "ScanState", 1);
+				}
+				else if (Sequence_DoStepAndPause(0.1))
+				{
+					Terminal_IncImGuiStateInt("Scanner", "ScanState", 1);
+				}
+				else if (Sequence_DoStepAndWait(3))
+				{
+					Terminal_SetGuiActive("Scanner", false, 0.3);
+					StopScannerArm();
+				}
+				else if (Sequence_DoStepAndWait(0.5))
+				{
+					Button_SetSwitchedOn("ScannerDoor_Button", true, true);
+					Entity_SetActive("ScannerDoor_Blocker", false);
+					Button_SetLocked("ScannerDoor_Button", true, true);
+					Button_SetLocked("ScannerButton", true, true);
+				}
+				else
+				{
+					mbPlayerScanned = true;
+					if (mbFinishedSim)
+					{
+						Voice_Stop("Dialog");
+						Voice_Play("1_ScanningAndSimDone_1");
+						Voice_PlayWhenPossible("1_ScanningAndSimDone_2", "VoiceCondition_ScanningAndSimDone", -1, 0, "VoiceOver_EjectCathTool");
+					}
+					else
+					{
+						Voice_Play("1_ScanningDone_SimNotDone");
+					}
+				}
+				Sequence_End();
+			}
+			
+			//-------------------------------------------------------
+			
+			void LineOver_LookAtHands(const tString&in asScene, const tString&in asSubject, int alLineIndex, bool abStart)
+			{
+				if (abStart==false) return;
+				
+				Map_AddTimer("Timer_LookAtHands", 1, "Timer_LookAtHands");
+			}
+			
+			//-------------------------------------------------------
+			
+			void Timer_LookAtHands(const tString &in asTimer)
+			{
+				
+				PlayerHands_SetUseCustomPosition(false);
+				PlayerHands_SetUseCustomRotation(false);
+				PlayerHands_PlayAnimation("event_look_at_hands_2_1");
+			}
+			
+			//-------------------------------------------------------
+			
+			bool DialogEvent_LookingAtScreen(const tString &in asBranch, const tString &in asSubject, int alLineIndex, const tString &in asNewBranch)
+			{
+				return Entity_IsInPlayerFOV("ScanScreenLookAt");
+			}
+			
+			//-------------------------------------------------------
+			
+			void Subject_ScannerScanning(const tString &in asSubject, bool abStartOfSubject)
+			{
+				if (abStartOfSubject) return;
+				SequenceStates_Resume("Seq_ScannerScanning");
+			}
+			
+			//-------------------------------------------------------
+			
+			void LineOver_ScannerScanning(const tString &in asScene, const tString &in asSubject, int alLineIndex, bool abStart)
+			{
+				if (abStart) return;
+				SequenceStates_Resume("Seq_ScannerScanning");
+			}
+			
+			//-------------------------------------------------------
+			
+			void StopScannerArm()
+			{
+				Entity_SetActive("ScannerArmStopper", true);
+			}
+			
+			//-------------------------------------------------------
+			
+			bool Trigger_StopScannerArm(const tString &in asParent, const tString &in asChild, int alState)
+			{
+				Prop_RotateToSpeed("ScannerArm", 2, 0, false, "");
+				return false;
+			}
+		//} END Use Scanner
+
+		//-------------------------------------------------------
+
+	
+		/////////////////////////////////////////
+		// Scene 1 - Puppet Reveal Security Corridor
+		//{//////////////////////////////////////
+		
+		//-------------------------------------------------------
+
+		float mfScanningProgress = 0;
+		float mfImageDisplay = 0;
+		void OnGui_ScannerScreen(const tString&in asEntityName, float afTimeStep)
+		{
+			ImGui_SetTransCategory("02_06_theta_tunnels");
+			
+			cImGuiGfx xRayFront = cImGuiGfx("xray_front", eImGuiGfx_Texture);
+			cImGuiGfx xRaySide = cImGuiGfx("xray_side", eImGuiGfx_Texture);
+			cImGuiGfx xRayGrid = cImGuiGfx("xray_cross", eImGuiGfx_Texture);
+				
+					
+			//StationGuiBG_BackdropV2();
+			StationGuiBG_Scanlines();
+			
+			int lScanState = ImGui_GetStateInt("ScanState", eScannerState_Boot);
+			
+			if (lScanState == eScannerState_Boot)
+			{
+				
+			}
+			
+			///////////////////////////
+			// Print scan image, line by line
+			else if (lScanState == eScannerState_BodyScan)
+			{
+				mfScanningProgress += afTimeStep * 0.4f;
+							
+				if(mfScanningProgress>=2.0f)
+				{
+					mfScanningProgress = 2;
+					ImGui_IncStateInt("ScanState", 1);
+				}
+					
+				if (int(mfScanningProgress*10)!=int(mfImageDisplay*10))
+					mfImageDisplay = cMath_RoundFloatToDecimals(mfScanningProgress, 1);
+			}
+					
+			cVector2f vBaseImgSize = ImGui_GetRatioCorrectSizeByNrmHeight(xRayFront, 1);
+			xRayFront.mvUVMax = xRaySide.mvUVMax = cVector2f(1, mfImageDisplay/2.0f);
+			
+			///////////////////////////
+			// Draw brain stuff
+			if (lScanState == eScannerState_Brain)
+			{
+				ScanBodyPartHighlight("brain", vBaseImgSize);
+				if (ScanPopUpImg("brain", cImGuiGfx("xray_brain_01.dds", eImGuiGfx_TextureAnimated), cVector3f(0.8, 0.05, 1), 0.2))
+				{
+					ScanInfoLines_AddNrmVertex(cVector2f(0.8, 0.15));
+					ScanInfoLines_AddNrmVertex(cVector2f(0.675, 0.15));
+					ScanInfoLines("BrainLines");
+				}
+				
+				ScanInfoText("Scanner_Brain", 2, -1, afTimeStep, ImGui_NrmPosGroup(0.8, 0.30, 5), ImGui_NrmSize(0.2, 0.35));
+			}
+			
+			///////////////////////////
+			// Draw blackbox stuff
+			else if (lScanState == eScannerState_Blackbox || lScanState == eScannerState_ShowReed)
+			{
+				ScanBodyPartHighlight("blackbox", vBaseImgSize);
+				if (ScanPopUpImg("blackbox", cImGuiGfx("xray_blackbox_01.dds", eImGuiGfx_TextureAnimated), cVector3f(0.8, 0.25, 1), 0.2))
+				{
+					ScanInfoLines_AddNrmVertex(cVector2f(0.9, 0.25));
+					ScanInfoLines_AddNrmVertex(cVector2f(0.9, 0.175));
+					ScanInfoLines_AddNrmVertex(cVector2f(0.675, 0.175));
+					ScanInfoLines("BlackboxLines");
+				}
+
+				ScanInfoText("Scanner_Blackbox_1", 1, 2.5, afTimeStep, ImGui_NrmPosGroup(0.8, 0.50, 5), ImGui_NrmSize(0.2, 0.35));
+				ScanInfoText("Scanner_Blackbox_2", 2.5, 5, afTimeStep, ImGui_NrmPosGroup(0.8, 0.50, 5), ImGui_NrmSize(0.2, 0.35));
+				ScanInfoText("Scanner_Blackbox_3", 5, -1, afTimeStep, ImGui_NrmPosGroup(0.8, 0.50, 5), ImGui_NrmSize(0.2, 0.35));
+			}
+			
+			///////////////////////////
+			// Draw battery stuff
+			else if (lScanState == eScannerState_Battery)
+			{
+				ScanBodyPartHighlight("battery", vBaseImgSize);
+				if (ScanPopUpImg("battery", cImGuiGfx("xray_battery_01.dds", eImGuiGfx_TextureAnimated), cVector3f(0.8, 0.4, 1), 0.2))
+				{
+					ScanInfoLines_AddNrmVertex(cVector2f(0.8, 0.5));
+					ScanInfoLines_AddNrmVertex(cVector2f(0.76, 0.5));
+					ScanInfoLines_AddNrmVertex(cVector2f(0.76, 0.325));
+					ScanInfoLines_AddNrmVertex(cVector2f(0.675, 0.325));
+					ScanInfoLines("BatteryLines");
+				}
+				
+				ScanInfoText("Scanner_Battery", 2, -1, afTimeStep, ImGui_NrmPosGroup(0.8, 0.65, 5), ImGui_NrmSize(0.2, 0.35));
+			}
+			
+			///////////////////////////
+			// Draw gel stuff
+			else if (lScanState == eScannerState_Gel)
+			{
+				ScanBodyPartHighlight("body", vBaseImgSize);
+				if (ScanPopUpImg("gel", cImGuiGfx("xray_gel_01.dds", eImGuiGfx_TextureAnimated), cVector3f(0.8, 0.1, 1), 0.2))
+				{
+					ScanInfoLines_AddNrmVertex(cVector2f(0.8, 0.225));
+					ScanInfoLines_AddNrmVertex(cVector2f(0.725, 0.225));
+					ScanInfoLines("GelLines");
+				}
+				
+				ScanInfoText("Scanner_Gel", 2, -1, afTimeStep, ImGui_NrmPosGroup(0.8, 0.35, 5), ImGui_NrmSize(0.2, 0.35));
+			}
+			
+			///////////////////////////
+			// Draw flesh stuff
+			else if (lScanState == eScannerState_Flesh)
+			{
+				ScanBodyPartHighlight("body", vBaseImgSize);
+				if (ScanPopUpImg("flesh", cImGuiGfx("xray_flesh_01.dds", eImGuiGfx_TextureAnimated), cVector3f(0.8, 0.35, 1.5), 0.2))
+				{
+					ScanInfoLines_AddNrmVertex(cVector2f(0.8, 0.475));
+					ScanInfoLines_AddNrmVertex(cVector2f(0.74, 0.475));
+					ScanInfoLines("FleshLines");
+				}
+				
+				ScanInfoText("Scanner_Flesh", 2, -1, afTimeStep, ImGui_NrmPosGroup(0.8, 0.6, 5), ImGui_NrmSize(0.2, 0.35));
+			}
+				
+			////////////////////////////
+			// Reed info
+			if (lScanState >= eScannerState_ShowReed)
+			{
+				ScanPopUpImg("reed", cImGuiGfx("xray_reed"), cVector3f(0.3, 0.3, 5.1), 0.2);
+				ScanInfoText("Scanner_Reed", 0, -1, afTimeStep, ImGui_NrmPosGroup(-0.1, 0.65, 5)+cVector3f_Right*vBaseImgSize.x, ImGui_NrmSize(0.2, 0.35), 0.05);
+			}
+			
+			ImGui_DoImage(xRaySide, 0, vBaseImgSize*xRayFront.mvUVMax);
+			ImGui_DoImage(xRayFront, cVector3f(vBaseImgSize.x, 0, 0)/*+ImGui_NrmPosGroup(0, 0, 0)*/, vBaseImgSize*xRayFront.mvUVMax);
+			ImGui_SetModRotateAngle(180);
+			ImGui_SetModColorMul(gStationGuiColor_Normal*0.5);
+			cVector2f vProgressSize = ImGui_NrmSizeGroup(0, 0.0125);
+			vProgressSize.x = vBaseImgSize.x*2.0f*(mfScanningProgress-mfImageDisplay)*10.f;
+			ImGui_DoImage(cImGuiGfx(""), ImGui_NrmPosGroup(0, xRayFront.mvUVMax.y, 1), vProgressSize);
+			ImGui_SetModColorMul(cColor_White);
+			ImGui_SetModRotateAngle(0);
+			
+			////////////////////////////
+			// Grid
+			ImGui_GroupBegin(cVector3f(0, 0, 3), ImGui_NrmSize(0.825, 1));
+			cVector2f vGridImageSize = ImGui_GetRatioCorrectSizeByNrmHeight(xRayGrid, 0.0875);
+			float fWidth = 10;
+			float fHeight = 10;
+			for (int x = 0; x < fWidth; x++)
+			{
+				float fXPos = x*(1.0/fWidth);
+				for (int y = 0; y < fHeight; y++)
+				{
+					ImGui_DoImage(xRayGrid, ImGui_NrmPosGroup(fXPos, y*(1.0/fHeight), 0), vGridImageSize);
+				}
+			}
+			ImGui_GroupEnd();
+		}
+		
+		//-------------------------------------------------------
+		
+		void ScanBodyPartHighlight(const tString &in asGfxSuffix, const cVector2f vImgSize)
+		{
+			cImGuiGfx xRayFront = cImGuiGfx("xray_front_"+asGfxSuffix, eImGuiGfx_Texture);
+			cImGuiGfx xRaySide = cImGuiGfx("xray_side_"+asGfxSuffix, eImGuiGfx_Texture);
+			ImGui_SetModColorMul(cColor_White * ImGui_FadeOscillateFloat("BodyPartColor", 0.75, 1, 0.5));
+			ImGui_DoImage(xRaySide, cVector3f(0, 0, 2), vImgSize);
+			ImGui_DoImage(xRayFront,cVector3f(vImgSize.x, 0, 2), vImgSize);
+			ImGui_SetModColorMul(cColor_White);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool ScanPopUpImg(const tString &in asName, cImGuiGfx &in aGfx, const cVector3f &in avImgNrmPos, float afImgNrmWidth)
+		{
+			aGfx.mfAnimationTime = 0.125;
+			aGfx.mbCrossfadeAnimation = true;
+			
+			const float fBorderSize = 4;
+			ImGui_FadeStateFloat(asName+"_ZoomFade", 1, 0.5, eEasing_QuadInOut, false);
+			float fFadeIn = ImGui_GetStateFloat(asName+"_ZoomFade", 0);
+			
+			cVector3f vPos = ImGui_NrmPosGroup(avImgNrmPos);
+			cVector2f vSize = ImGui_GetRatioCorrectSizeByNrmWidth(aGfx, afImgNrmWidth);
+			
+			if (fFadeIn < 0.99) ImGui_SetModColorMul(cColor(0, 1));
+			else 
+			{
+				ImGui_FadeStateFloat(asName+"_alpha", 1, 0.2, eEasing_QuadInOut, false);
+				ImGui_SetModColorMul(cColor(ImGui_GetStateFloat(asName+"_alpha", 0), 1));
+			}
+				
+			ImGui_DoImage(fFadeIn >= 0.99 ? aGfx : cImGuiGfx(""), vPos+cVector3f(fBorderSize, fBorderSize, 0.01), (vSize-cVector2f(fBorderSize*2.0f))*fFadeIn);
+			
+			ImGui_SetModColorMul(gStationGuiColor_Normal);
+			ImGui_DoImage(cImGuiGfx(""), vPos, vSize*fFadeIn);
+			ImGui_SetModColorMul(cColor_White);
+			
+			return fFadeIn > 0.99;
+		}
+		
+		//-------------------------------------------------------
+		
+		void ScanInfoText(const tString &in asEntry, float afStartTime, float afEndTime, float afDeltaTime, const cVector3f &in vPos, const cVector2f &in vSize, float afFontSize = 0.03)
+		{
+			if (afEndTime > 0)
+			{
+				ImGui_IncStateFloat(asEntry+"_End", afDeltaTime);
+				if (ImGui_GetStateFloat(asEntry+"_End", 0) > afEndTime)
+					return;
+			}
+			
+			cImGuiTextFrameData text = PathOS_CreateDefaultTextFrameData();
+			text.mFont.mvSize = ImGui_NrmSizeKeepRatio(afFontSize);
+				
+			tWString sText = ImGui_Translate(asEntry);
+			
+			ImGui_IncStateFloat(asEntry+"_Delay", afDeltaTime);
+			bool bDelayOver = ImGui_GetStateFloat(asEntry+"_Delay", 0) > afStartTime;
+			
+			if (bDelayOver)
+				ImGui_FadeStateFloat(asEntry+"_Progress", sText.length()+0.1, sText.length()*0.05, eEasing_Linear, false);
+			
+			float fProgress = ImGui_GetStateFloat(asEntry+"_Progress", 0);
+			int lSize = int(fProgress);
+			
+			bool bAddCaret = (lSize != sText.length()) && (bDelayOver || ImGui_FadeOscillateFloat("LineBlink", 0, 1, 0.5, eEasing_Linear) > 0.5f);
+			
+			sText.resize(lSize);
+			
+			if (bAddCaret)
+				sText += "_";
+				
+			ImGui_SetTextOverride(sText);
+			ImGui_DoTextFrameExt("", 10, 0, 0, text, vPos, vSize);
+			ImGui_ClearTextOverride();
+		}
+		
+		//-------------------------------------------------------
+		
+		array<cVector2f> mvScanInfoLines;
+		
+		void ScanInfoLines_AddNrmVertex(const cVector2f &in avVertex)
+		{
+			mvScanInfoLines.push_back(avVertex);
+		}
+		
+		void ScanInfoLines(const tString &in asName)
+		{
+			ImGui_FadeStateFloat(asName, 1, 0.5, eEasing_QuadInOut, false);
+			float fLines = ImGui_GetStateFloat(asName);
+			float fDiv = 1.0f/float(mvScanInfoLines.length()-1);
+			
+			ImGui_AddLineStripNrmVertex(mvScanInfoLines[0]);
+			for (int i = 1; i < mvScanInfoLines.length(); i++)
+			{
+				if (fLines < fDiv*(i-1))
+					break;
+					
+				float fFraction = (fLines-fDiv*(i-1))/fDiv;
+				fFraction = cMath_Clamp(fFraction, 0.01, 1.f);
+				
+				ImGui_AddLineStripNrmVertex(mvScanInfoLines[i-1] + (mvScanInfoLines[i] - mvScanInfoLines[i-1])*fFraction);
+			}
+			
+			ImGui_DrawAndClearLineStrip(2, 2.5, gStationGuiColor_Normal);
+			
+			mvScanInfoLines.resize(0);
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event Scanner GUI
+		
+	//} END SCENE 1
+	
+	
+	/////////////////////////////////////////
+	// ==============
+	// SCENE 2 - PUPPET ENCOUNTERS
+	// ==============
+	//{//////////////////////////////////////
+	
+		
+		///////////////////////////////////////////////////
+		// Event: Activate Puppet!
+		//{////////////////////////////////////////////////
+		
+		//--------------------------------------------------------
+		
+		bool CollideAreaEnableAkers(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			cLux_AddTodoMessage("Sound: Play a distant howl from akers.");
+			
+			Entity_SetActive("puppet_dynamic", true);
+			Map_AddTimer("StartAmbient", 11.f, "AmbientMusicHandler");
+			
+			AttackMeter_SetAttackerTeleportPosition("puppet_spawnpos_*");
+			
+			cLux_AddDebugMessage("Akers puppet is enabled!");
+			
+			Puppet_SetAgressionAmount("puppet_dynamic", 0.0f);
+			Puppet_SetComeOutOfHidingTimeMul("puppet_dynamic", 1.25f);
+			
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event Activate puppet!
+		
+		///////////////////////////////////////////////////
+		// Event: Puppet encounter when leaving Brandon
+		//{////////////////////////////////////////////////
+		
+		//--------------------------------------------------------
+		
+		bool AreaCollisionLeaveBrandon(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Puppet_ForceHideAndWaitAppearance("puppet_dynamic", true, "puppet_enter_brandon");
+			
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		//} EVENT Puppet encounter when leaving Brandon
+	
+		/////////////////////////////////////////////////////
+		// Event: Puppet encounter when leaving security
+		//{//////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		bool AreaTriggerSecurityPuppet(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Puppet_SetAgressionAmount("puppet_dynamic", 0.8f);
+			Puppet_SetComeOutOfHidingTimeMul("puppet_dynamic", 0.5f);
+		
+			Puppet_ForceHideAndWaitAppearance("puppet_dynamic", true, "puppet_enter_security");
+			
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event Puppet encounter when leaving security
+	
+		///////////////////////////////////////////////////
+		// Event: Puppet encounter when leaving chemlab
+		//{////////////////////////////////////////////////
+	
+		//-------------------------------------------------------
+		
+		bool AreaTriggerChemlabPuppet(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Puppet_ForceHideAndWaitAppearance("puppet_dynamic", true, "puppet_enter_chemlab");
+			
+			return false;
+		}
+		
+		//-------------------------------------------------------
+				
+		//} END Event Puppet encounter when leaving chemlab
+	
+	//-------------------------------------------------------
+	
+	//} END SCENE 2
+	
+	/////////////////////////////////////////////////////
+	// ==============
+	// SCENE 3: MISC ROOM EVENTS
+	// ==============
+	//{//////////////////////////////////////////////////////
+	
+	//-------------------------------------------------------
+	
+		////////////////////////////////////////////
+		// Event: Lecture Room Slideshow
+		//{/////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		int mlCurrentProjector = 1;
+		
+		//-------------------------------------------------------
+		
+		void SetupProjectors()
+		{
+			Entity_SetActive("Projector_1",true);
+			Entity_SetActive("Projector_2",false);
+			Entity_SetActive("Projector_3",false);
+			Entity_SetActive("Projector_4",false);
+			Lamp_SetLit("Projector_1",true,false);
+			Lamp_SetLit("Projector_2",false,false);
+			Lamp_SetLit("Projector_3",false,false);
+			Lamp_SetLit("Projector_4",false,false);
+			
+			Map_AddTimer("ProjectorLoop", 1.0f, "Timer_ProjectorLoop");
+		}
+		
+		void Timer_ProjectorLoop(const tString&in asTimer)
+		{
+			cLux_AddTodoMessage("Sound: Switch Projector sound!");
+			
+			Entity_SetActive("Projector_"+mlCurrentProjector,false);
+			Lamp_SetLit("Projector_"+mlCurrentProjector,false,false);
+						
+			mlCurrentProjector++;
+			if(mlCurrentProjector>4) mlCurrentProjector=1;
+			
+			Entity_SetActive("Projector_"+mlCurrentProjector,true);
+			Lamp_SetLit("Projector_"+mlCurrentProjector,true,false);
+			
+			Map_AddTimer("ProjectorLoop", 5.0f, "Timer_ProjectorLoop");
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Lecture Room Slideshow
+		
+		///////////////////////////////////////////////////
+		// Event: Doctors Audio Log
+		//{////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		void Doctor_Log_OnConnectionStateChange(const tString &in asEntity, int alState)
+		{
+			if (alState == 1)
+			{
+				cLux_AddDebugMessage("Starting audio log");
+				//Voice_SetSource("Masters",asEntity,0,12,true,12);
+				Voice_Play("3_DoctorAudioLog");
+				Sound_CreateAtEntity("DrTapeStart", "Entities_Station/object/tape_recorder/start", asEntity);
+				Sound_CreateAtEntity("DrTapeLoop", "Entities_Station/object/tape_recorder/loop", asEntity);
+				
+				//Set interaction disbaled for 1 second to stop from sound spamming
+				Entity_SetInteractionDisabled("Doctor_Log", true);
+				Map_AddTimer("ReEnableTapePlayerInteraction", 1.f, "Timer_TapePlayerInteractionEnable");
+			}
+			
+			if (alState == -1)
+			{
+				cLux_AddDebugMessage("Stopping audio log");
+				Voice_Stop("DataMining");
+				
+				Sound_Stop("DrTapeLoop", 0.05f);
+				Sound_Stop("DrTapeStart", 0.05f);
+				Sound_CreateAtEntity("DrTapeStop", "Entities_Station/object/tape_recorder/stop", asEntity);
+				Sound_CreateAtEntity("DrTapeLoopEnd", "Entities_Station/object/tape_recorder/loop_end", asEntity);
+				
+				//Set interaction disbaled for 0.5 seconds to stop from sound spamming
+				Entity_SetInteractionDisabled("Doctor_Log", true);
+				Map_AddTimer("ReEnableTapePlayerInteraction", 0.5f, "Timer_TapePlayerInteractionEnable");
+			}
+		}
+		
+		void Timer_TapePlayerInteractionEnable(const tString &in asTimer)
+		{
+			Entity_SetInteractionDisabled("Doctor_Log", false);
+		}
+	
+		//-------------------------------------------------------
+		
+		//} END Doctor's Audiolog
+		
+		///////////////////////////////////////////////////
+		// Event: Push Alarm button
+		//{////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		void AlarmButton_OnPlayerInteract(const tString &in asEntity)
+		{
+			Sound_CreateAtEntity("Reactor_Alarm","02_02_ms_curie_inside/SFX/curie_tilt/alarm/general", "AlarmEffectPoint", 0);	
+			Sound_CreateAIEventAtEntity("AlarmEffectPoint", 100, 3);
+		}
+	
+		//-------------------------------------------------------
+		
+		//} END Event Push Alarm button
+		
+		///////////////////////////////////////////////////
+		// Event: Drain wau flowers
+		//{////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		void DrainWauFlower_Storage(const tString &in asEntity)
+		{
+			Puppet_ForceHideAndWaitAppearance("puppet_dynamic", true, "puppet_attract_storage");
+			EnergySource_SetEnergy("wau_flower_2", 0);
+		}
+		
+		//-------------------------------------------------------
+		
+		void DrainWauFlower_Tunnel(const tString &in asEntity)
+		{
+			Puppet_ForceHideAndWaitAppearance("puppet_dynamic", true, "puppet_spawnpos_34");
+			EnergySource_SetEnergy("wau_flower_1", 0);
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Drain wau flowers
+		
+	//-------------------------------------------------------
+	
+	//} END SCENE MISC ROOM EVENTS
+	
+	/////////////////////////////////////////////////////
+	// ==============
+	// SCENE 4: ELEVATOR CHIP PUZZLE
+	// ==============
+	//{//////////////////////////////////////////////////////
+	
+	//-------------------------------------------------------
+	
+		///////////////////////////////////////////
+		// Event: Brandon's corpse.
+		//{////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		bool mbRecognizedBrandon = false;
+		bool mbTookBrandonChip = false;
+		
+		//-------------------------------------------------------
+		
+		void SetupBrandon()
+		{
+			Map_AddTimer("Timer_AttachBrandonHand", 5, "Timer_AttachBrandonHand");
+		}
+		
+		void Timer_AttachBrandonHand(const tString &in asTimer)
+		{
+			StickyArea_AttachEntity("BrandonNeck_StickyArea_1", "brandon_corpse_1", "Body_7");
+		}
+		
+		//-------------------------------------------------------
+		
+		void LookAt_BrandonCorpse(const tString &in asEntity, int alState)
+		{
+		}
+		
+		//-------------------------------------------------------
+		
+		void Interact_BrandonChip(const tString &in asEntity)
+		{
+			Entity_CallEntityInteract("brandon_corpse_1", "Body_7");
+		}
+		
+		//-------------------------------------------------------
+
+		void BrandonNeck_StickyArea_Detach(const tString &in asStickyArea, const tString &in asBodyName)
+		{
+			////////////////////////////////////////////////////
+			// Tool is picked up
+			Entity_CallEntityInteract("chip_unformatted");
+			Entity_SetActive("brandon_chip_interact",false);
+			Player_ChangeStateToNormal();
+			Sound_CreateAtEntity("BreakBrandon", "02_06_theta_tunnels/sfx/brandon_hand/break", asStickyArea);
+			
+			////////////////////////////////////////
+			// Simon remarks after extracting the chip
+			if (mbRecognizedBrandon)
+				BrandonChipRemoveComment(0.05f);
+			mbTookBrandonChip = true;
+			
+			/////////////////////////////////////////
+			// Puppet activation area will now activate
+			Entity_SetActive("Area_LeaveBrandon",true);
+			
+			////////////////////////////////////////
+			// Disable previous puppets
+			Entity_SetActive("puppet_security",false);
+			Entity_SetActive("puppet_chemlab",false);
+			
+			/////////////////////////////////////////
+			// Make datamining easier
+			Entity_SetActive("DatamineArea_Brandon_Aux*", true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void BrandonChipRemoveComment(float afDelay)
+		{
+			if (mbRecognizedBrandon && mbTookBrandonChip)
+				return;
+				
+			Map_AddTimer("BrandonChipRemoveComment", afDelay + 1.45f, "Timer_BrandonChipRemoveComment");
+			Map_AddTimer("StopAmbientMusic", afDelay, "AmbientMusicHandler");
+		}
+		
+		//-------------------------------------------------------
+		
+		void Timer_BrandonChipRemoveComment(const tString &in asTimer)
+		{
+			Voice_Play("1_ExtractChip");
+			Music_Play("02_06_brandonschip", 0.35f, false, eMusicPrio_BigEvent);
+			Map_AddTimer("StartAmbient", 11.f, "AmbientMusicHandler");
+		}
+		
+		//-------------------------------------------------------
+		
+		void security_chip_unformatted_OnPlayerInteract(const tString &in asEntity)
+		{
+			//////////////////////////////////////////////
+			// Player takes the unformatted chip
+			cLux_AddDebugMessage("Player gets the unformatted chip");
+			Entity_SetActive("security_chip_unformatted",false);
+			Entity_SetActive("security_chip_formatted",false);
+			
+			/////////////////////////////////////////////
+			// Call interact to get the tool back
+			Entity_CallEntityInteract("chip_unformatted");
+			
+			Sound_Stop("InsertChip", 1.0f);
+			Sound_CreateAtEntity("RemoveChip", "Entities_Station/object/memchip/remove", "ChipSoundArea");
+		}
+		
+		//-------------------------------------------------------
+		
+		void security_chip_formatted_OnPlayerInteract(const tString &in asEntity)
+		{
+			/////////////////////////////////////////////
+			// Player takes the freshly formatted chip
+			cLux_AddDebugMessage("Player gets the formatted chip");
+			Entity_SetActive("security_chip_unformatted",false);
+			Entity_SetActive("security_chip_formatted",false);
+			
+			Sound_Stop("InsertChipUnformatted", 1.0f);
+			Sound_CreateAtEntity("RemoveChip", "Entities_Station/object/memchip/remove", "ChipSoundArea");
+			
+			////////////////////////////////////////////
+			// Equip the tool
+			Tool_PickUp("door_panel_chip_formatted", true, true);
+
+			///////////////////////
+			// Threat level increase
+			Puppet_SetAgressionAmount("puppet_dynamic", 1.0f);
+			Puppet_SetComeOutOfHidingTimeMul("puppet_dynamic", 0.15f);
+			
+			
+			Map_AddTimer("timerTurnOffLights",3.0f,"TimerTurnOffLights");
+				
+			////////////////////////////////////////////
+			// Setup checkpoint
+			Map_AddTimer("Timer_RepairedChipCheckpoint", 1, "Timer_RepairedChipCheckpoint");
+		}
+		
+		//-------------------------------------------------------
+		
+		
+		void TimerTurnOffLights(const tString &in asTimer)
+		{
+			//////////////////////////////
+			// Lights off!
+			SetLevelLights(false);
+		}
+		
+		//-------------------------------------------------------
+		
+		void Timer_RepairedChipCheckpoint(const tString &in asTimer)
+		{
+			CheckPoint_Setup("CheckpointTookRepairedChip");
+		}
+		
+		//-------------------------------------------------------
+		
+		void Interact_DatatamineBrandon(const tString &in asEntity)
+		{
+			Entity_CallEntityInteract("DatamineArea_Brandon");
+		}
+		
+		//-------------------------------------------------------
+		
+		void CloseReadable_BrandonID(const tString &in asEntity)
+		{
+			if (mbTookBrandonChip)
+				BrandonChipRemoveComment(0.05f);
+			mbRecognizedBrandon = true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void DataminingDone_Brandon(const tString &in asEntity)
+		{
+			if (mbTookBrandonChip)
+				BrandonChipRemoveComment(0.05f);
+			mbRecognizedBrandon = true;
+		}
+		
+		//-------------------------------------------------------
+		
+		//} Event Brandon's corpse.
+	
+		//////////////////////////////////////////////////////////////////
+		// Event: Player uses the security terminal
+		//{///////////////////////////////////////////////////////////////
+		
+		bool mbPlayerEnterUnlockScreen=false;
+		
+		//-------------------------------------------------------
+		
+		void PlayerEnterUnlockScreen()
+		{
+			if(mbPlayerEnterUnlockScreen) return;
+			
+			cLux_AddDebugMessage("Player enters unlock screen!");
+			
+			mbPlayerEnterUnlockScreen = true;
+			
+			Entity_SetActive("Area_SecurityPuppet_1", true);
+		}
+		
+		//-------------------------------------------------------
+		
+		
+		//} END Brandons room is unlocked from the security terminal 
+	
+		//////////////////////////////////////////
+		// Event: Format the chip
+		//{///////////////////////////////////////
+		
+		//--------------------------------------------------------
+		
+		bool chip_unformatted_CanBeUsed(const tString &in asTool, const tString &in asEntity)
+		{
+			if (asEntity == "Area_InsertUnformattedChip") return true;
+			if (asEntity == "Area_Broken_Panel") return true;
+			return false;
+		}
+		
+		//--------------------------------------------------------
+		
+		bool chip_unformatted_OnUse(const tString &in asTool, const tString &in asEntity)
+		{
+			Tool_SetAutoHideAfterPickup("chip_unformatted", true);
+			if (asEntity == msBrokenPanelArea)
+			{
+				///////////////////////////////////////////////
+				// Insert the unformatted chip in to control panel
+				Entity_SetActive("Replaced_Chip",true);
+				Entity_PlaceAtEntity("Replaced_Chip","Replaced_Chip_Startpos");
+				Prop_MoveLinearTo("Replaced_Chip","Replaced_Chip_Target",10,0.8,0.1,true);
+				mbPanelChipReplaced = true;
+				mbUnformattedChipInPanel = true;
+				
+				////////////////////////////////////////////////
+				// Allow broken chip to be removed again
+				Entity_SetActive("Area_RetrieveBrokenChip",true);
+				
+				/////////////////////////////////////////
+				// Disable shock area as circuits are no longer exposed
+				Entity_SetActive(msBrokenPanelArea,false);
+				
+				/////////////////////////////////////////
+				// Sound
+				Sound_CreateAtEntity("panel_chip_click","02_06_theta_tunnels/sfx/elevator_chip_insert","BrokenChipSoundArea",0,false,1.0f);
+				Map_AddTimer("BadChipConfirm", 1.f, "BadChipConfirmBeep");
+				
+				/////////////////////////////////////////
+				// Comment
+				Map_AddTimer("1_InsertBadChip", 3, "TimerPlayVoice");
+				
+				return true;
+			}
+			
+			if (asEntity == "Area_InsertUnformattedChip")
+			{
+				///////////////////////////////////////////////
+				// Insert the unformatted chip in to the system
+				Entity_SetActive("Area_InsertUnformattedChip",false);
+				Entity_SetActive("security_chip_unformatted",true);
+				Entity_SetInteractionDisabled("security_chip_unformatted",true);
+				AddChip("SecurityOfficeTerminal", "UnformattedChip");
+				
+				/////////////////////////////////////////
+				// Sound
+				Sound_CreateAtEntity("InsertChipUnformatted","Entities_Station/object/memchip/insert","ChipSoundArea",0,false,1.0f);
+				
+				return true;
+			}
+			
+			return true;
+		}
+
+		void BadChipConfirmBeep (const tString &in asTimer)
+		{
+			Sound_CreateAtEntity("elevatorchipconfirm", "Entities_Station/tech/terminal_beeps/datapad/datapad_stop", "doorpanel_faceplate");
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event Format the chip
+		
+		//////////////////////////////////////////
+		// Event: Fix Elevator Panel
+		//{///////////////////////////////////////
+	
+		//-------------------------------------------------------
+		
+		tString msPanelToolArea = "ToolArea_DoorPanel";
+		tString msBrokenPanelArea = "Area_Broken_Panel";
+		
+		int mlRetentionClamps = 0;
+		bool mbTopClampOpen = false;
+		bool mbBottomClampOpen = false;
+		bool mbPlayerZapped = false;	
+		bool mbPanelFaceplate = false;
+		bool mbPanelChipReplaced = false;
+		bool mbUnformattedChipInPanel = false;
+		
+		//-------------------------------------------------------
+		
+		void stuck_door_chip_1_OnPlayerInteract(const tString &in asEntity)
+		{
+			Entity_SetActive("stuck_door_chip", false);
+			Entity_CallEntityInteract("door_panel_chip");
+		}
+		
+		//-------------------------------------------------------
+		
+		void SetupPanelClamps()
+		{
+			Lever_SetAutoMoveTarget("RetentionMechanism_1",-1);
+			Lever_SetAutoMoveTarget("RetentionMechanism_2",1);
+			Lever_SetAutoMoveEnabled("RetentionMechanism_1",true);
+			Lever_SetAutoMoveEnabled("RetentionMechanism_2",true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void RetentionLever_OnPlayerInteract(const tString &in asEntity)
+		{
+			Lever_SetAutoMoveEnabled(asEntity,false);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool CheckPanelRepaired()
+		{
+			if (mbPanelChipReplaced && mlRetentionClamps >= 2)
+			{
+				return true;
+			}
+			else
+			{
+				return false;
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		bool Area_Close_Panel(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			cLux_AddDebugMessage("Collision");
+			bool bRepaired = CheckPanelRepaired();
+			
+			////////////////////////////////////////
+			// If panel is fully repaired, swap in the full interactive door panel
+			if (alState == 1 && bRepaired)
+			{
+				Entity_SetActive("doorpanel_faceplate",false);
+				Entity_SetActive("TunnelEntrance_doorpanel_1",true);
+				Lamp_SetLit("Panel_Light_Success_*",false,true);
+				Sound_CreateAtEntity("Panel_Ventilation","Entities_Station/doors/elevator_panel/elevator_panel_lock","TunnelEntrance_doorpanel_1",0,false);
+				Map_AddTimer("ActivateElevatorPanel", 1.0f, "ActivateElevatorPanel");
+			}
+			
+			////////////////////////////////////////
+			// When closing the panel door, give feedback if not fully repaired
+			else if (alState == 1 && !bRepaired)
+			{
+				cLux_AddTodoMessage("TODO: DIALOG IS MISSING. URGENT. GET BACK IN!!");
+				Dialog_Begin();
+					Dialog_AddBranchAndSubject("1h_DoorNotFixed","","");
+				Dialog_End();
+			}
+			return true;
+		}
+		
+		void ActivateElevatorPanel (const tString &in asTimer)
+		{
+			Sound_CreateAtEntity("Panel_Ventilation","Entities_Station/tech/terminal_beeps/terminal_hardware_insert_beep","TunnelEntrance_doorpanel_1",0,false);
+		}
+		
+		//-------------------------------------------------------
+		
+		void Area_RetrieveBrokenChip_OnPlayerInteract(const tString &in asEntity)
+		{
+			cLux_AddDebugMessage("**** Getting broken chip back! ****");
+			
+			////////////////////////////////////////////
+			// When removing the broken chip from the panel
+			Entity_SetActive("Area_RetrieveBrokenChip",false);
+			Entity_SetActive("Replaced_Chip",false);
+			Entity_PlaceAtEntity("Replaced_Chip","Replaced_Chip_Startpos");
+			mbPanelChipReplaced = false;
+			mbUnformattedChipInPanel = false;
+			
+			////////////////////////////////////////////
+			// Re-equip the tool via the entity
+			Tool_SetAutoHideAfterPickup("chip_unformatted", false);
+			Tool_PickUp("chip_unformatted", true, true);
+				
+			/////////////////////////////////////////
+			// Re-enable shock area
+			Entity_SetActive(msBrokenPanelArea,true);
+			
+			Sound_CreateAtEntity("elevatorchipconfirm", "02_06_theta_tunnels/sfx/elevator_chip_remove", "BrokenChipSoundArea");
+			Map_AddTimer("RemoveChipConfirm", 1.f, "RemoveChipConfirmBeep");
+		}
+		
+		void RemoveChipConfirmBeep (const tString &in asTimer)
+		{
+			Sound_CreateAtEntity("elevatorchipconfirm", "Entities_Station/tech/terminal_beeps/datapad/datapad_back", "doorpanel_faceplate");
+		}
+		
+		//-------------------------------------------------------
+		
+		bool door_panel_chip_OnUse(const tString &in asTool, const tString &in asEntity)
+		{
+			if (asEntity == msBrokenPanelArea)
+			{
+				/////////////////////////////////////
+				// Replace the chip in the door panel 
+				Entity_SetActive("Replaced_Chip",true);
+				Entity_PlaceAtEntity("Replaced_Chip","Replaced_Chip_Startpos");
+				Prop_MoveLinearTo("Replaced_Chip","Replaced_Chip_Target",10,0.8,0.1,true);
+				Player_RemoveTool(asTool);
+				mbPanelChipReplaced = true;
+				
+				/////////////////////////////////////////
+				// Disable shock area as circuits are no longer exposed
+				Entity_SetActive(msBrokenPanelArea,false);
+				
+				/////////////////////////////////////////
+				// Sound
+				Sound_CreateAtEntity("panel_chip_click","02_06_theta_tunnels/sfx/elevator_chip_insert","Replaced_Chip",0,false,1.0f);
+				Map_AddTimer("ReplacedChipConfirm", 1.f, "ReplacedChipConfirmBeep");
+				return true;
+			}
+			return false;
+		}
+		
+		//--------------------------------------------------------
+		
+		void ReplacedChipConfirmBeep (const tString &in asTimer)
+		{
+			Sound_CreateAtEntity("elevatorchipconfirm", "Entities_Station/tech/terminal_beeps/datapad/datapad_forward", "doorpanel_faceplate");
+		}
+		
+		//--------------------------------------------------------
+		
+		void Replaced_Chip_OnPlayerInteract(const tString &in asEntity)
+		{
+		}
+			
+		//-------------------------------------------------------
+		
+		bool door_panel_chip_CanBeUsed(const tString &in asTool, const tString &in asEntity)
+		{
+			if (asEntity == msBrokenPanelArea)
+			{
+				return true;
+			}
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void RetentionMechanism_OnConnectionStateChange(const tString &in asEntity, int alState)
+		{		
+			//////////////////////////////////////////////////////////////////////////////
+			// If both clamps are open, allow the chip to be inserted if it hasn't already
+			if (mbPanelChipReplaced == false || mbUnformattedChipInPanel)
+			{
+		
+				if (asEntity == "RetentionMechanism_1")
+				{
+					mbTopClampOpen = (alState == -1) ? true : false;
+				}
+				
+				if (asEntity == "RetentionMechanism_2")
+				{
+					mbBottomClampOpen = (alState == 1) ? true : false;
+				}
+				cLux_AddDebugMessage("mbTopClampOpen "+mbTopClampOpen);
+				cLux_AddDebugMessage("mbBottomClampOpen "+mbBottomClampOpen);
+				
+				///////////////////////////////////////////////
+				// Determine if clamps are open
+				bool bOpen = (mbTopClampOpen&&mbBottomClampOpen) ? true : false;
+				Entity_SetActive(msBrokenPanelArea,bOpen && mbUnformattedChipInPanel == false);	
+				
+				Entity_SetActive("Area_RetrieveBrokenChip", bOpen && mbUnformattedChipInPanel);
+				
+				return;		
+			}
+			
+			/////////////////////////////////////////
+			// Clamp the top lever in place
+			if (asEntity == "RetentionMechanism_1" && alState == 1)
+			{
+				Lever_SetStuckState("RetentionMechanism_1",1,true);
+				Lamp_SetLit("Panel_Light_1",false,true);
+				Map_AddTimer("Panel_Light_1",0.75,"Timer_LightPanelIndicator");
+				++mlRetentionClamps;
+			}
+			
+			/////////////////////////////////////////
+			// Clamp the bottom lever in place
+			if (asEntity == "RetentionMechanism_2" && alState == -1)
+			{
+				Lever_SetStuckState("RetentionMechanism_2",-1,true);
+				Lamp_SetLit("Panel_Light_2",false,true);
+				Map_AddTimer("Panel_Light_2",0.75,"Timer_LightPanelIndicator");
+				++mlRetentionClamps;
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		tString msLampName = "";
+		void Timer_LightPanelIndicator(const tString &in asTimer)
+		{
+			//////////////////////////////////////////
+			// Swap out red light for green light
+			//todo: different on/off colours for single lamp entities?
+			msLampName = "Panel_Light_Success_" + cString_GetLastChar(asTimer);
+			Entity_SetActive(msLampName,true);
+			Entity_PlaceAtEntity(msLampName,asTimer);
+			Entity_SetActive(asTimer,false);
+			
+			/////////////////////////////////////////
+			// Finally, light the lamp
+			Lamp_SetLit(msLampName,true,true);
+			cLux_AddDebugMessage("Lit Lamp: " +asTimer);
+			Sound_CreateAtEntity("LightOn", "Entities_Station/tech/terminal_beeps/datapad/datapad_back", msLampName);
+		}
+	
+		//--------------------------------------------------------
+		
+		//} END Event Fix Elevator Panel
+		
+		/////////////////////////////////////
+		// Event: Player gets zapped by panel
+		//{//////////////////////////////////
+		
+		//--------------------------------------------------------
+		
+		void Area_Broken_Panel_OnPlayerInteract(const tString &in asEntity)
+		{
+			/////////////////////////////////////////////
+			// Zap the player for touching exposed wires
+			if (mbPlayerZapped == false)
+			{
+				cLux_AddTodoMessage("SCRIPT: Zap the player! Ow!");
+				
+				cLux_AddTodoMessage("Sound: Spark as player touches exposed wires");
+				Sound_PlayGui("level_01_02/events/generator_room_activated/transformer_electric_flash",1.0f);
+				
+				SequencePanelZap("");
+			}
+			else
+			{
+				///////////////////////////////////////////////////////////////
+				// If the player has already been zapped, don't zap them again but instead give hint
+				Dialog_Begin();
+					Dialog_AddBranchAndSubject("1h_DoorHint","","");
+					Dialog_End();
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mPanelZapSequence;
+			
+		void SequencePanelZap(const tString &in asTimer)
+		{
+			Sequence_Begin("SequencePanelZap", mPanelZapSequence);
+				
+			if (Sequence_DoStepAndWait(0.5))
+			{
+				///////////////////////////
+				// Apply electric damage effect
+				Depth_Audio_PlayerTakeDamage();
+				Player_GiveDamage(0.05f, 0.1, eDamageType_Electricity, "Area_Broken_Panel");
+			
+				//////////////////////////
+				// Move to position
+				Entity_PlaceAtEntity("Player", "Area_ShockPoint");
+				
+				//////////////////////////
+				// Get position for players head
+				cVector3f vCamTarget = Player_GetCrouching() ? cVector3f_Down*0.7 : cVector3f_Down*1.5;
+				vCamTarget = vCamTarget + cVector3f_Back*0.5f;
+				Player_MoveHeadPos(vCamTarget, 9, 5, 0.1);
+				
+				//////////////////////////
+				// Roll camera and reduce input speeds
+				Player_FadeRollTo(75, 4, 360);
+				Player_SetMoveSpeedMul(0.3);
+				Player_SetLookSpeedMul(0.1);
+				Player_MoveForward(-50.0f);
+				
+				//////////////////
+				// Screen Effects
+				Effect_Shake_Start(0.1, 0.1, 0, 0.4);
+				DistortionEffect_SetAmount(0.3f,0.5f);
+			}
+			else if (Sequence_DoStepAndWait(1))
+			{
+				//////////////////////////
+				// On the ground unable to move too much
+				DistortionEffect_SetAmount(0.0f,0.5f);
+				Player_SetMoveSpeedMul(0);
+				Player_SetLookSpeedMul(0.05);
+				
+			}
+			else if (Sequence_DoStepAndWait(1))
+			{
+				//////////////////////////////////
+				// Player stands up
+				Player_FadeLookSpeedMulTo(1, 1);
+				Player_FadeMoveSpeedMulTo(0.3, 1);
+				
+				Player_FadeRollTo(0, 1.5, 270);
+				Player_SetCrouching(false, false);
+				Player_MoveHeadPos(cVector3f_Down*0.5, 4.5, 5, 0.2);
+			}
+			else if (Sequence_DoStepAndWait(2))
+			{
+				Player_FadeMoveSpeedMulTo(1, 1);
+				Player_MoveHeadPos(cVector3f_Zero, 4.5, 5, 0.1);
+			
+				//////////////////////////////////
+				// Disable the zapping area
+				mbPlayerZapped = true;
+				Entity_SetActive(msBrokenPanelArea,true);	
+			}
+			else if (Sequence_DoStepAndWait(2))
+			{
+				////////////////////////////////
+				// Give feedback to the player
+				Dialog_Begin();
+					Dialog_AddBranchAndSubject("1h_DoorZap","","");
+					Dialog_End();
+			}
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event Player Gets zapped by panel.
+		
+	
+	//-------------------------------------------------------
+	
+	//} END SCENE 4, ELEVATOR CHIP PUZZLE
+	
+	/////////////////////////////////////////////////////
+	// ==============
+	// SCENE 5: ELEVATOR RIDE
+	// ==============
+	//{//////////////////////////////////////////////////////
+	
+	//-------------------------------------------------------
+	
+		//////////////////////////////////////////////////////
+		// Event: Enter Elevator; Puppet attacks
+		//{///////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		bool Trigger_EnterElevator(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState==1)
+			{
+				Map_AddTimer("Seq_UnstableElevator", 1, "Seq_UnstableElevator");
+			}
+			else
+			{
+				Map_RemoveTimer("Seq_UnstableElevator");
+			}
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mUnstableElevatorSequence;
+			
+		void Seq_UnstableElevator(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_UnstableElevator", mUnstableElevatorSequence);
+				
+			if (Sequence_DoStepAndWait(0.15))
+			{
+				Effect_Shake_Start(0.05, 0.1, 0, 0.5);
+				Prop_MoveLinearTo("02_06_elevator_1", "02_06_elevator_1_Target", 12, 5, 0.05, true);
+				Lamp_SetFlickerActive("02_06_elevator_1", true);
+				
+				cLux_AddDebugMessage("Sound: Elevator falls down a bit.");
+				Sound_CreateAtEntity("ElevatorShortFall", "02_06_theta_tunnels/sfx/events/elevator_sequence/motor/enter_drop", "Player");
+				
+				Entity_SetActive("Area_ElevatorPuppet", false);
+			}
+			else if (Sequence_DoStepAndWait(0.85))
+			{
+				ParticleSystem_CreateAtEntity("ElevatorDust", "dust_cloud", "ElevatorDustPSArea", false);
+			}
+			else if (Sequence_DoStepAndWait(2))
+			{
+			}
+			else
+			{
+				Lamp_SetFlickerActive("02_06_elevator_1", false);
+				
+				if(Puppet_IsHidingAndWaiting("puppet_dynamic"))
+				{
+					Entity_SetActive("puppet_elevator",true);
+					Pathfinder_Track_Clear("puppet_elevator");
+					Pathfinder_Track_Add("puppet_elevator", "PathNodeArea_90");
+					Pathfinder_Track_Start("puppet_elevator",true,1,"");
+					
+					}
+				else
+				{
+					Puppet_SetHideAndWaitPaused("puppet_dynamic", false);
+					
+					Sound_CreateAIEventAtEntity("Area_ElevatorPuppet", 100, 10);
+				}
+				
+				//Start tense music for Akers
+				Music_Play("02_06_elevatordoor", 0.35f, false, eMusicPrio_OverrideAll);
+			}
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		bool Trigger_PuppetInElevator(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState == 1)
+			{
+				Entity_SetInteractionDisabled("Elevator_InsideTerminal", true);
+				if (Entity_IsInteractedWith("Elevator_InsideTerminal"))
+					Player_ChangeStateToNormal();
+			}
+			else
+			{
+				Entity_SetInteractionDisabled("Elevator_InsideTerminal", false);
+			}
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Elevator Puppet Attack
+	
+		//////////////////////////////////////////////////////
+		// Event: Elevator Starts
+		//{///////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		void HandleElevatorClosing()
+		{
+			Entity_SetActive("Area_ElevatorClose",true);
+			Entity_SetActive("block_box_elevator",true);
+			
+			SlideDoor_SetClosed("elevatorTemp",true,false);
+			
+			Agent_SetSensesActive("puppet_elevator", false);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool CollideElevatorClose(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			cLux_AddDebugMessage("Puppet Attacks!");
+			
+			Puppet_ChangeState_Hunt("puppet_*");
+			
+			cScript_SetGlobalVarBool("PuppetElevatorAttack",true);
+			
+			//////////////////////////////////////////////////////////////////////////
+			// If the puppet has gotten in the Elevator, it's going to eat the player.
+			if (Entity_GetCollide("Area_ElevatorPuppet","puppet_elevator")) return false;
+			
+			//////////////////////////////////////////////
+			// If player is in the clear, start the escape
+			if (Entity_IsActive("puppet_elevator")==false)
+				Map_AddTimer("Timer_StartElevator", 2.5, "Timer_StartElevator");
+			else
+				SequenceElevatorEscape("");
+			
+			if(cLux_ScriptDebugOn()==false)
+				Map_Preload("02_07_theta_exit.hpm");
+			
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void DoorPounding()
+		{
+			int lShakeID = Effect_Shake_Start(0.02,0.1,0,0.05);
+			Effect_Shake_SetSourceEntity(lShakeID, "Area_DoorPoundEffect", 0.5, 7.5);
+			ParticleSystem_CreateAtEntity("SurvivorSmashParticles", "dust_falling_impact.ps", "Area_DoorPoundEffect", false);
+		}
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSequenceElevatorEscape;
+		
+		void SequenceElevatorEscape(const tString &in asTimer)
+		{
+			Sequence_Begin("SequenceElevatorEscape", mSequenceElevatorEscape);
+		
+			if (Sequence_DoStepAndWait(2.55f))
+			{
+			}
+			else if (Sequence_DoStepAndWait(1.75f))
+			{
+				Entity_SetActive("puppet_*",false);
+				
+				/////////////////////
+				// Pound on door
+				DoorPounding();
+				Effect_Shake_Start(0.1,0.1,0,0);
+				
+				/////////////////////
+				// Audio
+				Sound_CreateAtEntity("DoorPoundSequence", "02_06_theta_tunnels/sfx/events/elevator_sequence/akers_attack", "Player");
+				Sound_FadeGlobalVolume(0.35f, 3.0f, eSoundEntryType_World);
+				Depth_Audio_Fear_HighIntensity(7.0f, 10.0f, 1);
+			}
+			
+			else if (Sequence_DoStepAndWait(1.25f))
+			{
+				////////////////////////////////////
+				// Deactivate all the puppets
+				Entity_SetActive("puppet_*",false);
+				
+				/////////////////////
+				// Pound on door
+				DoorPounding();
+				Effect_Shake_Start(0.1,0.1,0,0);
+			}
+			else if (Sequence_DoStepAndWait(0.75f))
+			{
+				/////////////////////
+				// Pound on door
+				DoorPounding();
+				Effect_Shake_Start(0.025,0.1,0,0);
+			}
+			else if (Sequence_DoStepAndWait(1.0f))
+			{
+				
+			}
+			else if (Sequence_DoStepAndWait(0.75f))
+			{
+				Timer_StartElevator("");
+			}
+			
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		void Timer_StartElevator(const tString &in asTimer)
+		{
+			cLux_AddDebugMessage("Timer_StartElevator");
+			////////////////////////////////////
+			// Start the elevator
+			Area_MoveLinearTo("ElevatorMoveArea_1","ElevatorMoveTarget",1.0f,1.0f,0.0f,true);
+			SetLevelLights(true);
+			Sound_CreateAtEntity("elevatorloop", "02_06_theta_tunnels/sfx/events/elevator_sequence/motor/loop", "Player");
+			Map_AddTimer("Timer_ElevatorStartEffects", 0.45f, "ElevatorStartEffects");
+			Map_AddTimer("ElevatorLoopSlowDuck", 3.0f, "ElevatorAudioSlowlyDuck");
+			
+			//Incase the door pounding event didn't occur, kill all previous puppets to stop from sound leaking
+			Entity_SetActive("puppet_*",false);
+		}
+		
+		void ElevatorAudioSlowlyDuck(const tString &in asTimer)
+		{
+			Sound_Fade("elevatorloop", 0.5f, 20.0f);
+			cLux_AddDebugMessage("Slowly ducking elevator loop sound to build tension");
+		}
+		
+		void ElevatorStartEffects(const tString &in asTimer)
+		{
+			//Slight delay for keeping in sync with audio
+			Effect_Shake_Start(0.01, 0.15, 0.05, 0.5, cVector3f(0.25,1,0.25));
+			Effect_Shake_Start(0.005,28.5f,0,0,cVector3f(0.25,1,0.25));
+		}
+		
+		//-------------------------------------------------------
+
+		bool ElevatorWallCollision(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState == -1)
+			{
+				cLux_AddDebugMessage("Coll: "+asParent+" || " + asChild);
+				if (asChild == "ElevatorMoveArea_1")
+				{
+					Seq_ElevatorStops("");
+				}
+			}
+			return true;
+		}
+		
+		//---------------------------------------------------------
+		
+		cSequenceStatesData mElevatorStopsSequence;
+			
+		void Seq_ElevatorStops(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_ElevatorStops", mElevatorStopsSequence);
+				
+			if (Sequence_DoStepAndWait(0.25))
+			{
+				Entity_SetActive("puppet_*",false);
+				
+				Effect_Shake_Start(0.1, 0.75, 0.0, 0.15);
+				Sound_Stop("elevatorloop", 0.45f);
+				Sound_CreateAtEntity("ElevatorStop", "02_06_theta_tunnels/sfx/events/elevator_sequence/motor/stop", "Player");
+				Sound_CreateAtEntity("ElevatorSustained", "02_06_theta_tunnels/sfx/events/elevator_sequence/sustained_groan", "Player");
+				Sound_FadeGlobalVolume(1.0f, 3.0f, eSoundEntryType_World);
+				Map_AddTimer("Timer_ElevatorStopMusic", 4.0f, "ElevatorStopMusic");
+			}
+			else if (Sequence_DoStepAndWait(0.25))
+			{
+				Area_StopMovement("ElevatorMoveArea_1");
+				Depth_Audio_Fear_MediumIntensity(3.0f, 10.0f, 5, false, true);
+				cVector3f vOffset = Entity_GetDeltaToEntity("Elevator_Center_1","Player");
+				Entity_PlaceAtEntity("Player","Elevator_Center_2",vOffset,false);
+				Player_ChangeStateToNormal();
+			}
+			else if (Sequence_DoStepAndWait(0.6))
+			{
+				Lamp_SetLit("BrokenElevator", false, true);
+				IrradianceSet_FadeIn("elevator_shaft_dark", 0.3);
+				Terminal_SetGuiActive("Elevator_BrokenTerminal", false, 0.5);
+				
+				if (Entity_GetCollide("Player", "ElevatorHatchCheck")==false)
+				{
+					Trigger_OpenElevatorHatch("", "", -1);
+				}
+				else
+				{
+					Entity_AddCollideCallback("Player", "ElevatorHatchCheck", "Trigger_OpenElevatorHatch");
+				}
+			}
+			else if (Sequence_DoStepAndWait(0.65))
+			{
+				CheckPoint_Setup();
+			}
+			else if (Sequence_DoStepAndWait(1.0))
+			{
+				Lamp_SetLit("ElevatorEmergencyLamp_1", true, true);
+				Map_AddTimer("ElevatorEmergencyLamp_2", 0.25, "TimerSetLampLit");
+				Map_AddTimer("ElevatorEmergencyLamp_3", 0.5, "TimerSetLampLit");
+				Map_AddTimer("ElevatorEmergencyLamp_4", 0.75, "TimerSetLampLit");
+				IrradianceSet_FadeIn("elevator_shaft_Emergency", 1);
+			}
+				
+			Sequence_End();
+		}
+		
+		void ElevatorStopMusic(const tString &in asTimer)
+		{
+			Music_Play("02_06_elevatorstops", 0.25f, false, eMusicPrio_BigEvent);
+		}
+	
+		//} END Elevator Starts
+	
+		///////////////////////////////////////
+		// Event: Exit Elevator	& Fall From allder
+		//{////////////////////////////////////
+		
+		//---------------------------------------------------------
+		
+		bool Trigger_OpenElevatorHatch(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState == 1) return true;
+			
+			SwingDoor_PushOpen("02_06_elevator_hatch_1", 1);
+			return false;
+		}
+		
+		//---------------------------------------------------------
+		
+		bool Trigger_ElevatorHatchOpen(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Player_ChangeStateToNormal();
+			Player_SetLookSpeedMul(0);
+			Player_FadeLookSpeedMulTo(1, 1.5);
+			Entity_SetActive("LadderInteractAux", true);
+			return false;
+		}
+		
+		//---------------------------------------------------------
+		
+		bool Trigger_UnsteadyElevator(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			bool bPlayerClimbing = Entity_IsInteractedWith("LadderArea_1");
+			if (bPlayerClimbing==false)
+				return false;
+			
+			//Slight delay for pacing of sound
+			Map_AddTimer("UnsteadyElevatorEvent", 0.5f, "UnsteadyElevatorEvent");
+
+			return false;
+		}
+		
+		void UnsteadyElevatorEvent(const tString &in asTimer)
+		{
+			Sound_CreateAtEntity("ElevatorUnstable", "02_06_theta_tunnels/sfx/events/elevator_sequence/exit_elevator_groan_sweetener", "Player");
+			Sound_Stop("ElevatorStop", 3.0f);
+			Sound_Fade("ElevatorSustained", 0.0f, 3.0f);
+			Map_AddTimer("FadeUpElevatorCreaks", 3.0f, "FadeUpElevatorCreaks");
+			Effect_Shake_Start(0.01, 0, 0.5, 2, 1, 30);
+		}
+		
+		void FadeUpElevatorCreaks(const tString &in asTimer)
+		{
+			Sound_Fade("ElevatorSustained", 1.0f, 3.0f);
+		}
+		
+		//---------------------------------------------------------
+		
+		bool Trigger_PlayAkersStairsSound(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			return false;
+		}
+		
+		//---------------------------------------------------------
+		
+		bool Trigger_LeftElevator(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			//SlideDoor_SetClosed("elevator_doors_2", true, false);
+			//Entity_SetActive("elevator_doors_2_blockbox", true);
+			
+			CheckPoint_Setup("FinalDeathCheckpoint");
+			
+			return false;
+		}
+		
+		//--------------------------------------------------------
+		
+		int mlElevatorFallHearbeatID=-1;
+		int mlElevatorFallBreathID=-1;
+		bool Trigger_BreakLadder(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			bool bPlayerClimbing = Entity_IsInteractedWith("LadderArea_1");
+			
+			Entity_SetActive("LadderArea_1", false);
+			Player_ChangeStateToNormal();
+			
+			Entity_SetActive("Elevator_Ladder", false);
+			Entity_SetActive("Elevator_Ladder_Broken", true);
+			Entity_SetActive("Elevator_Ladder_Broken_Rung", true);
+			Entity_AddImpulseFromEntity("Elevator_Ladder_Broken_Rung","ForceAreaRung",50.0f,true);
+			
+			mlElevatorFallHearbeatID = Emotion_StartHeartbeat(0.35, 1.0f, 1, -1, 1, 0);
+			mlElevatorFallBreathID = Emotion_StartBackgroundBreath(eBreathType_Fear, 1, 1, 10, 0.0f, 0.2);
+			
+			cLux_AddDebugMessage("Player climbing? "+bPlayerClimbing);
+			if (bPlayerClimbing==false) return false;
+			
+			CameraAnimation_Begin("ElevatorBreakAnim", "", true);
+			
+			Effect_Shake_Start(0.075, 0, 0, 0.5);
+			
+			Sound_FadeGlobalVolume(0.0f, 0.05f, eSoundEntryType_WorldAll);
+			Sound_CreateAtEntity("LadderSnap", "02_06_theta_tunnels/sfx/events/elevator_sequence/ladder/snap", "Player");
+			Sound_CreateAtEntity("LadderSnapDebris", "02_06_theta_tunnels/sfx/events/elevator_sequence/ladder/snap_debris", "Player");
+			Music_Stop(0.0f, eMusicPrio_BgAmb);
+			Sound_Stop("ElevatorSustained", 0.0f);
+			
+			Map_AddTimer("Timer_BreakLadder_React", 0.25, "Timer_BreakLadder_React");
+			
+			return false;
+		}
+		
+		//---------------------------------------------------------
+		
+		void Timer_BreakLadder_React(const tString &in asTimer)
+		{
+			Depth_Audio_SimonGasp();
+		}
+		
+		//---------------------------------------------------------
+		
+		bool CameraAnimation_ElevatorFall(const tString &in asEntity, int alDirection)
+		{
+			Player_AddBodyForce(cVector3f_Down*400, false);
+			return true;
+		}
+		
+		//---------------------------------------------------------
+		
+		bool Trigger_ElevatorShaftBottom(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Emotion_StopHeartbeat(mlElevatorFallHearbeatID);
+			Emotion_StopBackgroundBreath(mlElevatorFallBreathID);
+			
+			//AttackMeter_AutoDamage(0, false, 0.1);
+			Seq_ElevatorShaftFall("");
+			return false;
+		}
+		
+		//---------------------------------------------------------
+		
+		cSequenceStatesData mElevatorShaftFallSequence;
+			
+		void Seq_ElevatorShaftFall(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_ElevatorShaftFall", mElevatorShaftFallSequence);
+				
+			if (Sequence_DoStepAndWait(5))
+			{
+				Player_SetActive(false);
+				Effect_Fade_Out(0);
+				
+				//Sound
+				Sound_Stop("LadderSnap", 0.5f);
+				Sound_CreateAtEntity("LadderLand","02_06_theta_tunnels/sfx/events/elevator_sequence/ladder/ground_hit","Player");
+				Sound_FadeGlobalVolume(0.0f, 0.05f, eSoundEntryType_WorldAll);
+				cSound_FadeLowPassFilter(100.0, 0.0f, 1.0f, eSoundEntryType_World);
+			}
+			else if (Sequence_DoStepAndWait(5.5))
+			{
+				CameraAnimation_Begin("ElevatorFallGetUpAnim", "", true);
+				Player_SetHealth(0.3);
+				Effect_Fade_In(8);
+				
+				//Sound
+				Sound_CreateAtEntity("WakeUp","02_06_theta_tunnels/sfx/events/elevator_sequence/wake_up/wakeup","Player");
+				Emotion_PlayEventBreath("02_06_theta_tunnels/sfx/events/elevator_sequence/wake_up/wakeup_vo", 5);
+				Sound_FadeGlobalVolume(1.0f, 1.0f, eSoundEntryType_WorldAll);
+				cSound_FadeLowPassFilter(22000.0, 0.0f, 10.0f, eSoundEntryType_World);
+			}
+			else if (Sequence_DoStepAndWait(0.5))
+			{
+				Player_SetActive(true);
+			}		
+			else if (Sequence_DoStepAndWait(0.5))
+			{
+				CameraAnimationNode_SetAutoMove("ElevatorFallGetUpAnim_1", 1);
+				Entity_SetActive("LadderArea_2", true);
+				Entity_SetActive("elevator_doors_2_blockbox", false);
+				
+				//Sound
+				Sound_CreateAtEntity("StandUp","02_06_theta_tunnels/sfx/events/elevator_sequence/wake_up/standup","Player");
+				Entity_SetActive("AMB_Elevator_Shaft_Creak", true);
+			}
+			Sequence_End();
+		}
+		
+		//---------------------------------------------------------
+		
+		//} END Exit Elevator & Fall From allder
+	
+		///////////////////////////////////////
+		// Event: Trigger Fatal Akers attack
+		//{////////////////////////////////////
+		
+		//---------------------------------------------------------
+
+		bool AreaTriggerFinalPuppet(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			cLux_AddTodoMessage("Sound: Akers final kill");
+			Entity_SetActive("puppet_tunnel",true);
+			
+			Pathfinder_Track_Clear("puppet_tunnel");
+			Pathfinder_Track_Add("puppet_tunnel", "PathNodeArea_107");
+			Pathfinder_Track_Start("puppet_tunnel",true,1,"");
+			
+			AttackMeter_SetCustomDamageCallback("TunnelPuppetDamage");
+						
+			Puppet_ChangeState_Hunt("puppet_tunnel");
+			Map_AddTimer("RevealPlayerPos", 0.25, "Timer_RevealPlayerPos");
+			
+			SlideDoor_SetClosed("elevator_doors_2", true, true);
+			
+			//Music_FadeVolumeMul(1., 0.05f);
+			Music_Stop(0.1f, eMusicPrio_BgAmb);
+			Music_Play("02_06_hallwaysurprise", 0.55f, false, eMusicPrio_BigEvent);
+			Sound_CreateAtEntity("AkersBurstDoor", "02_06_theta_tunnels/sfx/events/akers_smash_door", "AkersSmashSoundSource");
+			
+			return false;
+		}
+		
+		//---------------------------------------------------------
+				
+		void Timer_RevealPlayerPos(const tString &in asTimer)
+		{
+			Puppet_Hunt_RevealCurrentPlayerPos("puppet_tunnel");
+			
+			Map_AddTimer("RevealPlayerPos", 0.25, "Timer_RevealPlayerPos");
+		}
+		
+		//---------------------------------------------------------
+		
+		bool Trigger_RemoveAkerChaseBlockers(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Entity_SetActive("AkersChaseBlocker_*", false);
+			return false;
+		}
+		
+		//---------------------------------------------------------
+		
+		void TunnelPuppetDamage(const tString &in asSource)
+		{
+			SequencePuppetCapture("");
+		}
+		
+		cSequenceStatesData mSequencePuppetCature;
+		void SequencePuppetCapture(const tString &in asTimer)
+		{
+			Sequence_Begin("SequencePuppetCapture", mSequencePuppetCature);
+				
+			if (Sequence_DoStepAndWait(0.25))
+			{
+				Map_RemoveTimer("RevealPlayerPos");
+				
+				Player_SetMoveSpeedMul(0.2);
+				Player_SetLookSpeedMul(0.3f);
+				Effect_Shake_Start(0.85, 0.4, 0.3, 0.3, cVector3f(1, 0.3f, 0));
+				
+				Sound_FadeGlobalVolume(0.0f, 0.05f, eSoundEntryType_WorldAll);
+				cSound_FadeLowPassFilter(22000.00, 0.0f, 0.5f, eSoundEntryType_World);
+				Sound_PlayGui("Player/UI/death_hit", 1.0f);
+			}
+			else if (Sequence_DoStepAndWait(0.025))
+			{
+				Effect_Fade_Out(0.025f);
+				
+			}
+			else if (Sequence_DoStepAndWait(10))
+			{
+				Entity_SetActive("puppet_tunnel",false);
+			}
+			else if (Sequence_DoStepAndWait(1))
+			{
+				Player_SetMoveSpeedMul(1);
+				Player_SetLookSpeedMul(1);
+				Player_SetHealth(1);
+				Music_Stop(3.0f, eMusicPrio_BgAmb);
+				ExitLevel();
+			}
+			
+			Sequence_End();
+		}
+		
+		//---------------------------------------------------------
+		
+		void ExitLevel()
+		{
+			cLux_AddDebugMessage("Change level!");
+			Map_ChangeMap("02_07_theta_exit.hpm", "PlayerStartArea_1", "", "");
+		}
+		
+		//---------------------------------------------------------
+		
+		bool Trigger_InfectionTransition(const tString &in asParent, const tString &in asChild, int alState)
+		{		
+			return false;
+		}
+		
+		//---------------------------------------------------------
+		
+		cSequenceStatesData mInfectionEndingSequence;
+			
+		void Seq_InfectionEnding(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_InfectionEnding", mInfectionEndingSequence);
+					
+			if (Sequence_DoStepAndWait(1))
+			{
+				Player_FadeRunSpeedMulTo(0, 0.5);
+				Player_FadeMoveSpeedMulTo(0, 1);
+				Effect_ChromaticAberration_StartAnim(10.0f,0.01,0.01,cVector2f_Zero);
+				Effect_ImageTrail_Start(0.5,1,10,8.0);
+				Depth_Audio_Fear_LowIntensity(10, 10);
+				
+				cLux_AddTodoMessage("Sound: Simon feeling stronger effects of the infection.");
+			}
+			else if (Sequence_DoStepAndWait(1))
+			{
+				Player_FadeLookSpeedMulTo(0.2, 3);
+				Infection_CreateBorderTree(1, 30, cVector2f(14,35), 3.0f);
+				Infection_CreateBorderTree(2, 30, cVector2f(14,35), 3.0f);
+				Infection_CreateBorderTree(3, 30, cVector2f(14,35), 3.0f);
+			}
+			else if (Sequence_DoStepAndWait(2))
+			{
+				Player_SetCrouching(true, false, true);
+				Player_SetStandDisabled(true);
+				Player_StartLookAt("InfectionEnd_LookAt_1", 1, 1, 0.5);
+			}
+			else if (Sequence_DoStepAndWait(2))
+			{
+				Entity_SetActive("puppet_infection_end", true);
+				Button_SetSwitchedOn("panel_slidedoor_medium_6", true, true);
+				Player_StartLookAt("puppet_infection_end", 1, 1, 0.5);
+				Player_FadeRollTo(0.2, 1, 0.1);
+			}
+			else if (Sequence_DoStepAndWait(5))
+			{
+				Player_StartLookAt("InfectionEnd_LookAt_2", 1, 1, 0.5);
+				
+				Voice_Play("4_AkersInfectionEnding");
+				
+				Effect_Fade_Out(3);
+			}
+			else if (Sequence_DoStepAndWait(2))
+			{
+				Music_Stop(0, eMusicPrio_BgAmb);
+				Player_SetLookSpeedMul(1);
+				Player_SetMoveSpeedMul(1);
+				Player_SetRunSpeedMul(1);
+				Player_SetStandDisabled(false);
+				ExitLevel();
+			}
+			Sequence_End();
+		}
+		
+		//---------------------------------------------------------
+		
+		//} END Fatal Akers Attack
+
+	
+	//-------------------------------------------------------
+	
+	//} END SCENE 5 ELEVATOR RIDE
+	
+	/////////////////////////////////////////
+	// ==============
+	// TERMINALS
+	// ==============
+	//{//////////////////////////////////////
+
+	//-------------------------------------------------------
+	
+		/////////////////////////////////////////
+		// Terminal Basics
+		//{///////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		void DoDialogWindowStart(const tString&in asCaption, const tString&in asText, const cVector2f &in avNrmSize = cVector2f(0.6, 0.2), float afZ=1.5f)
+		{
+			//////////////////////////////////
+			// Setup widget data
+			cImGuiWindowData window = PathOS_CreateDefaultWindowData();
+			cImGuiTextFrameData textData;
+			textData.mbUseBackgroundGfx = false;
+			textData.mFont.mvSize = cVector2f(24, 24);
+			textData.mFontAlign = eFontAlign_Center;
+			textData.mColorText = cColor(0.8, 1);
+			
+			///////////////////////////////////////
+			// Show message 
+			ImGui_DoWindowStart(asCaption, window, ImGui_NrmPosGroup(cVector3f((1.f-avNrmSize.x)*0.5, (1.f-avNrmSize.y)*0.5, afZ)), ImGui_NrmSizeGroup(avNrmSize));
+				
+				ImGui_DoTextFrameExt(asText, ImGui_NrmSizeGroup(cVector2f(0.05, 0)), 0, 0, textData, 
+								  ImGui_NrmPosGroup(cVector3f(0.0, 0.1, 1)), ImGui_NrmSizeGroup(cVector2f(1, 1)));
+		}
+
+		//-------------------------------------------------------
+		
+		void DoDialogWindowEnd()
+		{
+			ImGui_DoWindowEnd();
+		}	
+		
+		//-------------------------------------------------------
+		
+		bool DoLoadingWindow(const tString &in asName, const tString &in asCaption, const tString &in asText, float afLoadTime, bool abReset, float afZ=1.5f,
+							 const tString &in asSoundFile="", const tString &in asSoundSource="", float afSoundFadeInTime=0, float afSoundFadeOutTime=0)
+		{
+			if (asSoundFile != "" && !Depth_ImGui_LoadingInProgress(asName))
+				Sound_CreateAtEntity(ImGui_GetName()+asName+"LoadSound", asSoundFile, asSoundSource == "" ? ImGui_GetName() : asSoundSource, afSoundFadeInTime);
+				
+			cGuiDialogBoxSettings dialogBox = StationGui_CreateDefaultDialogBox();
+			dialogBox.mbEndWindow = false;
+			dialogBox.mfZ = afZ;
+			Depth_ImGui_DialogBox(asCaption, asText, dialogBox);
+				
+			bool bDone = Depth_ImGui_LoadingGauge(asName, afLoadTime, abReset, ImGui_NrmPosGroup(cVector3f(0.05, 0.3, 1)), 
+														ImGui_NrmSizeGroup(cVector2f(0.9, 0.4)), StationGui_CreateDefaultGaugeData());
+			
+			ImGui_DoWindowEnd();
+			
+			if (bDone && asSoundFile != "")
+				Sound_Stop(ImGui_GetName()+asName+"LoadSound", afSoundFadeOutTime);
+			
+			return bDone;				 
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Terminal Basics
+
+		/////////////////////////////////////////
+		// Terminal *ARKTerminal*
+		//{///////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		eSimulationTerminalState mSimulationTerminalState = eSimulationTerminalState_Stopped;
+
+		int mlARKBootCounter = 0;
+		
+		int mlSimulationTicks = 0;
+		float mfSimulationSeconds = 0;
+
+		//-------------------------------------------------------
+
+		void ARKTerminal_OnGui(const tString&in asEntityName, float afTimeStep)
+		{
+			////////////////////////////
+			// Data 
+			cImGuiTextFrameData textData = PathOS_CreateDefaultTextFrameData();
+			textData.mbUseBackgroundGfx = false;
+			textData.mFont.mvSize = ImGui_NrmSizeKeepRatio(0.09375);
+			ImGui_SetDefaultTextFrame(textData);
+			
+			cImGuiButtonData button = PathOS_CreateDefaultButtonData();
+			button.mFont.mvSize = ImGui_NrmSizeKeepRatio(0.0625);
+			ImGui_SetDefaultButton(button);
+			
+			cImGuiLabelData label = ImGui_GetDefaultLabel();
+			label.mFont.mvSize = ImGui_NrmSizeKeepRatio(0.0625);
+			ImGui_SetDefaultLabel(label);
+			
+			ImGui_SetTransCategory("02_06_theta_tunnels");
+			
+			StationGuiBG_Scanlines();
+			
+			if (StationGui_DrawAndCheckErrorsV2())
+				return;
+			
+			int lCurrentApp = StationGui_GetActiveApp(eSimulationTerminalApp_Idle);
+			
+			switch (lCurrentApp)
+			{
+				case eSimulationTerminalApp_Idle:
+				StationGui_BigStatusMessage("AWAITING_CONNECTION", gStationGuiColor_Warning, 1.5, true);
+				break;
+				
+				case eSimulationTerminalApp_Boot:
+				ARKTerminal_Boot();
+				break;
+				
+				case eSimulationTerminalApp_WorldSetup:
+				ARKTerminal_WorldSetup();
+				break;
+				
+				case eSimulationTerminalApp_MindSetup:
+				ARKTerminal_MindSetup();
+				break;
+				
+				case eSimulationTerminalApp_Run:
+				ARKTerminal_Run(afTimeStep);
+				break;
+				
+				case eSimulationTerminalApp_Loading:
+				ARKTerminal_Loading();
+				break;
+			}
+		}
+		
+		void ARKTerminal_Loading()
+		{
+			int lNextApp = ImGui_GetStateInt("NextApp");
+			Terminal_SetUpdateWhenOutOfView(ImGui_GetName(), true);
+			
+			tString sHeader = "";
+			switch (lNextApp)
+			{
+				case eSimulationTerminalApp_MindSetup:
+				sHeader = "ArkTerminalUploading";
+				case eSimulationTerminalApp_Run:
+				sHeader = "ArkTerminalUploading";
+				break;
+			}
+			
+			cGuiDialogBoxSettings dialogBox = StationGui_CreateDefaultDialogBox();
+			dialogBox.mbEndWindow = false;
+			Depth_ImGui_DialogBox(sHeader, "", dialogBox);
+			
+			bool bLoadingFinished = Depth_ImGui_LoadingGauge("ArkTerminalLoading", 3, true, ImGui_NrmPosGroup(cVector3f(0.05, 0.3, 1)), 
+														ImGui_NrmSizeGroup(cVector2f(0.9, 0.4)), StationGui_CreateDefaultGaugeData());
+			ImGui_DoWindowEnd();
+					
+			if (bLoadingFinished==false)
+				return;
+					
+			Terminal_SetUpdateWhenOutOfView(ImGui_GetName(), false);
+			
+			if (lNextApp == eSimulationTerminalApp_MindSetup)
+			{
+				Voice_Play("1_ArkSimInstructions");
+				mbStartedSim = true;
+			}
+				
+			StationGui_SetActiveApp(lNextApp);
+		}
+			
+			//-------------------------------------------------------
+
+			/////////////////////////////////////////
+			// App *Boot sequence*
+			//{///////////////////////////////////////
+
+			//-------------------------------------------------------
+			
+			int mlARKBootCounterCheck = 0;
+
+			//-------------------------------------------------------
+		
+			void ARKTerminal_Boot()
+			{			
+				mlARKBootCounterCheck = 0;
+				
+				////////////////////////////////////
+				// Header
+				ImGui_SetTransCategory("");
+				ImGui_DoLabel("-------------------------------------------------------",ImGui_NrmPosGroup(cVector3f(0.05, -0.4, 0)), ImGui_NrmSizeGroup(cVector2f(1,1)));
+				ImGui_SetTransCategory("02_06_theta_tunnels");
+				ImGui_DoLabel("ArkTerminalBoot_OSVersion",ImGui_NrmPosGroup(cVector3f(0.05, -0.35, 0)), ImGui_NrmSizeGroup(cVector2f(1,1)));
+				ImGui_DoLabel("ArkTerminalBoot_CompileInfo",ImGui_NrmPosGroup(cVector3f(0.05, -0.3, 0)), ImGui_NrmSizeGroup(cVector2f(1,1)));
+				ImGui_SetTransCategory("");
+				ImGui_DoLabel("-------------------------------------------------------",ImGui_NrmPosGroup(cVector3f(0.05, -0.25, 0)), ImGui_NrmSizeGroup(cVector2f(1,1)));
+				ImGui_SetTransCategory("02_06_theta_tunnels");
+				
+				if (BootStepTimer(0.5)==false) return;
+				
+				int lMemoryMax = 1231;
+				
+				////////////////////////////////////
+				// System Memory Check
+				int lMemCheck = ImGui_GetStateFloat("MemCheckCounter", 0);
+				ImGui_FadeStateFloat("MemCheckCounter", float(lMemoryMax)+0.1f, 3, eEasing_Linear, false);
+				tWString sMemcheckStatus = ImGui_Translate("ArkTerminalBoot_MemcheckPre") + " " + lMemCheck + ImGui_Translate("ArkTerminalBoot_MemcheckPost");
+				ImGui_SetTextOverride(sMemcheckStatus);
+				if (lMemCheck >= lMemoryMax) ImGui_SetModColorMul(gStationGuiColor_Warning);
+				ImGui_DoLabel("",ImGui_NrmPosGroup(cVector3f(0.05, -0.2, 0)), ImGui_NrmSizeGroup(cVector2f(1,1)));
+				ImGui_ClearTextOverride();
+				
+				if (lMemCheck < lMemoryMax) return;
+				if (BootStepTimer(0.1)==false) return;
+				ImGui_DoLabel("ArkTerminalBoot_MemcheckOK",ImGui_NrmPosGroup(cVector3f(0.05, -0.15, 0)), ImGui_NrmSizeGroup(cVector2f(1,1)));
+				ImGui_SetModColorMul(cColor_White);
+				
+				
+				////////////////////////////////////
+				// Storage Detection
+				if (BootStepTimer(1)==false) return;
+				ImGui_DoLabel("ArkTerminalBoot_StorageDetect",ImGui_NrmPosGroup(cVector3f(0.05, -0.1, 0)), ImGui_NrmSizeGroup(cVector2f(1,1)));
+				if (BootStepTimer(1)==false) return;
+				ImGui_DoLabel("ArkTerminalBoot_DriveMount_1",ImGui_NrmPosGroup(cVector3f(0.05, -0.05, 0)), ImGui_NrmSizeGroup(cVector2f(1,1)));
+				if (BootStepTimer(0.5)==false) return;
+				ImGui_DoLabel("ArkTerminalBoot_DriveMount_2",ImGui_NrmPosGroup(cVector3f(0.05, -0.0, 0)), ImGui_NrmSizeGroup(cVector2f(1,1)));
+				if (BootStepTimer(0.875)==false) return;
+				ImGui_DoLabel("ArkTerminalBoot_Decrypt",ImGui_NrmPosGroup(cVector3f(0.05, 0.05, 0)), ImGui_NrmSizeGroup(cVector2f(1,1)));
+				if (BootStepTimer(0.625)==false) return;
+				
+				/////////////////////////////////////
+				// Boot up the ARK
+				ImGui_DoLabel("ArkTerminalBoot_ARKBoot",ImGui_NrmPosGroup(cVector3f(0.05, 0.1, 0)), ImGui_NrmSizeGroup(cVector2f(1,1)));
+				if (BootStepTimer(1)==false) return;
+				ImGui_DoLabel("ArkTerminalRunHeader",ImGui_NrmPosGroup(cVector3f(0.05, 0.15, 0)), ImGui_NrmSizeGroup(cVector2f(1,1)));
+				if (BootStepTimer(1)==false) return;
+				
+				StationGui_SetActiveApp(eSimulationTerminalApp_WorldSetup);
+				ARKTerminal_InitWorldSetup();
+				StationGui_SetError("ArkTerminalError_MemoryCorrupted");
+			}
+
+			//-------------------------------------------------------
+			
+			bool BootStepTimer(float afTime)
+			{
+				mlARKBootCounterCheck++;
+				
+				if (mlARKBootCounter >= mlARKBootCounterCheck)
+					return true;
+		
+				if (ImGui_TimerOver("NextBootStep_"+mlARKBootCounterCheck))
+				{
+					mlARKBootCounter++;
+					return true;
+				}
+				else if (ImGui_TimerExists("NextBootStep_"+mlARKBootCounterCheck)==false)
+				{
+					ImGui_AddTimer("NextBootStep_"+mlARKBootCounterCheck, afTime);
+				}
+				return false;
+			}
+
+			//-------------------------------------------------------
+			
+			//} END BOOT APP
+			
+			//-------------------------------------------------------
+
+			/////////////////////////////////////////
+			// App *World Setup*
+			//{///////////////////////////////////////
+
+			//-------------------------------------------------------
+			
+			void ARKTerminal_InitWorldSetup()
+			{
+				SetupModule(eSimulationTerminalModules_System_Rigid, 0.025f, true);
+				SetupModule(eSimulationTerminalModules_System_Soft, 0.155f, true);
+				SetupModule(eSimulationTerminalModules_System_FluidDynamics, 0.175f, true);
+				SetupModule(eSimulationTerminalModules_System_Buoyancy, 0.035f, true);
+				SetupModule(eSimulationTerminalModules_System_Atmosphere, 0.045f, true);
+				SetupModule(eSimulationTerminalModules_System_ScanInterface, 0.038f, true);
+				SetupModule(eSimulationTerminalModules_System_Heat, 0.068f, true);
+				SetupModule(eSimulationTerminalModules_System_DynamicLighting, 0.04f, true);
+				SetupModule(eSimulationTerminalModules_System_BasicVegetation, 0.015f, false, eSimulationModuleType_Vegetation);
+				SetupModule(eSimulationTerminalModules_System_AdvancedVegetation, 0.021f, true, eSimulationModuleType_Vegetation);
+				
+				SetupModule(eSimulationTerminalModules_Scene_Plains, 0.2f, false);
+				SetupModule(eSimulationTerminalModules_Scene_Forest, 0.225f, true);
+				
+				SetupModule(eSimulationTerminalModules_Object_Humanoid, 0.113f);
+				SetupModule(eSimulationTerminalModules_Object_Lake, 0.144f, true, eSimulationModuleType_Water);
+				SetupModule(eSimulationTerminalModules_Object_River, 0.15f, true, eSimulationModuleType_Water);
+				SetupModule(eSimulationTerminalModules_Object_Sun, 0.134f, true, eSimulationModuleType_LightSource);
+				SetupModule(eSimulationTerminalModules_Object_Moon, 0.058f, false, eSimulationModuleType_LightSource);
+				
+				SetupModule(eSimulationTerminalModules_Object_Flowers, 0.06f, true);
+				SetupModule(eSimulationTerminalModules_Object_Road, 0.075f, true);
+				SetupModule(eSimulationTerminalModules_Object_Bench, 0.018f, false);
+				SetupModule(eSimulationTerminalModules_Object_Boat, 0.115f, true);
+				SetupModule(eSimulationTerminalModules_Object_Chair, 0.016f, true);
+				SetupModule(eSimulationTerminalModules_Object_Cabin, 0.15f, false);
+				SetupModule(eSimulationTerminalModules_Object_Clouds, 0.072f, true);
+				
+				AddModuleDependency(eSimulationTerminalModules_Object_Humanoid, eSimulationTerminalModules_System_Atmosphere);
+				AddModuleDependency(eSimulationTerminalModules_Object_Humanoid, eSimulationTerminalModules_System_ScanInterface);
+				AddTypeDependency(eSimulationTerminalModules_Object_Humanoid, eSimulationModuleType_LightSource);
+				AddTypeDependency(eSimulationTerminalModules_Object_Humanoid, eSimulationModuleType_Water);
+				
+				AddModuleDependency(eSimulationTerminalModules_Object_Sun, eSimulationTerminalModules_System_DynamicLighting);
+				AddModuleDependency(eSimulationTerminalModules_Object_Sun, eSimulationTerminalModules_System_Heat);
+				
+				AddModuleDependency(eSimulationTerminalModules_Object_Moon, eSimulationTerminalModules_System_DynamicLighting);
+				AddModuleDependency(eSimulationTerminalModules_Object_Moon, eSimulationTerminalModules_System_FluidDynamics);
+				
+				AddModuleDependency(eSimulationTerminalModules_Object_River, eSimulationTerminalModules_System_FluidDynamics);
+				AddModuleDependency(eSimulationTerminalModules_Object_River, eSimulationTerminalModules_System_Rigid);
+				AddModuleDependency(eSimulationTerminalModules_Object_River, eSimulationTerminalModules_System_Buoyancy);
+				
+				AddModuleDependency(eSimulationTerminalModules_Object_Lake, eSimulationTerminalModules_System_Rigid);
+				AddModuleDependency(eSimulationTerminalModules_Object_Lake, eSimulationTerminalModules_System_Soft);
+				AddModuleDependency(eSimulationTerminalModules_Object_Lake, eSimulationTerminalModules_System_Buoyancy);
+				
+				AddModuleDependency(eSimulationTerminalModules_Scene_Forest, eSimulationTerminalModules_System_AdvancedVegetation);
+				
+				AddModuleDependency(eSimulationTerminalModules_Scene_Plains, eSimulationTerminalModules_Object_Sun);
+				AddTypeDependency(eSimulationTerminalModules_Scene_Plains, eSimulationModuleType_Vegetation);
+				
+				AddModuleDependency(eSimulationTerminalModules_Object_Flowers, eSimulationTerminalModules_System_Atmosphere);
+				AddTypeDependency(eSimulationTerminalModules_Object_Flowers, eSimulationModuleType_LightSource);
+				AddTypeDependency(eSimulationTerminalModules_Object_Flowers, eSimulationModuleType_Vegetation);
+				
+				AddModuleDependency(eSimulationTerminalModules_Object_Boat, eSimulationTerminalModules_System_Buoyancy);
+				AddModuleDependency(eSimulationTerminalModules_Object_Boat, eSimulationTerminalModules_System_Rigid);
+				
+				AddModuleDependency(eSimulationTerminalModules_Object_Chair, eSimulationTerminalModules_System_Rigid);
+				
+				AddModuleDependency(eSimulationTerminalModules_Object_Clouds, eSimulationTerminalModules_System_Atmosphere);
+				AddModuleDependency(eSimulationTerminalModules_Object_Clouds, eSimulationTerminalModules_System_Heat);
+			}
+
+			//-------------------------------------------------------
+			
+			void SetupModule(eSimulationTerminalModules aModule, float afMemory, bool abChecked = true, eSimulationModuleType aType = eSimulationModuleType_Null)
+			{
+				ImGui_SetStateFloat("Module_Memory_"+aModule, afMemory);
+				ImGui_SetStateInt("Module_Type_"+aModule, aType);
+				ImGui_SetStateBool("ModuleChecked_"+aModule, abChecked);
+			}
+
+			//-------------------------------------------------------
+			
+			void AddModuleDependency(eSimulationTerminalModules aModule, eSimulationTerminalModules aDependency)
+			{
+				int i = 1;
+				while (true)
+				{
+					if (ImGui_GetStateInt("Module_Dependency_"+aModule+"_"+i, -1)!=-1)
+					{
+						i++;
+						continue;
+					}
+						
+					ImGui_SetStateInt("Module_Dependency_"+aModule+"_"+i, aDependency);
+					ImGui_SetStateInt("Module_Dependency_"+aModule+"_"+(i+1), -1);
+					break;
+				}
+			}
+			
+			//-------------------------------------------------------
+			
+			void AddTypeDependency(eSimulationTerminalModules aModule, eSimulationModuleType aType)
+			{
+				int i = 1;
+				while (true)
+				{
+					if (ImGui_GetStateInt("Type_Dependency_"+aModule+"_"+i, -1)!=-1)
+					{
+						i++;
+						continue;
+					}
+						
+					ImGui_SetStateInt("Type_Dependency_"+aModule+"_"+i, aType);
+					ImGui_SetStateInt("Type_Dependency_"+aModule+"_"+(i+1), -1);
+					break;
+				}
+			}
+
+			//-------------------------------------------------------
+			bool mbReInit = false;
+			
+			void ARKTerminal_WorldSetup()
+			{
+				// Debugging
+				if (mbReInit)
+				{
+					mbReInit=false;
+					ARKTerminal_InitWorldSetup();
+				}
+				//
+				
+				int lMaxMemory = 1152;
+				int lMemory = 0;
+				
+				cImGuiButtonData toggleButton = PathOS_CreateToggleButtonData();
+				toggleButton.mFont.mvSize = ImGui_NrmSizeKeepRatio(0.045);
+				toggleButton.mFontAlign = eFontAlign_Left;
+				toggleButton.mColorBase = cColor(0);
+				toggleButton.mbUseBackgroundGfx = true;
+				toggleButton.mbUseFrame = false;
+				
+				cImGuiButtonData toggleButtonDisabled = toggleButton;
+				//toggleButtonDisabled.mColorBase = cColor(1);
+				toggleButtonDisabled.mColorDisabled = toggleButtonDisabled.mColorDisabled * cColor(2, 1);
+				
+				cImGuiLabelData headlineLabel = ImGui_GetDefaultLabel();
+				headlineLabel.mFontAlign = eFontAlign_Center;
+				headlineLabel.mbUseBackgroundGfx = true;
+				headlineLabel.mGfxBackground.mColor = gStationGuiColor_Normal;
+				headlineLabel.mFont.mvSize = ImGui_NrmSizeKeepRatio(0.045);
+				
+				cImGuiLabelData label = ImGui_GetDefaultLabel();
+				label.mFont.mvSize = ImGui_NrmSizeKeepRatio(0.045);
+				
+				//////////////////////////
+				// Layout variables
+				float fWindowEdge = 0.025;
+				float fWindowSpace = 0.025;
+				float fModuleWindowWidth = 0.525;
+				float fStatusWindowX = fWindowEdge+fModuleWindowWidth+fWindowSpace;
+				
+				// Reset module type selections
+				for (int i = eSimulationModuleType_Null; i < eSimulationModuleType_LastEnum; i++) 
+					ImGui_SetStateBool("Type_Selected_"+i, false);
+					
+				//////////////////////////
+				// Module window
+				ImGui_DoWindowStart("ArkTerminalModules", PathOS_CreateDefaultWindowData(), 
+									ImGui_NrmPosGroup(fWindowEdge, 0.05, 1), ImGui_NrmSizeGroup(fModuleWindowWidth, 0.9));
+					ImGui_GroupBegin(ImGui_NrmPosGroup(0.0125, 0.05, 1), ImGui_NrmSizeGroup(0.48, 0.9));
+					ImGui_DoLabelExt("ArkTerminalModule_System_Header", headlineLabel, ImGui_NrmPosGroup(0, 0, 1), ImGui_NrmSizeGroup(1, 0.06));
+					for (int i = 1; i < eSimulationTerminalModules_System_LastEnum; i++)
+					{
+						lMemory += ModuleSelection(i, i*0.07f, lMaxMemory, toggleButton);
+					}
+					ImGui_GroupEnd();
+					
+					ImGui_GroupBegin(ImGui_NrmPosGroup(0.0125, 0.07*eSimulationTerminalModules_System_LastEnum, 1), ImGui_NrmSizeGroup(0.48, 0.9));
+					ImGui_DoLabelExt("ArkTerminalModule_Scene_Header", headlineLabel, ImGui_NrmPosGroup(0, 0, 1), ImGui_NrmSizeGroup(1, 0.06));
+					ImGui_SetModUseInput(false);
+					for (int i = eSimulationTerminalModules_System_LastEnum; i < eSimulationTerminalModules_Scene_LastEnum; i++)
+					{
+						float fY = (i-eSimulationTerminalModules_System_LastEnum+1)*0.07;
+						lMemory += ModuleSelection(i, fY, lMaxMemory, toggleButtonDisabled);
+					}
+					ImGui_SetModUseInput(true);
+					ImGui_GroupEnd();
+					
+					ImGui_GroupBegin(ImGui_NrmPosGroup(0.5075, 0.05, 1), ImGui_NrmSizeGroup(0.48, 0.9));
+					ImGui_DoLabelExt("ArkTerminalModule_Object_Header", headlineLabel, ImGui_NrmPosGroup(0, 0, 1), ImGui_NrmSizeGroup(1, 0.06));
+					for (int i = eSimulationTerminalModules_Scene_LastEnum; i < eSimulationTerminalModules_Object_LastEnum; i++)
+					{
+						float fY = (i-eSimulationTerminalModules_Scene_LastEnum+1)*0.07;
+						lMemory += ModuleSelection(i, fY, lMaxMemory, toggleButton);
+					}
+					ImGui_GroupEnd();
+				ImGui_DoWindowEnd();
+				
+				//////////////////////////
+				// Check dependencies
+				int lErrorCount = 0;
+				
+				for (int i = 1; i < eSimulationTerminalModules_Object_LastEnum; i++)
+				{
+					if (ImGui_GetStateBool("Module_Selected_"+i, false)==false)
+						continue;
+					
+					//////////////////////////
+					// Specific modules
+					int j = 1; 
+					int lDependency = ImGui_GetStateInt("Module_Dependency_"+i+"_"+j, -1);
+					while (lDependency >= 0)
+					{
+						if (ImGui_GetStateBool("Module_Selected_"+lDependency, false)==false)
+						{
+							ImGui_SetStateInt("SetupError_"+lErrorCount+"_ErrorType",0);
+							ImGui_SetStateInt("SetupError_"+lErrorCount+"_Module",i);
+							ImGui_SetStateInt("SetupError_"+lErrorCount+"_Dependency",lDependency);
+							lErrorCount++;
+						}
+						
+						j++;
+						lDependency = ImGui_GetStateInt("Module_Dependency_"+i+"_"+j, -1);
+					}
+					
+					
+					//////////////////////////
+					// Module types
+					j = 1; 
+					lDependency = ImGui_GetStateInt("Type_Dependency_"+i+"_"+j, -1);
+					while (lDependency >= 0)
+					{
+						if (ImGui_GetStateBool("Type_Selected_"+lDependency, false)==false)
+						{
+							ImGui_SetStateInt("SetupError_"+lErrorCount+"_ErrorType",1);
+							ImGui_SetStateInt("SetupError_"+lErrorCount+"_Module",i);
+							ImGui_SetStateInt("SetupError_"+lErrorCount+"_Dependency",lDependency);
+							lErrorCount++;
+						}
+						
+						j++;
+						lDependency = ImGui_GetStateInt("Type_Dependency_"+i+"_"+j, -1);
+					}
+				}
+				
+				//////////////////////////
+				// Status window
+				ImGui_DoWindowStart("ArkTerminalSetupStatus", PathOS_CreateDefaultWindowData(), 
+									ImGui_NrmPosGroup(fStatusWindowX, 0.05, 1), ImGui_NrmSizeGroup(1.0f-fWindowEdge-fStatusWindowX, 0.9));
+									
+					/////////////////////////
+					// Info
+					ImGui_GroupBegin(ImGui_NrmPosGroup(0.05, 0.025, 1), ImGui_NrmSizeGroup(0.9, 0.5));
+						float fInfoY = 0;	
+							
+						/////////////////////////
+						// Dependency errors
+						if (lErrorCount>0)
+						{
+							ImGui_SetModColorMul(cColor_Red);
+							for (int i = 0; i < lErrorCount; i++)
+							{
+								// Make sure the window doesn't fill up
+								if (i >= 11)
+								{
+									ImGui_SetTextOverride(tWString("..."));
+									ImGui_DoLabelExt("", label, ImGui_NrmPosGroup(0, fInfoY, 0), ImGui_NrmSizeGroup(1, 0.1));
+									ImGui_ClearTextOverride();
+									break;
+								}
+								
+								int lErrorType = ImGui_GetStateInt("SetupError_"+i+"_ErrorType",-1);
+								int lModule = ImGui_GetStateInt("SetupError_"+i+"_Module",-1);
+								int lDependency = ImGui_GetStateInt("SetupError_"+i+"_Dependency",-1);	
+								label.mFontAlign = eFontAlign_Left;
+								tWString sText = ImGui_Translate("ArkTerminalModule_System_"+lModule) + " " + 
+												 ImGui_Translate("ArkTerminalSetupStatusDependency") + " ";
+								
+								if (lErrorType == 0)
+									sText += ImGui_Translate("ArkTerminalModule_System_"+lDependency);
+								else
+									sText += ImGui_Translate("ArkTerminalModuleType_"+lDependency);
+									
+								ImGui_SetTextOverride(sText);
+								ImGui_DoLabelExt("", label, ImGui_NrmPosGroup(0, fInfoY, 0), ImGui_NrmSizeGroup(1, 0.1));
+								ImGui_ClearTextOverride();
+									
+								fInfoY+=0.085;
+							}
+							ImGui_SetModColorMul(cColor_White);
+						}
+						
+						/////////////////////////
+						// Required module errors
+						label.mFontAlign = eFontAlign_Left;
+						ImGui_SetModColorMul(cColor_Red);
+						if (ImGui_GetStateBool("Module_Selected_"+eSimulationTerminalModules_Object_Humanoid, false)==false)
+						{
+							ImGui_DoLabelExt("ArkTerminalSetupStatusRequiredModule_Soma", label, ImGui_NrmPosGroup(0, fInfoY, 0), ImGui_NrmSizeGroup(1, 0.1));
+							lErrorCount++;
+							fInfoY+=0.085;
+						}
+						if (ImGui_GetStateBool("Module_Selected_"+eSimulationTerminalModules_Scene_Plains, false)==false && 
+							ImGui_GetStateBool("Module_Selected_"+eSimulationTerminalModules_Scene_Forest, false)==false)
+						{
+							ImGui_DoLabelExt("ArkTerminalSetupStatusRequiredModule_Ground", label, ImGui_NrmPosGroup(0, fInfoY, 0), ImGui_NrmSizeGroup(1, 0.1));
+							lErrorCount++;
+							fInfoY+=0.085;
+						}
+						ImGui_SetModColorMul(cColor_White);
+					ImGui_GroupEnd();
+				
+					/////////////////////////
+					// Memory gauge
+					//label.mbUseBackgroundGfx=false;
+					ImGui_SetModColorMul(lMemory <= lMaxMemory ? cColor_White : cColor_Red);
+					ImGui_DoLabelExt("ArkTerminalMemory", label, ImGui_NrmPosGroup(0.05, 0.575, 1), ImGui_NrmSizeGroup(0.9, 0.06));
+					ImGui_SetTransCategory("");
+					label.mFontAlign = eFontAlign_Right;
+					ImGui_DoLabelExt(lMemory+"TB / "+lMaxMemory+"TB", label, ImGui_NrmPosGroup(0.05, 0.575, 1), ImGui_NrmSizeGroup(0.9, 0.06));
+					ImGui_DoGauge(StationGui_CreateDefaultGaugeData(), lMemory/float(lMaxMemory), ImGui_NrmPosGroup(0.05, 0.625, 1), ImGui_NrmSizeGroup(0.9, 0.1));
+					ImGui_SetTransCategory("02_06_theta_tunnels");
+					ImGui_SetModColorMul(cColor_White);
+					
+					/////////////////////////
+					// Next Button
+					ImGui_SetModUseInput(lMemory <= lMaxMemory && lErrorCount==0);
+					ImGui_SetModUISizeVertExpansion(4.5, 0);
+					if (ImGui_DoButton("NextButton", "ArkTerminalSetupNext", ImGui_NrmPosGroup(0.55, 0.775, 1), ImGui_NrmSizeGroup(0.4, 0.175)))
+					{
+						StationGui_SetActiveApp(eSimulationTerminalApp_Loading);
+						ImGui_SetStateInt("NextApp", eSimulationTerminalApp_MindSetup);
+					}
+				
+				ImGui_DoWindowEnd();
+			}
+
+			//-------------------------------------------------------
+			
+			int ModuleSelection(int alModule, float afY, int alMaxMemory, const cImGuiButtonData &in aButton)
+			{
+				cImGuiLabelData label = ImGui_GetDefaultLabel();
+				label.mFontAlign = eFontAlign_Right;
+				label.mFont.mvSize = ImGui_NrmSizeKeepRatio(0.045);
+				
+				bool bPressed = ImGui_DoToggleButtonExt("ArkTerminalModule_"+alModule, "ArkTerminalModule_System_"+alModule, 
+														ImGui_GetStateBool("ModuleChecked_"+alModule, false), aButton, 
+														ImGui_NrmPosGroup(0, afY, 1), ImGui_NrmSizeGroup(1, 0.06)); 
+														
+				int lMemory = int(alMaxMemory*ImGui_GetStateFloat("Module_Memory_"+alModule, 0));
+				ImGui_SetTransCategory("");
+				ImGui_DoLabelExt("["+lMemory+"TB]", label, ImGui_NrmPosGroup(0, afY, 1), ImGui_NrmSizeGroup(1, 0.06));
+				ImGui_SetTransCategory("02_06_theta_tunnels");
+				
+				ImGui_SetStateBool("Module_Selected_"+alModule, bPressed);
+				
+				if (bPressed)
+				{
+					int lType = ImGui_GetStateInt("Module_Type_"+alModule, eSimulationModuleType_Null);
+					ImGui_SetStateBool("Type_Selected_"+lType, true);
+				}
+				
+				return bPressed ? lMemory : 0;
+			}
+			
+			//} END WORLD SETUP APP
+			
+			//-------------------------------------------------------
+
+			/////////////////////////////////////////
+			// App *Mind Setup*
+			//{///////////////////////////////////////
+
+			//-------------------------------------------------------
+			
+			void ARKTerminal_MindSetup()
+			{
+				ImGui_GroupBegin(ImGui_NrmPosGroup(cVector3f(0.025, 0.025, 1)), ImGui_NrmSizeGroup(cVector2f(0.95, 0.95)));
+					
+					int lFileCount = 0;
+					if (cScript_GetGlobalVarBool("PlayerErasedLegacyData_0")==false)
+					{
+						lFileCount++;
+						ImGui_AddItemString("ArkTerminalScan_1");
+					}
+					if (cScript_GetGlobalVarBool("PlayerErasedLegacyData_1")==false)
+					{
+						lFileCount++;
+						ImGui_AddItemString("ArkTerminalScan_2");
+					}
+					if (cScript_GetGlobalVarBool("PlayerErasedLegacyData_2")==false)
+					{
+						lFileCount++;
+						ImGui_AddItemString("ArkTerminalScan_3");
+					}
+					if (cScript_GetGlobalVarBool("PlayerErasedLegacyData_3")==false)
+					{
+						lFileCount++;
+						ImGui_AddItemString("ArkTerminalScan_4");
+					}
+					
+					// Dummy scan
+					lFileCount++;
+					ImGui_AddItemString("ArkTerminalScan_5");
+					
+					int lSelection = StationGui_FileList("ArkTerminalScans", lFileCount, ImGui_NrmPosGroup(0.325, 0, 1), ImGui_NrmSizeGroup(0.35, 1));
+					
+					ImGui_SetModUseInput(lSelection > 0);
+					if (ImGui_DoButton("UploadScanButton", "ArkTerminalScanUpload", ImGui_NrmPosGroup(0.4125, 0.8, 3), ImGui_NrmSizeGroup(0.175, 0.15)))
+					{
+						if (lSelection != lFileCount)
+						{
+							StationGui_SetError("ArkTerminalError_IncorrectScan");
+							Voice_Play("1_LegacyScanUploadError");
+						}
+						else
+						{
+							ARKTerminal_InitRun();
+							StationGui_SetActiveApp(eSimulationTerminalApp_Loading);
+							ImGui_SetStateInt("NextApp", eSimulationTerminalApp_Run);
+						}
+					}
+				ImGui_GroupEnd();
+			}
+			
+			//} END MIND SETUP APP
+			
+			//-------------------------------------------------------
+
+			/////////////////////////////////////////
+			// App *Run*
+			//{///////////////////////////////////////
+
+			//-------------------------------------------------------
+			
+			array<tString> mvModules;
+			int mlModuleUpdateCount = -1;
+			int mlSimUpdateSpeedIndex = 0;
+
+			//-------------------------------------------------------
+			
+			void ARKTerminal_InitRun()
+			{
+				mvModules.push_back("ArkTerminalScan_5");
+				
+				for (int i = 1; i < eSimulationTerminalModules_Object_LastEnum; i++)
+				{
+					if (ImGui_GetStateBool("Module_Selected_"+i, false)==false)
+						continue;
+					
+					mvModules.push_back("ArkTerminalModule_System_"+i);
+				}
+				
+				ImGui_SetStateInt("CurrentModule", cMath_RandRectl(1, mvModules.length()-1));
+				ImGui_SetStateFloat("ModuleUpdate", cMath_RandRectf(0.017f, 0.1f));
+				
+				mlModuleUpdateCount = mvModules.length();
+			}
+
+			//-------------------------------------------------------
+			
+			void ARKTerminal_Run(float afTimeStep)
+			{
+				cImGuiWindowData window = PathOS_CreateDefaultWindowData();
+				window.mFont.mvSize = ImGui_NrmSizeKeepRatio(0.0625);
+				ImGui_DoWindowStart("ArkTerminalRunHeader", window, ImGui_NrmPosGroup(cVector3f(0.05,0.05, 1)), ImGui_NrmSizeGroup(cVector2f(0.9, 0.9)));	
+					ImGui_DoTextFrame("ARKVersion", 		  ImGui_NrmSizeGroup(cVector2f(0.05, 0)), 5, 0, ImGui_NrmPosGroup(cVector3f(0, 0.025, 0)), ImGui_NrmSizeGroup(cVector2f(1,1)));
+				
+					switch (mSimulationTerminalState)
+					{
+						case eSimulationTerminalState_Running:
+							ImGui_IncStateFloat("ModuleUpdate", -afTimeStep*gvArkSimulationSpeeds[mlSimUpdateSpeedIndex]);
+							if (ImGui_GetStateFloat("ModuleUpdate", 0) <= 0)
+							{
+								int lCurrentModule = ImGui_GetStateInt("CurrentModule", 0);
+								lCurrentModule = cMath_Wrap(lCurrentModule+1, -1, mvModules.length()-1);
+								ImGui_SetStateInt("CurrentModule", lCurrentModule);
+								ImGui_SetStateFloat("ModuleUpdate", cMath_RandRectf(0.03f, 0.04f));
+								mlModuleUpdateCount-=1;
+								if (mlModuleUpdateCount <= 0)
+								{
+									mlModuleUpdateCount = mvModules.length();
+									mfSimulationSeconds += .1;
+								}
+							}
+						break;
+					}
+			
+					if (mSimulationTerminalState == eSimulationTerminalState_Diagnostic)
+					{
+							int lDiagnosticCount = Depth_ImGui_Loading("Diagnostic", 0, 100, 3, true);
+						
+							if (lDiagnosticCount >= 100)
+							{
+								mSimulationTerminalState = eSimulationTerminalState_Stopped;
+								
+								if (mbFinishedSim==false)
+								{
+									Voice_Stop("Dialog");
+									Dialog_Begin();
+										Dialog_AddBranch("1_ArkSimComplete");
+											Dialog_AddSubject("1_ArkSimComplete");
+											if (mbPlayerScanned==false && mbKnowsAboutScanner) 
+												Dialog_AddSubject("1_ArkSimComplete_NotScanned_SeenScanner");
+											else if (mbPlayerScanned==false)
+												Dialog_AddSubject("1_ArkSimComplete_NotScanned_NotSeenScanner");
+											else
+											{
+												Dialog_AddSubject("1_ScanningAndSimDone_1", "");
+												Dialog_AddEndEvent_Callback("DialogEvent_ScanningAndSimDone", "1_ScanningAndSimDone_2");
+											}
+
+										Dialog_AddBranch("1_ScanningAndSimDone_2");
+											Dialog_AddSubject("1_ScanningAndSimDone_2", "Subject_EjectCathTool");
+									Dialog_End();
+									mbFinishedSim = true;
+								}
+							}
+								
+							ImGui_SetTransCategory("");
+							ImGui_DoTextFrame(lDiagnosticCount+"%", ImGui_NrmSizeGroup(cVector2f(0.05, 0.4)), 5, 0, ImGui_NrmPosGroup(cVector3f(0.0, -0.0, 0)), ImGui_NrmSizeGroup(cVector2f(1,1)));
+							
+							ImGui_SetTransCategory("02_06_theta_tunnels");
+							ImGui_DoTextFrame("ARKDiag", ImGui_NrmSizeGroup(cVector2f(0.05, 0.4)), 5, 0, ImGui_NrmPosGroup(cVector3f(0.0, -0.2, 0)), ImGui_NrmSizeGroup(cVector2f(1,1)));
+					}
+					else
+					{
+						ImGui_SetTransCategory("02_06_theta_tunnels");
+						
+						//////////////////////////
+						// Run Diagnostics Button
+						ImGui_SetModUseInput(mSimulationTerminalState == eSimulationTerminalState_Stopped && ImGui_GetStateInt("CurrentModule", -1)==0);
+						if (ImGui_DoButton("ButtonDiag","ButtonDiag", ImGui_NrmPosGroup(cVector3f(0.025, 0.2, 1)), ImGui_NrmSizeGroup(cVector2f(0.35, 0.15))))
+						{
+							mSimulationTerminalState = eSimulationTerminalState_Diagnostic;
+							Depth_Audio_Terminal_Forward("ArkTerminalSoundSource");
+						}
+				
+						/////////////////////////
+						// Start Sim Button
+						ImGui_SetModUseInput(mSimulationTerminalState != eSimulationTerminalState_Running);
+						if (ImGui_DoButton("ButtonStart","ButtonStart", ImGui_NrmPosGroup(cVector3f(0.025, 0.4, 1)), ImGui_NrmSizeGroup(cVector2f(0.35, 0.15))))
+						{
+							mSimulationTerminalState = eSimulationTerminalState_Running;
+							Depth_Audio_Terminal_Forward("ArkTerminalSoundSource");
+						}
+					
+						/////////////////////////
+						// Stop Sim Button
+						ImGui_SetModUseInput(mSimulationTerminalState == eSimulationTerminalState_Running);
+						if (ImGui_DoButton("ButtonStop","ButtonStop", ImGui_NrmPosGroup(cVector3f(0.025, 0.6, 1)), ImGui_NrmSizeGroup(cVector2f(0.35, 0.15))))
+						{
+							// Force player to slow down simulation in order to press stop at the right time
+							if (mlSimUpdateSpeedIndex<=1 && ImGui_GetStateInt("CurrentModule", -1)==0)
+							{
+								cLux_AddDebugMessage("Forced Dummy skip");
+								ImGui_SetStateInt("CurrentModule", 1);
+							}
+							
+							mSimulationTerminalState = eSimulationTerminalState_Stopped;
+							Depth_Audio_Terminal_Forward("ArkTerminalSoundSource");
+							
+							if (CathTool_IsInserted("CathTool") && ImGui_GetStateInt("CurrentModule", -1)!=0)
+								Voice_Play("1_ArkSimPaused");
+						}
+						
+						/////////////////////////
+						// Reset Sim Button
+						ImGui_SetModUseInput(mfSimulationSeconds > 0);
+						if (ImGui_DoButton("ButtonReset","ButtonReset", ImGui_NrmPosGroup(cVector3f(0.025, 0.8, 1)), ImGui_NrmSizeGroup(cVector2f(0.35, 0.15))))
+						{
+						
+							Depth_Audio_Terminal_Negative("ArkTerminalSoundSource");
+							mfSimulationSeconds = 0;
+						}
+						
+						/////////////////////////
+						// Speed Control
+						ImGui_SetModUseInput(mSimulationTerminalState == eSimulationTerminalState_Running);
+						if (ImGui_DoButton("SpeedDownButton","ArkTerminalRunSpeedDown", ImGui_NrmPosGroup(cVector3f(0.5, 0.725, 1)), ImGui_NrmSizeGroup(cVector2f(0.075, 0.15))))
+						{
+							Depth_Audio_Terminal_Negative("ArkTerminalSoundSource");
+							mlSimUpdateSpeedIndex = cMath_Min(mlSimUpdateSpeedIndex+1, gvArkSimulationSpeeds.length()-1);
+						}
+						if (ImGui_DoButton("SpeedUpButton","ArkTerminalRunSpeedUp", ImGui_NrmPosGroup(cVector3f(0.725, 0.725, 1)), ImGui_NrmSizeGroup(cVector2f(0.075, 0.15))))
+						{
+							Depth_Audio_Terminal_Confirm("ArkTerminalSoundSource");
+							mlSimUpdateSpeedIndex = cMath_Max(mlSimUpdateSpeedIndex-1, 0);
+						}
+						ImGui_SetModUseInput(true);
+					
+						ImGui_DoTextFrame("ARKModule", ImGui_NrmSizeGroup(cVector2f(0, 0)), 5, 0, ImGui_NrmPosGroup(cVector3f(0.5, 0, 0)), ImGui_NrmSizeGroup(cVector2f(1,1)));
+						ImGui_DoTextFrame(""+mvModules[ImGui_GetStateInt("CurrentModule", 0)], ImGui_NrmSizeGroup(cVector2f(0, 0)), 0, 0, ImGui_NrmPosGroup(cVector3f(0.55, 0.1, 0)), ImGui_NrmSizeGroup(cVector2f(1,1)));
+						ImGui_DoTextFrame("ARKTime", ImGui_NrmSizeGroup(cVector2f(0, 0)), 5, 0, ImGui_NrmPosGroup(cVector3f(0.5, 0.3, 0)), ImGui_NrmSizeGroup(cVector2f(1,1)));
+						ImGui_DoTextFrame("ARKTimeScale", ImGui_NrmSizeGroup(cVector2f(0, 0)), 5, 0, ImGui_NrmPosGroup(cVector3f(0.5, 0.6, 0)), ImGui_NrmSizeGroup(cVector2f(1,1)));
+						
+						ImGui_SetTransCategory("");
+						ImGui_DoTextFrame(String_SecondsToClockDisplay(mfSimulationSeconds,true,true,true,true), ImGui_NrmSizeGroup(cVector2f(0, 0)), 0, 0, ImGui_NrmPosGroup(cVector3f(0.55, 0.4, 0)), ImGui_NrmSizeGroup(cVector2f(1,1)));
+						
+						cImGuiTextFrameData text = ImGui_GetDefaultTextFrame();
+						text.mFontAlign = eFontAlign_Center;
+						ImGui_DoTextFrameExt(int(gvArkSimulationSpeeds[mlSimUpdateSpeedIndex]*100)+"%", ImGui_NrmSizeGroup(cVector2f(0, 0)), 0, 0, text, ImGui_NrmPosGroup(cVector3f(0.575, 0.75, 0)), ImGui_NrmSizeGroup(cVector2f(0.1525,1)));
+					}
+					
+				ImGui_DoWindowEnd();
+			}
+			
+			//} END RUN APP
+
+		//-------------------------------------------------------
+		
+		//} END ARK TERMINAL
+		
+		/////////////////////////////////////////////////////////
+		// Terminal: Main Termianl
+		//{//////////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		//-------------------------------------------------------
+		
+		void MainTerminal_OnGui(const tString&in asEntityName, float afTimeStep)
+		{
+			ImGui_SetTransCategory("02_06_theta_tunnels");
+			
+			// Data
+			cImGuiButtonData buttonData = StationGui_CreateDefaultButtonData();
+			buttonData.mFont.mvSize = cVector2f(20);
+			ImGui_SetDefaultButton(buttonData);
+			
+			StationGuiBG_Scanlines();
+			StationGuiBG_BackdropV2("background_logo_pathosstation");
+			StationGuiBG_TaskbarV2("thirdparty/train/transport_symbol_theta");
+			
+			bool bBackButtonActive = true;
+			
+			int lState = StationGui_GetActiveApp(0);
+			switch(lState)
+			{
+				case 0:
+				StationGui_AddApp("Documents", true, 1);
+				StationGui_AddApp("MainTerminal_ArkLocator", true, 2);
+				StationGui_AddApp("MainTerminal_Quiz", true, 3);
+				StationGui_MainMenu();
+				bBackButtonActive = false;
+				break;
+				
+				case 1:
+				Depth_ImGui_AddTextFile("MainTerminalFileName_1", "MainTerminalFile_1");
+				Depth_ImGui_AddTextFile("MainTerminalFileName_2", "MainTerminalFile_2");
+				StationGui_TextReaderMulti();
+				break;
+				
+				case 2:
+				MainTerminalArkLocator();
+				break;
+				
+				case 3:
+				bBackButtonActive = OnGuiQuizApp();
+				break;
+			}
+			
+			StationGui_BackButton(bBackButtonActive, 0);
+		}
+		
+		//-------------------------------------------------------
+		
+		void MainTerminalArkLocator()
+		{
+			cImGuiWindowData windowData = PathOS_CreateDefaultWindowData();
+			ImGui_DoWindowStart("MainTerminal_ArkLocator", windowData, ImGui_NrmPos(cVector3f(0.1875, 0.025, 1.5)), ImGui_NrmSize(cVector2f(0.625, 0.8)));
+			
+			cImGuiGfx map = cImGuiGfx("arklocator_map", eImGuiGfx_Texture);
+			cImGuiGfx ark = cImGuiGfx("arklocator_ark", eImGuiGfx_Texture);
+			
+			ImGui_DoImage(map, ImGui_NrmPosGroup(cVector3f(0, 0, 1)), ImGui_GetRatioCorrectSizeByNrmWidth(map, 1));
+			
+			ImGui_SetModColorMul(ImGui_FadeOscillateColor("PathGlow", cColor_White, cColor(1, 0.75), 2));
+			ImGui_DoImage(cImGuiGfx("arklocator_player", eImGuiGfx_Texture), ImGui_NrmPosGroup(cVector3f(0, 0, 1.1)), ImGui_GetRatioCorrectSizeByNrmWidth(map, 1));
+			ImGui_DoImage(cImGuiGfx("arklocator_path", eImGuiGfx_Texture), ImGui_NrmPosGroup(cVector3f(0, 0, 1.1)), ImGui_GetRatioCorrectSizeByNrmWidth(map, 1));
+			ImGui_DoImage(ark, ImGui_NrmPosGroup(cVector3f(0.8, 0.445, 1.2)), ImGui_GetRatioCorrectSizeByRect(ark, ImGui_NrmSizeGroup(0.112, 0.112)));
+			ImGui_SetModColorMul(cColor_White);
+			
+			ImGui_DoWindowEnd();
+		}
+				
+				/////////////////////////////////////////
+				// App Cloud Terminal: Quiz
+				//{//////////////////////////////////////
+				
+				int mlQuizCurrentQuestion=0;
+				int mlQuizSelectedAnswer=-1;
+				bool mbQuizLoading=false;
+				bool mbQuizOnStartScreen=true;
+				
+				//-------------------------------------------------------
+				
+				bool OnGuiQuizApp()
+				{
+					/////////////////////
+					// GUI Data
+					cImGuiWindowData windowData = PathOS_CreateDefaultWindowData();
+					
+					cImGuiButtonData buttonData = PathOS_CreateToggleButtonData();
+					buttonData.mFont.mvSize = ImGui_NrmSizeKeepRatio(0.05);
+					ImGui_SetDefaultButton(buttonData);
+					
+					cImGuiTextFrameData textFrame = PathOS_CreateDefaultTextFrameData();
+					textFrame.mFont.mvSize = ImGui_NrmSizeKeepRatio(0.04);
+					
+					cImGuiLabelData labelData;
+					labelData.mFont.SetFile("sansation_large_bold.fnt");
+					labelData.mFont.mvSize = ImGui_NrmSizeKeepRatio(0.07);
+					
+					///////////////////////
+					// Logic data
+					const int lNumOfQuestions = 5;
+					
+					bool bUseBackButton = false;
+						
+					
+					///////////////////////////
+					// Loading
+					if(mbQuizLoading)
+					{
+						tWString sDots = Depth_ImGui_Effect_AnimatedDots();
+						
+						ImGui_SetAlignment(eImGuiAlign_CenterLeft);
+						
+						ImGui_SetTextOverride(ImGui_Translate("MainTerminal_QuizSaving")+sDots);
+						ImGui_DoLabelExt("",labelData, ImGui_NrmPos(0.35, 0.5, 2));
+						ImGui_ClearTextOverride();
+						
+						float fQuizLoadingCount = Depth_ImGui_Loading("QuizLoading", 0, 1.0f, 1.65, true);
+
+						if(fQuizLoadingCount>=1.0f)
+						{
+							mlQuizCurrentQuestion++;
+							ImGui_SetFocus("QuizSelect$0");
+							mlQuizSelectedAnswer=-1;
+							mbQuizLoading=false;
+							
+							if (mlQuizCurrentQuestion>=lNumOfQuestions)
+							{
+								SetupQuizResults(0, 76, 10, 12, 2);
+								SetupQuizResults(1, 44, 52, 4, 0);
+								SetupQuizResults(2, 68, 24, 4, 4);
+								SetupQuizResults(3, 24, 32, 18, 26);
+								SetupQuizResults(4, 22, 26, 20, 32);
+							}
+						}
+					}
+					///////////////////////////
+					// Start Screen
+					else if(mbQuizOnStartScreen)
+					{
+						StationGui_DoWindowStart("MainTerminal_QuizAppName", windowData, ImGui_NrmPos(cVector3f(0.05, 0.22, 2)), ImGui_NrmSize(cVector2f(0.9, 0.45)), false);
+						
+							ImGui_DoTextFrameExt("MainTerminal_QuizIntro",
+												0, 0, 0,textFrame, ImGui_NrmPos(0.025f, 0.025f, 2), ImGui_NrmSizeGroup(0.95, 0.95));
+							
+						
+						StationGui_DoWindowEnd();
+						
+						if(ImGui_DoButton("QuizStart", "MainTerminal_QuizStart", ImGui_NrmPos(0.6, 0.69, 2), ImGui_NrmSize(0.325, 0.1)))
+						{
+							mbQuizOnStartScreen = false;	
+						}
+						
+						
+						bUseBackButton = true;
+					}
+					///////////////////////////
+					// End Screen
+					else if(mlQuizCurrentQuestion>=lNumOfQuestions)
+					{
+						StationGui_DoWindowStart("MainTerminal_QuizResultHeader", windowData, ImGui_NrmPos(cVector3f(0.05, 0.05, 2)), ImGui_NrmSize(cVector2f(0.9, 0.75)), false);
+						
+							ImGui_DoTextFrameExt("MainTerminal_QuizResultBody",
+												0, 0, 0,textFrame, ImGui_NrmPosGroup(0.025f, 0.025f, 2), ImGui_NrmSizeGroup(0.95, 0.95));
+							
+							for (int i = 0; i < 5; i++)
+							{
+								float fQuestionYPos = 0.175+(i/2)*0.275;
+								ImGui_DoTextFrameExt("MainTerminal_QuestionName_"+i,
+													0, 0, 0,textFrame, ImGui_NrmPosGroup(0.025+(i%2)*0.5, fQuestionYPos, 2), ImGui_NrmSizeGroup(0.95, 0.95));
+										
+								int lPlayerAnswer = ImGui_GetStateInt("PlayerAnswer_"+i, -1);			
+								for (int lAnswer = 0; lAnswer < 4; lAnswer++)
+								{
+									int lPercent = ImGui_GetStateInt("ARKQuizAnswers_"+i+"_"+lAnswer, 0);
+									tWString sAnswerText = ImGui_Translate("MainTerminal_Answer_"+lAnswer) + " - "+lPercent+"%";
+									
+									textFrame.mColorText = (lAnswer == lPlayerAnswer ? gStationGuiColor_Warning : gStationGuiColor_Disabled*2);
+									ImGui_SetTextOverride(sAnswerText);
+									ImGui_DoTextFrameExt("",
+														 0, 0, 0,textFrame, ImGui_NrmPosGroup(0.025+(i%2)*0.5, fQuestionYPos+0.05*(lAnswer+1), 2), 
+														 ImGui_NrmSizeGroup(0.95, 0.95));
+									ImGui_ClearTextOverride();
+									textFrame.mColorText = gStationGuiColor_Normal;
+								}
+								
+							}
+						
+						StationGui_DoWindowEnd();
+						
+						bUseBackButton = true;
+					}
+					///////////////////////////
+					// Answers & Questions
+					else
+					{
+						
+						float fQuestionWindowHeight = 0.5f;
+						////////////////////////
+						// Question
+						StationGui_DoWindowStart("MainTerminal_Question", windowData, ImGui_NrmPos(cVector3f(0.05, 0.05, 2)), ImGui_NrmSize(cVector2f(0.9, fQuestionWindowHeight)), false);
+							
+							ImGui_DoTextFrameExt("MainTerminal_Question_"+mlQuizCurrentQuestion,
+												0, 0, 0,textFrame, ImGui_NrmPos(0.025f, 0.025f, 2), ImGui_NrmSizeGroup(0.95, 0.95));
+												
+						StationGui_DoWindowEnd();
+						
+						////////////////////////
+						// Answer
+						StationGui_DoWindowStart("MainTerminal_Answers", windowData, 
+												 ImGui_NrmPos(cVector3f(0.05, fQuestionWindowHeight+0.07, 2)), 
+												 ImGui_NrmSize(cVector2f(0.9, 0.8-(fQuestionWindowHeight+0.07))), false);
+								
+							for(int i=0; i<4; ++i)
+							{
+								bool bAnswerSelected = ImGui_DoButton("QuizButton_"+i, "MainTerminal_Answer_"+i, 
+																	  ImGui_NrmPosGroup(0.025+(i/2)*0.5, 0.025+(i%2)*0.5, 2), 
+																	  ImGui_NrmSizeGroup(0.4, 0.4));
+								if (bAnswerSelected)
+								{
+									mbQuizLoading =true;
+									ImGui_SetStateInt("PlayerAnswer_"+mlQuizCurrentQuestion, i);
+								}
+							}
+							
+						StationGui_DoWindowEnd();
+					}
+					
+					
+					ImGui_SetAlignment(eImGuiAlign_TopLeft);
+					
+					return bUseBackButton;
+				}
+				
+				//-------------------------------------------------------
+				
+				void SetupQuizResults(int alQuestion, int alPercent_0, int alPercent_1, int alPercent_2, int alPercent_3)
+				{
+					ImGui_SetStateInt("ARKQuizAnswers_"+alQuestion+"_0", alPercent_0);
+					ImGui_SetStateInt("ARKQuizAnswers_"+alQuestion+"_1", alPercent_1);
+					ImGui_SetStateInt("ARKQuizAnswers_"+alQuestion+"_2", alPercent_2);
+					ImGui_SetStateInt("ARKQuizAnswers_"+alQuestion+"_3", alPercent_3);
+				}
+				
+				//-------------------------------------------------------
+				
+				//} END App Cloud Terminal: Quiz
+		
+		//-------------------------------------------------------
+		
+		//} END Main Terminal
+		
+		/////////////////////////////////////////////////////////
+		// Terminal: Mater's computer
+		//{//////////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		bool mbEmailSent = false;
+		
+		//-------------------------------------------------------
+		
+		void MastersTerminal_OnGui(const tString&in asEntityName, float afTimeStep)
+		{
+			ImGui_SetTransCategory("02_06_theta_tunnels");	
+			
+			StationGuiBG_BackdropV2("background/background_logo_pathosstation", cVector2f(0.05, 0.05));
+			StationGuiBG_Scanlines();
+			StationGuiBG_TaskbarV2("transport_symbol_theta");
+			
+			Depth_ImGui_AddTextFile("MastersTerminalFileName_1", "MastersTerminalFile_1");
+			Depth_ImGui_AddTextFile("MastersTerminalFileName_2", "MastersTerminalFile_2");
+			Depth_ImGui_AddTextFile("MastersTerminalFileName_3", "MastersTerminalFile_3");
+			Depth_ImGui_AddTextFile("MastersTerminalFileName_4", "MastersTerminalFile_4");
+			StationGui_TextReaderMulti();
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Master's Computer
+		
+		/////////////////////////////////////////////////////////
+		// Termianl: Security Console
+		//{//////////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		bool CheckForAndLoadChip(const tString &in asChipName, const tString &in asText)
+		{		
+			int lLoadState = ImGui_GetStateInt(asChipName + "_LoadState");
+			//////////////////////////////////////
+			// Check if chip was inserted
+			if (lLoadState==1)
+			{			
+				cGuiDialogBoxSettings dialogBox = StationGui_CreateDefaultDialogBox();
+				dialogBox.mType = eGuiDialogBoxType_OK;
+				eGuiDialogCode dialogCode = Depth_ImGui_DialogBox("", "ChipInserted", dialogBox);
+				
+				if (dialogCode == eGuiDialogCode_OK)
+				{
+					Depth_ImGui_ResetLoadingGauge(asChipName);
+					ImGui_IncStateInt(asChipName + "_LoadState", 1);
+				}
+			}
+			
+			//////////////////////////////////////
+			// Display loading dialog
+			else if (lLoadState==2)
+			{
+				tString sSoundFile="level_amb_shared_machines/tech/HDD/underload_loop";
+				tString sSoundSource="SecurityTerminalSoundSource";
+				float fFadeInTime = 0.0f;
+				float fFadeOutTime = 0.0f;
+		
+				if (DoLoadingWindow(asChipName, "LoadingChip_Header", asText, 2.0f, true, 1.5f, sSoundFile,sSoundSource, fFadeInTime, fFadeOutTime))
+				{
+					ImGui_IncStateInt(asChipName + "_LoadState", 1);
+					return true;
+				}
+			}
+			
+			return false;
+		}
+
+		//-------------------------------------------------------
+		
+		bool ChipIsLoading(const tString &in asChipName)
+		{
+			int lState = ImGui_GetStateInt(asChipName + "_LoadState") ;
+			return lState==1 || lState==2;
+		}
+
+		//-------------------------------------------------------
+		
+		bool ChipIsLoaded(const tString &in asChipName)
+		{
+			return ImGui_GetStateInt(asChipName + "_LoadState")==3;
+		}
+
+		//-------------------------------------------------------
+		
+		void AddChip(const tString &in asTerminal, const tString &in asChipName)
+		{
+			Terminal_SetImGuiStateInt(asTerminal, asChipName + "_LoadState", 1);
+		}
+
+		//-------------------------------------------------------
+		
+		void RemoveChip(const tString &in asTerminal, const tString &in asChipName)
+		{
+			Terminal_SetImGuiStateInt(asTerminal, asChipName + "_LoadState", 0);
+		}
+		
+		//-------------------------------------------------------
+		
+		void SecurityOfficeTerminal_OnGui(const tString&in asEntityName, float afTimeStep)
+		{
+			ImGui_SetTransCategory("02_06_theta_tunnels");
+			
+			/////////////////////////////////
+			// Backdrop
+			StationGuiBG_BackdropV2("background/background_logo_pathosstation", cVector2f(0.05, 0.05), 0.75);
+			StationGuiBG_Scanlines();
+			
+			CheckForAndLoadChip("UnformattedChip", "LoadingChip");
+			if (ChipIsLoading("UnformattedChip"))
+				return;
+			
+			bool bBackButtonEnabled = true;
+			int lActiveApp = StationGui_GetActiveApp(eSecurityConsole_MainMenu);
+			switch (lActiveApp)
+			{
+				case eSecurityConsole_MainMenu:
+					StationGui_AddApp("ButtonDoorLock", true, eSecurityConsole_EnterCode);
+					StationGui_AddApp("ButtonChipMaintenance", true, eSecurityConsole_FormatChip);
+					StationGui_MainMenu();
+					bBackButtonEnabled=false;
+				break;
+				
+				case eSecurityConsole_FormatChip:
+					SecurityOfficeTerminal_Format();
+				break;
+				
+				case eSecurityConsole_EnterCode:
+					SecurityOfficeTerminal_DoorLockApp();
+				break;
+			}
+			
+			StationGuiBG_TaskbarV2("thirdparty/train/transport_symbol_theta");
+			if (StationGui_BackButton(bBackButtonEnabled, 0))
+				Depth_ImGui_StopAudioFilePlayback(ImGui_GetName());
+		}
+		
+		//-------------------------------------------------------
+		
+		void SecurityOfficeTerminal_Format()
+		{
+			////////////////////////////
+			// Data
+			cImGuiTextFrameData textData = PathOS_CreateDefaultTextFrameData();
+			textData.mbUseBackgroundGfx = false;
+			textData.mFont.mvSize = ImGui_NrmSizeKeepRatio(0.035);
+			textData.mFontAlign = eFontAlign_Left;
+		
+			cImGuiButtonData button = PathOS_CreateDefaultButtonData();
+			button.mFont.mvSize = ImGui_NrmSizeKeepRatio(0.04);
+			ImGui_SetDefaultButton(button);
+			
+			////////////////////////////
+			// Handle insertion/loading of chip
+			if (CheckForAndLoadChip("FormattedChip", "RepairingChip"))
+			{
+				Depth_Audio_Terminal_Forward("SecurityTerminalSoundSource");
+				Entity_SetActive("security_chip_unformatted",true);
+				Entity_SetActive("security_chip_formatted",true);
+			}
+			if (ChipIsLoading("FormattedChip"))
+				return;
+				
+			cImGuiWindowData window = PathOS_CreateDefaultWindowData();
+			
+			ImGui_DoWindowStart("ButtonChipMaintenance", window, ImGui_NrmPosGroup(cVector3f(0.075, 0.15, 1)), ImGui_NrmSizeGroup(cVector2f(0.85, 0.5)));
+				
+				bool bUnformattedChipInserted = ChipIsLoaded("UnformattedChip");
+				bool bFormattedChipInserted = Entity_IsActive("security_chip_formatted");
+				if (bUnformattedChipInserted || bFormattedChipInserted)
+				{
+					ImGui_DoTextFrameExt("ChipInfo_ChipInserted", 0, 3, 0, textData, ImGui_NrmPosGroup(cVector3f(0.05,0.1,1)), ImGui_NrmSizeGroup(cVector2f(0.5, 0.8)));
+					if (!bFormattedChipInserted)
+					{
+						textData.mColorText = gStationGuiColor_Warning;
+						ImGui_DoTextFrameExt("ChipIntegrity_Error", 0, 3, 0, textData, ImGui_NrmPosGroup(cVector3f(0.55,0.4,1)), ImGui_NrmSizeGroup(cVector2f(0.435, 0.35)));
+					}
+					else
+					{
+						ImGui_DoTextFrameExt("ChipIntegrity_NoError", 0, 3, 0, textData, ImGui_NrmPosGroup(cVector3f(0.55,0.4,1)), ImGui_NrmSizeGroup(cVector2f(0.435, 0.35)));
+					}
+				
+					ImGui_SetModUseInput(bUnformattedChipInserted);
+					bool bFormat = ImGui_DoButtonExt("ButtonFormat","ButtonFormat", button, 
+												  ImGui_NrmPosGroup(cVector3f(0.55, 0.7, 1)), ImGui_NrmSizeGroup(cVector2f(0.4, 0.225)));
+					if (bFormat)
+					{
+						Depth_Audio_Terminal_Forward("SecurityTerminalSoundSource");
+						ImGui_SetStateInt("FormattedChip_LoadState", 2);
+						RemoveChip("SecurityOfficeTerminal", "UnformattedChip");
+					}
+				}
+				else
+				{
+					textData.mFontAlign = eFontAlign_Center;
+					textData.mFont.mvSize = ImGui_NrmSizeKeepRatio(0.045);
+					ImGui_DoTextFrameExt("ChipInfo_NoChipInserted", 0, 3, 0, textData, ImGui_NrmPosGroup(cVector3f(0.0,0.4,1)), ImGui_NrmSizeGroup(cVector2f(1, 0.8)));
+				}
+				ImGui_SetModUseInput(true);
+			
+			ImGui_DoWindowEnd();
+		}
+		
+		//-------------------------------------------------------
+		
+		bool mbShowUnlockedDialog = false;
+		
+		//-------------------------------------------------------
+		
+		void SecurityOfficeTerminal_DoorLockApp()
+		{
+			ImGui_SetTransCategory("02_06_theta_tunnels");
+			
+			PlayerEnterUnlockScreen();
+			
+			cStationGui_DoorLockAppSettings settings;
+			settings.mlMinLockedCount = 2;
+			settings.mMapBackground = cImGuiGfx("theta_securitymap", eImGuiGfx_Texture);
+			settings.mfSizeMul = 1.375;
+			settings.mvPosOffset = cVector3f(-0.125, -0.175, 0);
+			
+			{			
+				cDoorLockAppButton lock = CreateDoorLockButton("RoomName_ChemRoom", "theta_securitymap_lab", "chemroom_doorpanel");
+				lock.mvNrmPos = cVector3f(0.498, 0.18, 1);
+				lock.mvNrmSize = cVector2f(0.14, 0.08);
+				lock.mvButtons.push_back("chemroomB_doorpanel_3");
+				lock.mvButtons.push_back("chemroomB_doorpanel_4");
+				lock.msFocusText = "DoorPanel_MedLab";
+				lock.msSlideDoor = "chemroom*";
+				StationGui_DoorLockApp_AddLock(lock);
+			}
+			
+			{
+				cDoorLockAppButton lock = CreateDoorLockButton("RoomName_Infirmary", "theta_securitymap_infirmary", "infirmary_doorpanel");
+				lock.mvNrmPos = cVector3f(0.4955, 0.313, 1);
+				lock.mvNrmSize = cVector2f(0.1225, 0.085);
+				lock.mvButtons.push_back("infirmaryside_doorpanel_1");
+				lock.mvButtons.push_back("infirmaryside_doorpanel_2");
+				lock.msFocusText = "DoorPanel_Infirmary";
+				lock.msSlideDoor = "infirmary*";
+				StationGui_DoorLockApp_AddLock(lock);
+			}
+			
+			{
+				cDoorLockAppButton lock = CreateDoorLockButton("RoomName_LectureRoom", "theta_securitymap_conferencehall", "lectureroom_doorpanel");
+				lock.mvNrmPos = cVector3f(0.35, 0.313, 1);
+				lock.mvNrmSize = cVector2f(0.0831, 0.085);
+				lock.msFocusText = "DoorPanel_Conference";
+				lock.msSlideDoor = "lectureroom_door";
+				StationGui_DoorLockApp_AddLock(lock);
+			}
+			
+			{
+				cDoorLockAppButton lock = CreateDoorLockButton("RoomName_MastersOffice", "theta_securitymap_mastersroom", "mastersoffice_doorpanel");
+				lock.mvNrmPos = cVector3f(0.63, 0.313, 1);
+				lock.mvNrmSize = cVector2f(0.07, 0.085);
+				lock.msFocusText = "DoorPanel_Office";
+				lock.msSlideDoor = "mastersoffice_door";
+				StationGui_DoorLockApp_AddLock(lock);
+			}
+			
+			{
+				cDoorLockAppButton lock = CreateDoorLockButton("RoomName_ProbeDesign", "theta_securitymap_casing", "probedesign_doorpanel");
+				lock.mvNrmPos = cVector3f(0.3675, 0.6375, 1);
+				lock.mvNrmSize = cVector2f(0.1094, 0.085);
+				lock.msFocusText = "DoorPanel_Casing";
+				lock.msSlideDoor = "probedesign_door";
+				StationGui_DoorLockApp_AddLock(lock);
+			}
+			
+			{
+				cDoorLockAppButton lock = CreateDoorLockButton("RoomName_ProbeSimulation", "theta_securitymap_omegaroom", "probesimulation_doorpanel");
+				lock.mvNrmPos = cVector3f(0.6, 0.6575, 1);
+				lock.mvNrmSize = cVector2f(0.1531, 0.12);
+				lock.msFocusText = "OmegaManagement_Info";
+				lock.msSlideDoor = "probesimulation_door";
+				StationGui_DoorLockApp_AddLock(lock);
+			}
+			
+			{
+				cDoorLockAppButton lock = CreateDoorLockButton("RoomName_RocketDesign", "theta_securitymap_projectroom", "rocketdesign_doorpanel");
+				lock.mvNrmPos = cVector3f(0.35, 0.48, 1);
+				lock.mvNrmSize = cVector2f(0.0831, 0.15);
+				lock.msFocusText = "DoorPanel_Payload";
+				lock.msSlideDoor = "rocketdesign_door";
+				StationGui_DoorLockApp_AddLock(lock);
+			}
+			
+			{
+				cDoorLockAppButton lock = CreateDoorLockButton("RoomName_Security", "theta_securitymap_security", "security_doorpanel");
+				lock.mvNrmPos = cVector3f(0.35, 0.18, 1);
+				lock.mvNrmSize = cVector2f(0.0831, 0.08);
+				lock.msFocusText = "DoorPanel_Security";
+				lock.msSlideDoor = "security_door";
+				StationGui_DoorLockApp_AddLock(lock);
+			}
+			
+			{
+				cDoorLockAppButton lock = CreateDoorLockButton("RoomName_Storage", "theta_securitymap_storage", "storage_doorpanel");
+				lock.mvNrmPos = cVector3f(0.58, 0.48, 1);
+				lock.mvNrmSize = cVector2f(0.0831, 0.15);
+				lock.msFocusText = "DoorPanel_Storage";
+				lock.msSlideDoor = "storage_door";
+				StationGui_DoorLockApp_AddLock(lock);
+			}
+			
+			/*{
+				cDoorLockAppButton lock = CreateDoorLockButton("RoomName_ARKRoom", "theta_securitymap_cleanroom", "AirlockButton_North");
+				lock.mvNrmPos = cVector3f(0.4625, 0.75, 2);
+				lock.mvNrmSize = cVector2f(0.175, 0.175);
+				lock.msFocusText = "RoomName_ARKRoom";
+				StationGui_DoorLockApp_AddLock(lock);
+			}*/
+			
+			int lDoorCount = gvDoorControlButtons.length();
+			
+			StationGui_DoorLockApp(settings);
+		}
+		
+		void AddDoorLockButton(const tString &in asName, const tString &in asGfx, const tString &in asPanelPrefix)
+		{
+			cDoorLockAppButton lock = CreateDoorLockButton(asName, asGfx, asPanelPrefix);
+			StationGui_DoorLockApp_AddLock(lock);
+		}
+		
+		cDoorLockAppButton CreateDoorLockButton(const tString &in asName, const tString &in asGfx, const tString &in asPanelPrefix)
+		{
+			cDoorLockAppButton lock(asName);
+			lock.mvButtons.push_back(asPanelPrefix+"_1");
+			lock.mvButtons.push_back(asPanelPrefix+"_2");
+			lock.mGfx = cImGuiGfx(asGfx);
+			return lock;
+		}
+		
+		//-------------------------------------------------------
+		
+		void SecurityOfficeTerminal_GuiEnter(const tString&in asEntityName)
+		{
+		}
+		
+		//-------------------------------------------------------
+		
+		void SecurityOfficeTerminal_GuiLeave(const tString&in asEntityName)
+		{
+		}
+
+		//-------------------------------------------------------
+		
+		//} END Termianl Security Console
+
+		//////////////////////////////////////////
+		// Terminal: Elevator OutSide
+		//{///////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		void Elevator_Terminal_OnGui(const tString&in asEntityName, float afTimeStep)
+		{
+			ImGui_SetTransCategory("02_06_theta_tunnels");
+			
+			/////////////////////////////////
+			// Backdrop
+			StationGuiBG_Scanlines();
+			StationGuiBG_BackdropV2();
+			
+			if (mbUnformattedChipInPanel)
+				StationGui_BigStatusMessage("ChipCorrupt", gStationGuiColor_Warning, 0.825);
+			else if (mbPanelChipReplaced)
+				StationGui_BigStatusMessage("ChipSuccess", gStationGuiColor_Highlight, 0.9);
+			else
+				StationGui_BigStatusMessage("ChipEmpty");
+		}
+		
+		//-------------------------------------------------------
+		
+		void RenderKeypadSerial(const tString &in asEntityName, float afTimeStep)
+		{
+			ImGui_SetTransCategory("02_06_theta_tunnels");
+			
+			//////////////////////////////
+			// Window data
+			cImGuiWindowData window = PathOS_CreateDefaultWindowData();
+			window.mColorBase = gStationGuiColor_Normal;
+			
+			////////////////////////////
+			// Text
+			cImGuiTextFrameData textData = ImGui_GetDefaultTextFrame();
+			textData.mbUseBackgroundGfx = false;
+			textData.mFont.mvSize = ImGui_NrmSizeKeepRatio(0.1125);
+			textData.mFontAlign = eFontAlign_Center;
+			
+			/////////////////////////////////
+			// Backdrop
+			StationGuiBG_Scanlines();
+
+			tString sName = Entity_GetVarString(asEntityName, "");
+			
+			ImGui_DoWindowStart("", window, ImGui_NrmPosGroup(cVector3f(0.1,0.1, 1)), ImGui_NrmSizeGroup(cVector2f(0.8, 0.8)));
+				cVector2f vSize = ImGui_NrmSizeGroup(1);
+				vSize.y = ImGui_GetStateFloat(sName+"_Height", 0);
+				float fOverflow = ImGui_DoTextFrameExt(sName, ImGui_NrmSizeGroup(cVector2f(0, 0.0)), 0, 0, textData, ImGui_NrmPosGroup(0.0, 0.45, 1)-cVector3f_Up*vSize.y*0.5f, vSize);
+			ImGui_DoWindowEnd();
+
+			// Hack to make text appear at the center of the screen
+			if (fOverflow > 0)
+			{
+				ImGui_SetStateFloat(sName+"_Height", textData.mFont.mvSize.y*fOverflow);
+			}
+		}
+
+		//-------------------------------------------------------
+		
+		//} END Elevator Outside
+
+		//////////////////////////////////////////
+		// Termianal: Elevator Inside
+		//{///////////////////////////////////////
+
+		//-------------------------------------------------------
+		
+		void Elevator_InsideTerminal_OnGui(const tString&in asEntityName, float afTimeStep)
+		{
+			/////////////////
+			// Data
+			cImGuiButtonData button = ImGui_GetDefaultButton();
+			button.mGfxBackground = cImGuiGfx("");
+			button.mbUseInFocusGfx = false;
+			button.mbUseTriggeredGfx = false;
+			button.mbUseInFocusColor = true;
+			button.mbUseTriggeredColor = true;
+			button.mColorInFocus = cColor_White*1.3;
+			button.mColorTriggered = cColor_White*1.3;
+			ImGui_SetDefaultButton(button);
+			
+			cImGuiLabelData label = ImGui_GetDefaultLabel();
+			label.mFont.mvSize = ImGui_NrmSizeKeepRatio(0.06);
+			label.mFontAlign = eFontAlign_Center;
+			ImGui_SetDefaultLabel(label);
+			
+			/////////////////
+			// Default look
+			StationGuiBG_Scanlines();
+			StationGuiBG_Backdrop();
+			
+			bool bPrevFloorSelected = (ImGui_GetStateInt("FloorSelected_0", 0)==1 || ImGui_GetStateInt("FloorSelected_1", 0)==1);
+			bool bFloorSelected = bPrevFloorSelected;
+			
+			ImGui_GroupBegin(ImGui_NrmPosGroup(cVector3f(0,0.1, 1)), ImGui_NrmSizeGroup(cVector2f(1, 0.825)));
+			
+				ImGui_SetTransCategory("");	
+				///////////////////////////////
+				// ELEVATOR BUTTONS
+				if (DoElevatorButton(2, cColor(0.8, 0.4, 0, 1), "LABORATORY", false))
+				{
+					cLux_AddTodoMessage("Sound: Error sound, elevator already on this floor.");
+					Sound_CreateAtEntity("Elevator error","Entities_Station/doors/slidedoor_normal/button_signal_error",asEntityName,0,false);
+				}
+				if (DoElevatorButton(1, cColor(0.8, 0, 0, 1), "MAINTENANCE", true))
+				{
+					ImGui_SetStateInt("FloorSelected_1", 1);
+					bFloorSelected = true;
+				}		
+				if (DoElevatorButton(0, cColor(0.125, 0.75, 0.125, 1), "TRANSPORT ST.", true))
+				{
+					ImGui_SetStateInt("FloorSelected_0", 1);
+					bFloorSelected = true;
+				}	
+				
+				///////////////////////////////
+				// CHECK FOR FLOOR CHANGE
+				if (bFloorSelected && bPrevFloorSelected==false)
+				{				
+					Player_ChangeStateToNormal();
+					Entity_SetInteractionDisabled(asEntityName, true);
+					
+					HandleElevatorClosing();
+				}
+				
+				ImGui_SetModUseInput(true);
+			
+			ImGui_GroupEnd();
+		}
+
+		//-------------------------------------------------------
+		
+		bool DoElevatorButton(int lFloor, const cColor &in aCol, const tString&in asText, bool abToggle)
+		{
+			cImGuiLabelData labelBig = ImGui_GetDefaultLabel();
+			labelBig.mFont.mvSize = ImGui_NrmSizeKeepRatio(0.2);
+			labelBig.mFontAlign = eFontAlign_Left;
+			
+			ImGui_GroupBegin(ImGui_NrmPosGroup(cVector3f(0,0.66-lFloor*0.33, 1)), ImGui_NrmSizeGroup(cVector2f(1, 0.32)));
+				ImGui_SetModColorMul(aCol);
+				
+				bool bFloorSelected;
+				if (abToggle) 
+					bFloorSelected = ImGui_DoToggleButton("FloorButton_"+lFloor, "", false, ImGui_NrmPosGroup(cVector3f(0,0, 0.5)), ImGui_NrmSizeGroup(cVector2f(1, 1)));
+				else
+					bFloorSelected = ImGui_DoButton("FloorButton_"+lFloor, "", ImGui_NrmPosGroup(cVector3f(0,0, 0.5)), ImGui_NrmSizeGroup(cVector2f(1, 1)));
+				
+				ImGui_SetModColorMul(cColor_White);
+				ImGui_DoLabel(asText, ImGui_NrmPosGroup(cVector3f(0.25,0.35, 0.75)), ImGui_NrmSizeGroup(cVector2f(0.75, 0.3)));
+				tString sFloor = ""+lFloor;
+				if (lFloor == 0) sFloor = "B";
+				ImGui_DoLabelExt(sFloor, labelBig, ImGui_NrmPosGroup(cVector3f(0.075,0.1, 0.8)), ImGui_NrmSizeGroup(cVector2f(0.62, 0.3)));		
+			ImGui_GroupEnd();
+			
+			return bFloorSelected;
+		}
+		
+		//} END Elevator Inside
+
+		//-------------------------------------------------------
+	
+	//} END TERMINALS
+
+	//////////////////////////////////////////
+	// ==============
+	// READABLES
+	// ==============
+	//{///////////////////////////////////////
+	
+	//-------------------------------------------------------
+	
+		//////////////////////////////////////////
+		// Readable: White Board
+		//{///////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		void OnGuiReadableWhiteboard(float afTimeStep, float afAlpha)
+		{
+			cVector3f vPos;
+			vPos.x = -cLux_GetHudVirtualOffset().x;
+			vPos.y = -cLux_GetHudVirtualOffset().y;
+			
+			ImGui_GroupBegin(vPos, ImGui_GetSize());
+			
+			ImGui_SetTransCategory("02_06_theta_tunnels");
+			
+			ImGui_DrawReadableLabel("WhiteboardARK_Step1",
+				ImGui_NrmPosGroup(cVector3f(0.37f, 0.3f, 1)), 
+				ImGui_NrmSizeGroup(cVector2f(0.3f,0.075f)), 
+				afAlpha);
+				
+			ImGui_DrawReadableLabel("WhiteboardARK_Step2",
+				ImGui_NrmPosGroup(cVector3f(0.70f, 0.27f, 1)), 
+				ImGui_NrmSizeGroup(cVector2f(0.3f,0.075f)), 
+				afAlpha);
+				
+			ImGui_DrawReadableLabel("WhiteboardARK_Step3",
+				ImGui_NrmPosGroup(cVector3f(0.72f, 0.6f, 1)), 
+				ImGui_NrmSizeGroup(cVector2f(0.3f,0.075f)), 
+				afAlpha);
+				
+			ImGui_DrawReadableLabel("WhiteboardARK_Step4",
+				ImGui_NrmPosGroup(cVector3f(0.53f, 0.68f, 1)), 
+				ImGui_NrmSizeGroup(cVector2f(0.3f,0.075f)), 
+				afAlpha);
+
+			ImGui_DrawReadableLabel("WhiteboardARK_Lift",
+				ImGui_NrmPosGroup(cVector3f(0.63f, 0.15f, 1)), 
+				ImGui_NrmSizeGroup(cVector2f(0.3f,0.075f)), 
+				afAlpha);
+
+			ImGui_ResetModifiers();
+			
+			ImGui_GroupEnd();
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END White Board
+	
+	//-------------------------------------------------------
+	
+	//} END READABLES
+	
+	 //////////////////////////////////////////////////////////////////////////////////////////
+	 // ==============
+	 // AUDIO
+	 // ==============
+	 //{//////////////////////////////////////////////////////////////////////////////////////
+	
+	
+	
+	//----------------------------------------------------------------------
+	//{Music
+	
+	//Event Music
+	bool Trigger_LeaveVentMusic(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		Music_Play("02_06_exitvents", 0.55f, false, eMusicPrio_BigEvent);
+		return false;
+	}
+	
+	//----------------------------------------------------------------------
+	bool mbEmptyBedMusicPlayed = false;
+	
+	bool Trigger_EmptyBedMusic(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		if (mbEmptyBedMusicPlayed==false)
+		{
+			Music_Stop(1.0f, eMusicPrio_BgAmb);
+			mbAmbientMusicPlaying = false;
+			Music_FadeVolumeMul(1.0f, 2.0f);
+			Map_AddTimer("EmptyBedMusic", 1.0f, "EmptyBedMusicStart");
+			mbEmptyBedMusicPlayed = true;
+		}
+		return false;
+	}
+	
+	void EmptyBedMusicStart(const tString &in asTimer)
+	{
+		Music_Play("02_06_emptybed", 0.35f, false, eMusicPrio_BigEvent);
+		Map_AddTimer("StartAmbient", 11.f, "AmbientMusicHandler");
+	}
+	
+	//----------------------------------------------------------------------
+	
+	//Ambient Music
+	bool mbAmbientMusicPlaying = false;
+
+	void AmbientMusicHandler(const tString &in asTimer)
+	{
+		if (asTimer=="StartAmbient" && mbAmbientMusicPlaying==false && mbLightsOut==false)
+		{
+			cLux_AddDebugMessage("First stage ambient music triggering");
+			Music_PlayExt("02_06_ambient", true, 0.35f, 1.0f, 0.0f, 0.0f, eMusicPrio_BgAmb, true);
+			//Music_FadeVolumeMul(1.0f, 3.0f);
+			mbAmbientMusicPlaying = true;
+			
+			//Dynamic fades
+			Map_AddTimer("RandomFadeRider", cMath_RandRectf(8.f,12.f), "AmbientMusicFade");
+			Map_AddTimer("FadeOut", cMath_RandRectf(35.f,65.f), "AmbientMusicFade");
+		}
+		
+		//Fade Music back up
+		else if (asTimer=="AmbientMusicFadeBackIn" && mbAmbientMusicPlaying==true)
+		{
+			//Music_FadeVolumeMul(1.0f, cMath_RandRectf(12.f,15.f));
+			Map_AddTimer("FadeOut", cMath_RandRectf(35.f,65.f), "AmbientMusicFade");
+		}
+		else if (asTimer=="StopAmbientMusic" && mbAmbientMusicPlaying==true)
+		{
+			Music_Stop(4.5f, eMusicPrio_BgAmb);
+			Map_RemoveTimer("RandomFadeRider");
+			Map_RemoveTimer("FadeOut");
+			//Music_FadeVolumeMul(1.0f,1.0f);
+			mbAmbientMusicPlaying = false;
+		}
+	}
+	
+	void AmbientMusicFade(const tString &in asTimer)
+	{
+		if(asTimer=="FadeOut")
+		{	
+			Map_RemoveTimer("RandomFadeRider");
+			cLux_AddDebugMessage("Ambient Music Fading Out");
+			//Music_FadeVolumeMul(0.0f, cMath_RandRectf(12.0f,15.0f));
+			Map_AddTimer("AmbientMusicFadeBackIn", cMath_RandRectf(25.f,45.f), "AmbientMusicHandler");
+		}
+		if(asTimer=="RandomFadeRider")
+		{
+			cLux_AddDebugMessage("Ambient Music Fading");
+			Map_AddTimer("RandomFadeRider", cMath_RandRectf(10.f,15.f), "AmbientMusicFade");
+			//Music_FadeVolumeMul(cMath_RandRectf(0.65f, 1.2f), cMath_RandRectf(5.0f,8.0f));
+		}
+	}
+	
+	//---------------------------------------------------------------------
+	
+	bool Trigger_HallwayDroneMusic(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		Music_Play("02_06_hallwaydrone", 0.45f, true, eMusicPrio_BgAmb);
+		return false;
+	}
+	//} END Music
+		
+	//--------------------------------------------
+	//Akers end attack
+	bool mbEndAkersAudioPrepared = false;
+	bool Audio_AkersAttackPrepare(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		if (mbEndAkersAudioPrepared==false)
+		{	
+			cLux_AddDebugMessage("Audio prep");
+			cSound_FadeLowPassFilter(800.00, 0.0f, 5.0f, eSoundEntryType_World);
+			Sound_FadeGlobalVolume(0.65f, 3.0f, eSoundEntryType_WorldAll);
+			//Music_FadeVolumeMul(1.35, 3.0f);
+			mbEndAkersAudioPrepared = true;
+		}
+		return true;
+	}
+	
+	bool Audio_AkersAttackReset(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		if(mbEndAkersAudioPrepared==true)
+		{
+			cLux_AddDebugMessage("Reset audio prep");
+			cSound_FadeLowPassFilter(22000.00, 0.0f, 5.0f, eSoundEntryType_World);
+			Sound_FadeGlobalVolume(1.0f, 3.0f, eSoundEntryType_WorldAll);
+			//Music_FadeVolumeMul(1.0, 3.0f);
+			mbEndAkersAudioPrepared = false;
+		}
+		return true;
+	}
+	
+	bool Audio_AkersAttackPrepareFinalDuck(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		if(mbEndAkersAudioPrepared==true)
+		{
+			cLux_AddDebugMessage("Final audio prep");
+			Sound_FadeGlobalVolume(0.25f, 2.0f, eSoundEntryType_WorldAll);
+			cSound_FadeLowPassFilter(200.00, 0.0f, 2.0f, eSoundEntryType_World);
+		}
+		return true;
+	}
+	
+	//--------------------------------------------
+	
+	//////////////////////////////////////////
+	// Mind coral distant sweeteners
+	bool CollidePlayCoralSounds(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		return false; //Interferes with the Puppet, so disabling this for now!
+		
+		//cLux_AddDebugMessage("parent: " + asParent + " chld: " + asChild);
+		if (alState != 1) return true;
+		
+		////////////////////////////////////
+		// Play coral sounds when player goes in to certain areas
+		cLux_AddTodoMessage("SOUND: Bank of sounds for creepy coral creature lurking in vents/distance");
+		
+		tString sTargetArea = Entity_GetVarString(asChild,"");
+		Sound_CreateAtEntity("coral_"+sTargetArea,"02_06_theta_tunnels/sfx/distant_coral_movement",sTargetArea,0.0f,false,1.f);
+		
+		//Disable both sets of sound triggers to stop from spam
+		Entity_SetActive("Area_MindCoralSounds_*", false);
+		Entity_SetActive("Area_CoralSoundsArea_*", false);
+			
+		//Reenable areas after random time
+		Map_AddTimer("ResetCoralSoundAreas", cMath_RandRectf(35.0f, 55.0f), "MindCoralSoundTriggerEnable");
+		
+		//Add some fear breathing
+		Map_AddTimer("CoralSoundFearBreathing", cMath_RandRectf(3.0f, 5.0f), "CoralSoundFearBreathing");
+		Map_AddTimer("StopAmbientMusic", 1.0f, "AmbientMusicHandler");
+		Map_AddTimer("StartAmbient", cMath_RandRectf(8.f,12.f), "AmbientMusicHandler");
+		
+		return false;
+	}
+	
+	//-------------------------------------------------------
+
+	//////////////////////////////////////////
+	// Mind coral crawling sounds from vents etc
+	tString msCoralSoundArea = "";
+	bool MindCoralSoundTrigger(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		if (alState == 1)
+		{
+			cLux_AddDebugMessage("Coral vent sound triggered @ " + asChild);
+			msCoralSoundArea = Entity_GetVarString(asChild,"");
+			Sound_CreateAtEntity("mindcoral_crawling","02_06_theta_tunnels/sfx/vent_sweetener",msCoralSoundArea,0,false,1.0);
+			
+			//Disable both sets of sound triggers to stop from spam
+			Entity_SetActive("Area_MindCoralSounds_*", false);
+			Entity_SetActive("Area_CoralSoundsArea_*", false);
+			
+			//Reenable areas after random time
+			Map_AddTimer("ResetCoralSoundAreas", cMath_RandRectf(35.0f, 55.0f), "MindCoralSoundTriggerEnable");
+			
+			//Add some fear breathing
+			Map_AddTimer("CoralSoundFearBreathing", cMath_RandRectf(3.0f, 5.0f), "CoralSoundFearBreathing");
+		}
+		return true;
+	}
+	
+	void MindCoralSoundTriggerEnable(const tString &in asTimer)
+	{
+		cLux_AddDebugMessage("Coral sound triggers reenabled");
+		Entity_SetActive("Area_MindCoralSounds_*", true);
+		Entity_SetActive("Area_CoralSoundsArea_*", true);
+	}
+	
+	void CoralSoundFearBreathing (const tString &in asTimer)
+	{
+		Depth_Audio_Fear_LowIntensity();
+	}
+	
+	//}ENDAUDIO--------------------------------------------
+
+	
+	//-------------------------------------------------------
+}

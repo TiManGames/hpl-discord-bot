@@ -1,0 +1,9 @@
+=Compound Objects=
+Compound objects are actually groups of simple objects that are put together and transformed as a single one. Compounds are created by selecting multiple objects in the level and pressing '''B'''. Press '''B''' again to revert the compound back into individual objects.
+
+Parameter:
+
+*'''Name''': Name for the compound.
+*'''Position''': 3D Vector storing the position of the center of the compound.
+*'''Rotation''': 3D Vector storing the compound rotation. There can be restrictions on this, if a non rotatable object is included in the compound.
+*'''Scale''': 3D Vector storing the compound scale. There can be restrictions on this, if a non scalable object is included in the compound.

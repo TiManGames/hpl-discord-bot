@@ -1,0 +1,574 @@
+
+//------------------------------------------------------------
+
+#include "helpers/helper_imgui.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_font.hps"
+#include "InputHandler_Types.hps"
+
+//------------------------------------------------------------
+
+// Set to false to allow zoom areas and readables to work
+// without holding interact
+const bool gbReadablesHoldInteract = false;
+
+const float gfReadableFontSize = 23;
+const float gfReadableTitleSize = 30;
+const float gfReadableHintSize = 23;
+
+const float gReadableBorderSize = 0.05f;
+
+const float gfReadableScrollingInputTick = 0.1f;
+
+const float gfReadableFadeTime = 0.5f;
+const float gfHintFadeTime = 0.5;
+
+//------------------------------------------------------------
+
+enum eTextSide
+{
+	eTextSide_None,
+	eTextSide_Front,
+	eTextSide_Back
+}
+
+//------------------------------------------------------------
+
+class cUtility_Readable
+{
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+		mState = eTextSide_None;
+		mfTextAlpha = 0;
+		mfTextFadeTimer=0.0f;
+		mlTextFade=0;
+		mfCalculatedHeight = 0.0f;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupReading(const tString& in asCategory, const tString& in asFront, const tString& in asBack, const tString& in asTitle = "")
+	{
+		Reset();
+
+		msCategory = asCategory;
+		msFront = asFront;
+		msBack = asBack;
+		msTitle = asTitle;		
+		mAvailable = eTextSide_None;
+		mfHintFadeTimer = 0.0f;
+		mfAdditionalHintFadeTimer = 0.0f;
+		
+		if(msAdditionalHintEntry.length()>0)
+			Hint_ShowHint("Hints", msAdditionalHintEntry, true);
+		
+		//ReparseHints();
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetGuiFunction(const tString& in asFunction)
+	{
+		msGuiFunction = asFunction;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetMainHint(const tString& in asHintEntry)
+	{
+		msHintEntry = asHintEntry;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetAdditionalHint(const tString& in asHintEntry)
+	{
+		msAdditionalHintEntry = asHintEntry;
+	}
+	
+	//------------------------------------------------------------
+	
+	void ReparseHints()
+	{ 
+		//Warning("There are " + mvCurrentHintIcons.length() + " icons before clearing\n");
+		//mvCurrentHintLines.resize(0);
+		mvCurrentHintIcons.resize(0);
+		mvCurrentAdditionalHintIcons.resize(0);
+		
+		//mvCurrentHintLines.resize(0);
+		//mvCurrentHintIcons.resize(0);
+		//mvCurrentAdditionalHintLines.resize(0);
+		//		
+		//bool bShowGamepadVariant = cLux_GetInputHandler().IsGamepadConnected() && cLux_GetInputHandler().GetTimeSinceGamepadWasUsed(0)<0.5f;
+		//
+		//mFormatParams.mLabelText.mFont = cImGuiFont(Helper_Font_GetFontName(eLuxFontType_Default_Small), cVector2f(gfReadableHintSize));
+		//mFormatParams.mLabelText.mFontAlign = eFontAlign_Center;
+		//
+		///*
+		// * mFormatParams.mLabelKeyboardKey.mFont = cImGuiFont(Helper_Font_GetFontName(eLuxFontType_Vera), mFormatParams.mLabelText.mFont.mvSize*1.15f);
+		// * mFormatParams.mLabelKeyboardKey.mFontAlign = eFontAlign_Center;
+		// * mFormatParams.mLabelKeyboardKey.mColorBase = cColor(0.2f, 1.0f);
+		//*/
+		//
+		//mFormatParams.mfIconGamepadHeight = gfReadableHintSize*1.25f;
+		//mFormatParams.mfIconMouseHeight = gfReadableHintSize*1.5f;
+		//mFormatParams.mfIconKeyHeight = mFormatParams.mLabelText.mFont.mvSize.y*1.15f*1.4f;
+		//
+		//tString sCat = "Hints";
+		//if(bShowGamepadVariant)
+		//{
+		//	if(cLux_HasTranslation("HintsGamepad", msHintEntry))
+		//		sCat += "Gamepad";
+		//}
+		//
+		//float fDuration;
+		//
+		//cLux_ParseStringIntoScreenText(cLux_Translate(sCat, msHintEntry), cLux_GetGameHudImGui(), mFormatParams, 
+		//								mvCurrentHintLines, mvCurrentHintIcons, mvCurrentHintIconsPerLine, mfMaxHintIconHeight, fDuration);
+		//		
+		//// Additional hint
+		//if(msAdditionalHintEntry.length()>0)
+		//{
+		//	float fMaxAdditionalHintIconHeight;
+		//	
+		//	sCat = "Hints";
+		//	if(bShowGamepadVariant)
+		//	{
+		//		if(cLux_HasTranslation("HintsGamepad", msAdditionalHintEntry))
+		//			sCat += "Gamepad";
+		//	}
+		//	
+		//	cLux_ParseStringIntoScreenText(cLux_Translate(sCat, msAdditionalHintEntry), cLux_GetGameHudImGui(), mFormatParams, 
+		//									mvCurrentAdditionalHintLines, mvCurrentAdditionalHintIcons, mvCurrentAdditionalHintIconsPerLine, fMaxAdditionalHintIconHeight, fDuration);
+		//				
+		//	mfMaxHintIconHeight = cMath_Max(mfMaxHintIconHeight, fMaxAdditionalHintIconHeight);
+		//}
+	}
+	
+	//------------------------------------------------------------
+	
+	bool CanShowText()
+	{
+		if (mAvailable==eTextSide_None)
+			return false;
+			
+		if (msCategory==""&&msGuiFunction=="")
+			return false;
+
+		if (mAvailable == eTextSide_Front && (msFront==""&&msGuiFunction=="") )
+			return false;
+
+		if (mAvailable == eTextSide_Back && (msBack==""))
+			return false;
+
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	int mlMainHintID = -1;
+	void SetTextAvailable(eTextSide aSide)
+	{
+		eTextSide oldAvailable = mAvailable;
+		
+		mAvailable = aSide;
+			
+		if(oldAvailable!=mAvailable)
+		{
+			if(CanShowText())
+			{
+				mlMainHintID = Hint_ShowHint_Hold("Hints", msHintEntry, true, 1.5f, false);
+			}
+			else
+			{
+				Hint_Release(mlMainHintID);
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	bool ShowText()
+	{
+		if (!CanShowText())
+			return false;
+
+		Reset();
+		
+		mState = mAvailable;
+		mlTextFade=1;
+		
+		Hint_AddAsGiven(mlMainHintID);
+		Hint_Release(mlMainHintID);
+				
+		mlMainHintID = -1;
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	void HideText()
+	{		
+		if (mlTextFade==-1)
+			return;
+			
+		mfTextAlpha = 1.0f;
+		mfTextFadeTimer = 0.0f;
+		mlTextFade = -1;
+		
+		Hint_Release(mlMainHintID);
+		mlMainHintID = -1;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool IsShowingText()
+	{
+		return (mState!=eTextSide_None);
+	}
+	
+	//------------------------------------------------------------
+	
+	bool IsFading()
+	{
+		return (mlTextFade!=0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep)
+	{
+		if (mlTextFade!=0)
+		{
+			mfTextFadeTimer+=afTimeStep;
+			if (mlTextFade>0)
+			{
+				mfTextAlpha = cMath_Min(1.0f, mfTextFadeTimer/gfReadableFadeTime );
+				if (mfTextAlpha==1.0f)
+					mlTextFade=0;
+			}
+			else
+			{
+				mfTextAlpha = cMath_Max(0.0f, 1.0f-(mfTextFadeTimer/gfReadableFadeTime) );
+				if (mfTextAlpha==0.0f)
+				{
+					mlTextFade=0;
+					mState=eTextSide_None;
+				}
+			}
+		}
+		else
+		{
+			mfTextAlpha=1.0f;
+		}
+		
+		if ( (mState!=eTextSide_None) && (mState!=mAvailable) && !IsFading() )
+		{
+			HideText();
+		}
+	}
+		
+	//------------------------------------------------------------
+	
+	bool TextNeedsScrolling()
+	{
+		return false;
+	}
+	
+	void NextPage()
+	{
+		mlPage++;
+	}
+
+	int GetPage()
+	{
+		return mlPage;
+	}
+
+	int GetPageNum()
+	{
+		return mlPageNum;
+	}
+	
+	//------------------------------------------------------------
+	
+	void DrawGui(float afTimeStep)
+	{
+	/*
+		////////////////////////////////////////////////////////////
+		// Scrolling
+		mfScrollTimer+=afTimeStep;
+		if (TextNeedsScrolling() && (mfScrollTimer > gfReadableScrollingInputTick))
+		{
+			mfScrollTimer=0.0f;
+			
+			if ( (mlScrollAction==1) && (mfScrollOffset<mfOverlap) )
+			{
+				mfScrollOffset = cMath_Min(mfOverlap, mfScrollOffset+1.0f);
+			}
+			else if ( (mlScrollAction==-1) && (mfScrollOffset>0.0f) )
+			{
+				mfScrollOffset = cMath_Max(0.0f, mfScrollOffset-1.0f);
+			}
+		}*/
+		
+		cVector3f vPos = cLux_GetHudVirtualCenterScreenStartPos();
+		
+		cVector2f vScreenSize = cLux_GetHudVirtualCenterScreenSize();
+		cVector2f vSize = vScreenSize;
+		
+		/*
+		///////////////////////////////
+		// Hints
+		if (cLux_GetUserConfig().GetBool("Gameplay", "ShowHints", true))
+		{
+			if ( (mAvailable != eTextSide_None) && (mState == eTextSide_None) && CanShowText() )
+			{
+				mfHintFadeTimer=cMath_Min(mfHintFadeTimer+afTimeStep, gfHintFadeTime);
+			}
+			else
+			{
+				mfHintFadeTimer=cMath_Max(0.0f, mfHintFadeTimer-afTimeStep);
+			}
+			
+			if (msAdditionalHintEntry!="")
+			{
+				if (mState == eTextSide_None)
+				{
+					mfAdditionalHintFadeTimer=cMath_Min(mfAdditionalHintFadeTimer+afTimeStep, gfHintFadeTime);
+				}
+				else
+				{
+					mfAdditionalHintFadeTimer=cMath_Max(0.0f, mfAdditionalHintFadeTimer-afTimeStep);
+				}
+			}
+			
+			if ((mfHintFadeTimer>0.0f)||(mfAdditionalHintFadeTimer>0.0f))
+			{
+				DrawGuiHints(afTimeStep);
+			}
+		}
+		 * */
+		
+		///////////////////////////////
+		// Text
+		if (mState != eTextSide_None)
+		{
+			if ( (msGuiFunction!="")&&(mState==eTextSide_Front) )
+			{
+				// Adjust so that everything is 16:9
+				vSize.x = vSize.y/9.0f*16.0f;
+				vPos.x-= (vSize.x-vScreenSize.x)/2.0f;
+				
+				ImGui_GroupBegin(vPos, vSize);
+		
+				cLuxMap @pMap = cLux_GetCurrentMap();
+				if(pMap.ScriptPrepare("void " + msGuiFunction + "(float afTimeStep, float afAlpha)" ) )
+				{
+					pMap.SetArgFloat(0, afTimeStep);
+					pMap.SetArgFloat(1, mfTextAlpha);
+					pMap.ScriptExecute();
+				}
+				
+				ImGui_ResetModifiers();
+				ImGui_GroupEnd();
+		
+			}
+			else
+			{
+				ImGui_GroupBegin(vPos, vSize);
+				DrawGuiText(afTimeStep);
+				ImGui_ResetModifiers();
+				ImGui_GroupEnd();
+			}
+		}
+		
+
+	}
+	
+	//------------------------------------------------------------
+
+	void DrawGuiText(float afTimeStep)
+	{
+		ImGui_SetTransCategory(msCategory);
+		
+		cImGuiLabelData titleData;
+		titleData.mFont.mvSize = cVector2f(gfReadableTitleSize);
+		titleData.mFontAlign = eFontAlign_Center;
+
+		cImGuiTextFrameData textData = ImGui_GetDefaultTextFrame();
+		textData.mbUseBackgroundGfx = false;
+		textData.mFont.mvSize = cVector2f(gfReadableFontSize);
+			
+		tString sText = msFront;
+		if (mState == eTextSide_Back)
+			sText = msBack;
+				
+		ImGui_GroupBegin( ImGui_NrmPosGroup(cVector3f(0.125f, 0.14f, 0)), ImGui_NrmSizeGroup(cVector2f(0.75f,0.725f)) );
+		
+		float fTextWidth = 1.0f-gReadableBorderSize*2.0f;
+		float fTitleHeight = 0.0f;
+		if (msTitle!="")
+		{
+			fTitleHeight = 0.1f;
+		}
+		
+		if (mfCalculatedHeight==0.0f)
+		{
+			// Funky little hack to work out how much text we've got
+			// Draws a set of invisible text frames on the first time we open 
+			// the text box.
+			mfCalculatedHeight = 0.1f;
+			float fOverlap = 0.0f;
+			float fMaxHeight = 1.0f-gReadableBorderSize*2.0f-fTitleHeight;
+			ImGui_SetModColorMul(cColor(1.0f,1.0f,1.0f,0.0f));
+			do
+			{
+				mfCalculatedHeight+=0.1f;
+				fOverlap = ImGui_DoTextFrameExt(sText, cVector2f_Zero, 5, 0, textData, 
+								 ImGui_NrmPosGroup(cVector3f(gReadableBorderSize, gReadableBorderSize, 0)), ImGui_NrmSizeGroup(cVector2f(fTextWidth,mfCalculatedHeight)));
+			} while ((fOverlap>0.0f) && (mfCalculatedHeight<fMaxHeight));
+			ImGui_ResetModifiers();
+			
+			// Get number of pages
+			float fRows = 0;
+			mlPage = 0;
+			mlPageNum = 0;
+
+			while(fRows < fOverlap)
+			{
+				fRows += 16;
+				mlPageNum++;
+			}
+		}
+		
+		float fBGHeight = mfCalculatedHeight+gReadableBorderSize*2.0f+fTitleHeight;
+		float fYOffset = (1.0f-fBGHeight)*0.5f;
+		
+		///////////////////////////////
+		// Draw background
+		ImGui_DrawReadableBackground(ImGui_NrmPosGroup(cVector3f(0.0f, fYOffset, 0)), 
+									ImGui_NrmSizeGroup(cVector2f(1.0f,fBGHeight)), mfTextAlpha);
+									
+		ImGui_SetModColorMul(cColor(1.0f,1.0f,1.0f,mfTextAlpha));
+		
+		///////////////////////////////
+		// Draw title
+		ImGui_DoLabelExt(msTitle, titleData, 
+			ImGui_NrmPosGroup(cVector3f(0.0f, fYOffset-0.025f, 1)), ImGui_NrmSizeGroup(cVector2f(1.0f,0.2f)), 1.0f);
+		
+		///////////////////////////////
+		// Draw Text
+		mfScrollOffset = mlPage * 16;
+		ImGui_DoTextFrameExt(sText, cVector2f_Zero, 5, mfScrollOffset, textData, 
+			ImGui_NrmPosGroup(cVector3f(gReadableBorderSize, fYOffset+gReadableBorderSize+fTitleHeight, 0)),
+			ImGui_NrmSizeGroup(cVector2f(fTextWidth,mfCalculatedHeight)));
+
+		if(mlPageNum > 0)
+		{
+			////////////
+			// Draw page num
+			ImGui_SetTransCategory("");
+			textData.mFontAlign = eFontAlign_Center;
+			ImGui_DoTextFrameExt("("+(mlPage + 1) + " / " + (mlPageNum + 1)+")", cVector2f_Zero, 5, 0, textData, 
+			ImGui_NrmPosGroup(cVector3f(gReadableBorderSize + fTextWidth - 0.04, fYOffset+gReadableBorderSize+fTitleHeight + mfCalculatedHeight, 0)),
+			ImGui_NrmSizeGroup(cVector2f(0.1,0.1)));
+		}
+
+		ImGui_GroupEnd();	
+	}
+	
+	//------------------------------------------------------------
+	
+	/*
+	void DrawGuiHints(float afTimeStep)
+	{
+		float fAlpha = mfHintFadeTimer/gfHintFadeTime;
+		ImGui_SetTransCategory("Hints");
+				
+		cVector3f vMainHintPos(ImGui_NrmPosGroup(0.0f, 0.78f, 1));
+		cVector2f vHintLineSize(ImGui_NrmSize(1.0f,0.0f).x, mFormatParams.mLabelText.mFont.mvSize.y);
+		
+		///////////////////////////////
+		// Main hint
+		if (fAlpha>0.0f)
+		{
+			cColor col = cColor(1.0f,1.0f,1.0f, fAlpha);
+			ImGui_SetModColorMul(col);
+			
+			cLux_DrawScreenText(cLux_GetCurrentImGui(), afTimeStep, mFormatParams.mLabelText, vMainHintPos, vHintLineSize.x, 0.0f,
+													mvCurrentHintLines, mvCurrentHintIcons, mvCurrentHintIconsPerLine);
+		}
+		
+		///////////////////////////////
+		// Additional hint
+		fAlpha = mfAdditionalHintFadeTimer/gfHintFadeTime;
+		if ((fAlpha>0.0f)&&(msAdditionalHintEntry!=""))
+		{
+			cColor col = cColor(1.0f,1.0f,1.0f, fAlpha);
+			
+			ImGui_SetModColorMul(col);
+			
+			cVector3f vAdditionalHintPos(vMainHintPos);
+			vAdditionalHintPos.y += gfReadableHintSize + mfMaxHintIconHeight*0.75f;
+				
+			cLux_DrawScreenText(cLux_GetCurrentImGui(), afTimeStep, mFormatParams.mLabelText, vAdditionalHintPos, vHintLineSize.x, 0.0f,
+													mvCurrentAdditionalHintLines, mvCurrentAdditionalHintIcons, mvCurrentAdditionalHintIconsPerLine);
+		}
+		
+		ImGui_ResetModifiers();
+	}
+	 * */
+	
+	//------------------------------------------------------------
+	
+	tString msCategory;
+	tString msFront;
+	tString msBack;
+	tString msTitle;
+	eTextSide mState;
+	eTextSide mAvailable;
+	
+	tString msGuiFunction;
+	
+	tString msAdditionalHintEntry;
+	tString msHintEntry = "ReadableTextHint";
+	
+	float mfMaxHintIconHeight;
+	
+	cLuxScreenTextFormatParameters mFormatParams;
+	
+	array<tWString>						mvCurrentHintLines;
+	[nosave] array<cLuxScreenTextIcon@>	mvCurrentHintIcons;
+	[nosave] array<array<int>> 			mvCurrentHintIconsPerLine;
+	
+	array<tWString>						mvCurrentAdditionalHintLines;
+	[nosave] array<cLuxScreenTextIcon@>	mvCurrentAdditionalHintIcons;
+	[nosave] array<array<int>>			mvCurrentAdditionalHintIconsPerLine;
+	
+	/////////////////////////////
+	// Fading
+	float mfTextAlpha;
+	float mfTextFadeTimer;
+	int mlTextFade;
+	
+	//////////////////////////////////////
+	// Scrolling
+	int mlPageNum = 0;
+	int mlPage = 0;
+	float mfScrollOffset = 0;
+	
+	/////////////////////////////////////
+	// Display
+	float mfCalculatedHeight = 0.0f;
+	
+	////////////////////////////////////
+	// Hint Fading
+	float mfHintFadeTimer=0.0f;
+	float mfAdditionalHintFadeTimer=0.0f;
+}
+
+//------------------------------------------------------------

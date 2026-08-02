@@ -1,0 +1,394 @@
+#include "agents/Agent_Humanoid.hps"
+
+#include "helper/helper_effects.hps"
+#include "helper/helper_audio.hps"
+#include "helpers/helper_modules.hps"
+
+class cScrAgentRossCube : cScrAgentHumanoid
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupCharBody()
+	{
+		cScrAgentHumanoid::SetupCharBody();
+	}
+	
+	//------------------------------------------------------------
+		
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		mbUsePathfinding=false;
+		
+		cScrAgentHumanoid::SetupAfterLoad(apWorld, apVars, apInstanceVars);
+		
+		m_mtxBaseMeshOffset = mBaseObj.GetCharBody().GetEntityOffset();
+	
+		///////////////////////////////
+		//Head Tracker
+		@mpHeadTracker = cLux_CreateEntityComponent_HeadTracker(mBaseObj);
+		mpHeadTracker.LoadFromVariables(apVars);
+		
+		iCharacterBody@ pCharBody = mBaseObj.GetCharBody();
+		
+		pCharBody.SetMaxPositiveMoveSpeed(eCharDir_Forward, apVars.GetVarFloat("Movement_ForwadSpeed", 1));
+		pCharBody.SetMaxNegativeMoveSpeed(eCharDir_Forward, -apVars.GetVarFloat("Movement_BackwardSpeed", 1));
+		pCharBody.SetMaxPositiveMoveSpeed(eCharDir_Right, apVars.GetVarFloat("Movement_SidewaysSpeed", 1));
+		pCharBody.SetMaxNegativeMoveSpeed(eCharDir_Right,-apVars.GetVarFloat("Movement_SidewaysSpeed", 1));
+		pCharBody.SetMoveAcc(eCharDir_Forward, apVars.GetVarFloat("Movement_Acc", 1));
+		pCharBody.SetMoveAcc(eCharDir_Right, apVars.GetVarFloat("Movement_Acc", 1));
+		pCharBody.SetMoveDeacc(eCharDir_Forward, apVars.GetVarFloat("Movement_Deacc", 1));
+		pCharBody.SetMoveDeacc(eCharDir_Right, apVars.GetVarFloat("Movement_Deacc", 1));
+		pCharBody.SetMaxPushMass(17);
+		
+		
+		///////////////////////////////
+		//Mover setup
+		mpMover.SetMaxForwardSpeed(apVars.GetVarFloat("Movement_ForwadSpeed", 1));
+		mpMover.SetMaxBackwardSpeed(apVars.GetVarFloat("Movement_BackwardSpeed", 1));
+		mpMover.SetWallAvoidanceActive(false);
+		
+		///////////////////////////////
+		//Mesh setup
+		cMeshEntity @pEntity = mBaseObj.GetMeshEntity();
+		pEntity.SetVisible(mbVisible);
+		
+		EyeTracking_RegisterEntity(mBaseObj.GetID(), false, false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnAfterWorldLoad()
+	{
+		cScrAgentHumanoid::OnAfterWorldLoad();
+		
+		iLuxEntity @pEntity = mBaseObj.GetMap().GetEntityByName("Player");
+		if(pEntity !is null)
+		{
+			mpHeadTracker.SetTrackEntity(pEntity);
+		}
+		else
+		{
+			Error("Could not find headtracker target entity 'Player' for entity '"+mBaseObj.GetName()+"'");
+		}
+		
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnUpdate(float afTimeStep)
+	{
+		cScrAgentHumanoid::OnUpdate(afTimeStep);
+		
+		////////////////////////////////////////////
+		// Get player state This is tailored for the ross in 3.2 cage!
+		bool bChangedState=false;
+		float fDistToPlayer = mBaseObj.GetDistanceToPlayer();
+		bool InPlayerLOS = fDistToPlayer<7 && mBaseObj.GetEntityIsInPlayerFOV();
+		int lState = cLux_GetPlayer().GetCurrentStateId();
+		bool bPlayerReading = 	lState == ePlayerState_Terminal ||
+								lState == ePlayerState_Read;
+								
+		if (mfForceVisibleTime > 0.0f)
+			mfForceVisibleTime -= afTimeStep;
+		
+		float fDist = mBaseObj.GetDistanceToPlayer();
+		
+		mfVoiceCheckCount+=afTimeStep;
+		if((mfVoiceCheckCount>0.1 || mbVisible) && Voice_CharacterIsSpeaking("Ross"))
+		{
+			Effect_VideoDistortion_Start(1.0f, 0.3, 0.1, 0.1);
+			
+			mfVoiceCheckCount=0;
+			if(mbVisible==false)
+			{
+				mbVisible=true;
+				bChangedState=true;
+			}
+			mfVisibleCount=0.5f;
+			
+			////////////////////////////////////////////
+			// Hide Ross for a bit when the player blinks
+			if (EyeTracking_IsAiReactive() && EyeTracking_HasPlayerBlinked())
+			{
+				mbVisible = false;
+				bChangedState=true;
+			}
+			
+			////////////////////////////////////////////
+			// Hide Ross for a bit when the player looks at him
+//			if (EyeTracking_IsEntityBeingLookedAt(mBaseObj.GetID()))
+//			{
+//				mbVisible = false;
+//				bChangedState=true;
+//			}
+		}
+		
+		if(mbVisible)
+		{
+			mfVisibleCount-=afTimeStep;
+			if(mfVisibleCount<0)
+			{
+				mfVisibleCount = cMath_RandRectf(16.0f, 29.0f);
+				mbVisible=false;
+				bChangedState=true;
+			}
+		}
+		else
+		{
+			if(mfVisibleCount > 0 && (InPlayerLOS==false || fDistToPlayer>8))
+			{
+				mfVisibleCount -= afTimeStep;
+			}
+			
+			mfGoVisibleCheckCount-=afTimeStep;
+			if(mfGoVisibleCheckCount <= 0)
+			{
+				mfGoVisibleCheckCount = cMath_RandRectf(0.2f, 2.0f);
+				
+				if(InPlayerLOS && mfVisibleCount<0)
+				{
+					if(cMath_RandRectl(0, 2)==0)
+					{
+						mbVisible=true;
+						bChangedState=true;
+						mfVisibleCount=cMath_RandRectf(0.3f, 1.25f);
+					}
+					else
+					{
+						mfVisibleCount=cMath_RandRectf(1.0f, 8.0f);
+					}
+					
+					
+				}
+			}			
+		}
+		
+		///////////////////////////////
+		// Shaking
+		if(bChangedState)
+		{
+			cMeshEntity @pEntity = mBaseObj.GetMeshEntity();
+			
+			bool bVisible = mbVisible;
+			
+			pEntity.SetVisible(bVisible);
+						
+			if(bPlayerReading) bVisible = false;	
+			
+			if(bPlayerReading==false)
+			{
+				Effect_TimeGlitch_Start(0.1, 0.5, 0.1, true, 0.6f);
+				Effect_Shake_Start(0.185, 0.2, 0.05, 0.05, cVector3f(1, 0.5, 0));
+				Effect_VideoDistortion_Start(1.0f, 0.3, 0.1, 0.1);	
+			}
+				
+			if(mbVisible)
+			{
+			}
+			else
+			{
+				mBaseObj.GetCharBody().SetEntityOffset(m_mtxBaseMeshOffset);
+				mfShakeCount=0;
+				mbShaking=true;
+				
+				if(cMath_RandRectl(0, 3)==0 && mfForceVisibleTime <= 0.0f)
+					mbStayInvisible=true;
+			}
+		}
+				
+		///////////////////////////////
+		// Shaking
+		if(mbVisible)
+		{
+			mfShakeCount -= afTimeStep;
+			if(mfShakeCount<=0)
+			{
+				mbShaking = !mbShaking;
+				
+				if(mbShaking)
+				{
+					mfShakeCount = cMath_RandRectf(0.1, 0.3f);
+				}
+				else
+				{
+					mfShakeCount = cMath_RandRectf(0.1, 1.3f);
+				}
+			}
+			
+			if(mbShaking)
+			{
+				cVector3f vShake = cMath_RandRectVector3f(-0.2f, 0.2f)*0.7;
+				vShake.y*=0.05f;
+				cMatrixf mtxOffset = m_mtxBaseMeshOffset;
+				mtxOffset.SetTranslation(m_mtxBaseMeshOffset.GetTranslation() + vShake);
+			
+				mBaseObj.GetCharBody().SetEntityOffset(mtxOffset);
+			}
+		}
+		
+		
+		///////////////////////////////
+		// Rotation
+		if(mBaseObj.GetAngleToPlayer2D() > cMath_ToRad(55))
+		{
+			if(fDist < 15 && InPlayerLOS && mbVisible)
+			{
+				Effect_TimeGlitch_Start(1, 1, 0.1, fDist<9, fDist<5? 0.5f : 0.25f);
+			}
+			mpMover.TurnInstantlyToPos(mBaseObj.GetPlayerFeetPos());
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetProperties()
+	{
+		cScrAgentHumanoid::ResetProperties();
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnRecieveMessage(int alMessageId, cLuxEntityMessageData @apData)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnSetActive(bool abX)
+	{
+		cScrAgentHumanoid::OnSetActive(abX);
+		
+		if(abX)
+		{
+			cMeshEntity @pEntity = mBaseObj.GetMeshEntity();
+			pEntity.SetVisible(mbVisible);
+		}
+		else
+		{
+			mbVisible=false;
+			mfVisibleCount=0;
+			DistortionEffect_RemoveInstance(mBaseObj.GetID());
+			mbDistortionActive=false;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	bool CanInteract(int alType, iPhysicsBody@ apBody)
+	{
+		return false;
+	}
+	
+	//------------------------------------------------------------
+		
+	bool OnInteract(int alType, iPhysicsBody@ apBody, const cVector3f &in avFocusPos, const tString&in asData)
+	{
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	int GetInteractIconId(int alType, iPhysicsBody@ apBody)
+	{
+		return eCrossHairState_None;
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// CUSTOM
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_ForceInvisible()
+	{
+		mbForceInvisible = cScript_GetGlobalArgBool(0);
+		if (mbForceInvisible)
+			mfForceVisibleTime = 0.0f;
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_ForceVisible()
+	{
+		mfForceVisibleTime = cScript_GetGlobalArgFloat(0);
+		mfVisibleCount = 0;
+		if (mfForceVisibleTime > 0)
+			mbForceInvisible = false;
+	}
+	
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		afStartY = cLux_DrawDebugText("DistanceToPlayer: "+mBaseObj.GetDistanceToPlayer(),afStartY);
+		afStartY = cLux_DrawDebugText("mfVisibleCount: "+mfVisibleCount,afStartY);
+		afStartY = cLux_DrawDebugText("Visible: "+mbVisible,afStartY);
+		
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	cMatrixf m_mtxBaseMeshOffset;
+	bool mbDistortionActive=false;
+	bool mbVisible=false;
+	float mfVisibleCount=0;
+	float mfGoVisibleCheckCount=0;
+	float mfShakeCount=0;
+	bool mbShaking=false;
+	bool mbStayInvisible=false;
+	float mfStayInvisibleCount=0;
+	float mfVoiceCheckCount=0;
+	
+	bool mbForceInvisible = false;
+	float mfForceVisibleTime = 0.0f;
+	
+	cLuxHeadTracker @mpHeadTracker;
+	
+	//------------------------------------------------------------
+		
+}	

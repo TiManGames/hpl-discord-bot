@@ -1,0 +1,847 @@
+#include "interfaces/Agent_SwimBot.hps"
+#include "helpers/helper_map.hps"
+#include "helpers/helper_audio.hps"
+
+enum eWorkerState
+{
+	eWorkerState_Wander,
+	eWorkerState_HeadPound,
+	eWorkerState_Scavenge,
+	eWorkerState_AvoidPlayer,
+	eWorkerState_AttackPlayer,
+	eWorkerState_DoNothing,
+}
+
+enum eWorkerSpeed
+{
+	eWorkerSpeed_Scavenge,
+	eWorkerSpeed_Wander,
+	eWorkerSpeed_Dash,
+	eWorkerSpeed_Fast,
+	eWorkerSpeed_Slow,
+	eWorkerSpeed_Hunt,
+	eWorkerSpeed_Attack,
+}
+
+enum eWorkerMood
+{
+	eWorkerMood_Uncaring,
+	eWorkerMood_Avoid,
+	eWorkerMood_Attack,	
+}
+
+//-------------------------------------------------------
+
+const float gfWorkerAvoidPlayerDistance = 5.0f;
+const float gfWorkerHuntPlayerDistance = 12.0f;
+
+//-------------------------------------------------------
+
+const tString gsMoveLoopSound = "NPC_Creatures/Foley/Underwater/Construct_Worker/loop";
+const tString gsIdleLoopSound = "NPC_Creatures/Foley/Underwater/Construct_Worker/idle";
+const tString gsMoveLoopStartSound = "NPC_Creatures/Foley/Underwater/Construct_Worker/start";
+const tString gsMoveLoopStopSound = "NPC_Creatures/Foley/Underwater/Construct_Worker/stop";
+const float gfMoveLoopSoundMinSpeed =0.1;
+	
+//-------------------------------------------------------
+
+class cScrAgentWorker : cScrAgentSwimBot
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		cScrAgentSwimBot::Init();
+		
+		mIdleState = eWorkerState_Wander;
+		mMood = eWorkerMood_Uncaring;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupCharBody()
+	{
+		cScrAgentSwimBot::SetupCharBody();
+		
+		iCharacterBody@ pCharBody = mBaseObj.GetCharBody();
+		
+		pCharBody.SetMass(80);
+		
+		pCharBody.SetMaxPositiveMoveSpeed(eCharDir_Forward,2.25f);
+		pCharBody.SetMoveAcc(eCharDir_Forward,3);
+		pCharBody.SetMoveDeacc(eCharDir_Forward,3);
+		pCharBody.SetMoveOppositeDirAccMul(eCharDir_Forward,1);
+		
+	}
+		
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld @apWorld,  cResourceVarsObject@ apVars,  cResourceVarsObject@ apInstanceVars)
+	{
+		cScrAgentSwimBot::SetupAfterLoad(apWorld, apVars, apInstanceVars);
+		
+		/////////////////////////////////
+		// Genral Setup
+		
+		msLoopSound_Move = gsMoveLoopSound;
+		msLoopSound_Idle = gsIdleLoopSound;
+		mfLoopSoundMinMoveSpeed = gfMoveLoopSoundMinSpeed;
+		
+		//gsMusic_Stalk = "02_02_fleshernear"
+		//gsMusic_Hunt = "02_02_flesherattacks"
+		mbBubbleEffectsActive = true;
+		
+		mpForceEmitter.SetActive(true);
+		mpForceEmitter.SetRadius(1.8f);
+		
+		/////////////////////////////////
+		// Mover
+		mpMover.SetMaxForwardSpeed(2.25f);
+		
+		mpMover.SetBackwardAnimName("Idle");
+		mpMover.SetWalkAnimName("Drive_fwd");
+		mpMover.SetRunAnimName("Drive_fwd");
+		mpMover.SetIdleAnimName("Idle");
+		
+		mpMover.SetStoppedToWalkSpeed(0.8);
+		mpMover.SetWalkToRunSpeed(4);
+		mpMover.SetWalkToStoppedSpeed(0.6);
+		mpMover.SetTurnStoppedToWalkSpeed(99.90f); //Meaning that we do not it!
+		mpMover.SetTurnWalkToStoppedSpeed(99.0f); //Meaning that we do not it!
+		
+		mpMover.SetupWallAvoidance(3.0f, 8.0f, 4);
+		
+		/////////////////////////////////
+		// Speed States
+		mpMover.AddSpeedState(eWorkerSpeed_Scavenge);
+		mpMover.SetSpeedState_Forward(1.6f);
+		
+		mpMover.AddSpeedState(eWorkerSpeed_Wander);
+		mpMover.SetSpeedState_Forward(1.2f);
+		mpMover.SetSpeedState_TurnSpeedMul(0.2);
+		mpMover.SetSpeedState_TurnMaxSpeed(1);
+		
+		mpMover.AddSpeedState(eWorkerSpeed_Slow);
+		mpMover.SetSpeedState_Forward(0.6f);
+		mpMover.SetSpeedState_Backward(0.6f);
+		
+		mpMover.AddSpeedState(eWorkerSpeed_Fast);
+		mpMover.SetSpeedState_Forward(2.9f);
+		
+		mpMover.AddSpeedState(eWorkerSpeed_Dash);
+		mpMover.SetSpeedState_Forward(4.2f);
+		
+		mpMover.AddSpeedState(eWorkerSpeed_Hunt);
+		mpMover.SetSpeedState_Forward(1.8f);
+		
+		mpMover.AddSpeedState(eWorkerSpeed_Attack);
+		mpMover.SetSpeedState_Forward(5.8f);
+		mpMover.SetSpeedState_ForwardAcc(10);
+		
+		
+		/////////////////////////////////
+		// States
+		mpStateMachine.AddState("Wander", eWorkerState_Wander);
+		mpStateMachine.AddState("HeadPound", eWorkerState_HeadPound);
+		mpStateMachine.AddState("Scavenge", eWorkerState_Scavenge);
+		mpStateMachine.AddState("AvoidPlayer", eWorkerState_AvoidPlayer);
+		mpStateMachine.AddState("AttackPlayer", eWorkerState_AttackPlayer);
+		mpStateMachine.AddState("DoNothing", eWorkerState_DoNothing);
+				
+		/////////////////////////////////
+		// Misc
+		mvStartPosition = mBaseObj.GetPosition();
+		mfStartYaw = mBaseObj.GetCharBody().GetYaw();
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnUpdate(float afTimeStep)
+	{
+		cScrAgentSwimBot::OnUpdate(afTimeStep);
+		
+		//////////////////////////
+		// Mood check
+		if(mpStateMachine.GetCurrentState() <= eWorkerState_Scavenge)
+		{
+			////////////////////////
+			// Avoid
+			if(mMood == eWorkerMood_Avoid)
+			{		
+				if(mBaseObj.GetDistanceToPlayer()<gfWorkerAvoidPlayerDistance)
+				{
+					mpStateMachine.ChangeState(eWorkerState_AvoidPlayer);
+				}
+			}
+			////////////////////////
+			// Attack
+			else if(mMood == eWorkerMood_Attack)
+			{	
+				if(	cMath_Vector3Dist(mvStartPosition, mBaseObj.GetPlayerPos())< gfWorkerHuntPlayerDistance &&
+					mBaseObj.GetDistanceToPlayer()<gfWorkerHuntPlayerDistance*0.7f)
+				{
+					mpStateMachine.ChangeState(eWorkerState_AttackPlayer);
+				}
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetProperties()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void BeforeEntityDestruction()
+	{
+		cScrAgentSwimBot::BeforeEntityDestruction();
+	}
+		
+	//------------------------------------------------------------
+	
+	void OnStartMove()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnConnectionStateChange(iLuxEntity@ apEntity,int alState)
+	{
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// STATES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+		///////////////////////////////////
+		// STATE: Default
+		///////////////////////////////////
+	
+		//------------------------------------------------------------
+		
+		
+		//------------------------------------------------------------
+	
+		///////////////////////////////////
+		// STATE: Scavenge
+		///////////////////////////////////
+	
+		//------------------------------------------------------------
+		
+		int mlScavengeState =0;
+		float mfPickUpHeight;
+	
+		//------------------------------------------------------------
+	
+		void State_Scavenge_Enter()
+		{
+			mlScavengeState =0;
+			mpMover.SetSpeedState(eWorkerSpeed_Scavenge);
+			mpStateMachine.AddTimer(0, 0);
+		}
+		
+		void State_Scavenge_Leave()
+		{
+			mpMover.SetUseMoveStateAnimations(true);
+			mBaseObj.GetCharBody().SetForceVelocity(cVector3f(0));
+		}
+		
+		//------------------------------------------------------------
+		
+		void State_Scavenge_Update(float afTimeStep)
+		{
+			////////////////////////
+			// Lower to proper height.
+			if(mlScavengeState==1)
+			{
+				float fGoalDiff = mfPickUpHeight - mBaseObj.GetPosition().y;
+			
+				float fAmount = fGoalDiff*60 - mBaseObj.GetCharBody().GetVelocity(afTimeStep).y*40;
+				mBaseObj.GetCharBody().AddForce(cVector3f(0,1,0) * fAmount);
+				
+				if(cMath_Abs(fGoalDiff) < 0.01)
+				{
+					mlScavengeState=2;
+					mpMover.PlayAnimation("Pick_up_item");
+					mBaseObj.GetCharBody().SetForceVelocity(cVector3f(0));
+					
+					mpStateMachine.StopTimer(1);
+				}
+			}
+		}
+		
+		//------------------------------------------------------------
+		
+		void State_Scavenge_TimerUp(uint64 alId) 
+		{
+			///////////////////////////////////
+			//Find a position to search for stuff
+			if(alId==0)
+			{
+				cAINode@ pNode = mpPathfinder.GetNodeAtPos(mvStartPosition, 2, 12, false, false, true,null);
+				if(pNode is null)
+				{
+					mpStateMachine.AddTimer(0, cMath_RandRectf(0.5, 1));
+					return;
+				}
+				mpPathfinder.MoveTo(pNode.GetPosition(), 1, true);
+				mlScavengeState =0;
+			}
+			///////////////////////////////////
+			// Lower to height time 
+			else if(alId==1)
+			{
+				mlScavengeState =0;
+				mBaseObj.GetCharBody().SetForceVelocity(cVector3f(0));
+				mpStateMachine.AddTimer(0, cMath_RandRectf(1, 2));
+			}
+		}
+		
+		//----------------------------------------------
+		
+		bool State_Scavenge_Message(int alMessageId)
+		{
+			////////////////////
+			// ANimation Over
+			if(alMessageId == eLuxEntityMessage_AnimationOver)
+			{
+				////////////////////////
+				//Picked up rock
+				if(mlScavengeState == 2)
+				{
+					//Go back to start
+					if(cMath_RandRectl(0,2)==0)
+					{
+						mlScavengeState =3;
+						mpPathfinder.MoveTo(mvStartPosition, 1, true);
+					}
+					//Scavange some more
+					else
+					{
+						mlScavengeState =0;
+						mpStateMachine.AddTimer(0, cMath_RandRectf(0, 2));
+					}
+				}
+				////////////////////////
+				//Dropped rock
+				else if(mlScavengeState == 4)
+				{
+					mlScavengeState =0;
+					mpStateMachine.AddTimer(0, cMath_RandRectf(2, 4));
+				}
+			}
+			////////////////////
+			// End of Path
+			if(alMessageId == eLuxEntityMessage_EndOfPath)
+			{
+				//At pick up point
+				if(mlScavengeState==0)
+				{
+					mlScavengeState =1; 
+					mBaseObj.GetDistanceToGround("State_Scavenge_Message_PickupPoint", 20, true, 10, 0.3, false);
+					
+					mpStateMachine.AddTimer(1, 4); //Time out!
+				}
+				//return with rock
+				else if(mlScavengeState==3)
+				{
+					mlScavengeState =4;
+					mpMover.PlayAnimation("Drop_item");
+				}
+			}
+			
+			return true;
+		}
+		
+		void State_Scavenge_Message_PickupPoint(float afDistance)
+		{
+			float fGroundDist = afDistance; 
+			mfPickUpHeight = (mBaseObj.GetPosition().y - fGroundDist);
+			mfPickUpHeight += 1.3f;
+		}
+	
+		//----------------------------------------------
+		
+		///////////////////////////////////
+		// STATE: Wander
+		///////////////////////////////////
+	
+		//------------------------------------------------------------
+		
+		void State_Wander_Enter()
+		{
+			mpMover.SetSpeedState(eWorkerSpeed_Wander);
+			mpStateMachine.AddTimer(0, 1);
+		}
+		
+		//------------------------------------------------------------
+		
+		void State_Wander_TimerUp(uint64 alId) 
+		{
+			///////////////////////////////////
+			//Find a position to search for stuff
+			if(alId==0)
+			{
+				if(cMath_RandRectl(0,4)==0)
+				{
+					mpStateMachine.AddTimer(0, cMath_RandRectf(2, 12));
+					return;
+				}
+				
+				cAINode@ pNode = mpPathfinder.GetNodeAtPos(mvStartPosition, 1, 12, false, false, true,null);
+				if(pNode is null)
+				{
+					mpStateMachine.AddTimer(0, cMath_RandRectf(0.5, 1));
+					return;
+				}
+				mpPathfinder.MoveTo(pNode.GetPosition(), 1, true);
+				
+				mpStateMachine.AddTimer(0, cMath_RandRectf(1, 5));
+			}
+		}
+		
+		//------------------------------------------------------------
+		
+		///////////////////////////////////
+		// STATE: DoNothing
+		///////////////////////////////////
+	
+		//------------------------------------------------------------
+		
+		void State_DoNothing_Enter()
+		{
+			mpMover.SetSpeedState(eWorkerSpeed_Slow);
+		}
+		
+		//------------------------------------------------------------
+		
+		///////////////////////////////////
+		// STATE: HeadPound
+		///////////////////////////////////
+	
+		//------------------------------------------------------------
+		
+		int mlHeadPoundState=0;
+	
+		//------------------------------------------------------------
+		
+		void State_HeadPound_Enter()
+		{
+			mpMover.SetSpeedState(eWorkerSpeed_Slow);
+			mpStateMachine.AddTimer(0, 1);
+			
+			if(mBaseObj.GetDistanceToPos(mvStartPosition)<0.25)
+			{
+				mlHeadPoundState=1;
+			}
+			else
+			{
+				mlHeadPoundState=0;
+				mpPathfinder.MoveTo(mvStartPosition,1,true);
+			}
+		}
+		
+		//------------------------------------------------------------
+		
+		void State_HeadPound_Update(float afTimeStep)
+		{
+			iCharacterBody@ pCharBody = mBaseObj.GetCharBody();
+			
+			if(mlHeadPoundState==1)
+			{
+				float fAngleDist = cMath_Abs(mfStartYaw -  pCharBody.GetYaw());
+				if(fAngleDist > 0.05)
+				{
+					cLux_AddDebugMessage("Turn");
+					mpMover.TurnToAngles(mfStartYaw, 0);
+				}
+				else
+				{
+					pCharBody.Move(eCharDir_Forward, -1);
+					if(mBaseObj.GetDistanceToPos2D(mvStartPosition)>1.5)
+					{
+						mlHeadPoundState =2;
+						mpMover.SetSpeedState(eWorkerSpeed_Dash);
+						mpStateMachine.AddTimer(0, cMath_RandRectf(3.0f,4.5f));
+					}
+				}
+			}
+			else if(mlHeadPoundState==2)
+			{
+				pCharBody.Move(eCharDir_Forward, 1);
+			}
+		}
+		
+		//------------------------------------------------------------
+		
+		void State_HeadPound_TimerUp(uint64 alId) 
+		{
+			if(alId == 0)
+			{
+				mlHeadPoundState =1;
+				mpMover.SetSpeedState(eWorkerSpeed_Slow);
+			}
+		}
+		
+		//------------------------------------------------------------
+	
+		///////////////////////////////////
+		// STATE: AvoidPlayer
+		///////////////////////////////////
+	
+		//------------------------------------------------------------
+		
+		void State_AvoidPlayer_Enter()
+		{
+			mpMover.SetSpeedState(eWorkerSpeed_Fast);
+			mpStateMachine.AddTimer(0, 0.1f);
+		}
+		
+		//------------------------------------------------------------
+		
+		void State_AvoidPlayer_TimerUp(uint64 alId) 
+		{
+			////////////////////////
+			// Check if Avoid is over
+			if(mBaseObj.GetDistanceToPlayer()>gfWorkerAvoidPlayerDistance+2.0f)
+			{
+				mpStateMachine.ChangeState(mIdleState);
+				return;
+			}
+			
+			////////////////////////
+			// Find point away from the player
+			cVector3f vFromPlayer = mBaseObj.GetPosition() - 
+									cLux_GetPlayer().GetCharacterBody().GetPosition();
+			vFromPlayer.y*=0.1f;
+			vFromPlayer.Normalize();
+			cVector3f vPos = mBaseObj.GetPosition() + vFromPlayer*8;
+			
+			
+			cAINode@ pNode = mpPathfinder.GetNodeAtPos(vPos, 0, 8, false, false, true,null);
+			if(pNode !is null)
+			{
+				mpPathfinder.MoveTo(pNode.GetPosition(), 1, false);
+				mpStateMachine.AddTimer(0, cMath_RandRectf(3, 6));
+			}
+			else
+			{
+				mpPathfinder.MoveTo(vPos, 1, false);
+				mpStateMachine.AddTimer(0, 1);
+			}
+		}
+		
+		//------------------------------------------------------------
+		
+		bool State_AvoidPlayer_Message(int alMessageId)
+		{
+			if(alMessageId == eLuxEntityMessage_EndOfPath)
+			{
+				mpStateMachine.StopTimer(0);
+				mpStateMachine.AddTimer(0, 0);
+			}
+			
+			return true;
+		}
+		
+		//------------------------------------------------------------
+		
+		///////////////////////////////////
+		// STATE: AttackPlayer
+		///////////////////////////////////
+	
+		//------------------------------------------------------------
+		
+		int mlAttackState=0;
+		tString msOnAttackCallback;
+	
+		//------------------------------------------------------------
+		
+		void State_AttackPlayer_Enter()
+		{
+			mpMover.SetSpeedState(eWorkerSpeed_Hunt);
+			mpStateMachine.AddTimer(0, 0);
+			
+			mlAttackState =0;
+		}
+		
+		//------------------------------------------------------------
+		
+		void State_AttackPlayer_Update(float afTimeStep)
+		{
+			if(mlAttackState==1)
+			{
+				mpMover.TurnToPos(mBaseObj.GetPlayerPos());
+				mBaseObj.GetCharBody().Move(eCharDir_Forward,1);
+				
+				// Hits player
+				if (mBaseObj.CollidesWithPlayer())
+				{
+					////////////////
+					// Callback
+					if (msOnAttackCallback != "")
+					{
+						cLuxMap@ pMap = cLux_GetCurrentMap();
+						if (pMap.ScriptPrepare("void " + msOnAttackCallback + "(const tString &in asEntity)"))
+						{
+							tString sName = mBaseObj.GetName();
+							pMap.SetArgString(0, sName);
+							pMap.ScriptExecute();
+						}
+					}
+
+					LeaveAttackState();
+				}
+			}
+			else if (mlAttackState==2)
+			{
+				mpMover.TurnToPos(mBaseObj.GetPlayerPos());
+				mBaseObj.GetCharBody().Move(eCharDir_Forward,-0.95);
+			}
+		}
+		
+		//------------------------------------------------------------
+		
+		void State_AttackPlayer_TimerUp(uint64 alId) 
+		{
+			/////////////////////////
+			// Movement
+			if(alId==0)
+			{
+				////////////////////////
+				// Check if the attack is over
+				if(cMath_Vector3Dist(mvStartPosition, mBaseObj.GetPlayerPos())> gfWorkerHuntPlayerDistance+2.0f )
+				{
+					mpStateMachine.ChangeState(mIdleState);
+					return;
+				}
+				
+				////////////////////////
+				// Move towards player
+				if(mlAttackState==0)
+				{
+					mpPathfinder.MoveTo(mBaseObj.GetPlayerPos(), 0, false);
+					mpStateMachine.AddTimer(0, 0.5f);
+					
+					if(mBaseObj.GetDistanceToPlayer()<5.0f)
+					{
+						mpMover.SetSpeedState(eWorkerSpeed_Attack);
+						mlAttackState=1;
+						mpPathfinder.Stop();
+						mpStateMachine.AddTimer(1, 3.f);
+					}
+				}
+				
+			}
+			/////////////////////////
+			// Attack timed out
+			else if(alId == 1)
+			{
+				LeaveAttackState();
+			}
+			/////////////////////////
+			// Wait after attack over
+			else if(alId==2)
+			{
+				mlAttackState=3;
+				
+				mpMover.SetSpeedState(eWorkerSpeed_Wander);
+				
+				mpPathfinder.MoveTo(mvStartPosition, 1, false);
+				
+				mpStateMachine.AddTimer(3, cMath_RandRectf(2,4));
+			}
+			/////////////////////////
+			// Some waiting is over
+			else if(alId==3)
+			{
+				mpMover.SetSpeedState(eWorkerSpeed_Hunt);
+				mpStateMachine.AddTimer(0, 0.2f);
+				mlAttackState=0;
+			}
+		}
+		
+		//------------------------------------------------------------
+		
+		void LeaveAttackState()
+		{
+			mpMover.SetSpeedState(eWorkerSpeed_Wander);
+			mlAttackState=2;
+			
+			mpStateMachine.StopTimer(1);
+			mpStateMachine.AddTimer(2, 2.25);
+		}
+		
+		//------------------------------------------------------------
+		
+		void _Global_IsAttacking()
+		{
+			cScript_SetGlobalReturnBool(mlAttackState == 1);
+		}
+		
+		//------------------------------------------------------------
+		
+		void _Global_SetOnAttackCallback()
+		{
+			msOnAttackCallback = cScript_GetGlobalArgString(0);
+		}
+		
+		//------------------------------------------------------------
+		
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPER
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetIdleMode(eWorkerState aState)
+	{
+		mIdleState = aState;
+		mpStateMachine.ChangeState(aState);
+	}
+	
+	//------------------------------------------------------------
+	
+		
+	/////////////////////////////////////////
+	// GLOBAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetIdleMode_Scavenger(){
+		SetIdleMode(eWorkerState_Scavenge);
+	}
+	
+	void _Global_SetIdleMode_Wanderer(){
+		SetIdleMode(eWorkerState_Wander);
+	}
+	
+	void _Global_SetIdleMode_HeadBanger(){
+		SetIdleMode(eWorkerState_HeadPound);
+	}
+	
+	void _Global_SetIdleMode_DoNothing(){
+		SetIdleMode(eWorkerState_DoNothing);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetSpeedState()
+	{
+		mpMover.SetSpeedState(cScript_GetGlobalArgInt(0));
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetMood_Avoid(){
+		mMood = eWorkerMood_Avoid;
+	}
+	
+	void _Global_SetMood_Attack(){
+		mMood = eWorkerMood_Attack;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnSetActive(bool abX)
+	{
+		cScrAgentSwimBot::OnSetActive(abX);
+	}
+	
+	//------------------------------------------------------------
+	
+	void GiveDamage(float afAmount, int alStrength, const tString&in asType, const tString&in asSource)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnHealthChange()
+	{
+	}
+		
+	//------------------------------------------------------------
+	
+	
+	/////////////////////////////////////////
+	// INPUT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	bool CanInteract(int alType, iPhysicsBody@ apBody)
+	{
+		return false;
+	}
+	
+	//------------------------------------------------------------
+		
+	bool OnInteract(int alType, iPhysicsBody@ apBody, const cVector3f &in avFocusPos, const tString&in asData)
+	{
+		return false;
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	cVector3f mvStartPosition;
+	float mfStartYaw;
+	int mIdleState;
+	int mMood;
+		
+	//------------------------------------------------------------
+	
+}

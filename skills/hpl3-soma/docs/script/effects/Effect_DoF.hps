@@ -1,0 +1,298 @@
+#include "effect/Effects.hps"
+
+/////////////////////////////////////////
+// SETTINGS - DEPTH OF FIELD
+/////////////////////////////////////////
+
+
+class cFadeVariable
+{
+	cFadeVariable()
+	{
+		mfFadeSpeed = 0;
+	}
+
+	void Reset(float afDefault)
+	{
+		mfGoal = mfValue = afDefault;
+		mfFadeSpeed = 0;
+	}
+
+	void StartFade(float afGoal, float afTime)
+	{
+		mfGoal = afGoal;
+		mfFadeSpeed = (mfGoal - mfValue) / cMath_Max(0.000001f, afTime);
+	}
+
+	void Update(float afTimeStep)
+	{
+		mfValue += mfFadeSpeed * afTimeStep;
+
+		if(mfFadeSpeed < 0 && mfValue <= mfGoal || 
+		   mfFadeSpeed > 0 && mfValue >= mfGoal)
+		{
+			mfValue = mfGoal;
+			mfFadeSpeed = 0;
+		}
+	}
+
+	bool IsActive()
+	{
+		return mfFadeSpeed != 0;
+	}
+
+	float mfValue;
+	float mfFadeSpeed;
+	float mfGoal;
+}
+
+class cDepthOfFieldInstance
+{
+	cDepthOfFieldInstance()
+	{
+		mFalloff.Reset(0.0f);
+	}
+
+	cDepthOfFieldInstance(int alID)
+	{
+		mlID = alID;
+		mFalloff.Reset(0.0f);
+	}
+
+	void Start(float afFocusStart, float afFocusEnd, float afFalloff, float afTime)
+	{
+		mFocusStart.Reset(afFocusStart);
+		mFocusEnd.Reset(afFocusEnd);
+
+		mFalloff.StartFade(afFalloff, afTime);
+	}
+
+	void FadeFocus(float afFocusStart, float afFocusEnd, float afTime)
+	{
+		mFocusStart.StartFade(afFocusStart, afTime);
+		mFocusEnd.StartFade(afFocusEnd, afTime);
+	}
+
+	void FadeFalloff(float afFalloff, float afTime)
+	{
+		mFalloff.StartFade(afFalloff, afTime);
+	}
+
+	void Update(float afTimeStep)
+	{
+				
+		mFocusStart.Update(afTimeStep);
+		mFocusEnd.Update(afTimeStep);
+		mFalloff.Update(afTimeStep);
+	}
+
+	bool IsActive()
+	{
+		return mFalloff.mfValue > 0 || mFalloff.mfFadeSpeed > 0;
+	}
+
+	cFadeVariable mFocusStart;
+	cFadeVariable mFocusEnd;
+	cFadeVariable mFalloff;
+
+	int mlID;
+}
+
+//------------------------------------------------------------
+
+class cScrEffect_DoF : iScrEffect, iScrEffect_Interface, iScrEffect_DepthOfField
+{
+
+	//----------------------------------
+	
+	void Init()
+	{
+		mlIDPool = 1;
+	}
+
+	//----------------------------------
+	
+	void OnDestroy()
+	{
+	}
+	
+	//----------------------------------
+	
+	/////////////////////////////////////////
+	// PULBIC METHODS
+	/////////////////////////////////////////
+	
+	//----------------------------------
+
+	int Start(float afFocusStart, float afFocusEnd, float afFocusFalloff, float afTime)
+	{
+		cDepthOfFieldInstance instance = cDepthOfFieldInstance(mlIDPool);
+
+		instance.Start(afFocusStart, afFocusEnd, afFocusFalloff, afTime);
+		mvInstances.push_back(instance);
+		
+		mBaseObj.SetActive(true);
+
+		return mlIDPool++;		
+	}
+	
+	//----------------------------------
+
+	void FadeFocus(int alID, float afFocusStart, float afFocusEnd, float afTime)
+	{
+		for(int i = 0; i < mvInstances.size(); ++i)
+		{
+			if(mvInstances[i].mlID == alID) 
+			{
+				mvInstances[i].FadeFocus(afFocusStart, afFocusEnd, afTime);
+				return;
+			}
+		}
+	}
+
+	//----------------------------------
+	
+	void FadeFalloff(int alID, float afFocusFalloff, float afTime)
+	{
+		for(int i = 0; i < mvInstances.size(); ++i)
+		{
+			if(mvInstances[i].mlID == alID) 
+			{
+				mvInstances[i].FadeFalloff(afFocusFalloff, afTime);
+				return;
+			}
+		}
+	}
+
+	//----------------------------------
+
+	void FadeOut(int alID, float afTime)
+	{
+		for(int i = 0; i < mvInstances.size(); ++i)
+		{
+			if(mvInstances[i].mlID == alID) 
+			{
+				mvInstances[i].FadeFalloff(0, afTime);
+				return;
+			}
+		}
+	}
+
+	//----------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL CALLBACKS
+	/////////////////////////////////////////
+	
+	
+	//----------------------------------
+	
+	void OnStart()
+	{
+	}
+
+	//----------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+		mBaseObj.SetActive(true);
+	}
+	
+	//----------------------------------
+	
+	void OnMapLeave(cLuxMap @apMap)
+	{
+		mvInstances.resize(0);
+	}
+
+	//----------------------------------
+	
+	void Reset()
+	{
+		mvInstances.resize(0);
+		if (cLux_GetCurrentMap()!=null)
+		{
+			cWorld@ pWorld = cLux_GetCurrentMap().GetWorld();
+			if (pWorld!=null)
+				pWorld.SetDepthOfFieldActive(false);
+		}
+	}
+
+	//----------------------------------
+	
+	
+	void Update(float afTimeStep)
+	{
+		///////////////
+		// Update and remove completed
+		for(int i = 0; i < mvInstances.size(); ++i)
+		{
+			mvInstances[i].Update(afTimeStep);
+		}
+
+		for(int i = 0; i < mvInstances.size(); ++i)
+		{
+			if(mvInstances[i].IsActive() == false)
+			{
+				//Is no longer active, remove
+				mvInstances[i--] = mvInstances[mvInstances.size() - 1];
+				mvInstances.pop_back();
+			}
+		}
+
+		cWorld@ pWorld = cLux_GetCurrentMap().GetWorld();
+
+		if(mvInstances.size() > 0)
+		{
+			////////////////////
+			// Calculate depth of field values by combining the instances
+			float fFocusStart = 0;
+			float fFocusEnd = 0;
+			float fFalloff = 0;
+			float fWeight = 0.000001f;
+
+			for(int i = 0; i < mvInstances.size(); ++i)
+			{
+				float fW = mvInstances[i].mFalloff.mfValue;
+				fWeight += fW;
+				fFalloff += fW * fW;
+				fFocusStart += mvInstances[i].mFocusStart.mfValue * fW;
+				fFocusEnd += mvInstances[i].mFocusEnd.mfValue * fW;
+			}
+
+			/////////////
+			// Normalize and set values and enable depth of field			
+			pWorld.SetDepthOfFieldFocusStart(fFocusStart / fWeight);
+			pWorld.SetDepthOfFieldFocusEnd(fFocusEnd / fWeight);
+			pWorld.SetDepthOfFieldFalloff(fFalloff / fWeight);
+			
+			pWorld.SetDepthOfFieldActive(true);
+		}
+		else
+		{
+			//No instances, disable depth of field
+			pWorld.SetDepthOfFieldActive(false);
+			mBaseObj.SetActive(false);
+		}
+	}
+	
+	//----------------------------------
+	
+	void OnDraw(float afFrameTime)
+	{
+		
+	}
+	
+	//----------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//----------------------------------
+	
+	array<cDepthOfFieldInstance> mvInstances;
+	int mlIDPool = 1;
+
+	//----------------------------------
+}

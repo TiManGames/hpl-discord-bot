@@ -1,0 +1,954 @@
+#include "helpers/helper_imgui.hps"
+#include "helpers/helper_props.hps"
+
+
+/////////////////////////////////////////
+// EFFECTS
+/////////////////////////////////////////
+
+//-------------------------------------------------------
+
+/**
+ *  Animates 3 dots that go ""->"."->". ."->". . ." and then start over.
+ */
+tString Depth_ImGui_Effect_AnimatedDots(const tString &in asVarName="__DefaultAnimDots")
+{
+	if(ImGui_IsFading(asVarName)==false)
+	{
+		ImGui_SetStateFloat(asVarName, 0);
+		ImGui_FadeStateFloat(asVarName, 1, 1, eEasing_Linear, true);
+	} 
+	float fT = ImGui_GetStateFloat(asVarName);
+	tString sDots = "";
+	if(fT>0.25) sDots = ".";
+	if(fT>0.5) sDots = ". .";
+	if(fT>0.75) sDots = ". . .";
+	return sDots;
+}
+
+//-------------------------------------------------------
+
+/**
+ *  Makes a character blink with a frequence by returning asChar or "" at regular intervals
+ */
+tString Depth_ImGui_Effect_BlinkChar(const tString &in asChar, float afFreq, const tString &in asVarName="__DefaultBlinkChar")
+{
+	if(ImGui_IsFading(asVarName)==false)
+	{
+		if(afFreq<=0) afFreq = 0.00001f;
+		
+		ImGui_SetStateFloat(asVarName, 0);
+		ImGui_FadeStateFloat(asVarName, 1, 1/afFreq , eEasing_Linear, true);
+	} 
+	float fT = ImGui_GetStateFloat(asVarName);
+	
+	return fT>0.5 ? asChar : "";
+}
+
+//-------------------------------------------------------
+
+/////////////////////////////////////////
+// DRAWING
+/////////////////////////////////////////
+
+//-------------------------------------------------------
+
+
+void Depth_ImGui_DrawLineDistortedGfx(	cImGuiGfx&in aGfx, 
+											const cVector3f&in avPos, 
+											const cVector2f&in avSize,
+											const cColor&in aColor,
+											float afDistortionAmount,
+											float afDistortionSpeed,
+											int alRandSeed=0)
+{
+		cVector2f vSize = avSize;
+		
+		int lFragments = 10 + int(afDistortionAmount*10);
+		cVector2f vFragmentSize = vSize;
+		cVector3f vFragmentPos = 0;
+		float fTotalSize = 0;
+		
+		float fT = ImGui_GetTimeCount();
+		fT *= afDistortionSpeed;
+		int lFragCount =alRandSeed;		
+		
+		while(fTotalSize < vSize.y)
+		{
+			float fHeight;
+			float fFloatSeed = fT*7*2 + 12319*lFragCount;
+			int lFragSeed = lFragCount + int(cMath_Sin(fT)*7 +cMath_Sin(fT*0.5)*14 + +cMath_Sin(fT*0.25)*14 + 12319*lFragCount);
+			
+			////////////////////////////
+			// Calculate height
+			fHeight= vSize.y/float(lFragments);
+			fHeight *= 0.5f + (cMath_FastRandomFloat(lFragSeed)+1)*0.5f;
+			//fHeight *= 0.5f + (cGenerate_GetNoisePerlin1D(fT*7)+1)*0.5f;
+			if(fTotalSize + fHeight > vSize.y) fHeight = vSize.y - fTotalSize;
+			
+			vFragmentSize.y = fHeight;
+			vFragmentPos.y = fTotalSize;
+			
+			////////////////////////////
+			// Calculate X-offset
+			float fXAmount = 	cGenerate_GetNoisePerlin1D(fFloatSeed) +
+								cGenerate_GetNoisePerlin1D(fFloatSeed*0.5f) +
+								cGenerate_GetNoisePerlin1D(fFloatSeed*0.25f);
+			vFragmentPos.x = fXAmount*vSize.x*0.3f*afDistortionAmount;
+			
+			////////////////////////////
+			// Calculate Y-offset
+			vFragmentPos.y += (cMath_FastRandomFloat(lFragSeed)-1)*5*afDistortionAmount;
+			
+			////////////////////////////
+			// Draw Graphics
+			aGfx.mvUVMin.y = fTotalSize / vSize.y;
+			aGfx.mvUVMax.y = (fTotalSize+fHeight) / vSize.y;
+			
+			cColor col = aColor;
+			float fCol = cMath_InterpolateLinear(1, (cMath_FastRandomFloat(lFragSeed)+1)*0.5, afDistortionAmount);
+			col = col * fCol;
+			
+			ImGui_DrawGfx(aGfx, avPos +vFragmentPos, vFragmentSize, col);
+			
+			////////////////////////////
+			// Update variables
+			fTotalSize += fHeight;
+			lFragCount++;
+		}
+}
+
+//-------------------------------------------------------
+
+/////////////////////////////////////////
+// SIZING
+/////////////////////////////////////////
+
+//-------------------------------------------------------
+
+enum eImGuiSizeType
+{
+	eImGuiSizeType_Default,
+	eImGuiSizeType_Normalized,
+	eImGuiSizeType_NormalizedGroup,
+	eImGuiSizeType_CorrectAspectWidth,
+	eImGuiSizeType_CorrectAspectWidthNormalized
+}
+
+//-------------------------------------------------------
+
+cVector2f Depth_ImGui_GetFinalSize(const cVector2f &in avInSize, const cImGuiGfx &in aGfx, eImGuiSizeType aType)
+{
+	cVector2f vFinalSize = avInSize;
+	
+	switch(aType)
+	{
+	case eImGuiSizeType_Normalized:
+		vFinalSize = ImGui_NrmSize(vFinalSize); break;
+	case eImGuiSizeType_NormalizedGroup:
+		vFinalSize = ImGui_NrmSizeGroup(vFinalSize); break;
+	case eImGuiSizeType_CorrectAspectWidth:
+		vFinalSize = ImGui_GetRatioCorrectSizeByWidth(aGfx, vFinalSize.x); break;
+	case eImGuiSizeType_CorrectAspectWidthNormalized:
+		vFinalSize = ::ImGui_GetRatioCorrectSizeByNrmWidth(aGfx, vFinalSize.x); break;
+	}
+	
+	return vFinalSize;
+}
+
+//-------------------------------------------------------
+
+/////////////////////////////////////////
+// TILED GFX
+/////////////////////////////////////////
+
+//-------------------------------------------------------
+
+void Depth_ImGui_DrawTiledGfx(const tString &in asGfx, const cVector3f &in avPos, const cVector2f &in avSize, const cColor &in aCol, const cVector2f &in avTileAmount, const cVector2f &in avTileOffset=cVector2f_Zero)
+{
+	cImGuiGfx gfx(asGfx);
+	//gfx.mvUVOffset = avTileOffset;
+	gfx.mvUVMax = avTileAmount;
+	ImGui_DrawGfx(gfx, avPos, avSize, aCol);
+}
+
+//-------------------------------------------------------
+
+/////////////////////////////////////////
+// OSCILLATING SIGNAL VALUES
+/////////////////////////////////////////
+
+//-------------------------------------------------------
+
+float Depth_ImGui_GetOscillatingSignalValue(const tString &in asPrefix, int alIndex, eEasing aFadeType=eEasing_Linear, float afMin=0.1f, float afMax=0.9f, float afFreqMul = 1.0f)
+{
+	tString sFadeVarName = asPrefix + "_signal_" + alIndex;
+		
+	if(ImGui_IsFading(sFadeVarName)==false || ImGui_FadeOver(sFadeVarName))
+	{
+		ImGui_FadeStateFloat(sFadeVarName, cMath_RandRectf(afMin, afMax), cMath_RandRectf(0.75f, 1.5f)*afFreqMul, aFadeType); 
+	}
+		 
+	return ImGui_GetStateFloat(sFadeVarName);
+}	
+
+//-------------------------------------------------------
+
+/////////////////////////////////////////
+// LOADING
+/////////////////////////////////////////
+
+//-------------------------------------------------------
+
+/**
+ * Draws a Gauge that fills up in a noisy manner over time.
+ * 
+ * @param asName, Unique identifier for this gauge.
+ * @param afLoadTime, approximate time it should take to fill the gauge.
+ * @param abResetWhenDone, if values should be reset automatically when the loading is complete. Use this if you stop showing the gauge when complete and want to be able to restart the loading. Use Depth_ImGui_ResetLoadingGauge to reset a gauge manually.
+ * @param avPos, position for the top left corner of the gauge.
+ * @param avSize, size of the gauge.
+ * @param aData, gauge data to use.
+ * 
+ * @return bool, true if the gauge has been filled up.
+ **/
+bool Depth_ImGui_LoadingGauge(const tString &in asName, float afLoadTime, bool abResetWhenDone, const cVector3f &in avPos, 
+							  const cVector2f &in avSize, const cImGuiGaugeData &in aData)
+{
+	
+	float fLoadValue = Depth_ImGui_Loading(asName, 0, 1.0f, afLoadTime, abResetWhenDone);
+	
+	////////////////////////////////
+	// Draw gauge
+	ImGui_DoGauge(aData, fLoadValue, avPos, avSize);
+	
+	return fLoadValue == 1.0f;
+}
+
+//-------------------------------------------------------
+
+/**
+ * Checks if there is a loading in progress with the specified name
+ * 
+ * @param asName, Loading name
+ * 
+ * @return bool, true if loading is in progress.
+ **/
+bool Depth_ImGui_LoadingInProgress(const tString &in asName)
+{
+	return ImGui_GetStateInt(asName+"Initialized", 0) > 0;
+}
+
+//-------------------------------------------------------
+
+/**
+ * Resets the specified loading gauge to 0.
+ * 
+ * @param asName, Unique identifier for this gauge.
+ * 
+ **/
+void Depth_ImGui_ResetLoadingGauge(const tString &in asName)
+{
+	ImGui_SetStateInt(asName+"Initialized", 0);
+	ImGui_StopFade(asName+"Counter");
+	ImGui_SetStateFloat(asName+"Counter", 0);
+}
+
+//-------------------------------------------------------
+
+/**
+ * Returns the loading progress with the specified name.
+ * 
+ * @param asName, Loading name
+ * @param afStart, Value that the loading started at, usually 0.
+ * @param afGoal, Value that the loading is loading towards. Usually 1.
+ * 
+ * @return float, loading progress.
+ **/
+float Depth_ImGui_GetLoadingValue(const tString &in asName, float afStart = 0, float afGoal = 1)
+{
+	return afStart + ImGui_GetStateFloat(asName+"Counter", 0)*(afGoal-afStart);
+}
+
+//-------------------------------------------------------
+
+/**
+ * Sets the loading progress of the specified name.
+ * 
+ * @param asName, Loading name
+ * @param afValue, Value to set.
+ * @param afStart, Value that the loading started at, usually 0.
+ * @param afGoal, Value that the loading is loading towards. Usually 1.
+ * 
+ * @return float, loading progress.
+ **/
+void Depth_ImGui_SetLoadingValue(const tString &in asName, float afValue, float afStart = 0, float afGoal = 1)
+{
+	ImGui_SetStateFloat(asName+"Counter", (afValue-afStart)/(afGoal-afStart));
+}
+
+//-------------------------------------------------------
+
+/**
+ * Updates the loading of the specified name.
+ * 
+ * @param asName, Loading name
+ * @param afStart, Value that the loading started at, usually 0.
+ * @param afGoal, Value that the loading is loading towards. Usually 1.
+ * @param afLoadTime, approximate time it should take to finish loading.
+ * @param abResetWhenDone, if values should be reset automatically when the loading is complete. Use this if you stop showing the gauge when complete and want to be able to restart the loading. Use Depth_ImGui_ResetLoadingGauge to reset a gauge manually.
+ * 
+ * @return float, loading progress.
+ **/
+float Depth_ImGui_Loading(const tString &in asName, float afStart, float afGoal, float afLoadTime, bool abResetWhenDone)
+{
+	////////////////////////
+	// Initialize counter
+	if (ImGui_GetStateInt(asName+"Initialized", 0) == 0)
+	{
+		Map_RemoveTimer(ImGui_GetName()+asName+"LoadTimer");
+		
+		float fTimerTime = (1.f-ImGui_GetStateFloat(asName+"Counter", 0))*afLoadTime;
+		
+		Map_AddTimer(ImGui_GetName()+asName+"LoadTimer", fTimerTime, "");
+		
+		ImGui_SetStateInt(asName+"Initialized", 1);
+	}
+	
+	////////////////////////////////
+	// Increase current value
+	float fTarget = 1.f-(Map_GetTimerTime(ImGui_GetName()+asName+"LoadTimer")/afLoadTime);
+	float fCurrent = ImGui_GetStateFloat(asName+"Counter", 0);
+	if (cMath_RandRectl(0, 5)==0 || cMath_Abs(fTarget-fCurrent) > 0.2)
+	{
+		ImGui_FadeStateFloat(asName+"Counter", fTarget, afLoadTime*0.05f, eEasing_Linear);
+	}
+	
+	bool bDone = fCurrent >= 0.99;
+	
+	/////////////
+	// Reset
+	if (bDone && abResetWhenDone)
+	{
+		ImGui_SetStateInt(asName+"Initialized", 0);
+		ImGui_StopFade(asName+"Counter");
+		ImGui_SetStateFloat(asName+"Counter", 0);
+	}
+	
+	if (bDone)
+		return afGoal;
+	
+	return afStart + fCurrent*(afGoal-afStart);
+}
+
+//-------------------------------------------------------
+
+/////////////////////////////////////////
+// INPUT
+/////////////////////////////////////////
+
+//-------------------------------------------------------
+
+const float gfGuiReaderInputTick = 0.1f;
+
+//-------------------------------------------------------
+
+void Depth_ImGui_InputScroll(const tString &in asName, float afScrollVal, float afOverlap)
+{
+	if (afOverlap <= 0.0f) return;
+	
+	float fTime = ImGui_GetStateFloat("ScrollTime_"+asName);
+	
+	fTime+=ImGui_GetTimeStep();
+	
+	if (ImGui_ActionTriggered(eImGuiAction_ScrollDown))
+	{
+		afScrollVal = cMath_Min(afOverlap, afScrollVal+1.0f);
+	}
+	else if (ImGui_ActionTriggered(eImGuiAction_ScrollUp))
+	{
+		afScrollVal = cMath_Max(0.0f, afScrollVal-1.0f);
+	}
+	
+	else if (fTime>gfGuiReaderInputTick)
+	{
+		fTime-=gfGuiReaderInputTick;
+		
+		if ( ImGui_ActionIsDown(eImGuiAction_ScrollDown) && (afScrollVal<afOverlap) )
+		{
+			afScrollVal = cMath_Min(afOverlap, afScrollVal+1.0f);
+		}
+		else if ( ImGui_ActionIsDown(eImGuiAction_ScrollUp) && (afScrollVal>0.0f) )
+		{
+			afScrollVal = cMath_Max(0.0f, afScrollVal-1.0f);
+		}
+	}
+	
+	ImGui_SetStateFloat("ScrollTime_"+asName,fTime);
+	ImGui_SetStateFloat("ScrollValue_"+asName,afScrollVal);
+}
+
+//-------------------------------------------------------
+
+float Depth_ImGui_GetScrollValue(const tString &in asName)
+{
+	return ImGui_GetStateFloat("ScrollValue_"+asName, 0);
+}
+
+//-------------------------------------------------------
+
+void Depth_ImGui_SetScrollValue(const tString &in asName, float afValue)
+{
+	ImGui_SetStateFloat("ScrollValue_"+asName, afValue);
+}
+
+//-------------------------------------------------------
+
+/////////////////////////////////////////
+// TEXT READER APPS
+/////////////////////////////////////////
+
+//-------------------------------------------------------
+
+class cGuiTextFile
+{
+	tString msTitle;
+	tString msBody;
+	bool mbHasImage = false;
+	cImGuiGfx mGfx;
+}
+
+array<cGuiTextFile> gvTextFiles;
+
+//-------------------------------------------------------
+
+void Depth_ImGui_AddTextFile(const tString&in asCaption, const tString&in asText)
+{
+	cGuiTextFile entry;
+	entry.msTitle = asCaption;
+	entry.msBody = asText;
+	gvTextFiles.push_back(entry);
+}
+
+//-------------------------------------------------------
+
+void Depth_ImGui_AddTextFile(const tString&in asCaption, const tString&in asText, const cImGuiGfx &in aGfx)
+{
+	cGuiTextFile entry;
+	entry.msTitle = asCaption;
+	entry.msBody = asText;
+	entry.mGfx = aGfx;
+	entry.mbHasImage = true;
+	gvTextFiles.push_back(entry);
+}
+
+//-------------------------------------------------------
+
+void Depth_ImGui_AddTextFile(const cGuiTextFile &in aTextFile)
+{
+	gvTextFiles.push_back(aTextFile);
+}
+
+//-------------------------------------------------------
+
+void Depth_ImGui_ClearTextFiles()
+{
+	gvTextFiles.resize(0);
+}
+
+//-------------------------------------------------------
+
+/////////////////////////////////////////
+// MAIL APPS
+/////////////////////////////////////////
+
+//-------------------------------------------------------
+
+class cGuiMailAppEntry
+{
+	tString msBody;
+	tString msTitle;
+	tString msTimestamp;
+	tString msSender;
+}
+
+enum eMailAppEntryType
+{
+	eMailAppEntryType_Inbox,
+	eMailAppEntryType_Draft,
+	eMailAppEntryType_Sent,
+}
+
+//-------------------------------------------------------
+
+array<cGuiMailAppEntry> gvDepthGuiMails_Inbox;
+array<cGuiMailAppEntry> gvDepthGuiMails_Draft;
+array<cGuiMailAppEntry> gvDepthGuiMails_Sent;
+void Depth_ImGui_AddMail(const tString &in asTitle, const tString &in asBody, const tString &in asSender, const tString &in asTimestamp, eMailAppEntryType aType)
+{
+	eMailAppEntryType actualType = aType;
+	if (aType == eMailAppEntryType_Draft)
+	{
+		if (ImGui_GetStateBool(asTitle+"_Sent", false))
+			aType = eMailAppEntryType_Sent;
+	}
+	
+	cGuiMailAppEntry mail;
+	mail.msTitle = asTitle;
+	mail.msBody = asBody;
+	mail.msSender = asSender;
+	mail.msTimestamp = asTimestamp;
+	
+	Depth_ImGui_GetMailList(aType).push_back(mail);
+	
+	if (ImGui_GetStateInt("SelectedMailIndex", -1)==-1)
+	{
+		ImGui_SetStateInt("SelectedMailIndex", Depth_ImGui_GetMailList(aType).length()-1);
+		ImGui_SetStateInt("SelectedMailType", aType);
+	}
+}
+
+//-------------------------------------------------------
+
+void Depth_ImGui_ClearMails()
+{
+	gvDepthGuiMails_Inbox.resize(0);
+	gvDepthGuiMails_Draft.resize(0);
+	gvDepthGuiMails_Sent.resize(0);
+}
+
+//-------------------------------------------------------
+
+array<cGuiMailAppEntry>& Depth_ImGui_GetMailList(eMailAppEntryType aType)
+{
+	
+	if (aType == eMailAppEntryType_Inbox)
+		return gvDepthGuiMails_Inbox;
+	else if (aType == eMailAppEntryType_Draft)
+		return gvDepthGuiMails_Draft;
+	else
+		return gvDepthGuiMails_Sent;
+}
+
+//-------------------------------------------------------
+
+/////////////////////////////////////////
+// AUDIO PLAYER APPS
+/////////////////////////////////////////
+
+//-------------------------------------------------------
+		 
+class cGuiAudioAppEntry
+{
+	tString msTitle;
+	tString msFile;
+	tString msCallback;
+	bool mbIsVoice;
+}
+
+array<cGuiAudioAppEntry> gvAudioAppEntries;
+
+//-------------------------------------------------------
+
+/**
+ * Adds a sound file to the audio player app. Do this before calling the Audio Player helper.
+ * 
+ * @param asTitle, name of the file to appear in the app.
+ * @param asFile, the actual sound file to play.
+ * 
+ **/
+void Depth_ImGui_AddAudioFile_Sound(const tString &in asTitle, const tString &in asFile)
+{
+	cGuiAudioAppEntry file;
+	file.msTitle = asTitle;
+	file.msFile = asFile;
+	file.mbIsVoice = false;
+	gvAudioAppEntries.push_back(file);
+}
+
+//-------------------------------------------------------
+
+/**
+ * Adds a voice subject to the audio player app. Do this before calling the Audio Player helper.
+ * 
+ * @param asTitle, name of the file to appear in the app.
+ * @param asSubject, the voice subject.
+ * @param asCallback, voice subject callback.
+ * 
+ **/
+void Depth_ImGui_AddAudioFile_Voice(const tString &in asTitle, const tString &in asSubject, const tString &in asCallback="")
+{
+	cGuiAudioAppEntry file;
+	file.msTitle = asTitle;
+	file.msFile = asSubject;
+	file.msCallback = asCallback;
+	file.mbIsVoice = true;
+	gvAudioAppEntries.push_back(file);
+}
+
+//-------------------------------------------------------
+
+/**
+ * Removes any audio player files that have been added. 
+ * The Audio Player app should do this automatically.
+ * 
+ **/
+void Depth_ImGui_ClearAudioFiles()
+{
+	gvAudioAppEntries.resize(0);
+}
+
+//-------------------------------------------------------
+
+bool Depth_ImGui_PlaybackActive()
+{
+	return ImGui_GetStateBool("FilePlaybackActive", false);
+}
+
+//-------------------------------------------------------
+
+/**
+ * Stops audio file playback, regardless of whether the file playing is a sound or a voice subject.
+ * This can be called from outside of an OnGui function.
+ * 
+ * @param asTerminal, name of the terminal.
+ * 
+ **/
+void Depth_ImGui_StopAudioFilePlayback(const tString &in asTerminal, bool abUnduckAudio=false)
+{	
+	Terminal_SetImGuiStateInt(asTerminal, "FilePlaybackActive", 0);
+	Terminal_StopImGuiFade(asTerminal, "FilePlayback");
+	Terminal_SetImGuiStateFloat(asTerminal, "FilePlayback", 0);
+
+	Terminal_SetUpdateWhenOutOfView(asTerminal, false);
+	
+	////////////////////////
+	// Audio ducking
+	if (abUnduckAudio && Terminal_GetImGuiStateBool(asTerminal, "AudioDucked", false))
+	{
+		Sound_FadeGlobalVolume(1.0f, 2.0f, eSoundEntryType_WorldAll);
+		Music_FadeVolumeMul(1.0f, 2.0f);
+		Terminal_SetImGuiStateBool(asTerminal, "AudioDucked", false);
+	}
+					
+	if (Sound_Exists(asTerminal+"_AudioPlaybackSound"))
+		Sound_Stop(asTerminal+"_AudioPlaybackSound", 0.3);
+
+	tString sScene = Entity_GetVarString(asTerminal, "VoicePlaybackScene");
+	if (sScene=="")
+		return;
+
+	cLux_AddDebugMessage("Stop scene "+sScene);
+
+	Voice_Stop(sScene);
+	Entity_SetVarString(asTerminal, "VoicePlaybackScene", "");
+}
+
+//-------------------------------------------------------
+
+/**
+ * Checks if the audio file has stopped playing and sets the playback variables accordingly.
+ * 
+ **/
+bool Depth_ImGui_CheckAudioFilePlaybackEnd()
+{
+	if (Depth_ImGui_PlaybackActive()==false) return false;
+
+	/////////////////////
+	// Check voice
+	tString sScene = Entity_GetVarString(ImGui_GetName(), "VoicePlaybackScene");
+	if (sScene != "" && !Voice_SceneIsActive(sScene))
+	{
+		Depth_ImGui_StopAudioFilePlayback(ImGui_GetName());
+		return true;
+	}
+
+	/////////////////////
+	// Check audio
+	if (sScene == "" && !Sound_Exists(ImGui_GetName()+"_AudioPlaybackSound"))
+	{
+		Depth_ImGui_StopAudioFilePlayback(ImGui_GetName());
+		return true;
+	}
+
+	return false;
+}
+
+//-------------------------------------------------------
+
+/////////////////////////////////////////
+// PHOTO VIEWER APPS
+/////////////////////////////////////////
+
+//-------------------------------------------------------
+
+class cGuiPhotoAppEntry
+{
+	tString msFile;
+	eImGuiGfx mGfxType;
+	tString msTextEntry;
+}
+
+array<cGuiPhotoAppEntry> gvPhotoViewerAppEntries;
+
+//-------------------------------------------------------
+
+/**
+ * Adds a photo for the photo viewer. Call this before calling the photo viewer app.
+ * The photo list is cleared automatically by the photo viewer app, use Depth_ImGui_ClearPhotoFiles if manual clearing is needed.
+ * 
+ * @param asPhoto, Image file to display.
+ * @param aGfxType, The type of the image.
+ * @param asTextEntry, optional text entry.
+ **/
+void Depth_ImGui_AddPhotoFile(const tString &in asPhoto, eImGuiGfx aGfxType = eImGuiGfx_Image, const tString &in asTextEntry = "")
+{
+	cGuiPhotoAppEntry entry;
+	entry.msFile = asPhoto;
+	entry.mGfxType = aGfxType;
+	entry.msTextEntry = asTextEntry;
+	gvPhotoViewerAppEntries.push_back(entry);
+}
+
+//-------------------------------------------------------
+
+/**
+ * Clears the list of photos. Keep in mind that the photo viewer app clears the photos automatically.
+ *  
+ **/
+void Depth_ImGui_ClearPhotoFiles()
+{
+	gvPhotoViewerAppEntries.resize(0);
+}
+
+//-------------------------------------------------------
+
+/////////////////////////////////////////
+// SCREENSAVER
+/////////////////////////////////////////
+
+//-------------------------------------------------------
+
+class cGuiScreenSaverSettings
+{
+	cImGuiGfx mCenterGfx;
+	cVector2f mvCenterGfxNrmSize = cVector2f_One;
+	cImGuiGfx mFullscreenGfx;
+	float mfTime;
+	bool mbStartOn;
+}
+
+//-------------------------------------------------------
+
+bool Depth_ImGui_ScreenSaver(const cGuiScreenSaverSettings &in aSettings)
+{
+	bool bActive = ImGui_GetStateBool("ScreensaverOn", aSettings.mbStartOn);
+	
+	if (bActive == false)
+	{
+		if (ImGui_InFocus())
+			ImGui_SetStateFloat("ScreensaverTimeOut", aSettings.mfTime);
+		else
+			ImGui_IncStateFloat("ScreensaverTimeOut", ImGui_GetTimeStep()*-1);
+		
+		float fTime = ImGui_GetStateFloat("ScreensaverTimeOut", aSettings.mfTime);
+		
+		if (fTime <= 0)
+		{
+			ImGui_SetStateBool("ScreensaverOn", true);
+			ImGui_FadeStateFloat("ScreensaverAlpha", 1, 0.3);
+		}
+	}
+	else
+	{
+		if (ImGui_InFocus())
+		{
+			ImGui_SetStateBool("ScreensaverOn", false);
+			ImGui_FadeStateFloat("ScreensaverAlpha", 0, 0.3);
+		}
+	}
+	
+	float fAlpha = ImGui_GetStateFloat("ScreensaverAlpha", aSettings.mbStartOn ? 1 : 0);
+	if (fAlpha > 0) 
+	{
+		ImGui_SetModColorMul(cColor(1, 1, 1, fAlpha));
+		ImGui_DoImage(aSettings.mFullscreenGfx, cVector3f(0, 0, 9.5), ImGui_NrmSizeGroup(1));
+		ImGui_SetAlignment(eImGuiAlign_CenterCenter);
+		ImGui_DoImage(aSettings.mCenterGfx, ImGui_NrmPosGroup(0.5, 0.5, 9.6), 
+					  ImGui_GetRatioCorrectSizeByRect(aSettings.mCenterGfx, ImGui_NrmSizeGroup(aSettings.mvCenterGfxNrmSize)));
+		ImGui_SetAlignment(eImGuiAlign_TopLeft);
+		ImGui_SetModColorMul(cColor_White);
+	}
+	
+	return bActive && ImGui_IsFading("ScreensaverAlpha")==false;
+}
+
+//-------------------------------------------------------
+
+/////////////////////////////////////////
+// GRAPH APPS
+/////////////////////////////////////////
+
+//-------------------------------------------------------
+
+class cGuiGraphOverlay
+{
+	cImGuiGfx mGfx;
+	float mfZ;
+}
+
+array<cGuiGraphOverlay> gvGraphOverlays;
+ 
+//--------------------------------------------------
+
+void Depth_ImGui_AddGraphOverlay(const cImGuiGfx &in aGfx, const cColor &in aCol, float afZ = -1.0f)
+{
+	cGuiGraphOverlay newOverlay;
+	newOverlay.mGfx = aGfx;
+	newOverlay.mGfx.mColor = aCol;
+	newOverlay.mfZ = afZ >= 0 ? afZ : (gvGraphOverlays.length()+1);
+	gvGraphOverlays.push_back(newOverlay);
+}
+ 
+//--------------------------------------------------
+
+void Depth_ImGui_ClearGraphOverlays()
+{
+	gvGraphOverlays.resize(0);
+}
+
+//-------------------------------------------------------
+
+/////////////////////////////////////////
+// DIALOG BOXES
+/////////////////////////////////////////
+
+//-------------------------------------------------------
+
+enum eGuiDialogBoxType
+{
+	eGuiDialogBoxType_NoButton,
+	eGuiDialogBoxType_OK,
+	eGuiDialogBoxType_OKCancel,
+}
+
+//-------------------------------------------------------
+
+enum eGuiDialogCode
+{
+	eGuiDialogCode_None,
+	eGuiDialogCode_OK,
+	eGuiDialogCode_Cancel,
+}
+
+//-------------------------------------------------------
+
+class cGuiDialogBoxSettings
+{
+	float mfZ = 1.5f; //Z-pos of dialog box
+	bool mbEndWindow = true; // If ImGui_DoWindowEnd() should be called at the end of the function.
+	cVector2f mvSize; //Size of window
+	bool mbUseCustomPos = false; // If the dialog box should be placed somehwere else than at the ceneter of the screen.
+	cVector3f mvCustomPos; // Custom pos of the dialog box.
+	eGuiDialogBoxType mType = eGuiDialogBoxType_NoButton; // Determines what buttons the dialog box should provide.
+	bool mbAutoFocus = true; // If the dialog box buttons should automatically get focus. Does nothing for eGuiDialogBoxType_NoButton.
+	tString msOKButtonText = "OK";
+	tString msCancelButtonText = "Cancel";
+	tString msOKButtonTextCat = "GUI";
+	tString msCancelButtonTextCat = "GUI";
+	
+	tString msCustomOKSound = "";
+	tString msCustomCancelSound = "";
+	
+	cImGuiWindowData mWindow;
+	cImGuiTextFrameData mTextFrame;
+	cImGuiButtonData mButton;
+}
+
+//-------------------------------------------------------
+
+eGuiDialogCode Depth_ImGui_DialogBox(const tString&in asCaption, const tString&in asText, const cGuiDialogBoxSettings &in aSettings)
+{	
+	tString sCurrentTransCat = ImGui_GetTransCategory();
+	
+	bool bAutoFocus = aSettings.mbAutoFocus && ImGui_GetStateBool("DialogBoxAutoFocus", true);
+	
+	///////////////////////////////////////
+	// Show message 
+	cVector3f vPos; 
+	if (aSettings.mbUseCustomPos)
+		vPos = aSettings.mvCustomPos;
+	else
+	{
+		cVector2f vScreenSize = ImGui_GetSize();
+		vPos.x = (vScreenSize.x-aSettings.mvSize.x)*0.5;
+		vPos.y = (vScreenSize.y-aSettings.mvSize.y)*0.5;
+		vPos.z = aSettings.mfZ;
+	}
+	
+	eGuiDialogCode returnCode = eGuiDialogCode_None;
+	ImGui_DoWindowStart(asCaption, aSettings.mWindow, vPos,aSettings.mvSize);
+		
+		ImGui_DoTextFrameExt(asText, 0, 0, 0, aSettings.mTextFrame, 
+								 ImGui_NrmPosGroup(0.0, 0.0,1), ImGui_NrmSizeGroup(1));
+				
+		ImGui_SetTransCategory("GUI");
+		ImGui_SetAlignment(eImGuiAlign_CenterCenter); 
+		if (aSettings.mType == eGuiDialogBoxType_OK)
+		{
+			ImGui_SetTransCategory(aSettings.msOKButtonTextCat);
+			ImGui_ResizeFontToFit(ImGui_Translate(aSettings.msOKButtonText), aSettings.mButton.mFont, aSettings.mButton.mvDefaultSize.x*0.85);
+			if (ImGui_DoButtonExt("DialogOK", aSettings.msOKButtonText, aSettings.mButton, 
+								  ImGui_NrmPosGroup(cVector3f(0.5, 1, 1))-cVector3f(0, aSettings.mButton.mvDefaultSize.y*0.5, 0)))
+			{
+				returnCode = eGuiDialogCode_OK;
+			}
+			ImGui_SetTransCategory("GUI");
+			
+			if (bAutoFocus)
+			{
+				if (ImGui_ActionIsDown(eImGuiAction_MouseLeft)==false && ImGui_InFocus())
+					ImGui_SetFocus("DialogOK");
+				ImGui_SetStateBool("DialogBoxAutoFocus", false);
+			}
+		}
+		else if (aSettings.mType == eGuiDialogBoxType_OKCancel)
+		{
+			ImGui_SetTransCategory(aSettings.msOKButtonTextCat);
+			ImGui_ResizeFontToFit(ImGui_Translate(aSettings.msOKButtonText), aSettings.mButton.mFont, aSettings.mButton.mvDefaultSize.x*0.85);
+			if (ImGui_DoButtonExt("DialogOK", aSettings.msOKButtonText, aSettings.mButton, 
+								  ImGui_NrmPosGroup(cVector3f(0.25, 1, 1))-cVector3f(0, aSettings.mButton.mvDefaultSize.y*0.5, 0)))
+			{
+				returnCode = eGuiDialogCode_OK;
+			}
+			ImGui_SetTransCategory(aSettings.msCancelButtonTextCat);
+			ImGui_ResizeFontToFit(ImGui_Translate(aSettings.msCancelButtonText), aSettings.mButton.mFont, aSettings.mButton.mvDefaultSize.x*0.85);
+			if (ImGui_DoButtonExt("DialogCancel", aSettings.msCancelButtonText, aSettings.mButton, 
+								  ImGui_NrmPosGroup(cVector3f(0.75, 1, 1))-cVector3f(0, aSettings.mButton.mvDefaultSize.y*0.5, 0)))
+			{
+				returnCode = eGuiDialogCode_Cancel;
+			}
+			ImGui_SetTransCategory("GUI");
+			
+			if (bAutoFocus)
+			{
+				if (ImGui_ActionIsDown(eImGuiAction_MouseLeft)==false)
+					ImGui_SetFocus("DialogOK");
+				ImGui_SetStateBool("DialogBoxAutoFocus", false);
+			}
+		}
+		ImGui_SetAlignment(eImGuiAlign_LastEnum);
+		
+	// Only close window if mbEndWindow is true
+	if (aSettings.mbEndWindow) ImGui_DoWindowEnd();
+	
+	// Reset autofocus
+	if (returnCode != eGuiDialogCode_None)
+	{
+		ImGui_SetStateBool("DialogBoxAutoFocus", true);
+	}
+	
+	ImGui_SetTransCategory(sCurrentTransCat);
+	return returnCode;
+}
+	

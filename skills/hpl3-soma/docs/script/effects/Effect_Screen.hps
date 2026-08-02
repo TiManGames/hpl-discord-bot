@@ -1,0 +1,497 @@
+#include "effect/Effects.hps"
+
+//------------------------------------------------------------
+
+class FadeVariable
+{
+	
+	//------------------------------------------------------------
+	
+	FadeVariable()
+	{
+		mfFadeSpeed = 0;
+	}
+	
+	//------------------------------------------------------------
+
+	void StartFade(float afCurrent, float afGoal, float afTime)
+	{
+		mfGoal = afGoal;
+		mfFadeSpeed = cMath_Abs(afCurrent - mfGoal) / cMath_Max(0.000001f, afTime);
+	}
+	
+	//------------------------------------------------------------
+
+	float FadeValue(float afCurrent, float afTimeStep)
+	{
+		if(IsComplete()) return 0;
+
+		float fDist = mfGoal - afCurrent;
+
+		if(fDist == 0)
+		{
+			//////////
+			// Goal reached, stop updating
+			mfFadeSpeed = 0;
+			return 0;
+		}
+		else
+		{
+			/////////////
+			// Fade closer to goal
+			float fAdd = cMath_Min(mfFadeSpeed * afTimeStep, cMath_Abs(fDist));
+			return cMath_Sign(fDist) * fAdd;
+		}
+	}
+	
+	//------------------------------------------------------------
+
+	bool IsComplete()
+	{
+		return mfFadeSpeed == 0;
+	}
+	
+	//------------------------------------------------------------
+
+	void Stop()
+	{
+		mfFadeSpeed = 0;
+	}
+	
+	//------------------------------------------------------------
+
+	float mfFadeSpeed;
+	float mfGoal;
+}
+
+//------------------------------------------------------------
+
+class cScrScreenMaterial
+{
+	//------------------------------------------------------------
+	
+	cScrScreenMaterial()
+	{
+		mlID = -1;
+		mbNameCheck = true;
+	}
+	
+	//------------------------------------------------------------
+
+	cScrScreenMaterial(int alID, tString asMaterial, cVector2f avPosition, cVector2f avSize)
+	{
+		mlID = alID;
+		mfLiquidAmount = 0;
+		mfAlpha = 0;
+		
+		mbNameCheck = true;
+		mfFadeInTime = 0;
+		mfStayTime = 1000000000;
+		mfFadeOutTime = 0;
+
+		mAlphaFade = FadeVariable();
+		mLiquidFade = FadeVariable(); 
+
+		mvOffset = cVector3f(avPosition.x * 2 - 1,avPosition.y* 2 - 1, 1.0f) * 0.15f;
+
+		///////////////
+		// Create billboard to place in front of screen
+		cLuxMap @pMap = cLux_GetCurrentMap();
+		cWorld @pWorld = pMap.GetWorld();
+		cBillboard@ pBillboard = pWorld.CreateBillboard("Screen Particle"+alID, avSize * 0.3, eBillboardType_Point, asMaterial, false);
+		if(pBillboard is null) m_idBillboard = tID_Invalid; 
+		else m_idBillboard = pBillboard.GetID();
+	}
+	
+	//------------------------------------------------------------
+
+	void Update(float afTimeStep)
+	{
+		///////////////
+		// First fade in, then stay, then fade out
+		if(mfFadeInTime > 0)
+		{
+			mfFadeInTime -= afTimeStep;
+		}
+		else if(mfStayTime > 0)
+		{
+			mfStayTime -= afTimeStep;
+
+			if(mfStayTime <= 0)
+			{
+				//////////////
+				// Start fading out the variables
+				mAlphaFade.StartFade(mfAlpha, 0, mfFadeOutTime);
+				mLiquidFade.StartFade(mfLiquidAmount, 0, mfFadeOutTime);
+			}
+		}
+		else
+		{
+			mfFadeOutTime -= afTimeStep * 0.9;
+		}
+
+		///////////////
+		// Update alpha, liquid amount and position
+		mfLiquidAmount += mLiquidFade.FadeValue(mfLiquidAmount, afTimeStep);
+		mfAlpha += mAlphaFade.FadeValue(mfAlpha, afTimeStep);
+
+		cBillboard@ pBillboard = cLux_ID_Billboard(m_idBillboard);
+		
+		if(pBillboard is null && mbNameCheck)
+		{
+			///////////////
+			// Id check failed, check with name (in case of save error)
+			cLuxMap @pMap = cLux_GetCurrentMap();
+			cWorld @pWorld = pMap.GetWorld();
+
+			@pBillboard = pWorld.GetBillboard("Screen Particle"+mlID);
+			if(pBillboard !is null) m_idBillboard = pBillboard.GetID();
+			mbNameCheck = false;
+		}
+
+		if(pBillboard !is null)
+		{
+			pBillboard.SetColor(cColor(1,1,1, mfAlpha));
+			pBillboard.SetLiquidAmount(0);
+		}
+	}
+	
+	//------------------------------------------------------------
+
+	void UpdatePosition(float afFovScale)
+	{
+		cVector3f vCameraFwd = cLux_GetPlayer().GetCamera().GetForward();
+		cVector3f vCameraUp = cLux_GetPlayer().GetCamera().GetUp();
+		cVector3f vCameraRight = cLux_GetPlayer().GetCamera().GetRight();
+		cVector3f vCameraPos = cLux_GetPlayer().GetCamera().GetPosition();
+
+		cVector3f vPos = vCameraPos + vCameraFwd * mvOffset.z * afFovScale + vCameraUp * mvOffset.y + vCameraRight * mvOffset.x;
+		
+		cBillboard@ pBillboard = cLux_ID_Billboard(m_idBillboard);
+
+		if(pBillboard is null && mbNameCheck)
+		{
+			///////////////
+			// Id check failed, check with name (in case of save error)
+			cLuxMap @pMap = cLux_GetCurrentMap();
+			cWorld @pWorld = pMap.GetWorld();
+
+			@pBillboard = pWorld.GetBillboard("Screen Particle"+mlID);
+			if(pBillboard !is null) m_idBillboard = pBillboard.GetID();
+			mbNameCheck = false;
+		}
+
+		if(pBillboard !is null) pBillboard.SetPosition(vPos);
+	}
+	
+	//------------------------------------------------------------
+
+	bool IsComplete()
+	{
+		return mfFadeOutTime < 0;
+	}
+	
+	//------------------------------------------------------------
+
+	int GetID()
+	{
+		return mlID;
+	}
+	
+	//------------------------------------------------------------
+
+	void FadeAlpha(float afValue, float afTime)
+	{
+		mAlphaFade.StartFade(mfAlpha, afValue, afTime);
+		mfFadeInTime = cMath_Max(mfFadeInTime, afTime);
+		mfStayTime = cMath_Max(mfStayTime, 0.0001f);
+	}
+	
+	//------------------------------------------------------------
+
+	void FadeLiquid(float afValue, float afTime)
+	{
+		mLiquidFade.StartFade(mfLiquidAmount, afValue, afTime);
+		mfFadeInTime = cMath_Max(mfFadeInTime, afTime);
+		mfStayTime = cMath_Max(mfStayTime, 0.0001f);
+	}
+	
+	//------------------------------------------------------------
+
+	void Destroy()
+	{
+		cLuxMap @pMap = cLux_GetCurrentMap();
+		cWorld @pWorld = pMap.GetWorld();
+		
+		cBillboard@ pBillboard = cLux_ID_Billboard(m_idBillboard);
+		
+		if(pBillboard is null && mbNameCheck)
+		{
+			///////////////
+			// Id check failed, check with name (in case of save error)
+			cLuxMap @pMap = cLux_GetCurrentMap();
+			cWorld @pWorld = pMap.GetWorld();
+
+			@pBillboard = pWorld.GetBillboard("Screen Particle"+mlID);
+			if(pBillboard !is null) m_idBillboard = pBillboard.GetID();
+			mbNameCheck = false;
+		}
+
+		if(pBillboard !is null)
+		{
+			pBillboard.SetScriptableIsSaved(false);
+			pWorld.DestroyBillboard(pBillboard);
+		}
+	}
+	
+	//------------------------------------------------------------
+
+	////////////
+	// Properties
+	cVector3f mvOffset;
+	float mfLiquidAmount;
+	float mfAlpha;
+
+	///////////
+	// Fade
+	FadeVariable mAlphaFade;
+	FadeVariable mLiquidFade;
+
+	float mfFadeInTime;
+	float mfStayTime;
+	float mfFadeOutTime;
+
+	int mlID;
+
+	//////////////
+	// Billboard
+	tString msMaterial;
+	tID m_idBillboard;
+	bool mbNameCheck;
+}
+
+
+//-----------------------------------------
+
+class cScrEffect_Screen : iScrEffect, iScrEffect_Interface, iScrEffect_Screen
+{
+	
+	//----------------------------------
+	
+	void Init()
+	{
+		mlIDPool = 0;
+	}
+
+	//----------------------------------
+	
+	void OnDestroy()
+	{
+		Reset();
+	}
+	
+	//----------------------------------
+
+	void LoadUserConfig()
+	{
+		cConfigFile@ pConfig = cLux_GetUserConfig();
+		float fFOV = cMath_ToRad(pConfig.GetFloat("Gameplay", "FOV", 70.0f));
+
+		float fAspectRatio = pConfig.GetFloat("Screen", "Width", 1920) / pConfig.GetFloat("Screen", "Height", 1080);
+
+		float fHorizontalFov = 2.0f * cMath_ATan(cMath_Tan(fFOV / 2.0f) * fAspectRatio);
+		float fDefaultHorizontalFov = 2.0f * cMath_ATan(cMath_Tan(cMath_ToRad(70.0f) / 2.0f) * (1920.0f / 1080.0f));
+
+		mfFovScale = fDefaultHorizontalFov / fHorizontalFov;
+		mfFovScale = mfFovScale * mfFovScale;
+
+		if(fHorizontalFov > 1.925f)
+		{
+			mfFovScale = cMath_Pow(mfFovScale, fHorizontalFov / 1.925f); //Special case for triple monitors
+		}
+	}
+	
+	//----------------------------------
+	
+	/////////////////////////////////////////
+	// PULBIC METHODS
+	/////////////////////////////////////////
+	
+	//----------------------------------
+	
+	int Start(tString asMaterial, cVector2f avPosition, cVector2f avSize)
+	{
+		int lID = mlIDPool++;
+
+		mvScreenMaterials.push_back(cScrScreenMaterial(lID, asMaterial, avPosition, avSize));
+		
+		mBaseObj.SetActive(true);
+
+		return lID;
+	}
+	
+	//------------------------------------------------------------
+
+	int Start(tString asMaterial, cVector2f avPosition, cVector2f avSize, float afTargetAlpha, float afFadeInTime, float afStayTime, float afFadeOutTime)
+	{
+		int lID = mlIDPool++;
+
+		mvScreenMaterials.push_back(cScrScreenMaterial(lID, asMaterial, avPosition, avSize));
+
+		int lA = mvScreenMaterials.size() - 1;
+
+		mvScreenMaterials[lA].FadeAlpha(afTargetAlpha, afFadeInTime);
+		mvScreenMaterials[lA].mfStayTime = afStayTime + 0.00001f;
+		mvScreenMaterials[lA].mfFadeOutTime = afFadeOutTime;
+		
+		mBaseObj.SetActive(true);
+
+		return lID;
+	}
+	
+	//----------------------------------
+
+	void FadeOut(int alID, float afFadeTime)
+	{
+		for(int i = 0; i < mvScreenMaterials.size(); ++i)
+		{
+			if(mvScreenMaterials[i].GetID() == alID)
+			{
+				mvScreenMaterials[i].FadeAlpha(0, afFadeTime);
+
+				mvScreenMaterials[i].mfStayTime = 0;
+				mvScreenMaterials[i].mfFadeInTime = 0;
+				mvScreenMaterials[i].mfFadeOutTime = afFadeTime;
+
+				return;
+			}
+		}
+	}
+
+	//----------------------------------
+
+	void FadeLiquidAmount(int alID, float afAmount, float afFadeTime)
+	{
+		for(int i = 0; i < mvScreenMaterials.size(); ++i)
+		{
+			if(mvScreenMaterials[i].GetID() == alID)
+			{
+				mvScreenMaterials[i].FadeLiquid(afAmount, afFadeTime);
+
+				return;
+			}
+		}
+	}
+
+	//----------------------------------
+
+	void FadeAlpha(int alID, float afAlpha, float afFadeTime)
+	{
+		for(int i = 0; i < mvScreenMaterials.size(); ++i)
+		{
+			if(mvScreenMaterials[i].GetID() == alID)
+			{
+				mvScreenMaterials[i].FadeAlpha(afAlpha, afFadeTime);
+
+				return;
+			}
+		}
+	}
+	
+	//----------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL CALLBACKS
+	/////////////////////////////////////////
+	
+	//----------------------------------
+	
+	void OnStart()
+	{
+	}
+
+	//----------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+		Reset();
+	}
+	
+	//----------------------------------
+	
+	void OnMapLeave(cLuxMap @apMap)
+	{
+		Reset();
+	}
+
+	//----------------------------------
+	
+	void Reset()
+	{
+		for(int i = 0; i < mvScreenMaterials.size(); ++i)
+		{
+			mvScreenMaterials[i].Destroy();
+		}
+
+		mvScreenMaterials.resize(0);
+	}
+
+	//----------------------------------
+	
+	
+	void Update(float afTimeStep)
+	{
+		if(mvScreenMaterials.size()==0)
+		{
+			mBaseObj.SetActive(false);
+		}
+		
+		///////////////
+		// Update and remove completed
+		for(int i = 0; i < mvScreenMaterials.size(); ++i)
+		{
+			mvScreenMaterials[i].Update(afTimeStep);
+		}
+	}
+	
+	//----------------------------------
+	
+	void OnDraw(float afFrameTime)
+	{
+		if(cLux_GetCurrentMap() is null) 
+		{
+			mBaseObj.SetActive(false);
+			Reset();
+			return;
+		}
+
+		for(int i = 0; i < mvScreenMaterials.size(); ++i)
+		{
+			if(mvScreenMaterials[i].IsComplete())
+			{
+				mvScreenMaterials[i].Destroy();
+				mvScreenMaterials[i--] = mvScreenMaterials[mvScreenMaterials.size() - 1];
+				mvScreenMaterials.pop_back();
+			}
+			else
+			{
+				mvScreenMaterials[i].UpdatePosition(mfFovScale);
+			}
+		}
+	}
+	
+	//----------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//----------------------------------
+	
+	array<cScrScreenMaterial> mvScreenMaterials;
+	int mlIDPool;
+
+	float mfFovScale;
+	
+	//----------------------------------
+}

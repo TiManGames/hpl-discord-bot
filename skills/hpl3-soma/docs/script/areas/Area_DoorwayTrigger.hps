@@ -1,0 +1,372 @@
+#include "interfaces/Area_Interface.hps"
+#include "base/Player_Types.hps"
+
+class cAreaDoorWayTriggerEntity
+{
+	tID m_idEntity;
+	bool mbCollision=false;
+	bool mbInside=false;
+	bool mbRemoveMe=false;
+}
+
+class cScrAreaDoorwayTrigger : iScrArea, iScrArea_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject @apVars)
+	{
+		msEntity = apVars.GetVarString("DoorwayEntity", "");
+		msGroup = apVars.GetVarString("DoorwayGroup", "");
+		msCallback = apVars.GetVarString("DoorwayCallback", "");
+		mbCheckCenterOnly = apVars.GetVarBool("DoorwayCheckCenterOnly", true);
+		
+		mBaseObj.SetCheckCollision(false);
+		
+		if(mbCheckCenterOnly)
+			@mpCenterShape = apWorld.GetPhysicsWorld().CreateSphereShape(0.1f, cMatrixf_Identity);
+	}
+	
+	//------------------------------------------------------------
+		
+	void OnAfterWorldLoad()
+	{
+		if(msEntity=="") return;
+		
+		array<tString> vEntityStrings;;
+		cString_GetStringVec(msEntity, vEntityStrings, " ,");
+		
+		for(int i=0; i<vEntityStrings.size(); ++i)
+		{
+			array<tID> vEntities;
+			
+			mBaseObj.GetMap().GetEntityArrayID(vEntityStrings[i], eLuxEntityType_LastEnum, "", vEntities);
+			if(vEntities.size()==0)
+			{
+				Error("Could not find any entities '"+vEntityStrings[i]+"' for Doorway '"+mBaseObj.GetName()+"'");
+				continue;
+			}
+
+			for(int j=0; j<vEntities.size(); ++j)
+			{
+				cAreaDoorWayTriggerEntity ent;
+				ent.m_idEntity = vEntities[j];
+				mvEntities.push_back(ent);
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool OnUpdateAutoSleep()
+	{
+		return mvEntities.size()==0;
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnUpdate(float afTimeStep)
+	{
+		if(mvEntities.size()==0) return;
+		
+		/////////////////////////////////
+		// Remove any if needed
+		CheckRemoveMeEntities();
+		
+		
+		////////////////////////////////////
+		//Iterate the entities
+		cAreaDoorWayTriggerEntity@ pDoorwayEnt;
+		iLuxEntity@ pEntity;
+		for(int i=0; i<mvEntities.size(); ++i)
+		{
+			@pDoorwayEnt = @mvEntities[i];
+			@pEntity = cLux_ID_Entity(pDoorwayEnt.m_idEntity);
+			
+			bool bPrevCollison = pDoorwayEnt.mbCollision;
+			
+			/////////////////////
+			// Check collison
+			bool bCollision;
+			
+			if(mbCheckCenterOnly)
+			{
+				bCollision = cMath_CheckPointInBVIntersection(pEntity.GetPosition(), mBaseObj.GetAreaBody().GetBoundingVolume());
+				if(bCollision)
+					bCollision = mBaseObj.CheckShapeCollision(mpCenterShape, pEntity.GetMatrix(), mBaseObj.GetMap());
+			}
+			else
+				bCollision = mBaseObj.CheckEntityCollision(pEntity);
+			
+			pDoorwayEnt.mbCollision = bCollision;
+			
+			if(bCollision || bPrevCollison==false) continue;
+			
+			////////////////////////////////////
+			// Check if in front
+			cVector3f vToTarget = pEntity.GetPosition() - mBaseObj.GetPosition();
+			vToTarget.Normalize();
+			float fDot = cMath_Vector3Dot(vToTarget, cMath_MatrixInverse(mBaseObj.GetMatrix()).GetForward());
+			bool bInside = 	fDot > 0;
+			
+			////////////////////////////////////
+			// Is this a new state?
+			tString sGlobalVar = "_Doorway_"+pEntity.GetName()+"_"+msGroup;
+			
+			bool bPrevInside = msGroup!="" ? cScript_GetGlobalVarBool(sGlobalVar) : pDoorwayEnt.mbInside;
+			
+			if(bInside == bPrevInside) continue;
+			
+			pDoorwayEnt.mbInside = bInside;
+			
+			////////////////////////////////////
+			// Set group
+			if(msGroup != "") cScript_SetGlobalVarBool(sGlobalVar, bInside);
+			
+			////////////////////////////////
+			// Var setup
+			int lState = bInside ? 1 : -1;
+			bool bRemoveEntity=false;
+			
+			////////////////////////////////////
+			// Connections
+			mBaseObj.ChangeConnectionState(lState);			
+			
+			////////////////////////////////////
+			// Callbacks
+			if(msCallback != "")
+			{
+				cLuxMap @pMap = mBaseObj.GetMap();
+				if(pMap.ScriptPrepare("bool " + msCallback + "(const tString &in asAreaName, const tString &in asEnitityName, int alInsideState)" ) )
+				{
+					tString sAreaName = mBaseObj.GetName();
+					pMap.SetArgString(0, sAreaName);
+					
+					tString sEntName = pEntity.GetName();
+					pMap.SetArgString(1, sEntName );
+					
+					pMap.SetArgInt(2, lState);
+					
+					if(pMap.ScriptExecute())
+					{
+						bRemoveEntity = !pMap.GetReturnBool();
+					}
+				}
+			}
+			
+			pDoorwayEnt.mbRemoveMe = bRemoveEntity;
+		}
+		
+		
+		/////////////////////////////////
+		// Broadcast removal
+		if(msGroup != "")
+		{
+			for(int i=0; i<mvEntities.size(); ++i)
+			{
+				if(mvEntities[i].mbRemoveMe)
+				{
+					cScript_SetGlobalArgString(0, msGroup);
+					cScript_SetGlobalArgID(1, mvEntities[i].m_idEntity);
+					cScript_RunGlobalFunc("*", "cScrAreaDoorwayTrigger", "_Global_RemoveEntity");
+				}
+				
+			}
+		}
+				
+		/////////////////////////////////
+		// Remove any if needed
+		CheckRemoveMeEntities();
+	}
+	
+	void CheckRemoveMeEntities()
+	{
+		for(int i=0; i<mvEntities.size();)
+		{
+			if(mvEntities[i].mbRemoveMe)
+			{
+				//Remove this one
+				mvEntities[i] = mvEntities[mvEntities.size()-1];
+				mvEntities.pop_back();
+			}
+			else
+			{
+				++i;
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnPostUpdate(float afTimeStep)
+	{
+	
+	}
+	//------------------------------------------------------------
+	
+	void ResetProperties()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void BeforeEntityDestruction()
+	{
+		if(mpCenterShape !is null)
+			mBaseObj.GetMap().GetPhysicsWorld().DestroyShape(mpCenterShape);
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INTERACTION
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	bool CanInteract(int alType, iPhysicsBody@ apBody)
+	{
+		return false;
+	}
+	
+	//------------------------------------------------------------
+		
+	bool OnInteract(int alType, iPhysicsBody@ apBody, const cVector3f &in avFocusPos, const tString&in asData)
+	{
+		return false;
+	}
+	//------------------------------------------------------------
+	
+	int GetInteractIconId(int alType, iPhysicsBody@ apBody)
+	{
+		return 0;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// COLLISIONS
+	/////////////////////////////////////////
+	
+	//-----------------------------------------------------------------------
+
+	bool OnStartCheckCollision(float afTimeStep, float afTimeSinceCheck)
+	{
+		return false;
+	}
+	
+	//-----------------------------------------------------------------------
+
+	bool OnCheckCollision(iPhysicsBody@ apBody, iLuxEntity@ apEntity)
+	{
+		return true;
+	}
+	
+	//-----------------------------------------------------------------------
+
+	void OnEndCheckCollision(float afTimteStep)
+	{
+	}
+	
+	//-----------------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//-----------------------------------------------------------------------
+	
+	void OnSetActive(bool abX)
+	{
+	
+	}
+	
+	//-----------------------------------------------------------------------
+	
+	
+	void OnConnectionStateChange(iLuxEntity@ apEntity,int alState)
+	{
+		if(alState==0) return;
+	}
+	
+	//-----------------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL
+	/////////////////////////////////////////
+	
+	//-----------------------------------------------------------------------
+	
+	void _Global_RemoveEntity()
+	{
+		if(msGroup != cScript_GetGlobalArgString(0)) return;
+		tID id = cScript_GetGlobalArgID(1);
+		
+		for(int i=0; i<mvEntities.size();++i)
+		{
+			if(mvEntities[i].m_idEntity == id)
+			{
+				mvEntities[i].mbRemoveMe = true;
+			}
+		}		
+	}
+	
+	//-----------------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	[nosave] iCollideShape @mpCenterShape=null;
+	
+	//------------------------------------------------------------
+	
+	tString msEntity;
+	tString msGroup;
+	tString msCallback;
+	bool mbCheckCenterOnly;
+	
+	array<cAreaDoorWayTriggerEntity> mvEntities;
+	
+	//------------------------------------------------------------
+		
+}	

@@ -1,0 +1,26 @@
+{{ScriptingStub}}
+
+Have some helpful descriptions to add to this class? Edit this page and add your insight to the Wiki!
+
+==Fields==
+
+cLuxMusicHandler has no public fields.
+
+==Functions==
+
+{| class="wikitable"
+! Return Type !! Function Name !! Parameters !! Description
+|-
+| <syntaxhighlight lang="c++" inline>void</syntaxhighlight> || AddDynamicTrack || [[../tID|<syntaxhighlight lang="c++" inline>tID a_idEntity</syntaxhighlight>]],<br /><syntaxhighlight lang="c++" inline>int alTrackPrio</syntaxhighlight>,<br /><syntaxhighlight lang="c++" inline>int alMusicPrio</syntaxhighlight>,<br />[[../tString|<syntaxhighlight lang="c++" inline>const tString &in asFile</syntaxhighlight>]],<br /><syntaxhighlight lang="c++" inline>float afVolume</syntaxhighlight>,<br /><syntaxhighlight lang="c++" inline>float afFadeInTime</syntaxhighlight>,<br /><syntaxhighlight lang="c++" inline>float afFadeOutTime</syntaxhighlight> ||
+|-
+| <syntaxhighlight lang="c++" inline>void</syntaxhighlight> || Play || [[../tString|<syntaxhighlight lang="c++" inline>const tString& asFile</syntaxhighlight>]],<br /><syntaxhighlight lang="c++" inline>bool abLoop</syntaxhighlight>,<br /><syntaxhighlight lang="c++" inline>float afVolume</syntaxhighlight>,<br /><syntaxhighlight lang="c++" inline>float afFreq</syntaxhighlight>,<br /><syntaxhighlight lang="c++" inline>float afVolumeFadeTime</syntaxhighlight>,<br /><syntaxhighlight lang="c++" inline>float afFreqFadeTime</syntaxhighlight>,<br /><syntaxhighlight lang="c++" inline>int alPrio</syntaxhighlight>,<br /><syntaxhighlight lang="c++" inline>bool abResume</syntaxhighlight>,<br /><syntaxhighlight lang="c++" inline>bool abSpecialEffect</syntaxhighlight> ||
+|-
+| <syntaxhighlight lang="c++" inline>void</syntaxhighlight> || RemoveDynamicTrack || [[../tID|<syntaxhighlight lang="c++" inline>tID a_idEntity</syntaxhighlight>]] ||
+|-
+| <syntaxhighlight lang="c++" inline>void</syntaxhighlight> || Stop || <syntaxhighlight lang="c++" inline>float afFadeTime</syntaxhighlight>,<br /><syntaxhighlight lang="c++" inline>int alPrio</syntaxhighlight> ||
+|}
+
+{{ReferencesSection}}
+
+{{HPL3SOMAScriptingCategories}}
+__FORCETOC__

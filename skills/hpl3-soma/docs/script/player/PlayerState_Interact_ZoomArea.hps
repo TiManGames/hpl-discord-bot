@@ -1,0 +1,477 @@
+#include "player/PlayerState_Interact.hps"
+#include "helpers/helper_player.hps"
+#include "player_types.hps"
+#include "utilities/utility_readables.hps"
+#include "base/InputHandler_Types.hps"
+#include "helpers/helper_effects.hps"
+
+/////////////////////////////////////////
+// SETTINGS
+/////////////////////////////////////////
+
+//------------------------------------------------------------
+
+const float gfHeadMoveAcc = 6.0f;
+const float gfHeadMoveSpeed = 1.5f;
+const float gfHeadMoveSlowdownDist = 0.3f;
+
+const float gfHeadRotateAcc = 6.0f;
+const float gfHeadRotateMaxSpeed = 1.5f;
+const float gfHeadRotateSpeedMul = 2;
+
+const float gfCheckMaxPushDist = 2.5f;
+
+//------------------------------------------------------------
+
+class cScrPlayerState_Interact_ZoomArea : iScrPlayerState, iScrPlayerState_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		mReadable.SetMainHint("ReadableTextHintZoomArea");
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// USER SETTINGS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void LoadUserConfig()
+	{
+	
+	}
+	void SaveUserConfig()
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ENTER MAP
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+	
+	}
+	void OnMapLeave(cLuxMap @apMap)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void CreateWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	void DestroyWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL FUNCTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupZoomArea()
+	{
+		mfCurrentCameraSpeed = 0;
+		
+		mAreaID = cScript_GetGlobalArgID(0);
+		
+		mReadable.SetupReading(cScript_GetGlobalArgString(1), cScript_GetGlobalArgString(2), "" );
+		mReadable.SetTextAvailable(eTextSide_Front);
+		
+		mfZoomDistance = cScript_GetGlobalArgFloat(3);
+		
+		mReadable.SetGuiFunction(cScript_GetGlobalArgString(4));
+		
+		iLuxEntity@ pAreaEntity = cLux_GetCurrentMap().GetEntityByID(mAreaID, eLuxEntityType_Area);
+		cLuxArea@ pArea = cLux_ToArea(pAreaEntity);
+		pArea.SetIsInteractedWith(true);
+		
+		////////////////////////////////
+		// Get specific params
+		cMatrixf matArea = cMath_MatrixInverse(pArea.GetMatrix().GetRotation());
+		cVector3f vDirection = matArea.GetForward();
+		cVector3f vTerminalPosition = pArea.GetPosition()+vDirection*mfZoomDistance;
+
+		///////////////////////////////////////////
+		// Get target camera and feet positions
+		iCharacterBody@ pCharBody = cLux_GetPlayer().GetCharacterBody();
+		
+		cVector3f vCurrentFeetPos = pCharBody.GetFeetPosition();
+		mvTargetCameraPosition = vTerminalPosition + vDirection;
+		cVector3f vFeetPosition = mvTargetCameraPosition;
+		vFeetPosition.y = vCurrentFeetPos.y;
+	
+		////////////////////////////////////
+		//Try to find a position in front of terminal where the player fits
+		cVector3f vPushBack;
+		bool bFitting = pCharBody.CheckCharacterFits(vFeetPosition, true,0, vPushBack);
+
+		if(	bFitting==false && vPushBack.y > -0.01 && vPushBack.Length() <= gfCheckMaxPushDist)
+		{
+			vFeetPosition = vFeetPosition + vPushBack;
+			bFitting = pCharBody.CheckCharacterFits(vFeetPosition, true,0, vPushBack);
+			if(bFitting == false) vFeetPosition += vPushBack;
+		}
+
+		pCharBody.SetFeetPosition(vFeetPosition, false);
+		
+		////////////////////////////////
+		// Move camera back to initial position
+		cVector3f vPosAdd = cLux_GetPlayer().GetCameraPosAdd(eCameraAddType_Terminal);
+		cVector3f vPosDifference = vCurrentFeetPos - pCharBody.GetFeetPosition();
+
+		cMatrixf mtxCharBodyRotation = cMath_MatrixInverse(cMath_MatrixUnitVectors(pCharBody.GetRight(), pCharBody.GetUp(), pCharBody.GetForward(), cVector3f(0)));
+		cLux_GetPlayer().SetCameraPosAdd(eCameraAddType_Terminal, cMath_MatrixMul(mtxCharBodyRotation, vPosDifference));
+		
+		////////////////////////////////
+		//Stop character body
+		pCharBody.SetMoveSpeed(eCharDir_Forward, 0);
+		pCharBody.SetMoveSpeed(eCharDir_Right, 0);
+		pCharBody.SetForceVelocity(cVector3f(0));
+
+		///////////////////////////////////////////
+		// Rotate camera towards screen
+		cLux_GetPlayer().RotateCameraTowards(gfHeadRotateAcc, gfHeadRotateSpeedMul, gfHeadRotateMaxSpeed, vDirection * -1, true);
+	}
+	
+	//------------------------------------------------------------
+	
+	void Exit()
+	{
+		mbExit=true;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnEnterState(int alPrevStateId)
+	{
+		mbExit = false;
+		mbEnteringState = true;
+		mlPreviousState = alPrevStateId;
+		mReadable.Reset();
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnLeaveState(int alNextStateId)
+	{	
+		////////////////////////////////////////
+		// Reset camera
+		cLux_GetPlayer().MoveCameraPosAdd(eCameraAddType_Terminal, cVector3f(0), gfHeadMoveAcc, gfHeadMoveSpeed, gfHeadMoveSlowdownDist);
+		cLux_GetPlayer().StopCameraRotate(0);
+
+		//////////////
+		// Restore fov
+		Player_FadeFOVToDefault(1.0f);
+		
+		//////////////////////////////
+		// Fade out text
+		mReadable.HideText();
+		
+		Effect_Shake_EnableAll(true);
+		
+		cLux_ID_Area(mAreaID).SetIsInteractedWith(false);
+	}
+		
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+		mbEnteringState = false;
+	}
+	
+	//------------------------------------------------------------
+	void Update(float afTimeStep)
+	{
+		if(mbExit) {
+			mBaseObj.mpPlayer.ChangeState(mlPreviousState);
+			return;
+		}
+				
+		iCharacterBody@ pCharBody = cLux_GetPlayer().GetCharacterBody();
+		
+		///////////////////////////////////////////
+		//Calculate direction to target position in the player's local space
+		cVector3f vPosAdd = cLux_GetPlayer().GetCameraPosAdd(eCameraAddType_Terminal);
+		cVector3f vToTarget = mvTargetCameraPosition - cLux_GetPlayer().GetCamera().GetPosition();
+		float fDist = vToTarget.Length();
+		cMatrixf mtxCharBodyRotation = cMath_MatrixUnitVectors(pCharBody.GetRight(), pCharBody.GetUp(), pCharBody.GetForward(), cVector3f(0));
+		cVector3f vLocalToTarget = cMath_MatrixMul(mtxCharBodyRotation, vToTarget);
+		vLocalToTarget.Normalize();
+		
+		///////////////////////////////////////////
+		//Move camera
+		vPosAdd += vLocalToTarget * cMath_Min(fDist, mfCurrentCameraSpeed*afTimeStep);
+		cLux_GetPlayer().SetCameraPosAdd(eCameraAddType_Terminal, vPosAdd);
+		
+		///////////////////////////////////////////
+		//Update camera speed
+		float fMaxSpeed = gfHeadMoveSpeed;
+		if (fDist < gfHeadMoveSlowdownDist)
+			fMaxSpeed *= fDist/gfHeadMoveSlowdownDist;
+			
+		if (mbEnteringState && fDist<0.01f)
+		{
+			mbEnteringState = false;
+			
+			// Auto pop up text if not English
+			tString sLang = cString_SetFileExt(cLux_GetCurrentLanguage(), "");
+			if (sLang!="english")
+			{
+				if (!mReadable.IsShowingText())
+					mReadable.ShowText();
+			}
+		}
+		
+		mfCurrentCameraSpeed = cMath_Min(fMaxSpeed, mfCurrentCameraSpeed + gfHeadMoveAcc * afTimeStep);
+				
+		//Show no crosshair!
+		Player_SetCrossHairState(eCrossHairState_None);
+		
+		mReadable.Update(afTimeStep);
+	}
+	
+	//------------------------------------------------------------
+	
+	void PostUpdate(float afTimeStep)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnGui(float afTimeStep)
+	{
+		mReadable.DrawGui(afTimeStep);
+	}
+	
+	
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool OnAction(int alAction, bool abPressed)
+	{
+		// If gbReadablesHoldInteract is set, allow releasing the interact
+		// button to cancel. So the player needs to hold.
+		if (gbReadablesHoldInteract && !abPressed && alAction == eAction_Interact)
+		{
+			LeaveState();
+			return false;
+		}
+		
+		if (alAction == eAction_Crouch || alAction == eAction_Jump)
+			return false;
+		/*	
+		if (!mReadable.IsFading())
+		{
+			////////////////////////////////
+			// Text scrolling
+			if (mReadable.IsShowingText())Action, abPress
+			{
+				mReadable.ScrollInput(aled);
+			}
+		}
+		*/
+		if (abPressed && !mReadable.IsFading())
+		{
+			///////////////////////////////
+			// SPACE / A
+			if (alAction == eAction_Examine || alAction == eAction_Interact)
+			{
+				if (!mReadable.IsShowingText())
+				{
+					mReadable.ShowText();
+					Effect_Shake_EnableAll(false);
+				}
+				else
+				{
+					// Increase page num
+					if(mReadable.GetPage() < mReadable.GetPageNum())
+					{
+						mReadable.NextPage();
+					}
+					else
+					{
+						cLux_AddDebugMessage("Close Text");
+						mReadable.HideText();
+						Effect_Shake_EnableAll(true);
+					}
+				}
+				
+				return false;
+			}
+			
+			///////////////////////////////
+			// Right click
+			if (alAction == eAction_InteractCancel)
+			{
+				LeaveState();
+				return false;
+			}
+		}
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnAnalogInput(int alAnalogId, const cVector3f &in avAmount)
+	{
+		///////////////////////////////////
+		// Disable look and move
+		if(alAnalogId == eAnalogType_Look || alAnalogId == eAnalogType_GamepadMove || alAnalogId == eAnalogType_Move)
+		{			
+			return false;
+		}
+		
+		////////////////////////////////////////////////////
+		// Text scrolling
+		if (alAnalogId == eAnalogType_Scroll)
+		{
+			if (mReadable.IsShowingText())
+			{
+				return false;
+			}
+		}
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnExitPressed()
+	{
+		LeaveState();
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	void LeaveState()
+	{
+		mBaseObj.mpPlayer.ChangeState(mlPreviousState);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// BODY CALLBACKS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool AllowBuoyancy(iPhysicsBody @apBody)
+	{
+		return false;
+	}
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// CHARACTER CALLBACK
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void CharBody_GravityCollide(iCharacterBody@ apCharBody, iPhysicsBody@ apBody, cCollideData @apCollideData)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void CharBody_HitGround(iCharacterBody@ apCharBody,const cVector3f &in avVel)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPER METHODS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	void SaveBodyProperties(iPhysicsBody @apBody)
+	{
+		
+	}
+
+	//-----------------------------------------------------------------------
+
+
+	bool BodyIsAdded(iPhysicsBody @apBody)
+	{
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	cVector3f mvTargetCameraPosition;
+	float mfZoomDistance;
+	float mfCurrentCameraSpeed;
+	bool mbExit;
+	int mlPreviousState;
+	
+	tID mAreaID;
+	cVector3f mvZoomOffset;
+	
+	[nosave] cUtility_Readable mReadable;
+	tString msGuiFunction;
+	bool mbEnteringState = false;
+	
+	//------------------------------------------------------------
+		
+}

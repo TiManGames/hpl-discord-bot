@@ -1,0 +1,289 @@
+#include "effect/Effects.hps"
+#include "player/Player_Types.hps"
+#include "helpers/helper_effects.hps"
+
+/////////////////////////////////////////
+// SETTINGS
+/////////////////////////////////////////
+
+//------------------------------------------------------------
+
+class cLuxEffect_ColorInstance
+{
+	float mfDuration;
+	float mfTime;
+	cColor mColor;
+	
+	int mlID;
+}
+
+//------------------------------------------------------------
+
+class cLuxEffect_RumbleInstance
+{
+	float mfTime;
+	float mfDuration;
+	float mfFadeInTime;
+	float mfFadeOutTime;
+	float mfRumble;
+	
+	int mlID;
+}
+
+//------------------------------------------------------------
+
+class cScrEffect_Gamepad : iScrEffect, iScrEffect_Interface, iScrEffect_Gamepad
+{
+	
+	//----------------------------------
+	
+	void Init()
+	{
+		mlIdCounter = 0;
+	}
+	//----------------------------------
+	
+	void OnDestroy()
+	{
+	}
+	
+	//----------------------------------
+	
+	/////////////////////////////////////////
+	// PULBIC METHODS
+	/////////////////////////////////////////
+	
+	//----------------------------------
+	
+	int StartRumble(float afAmount, float afTime, float afFadeInTime,float afFadeOutTime)
+	{		
+		cLuxEffect_RumbleInstance rumble;
+		rumble.mfRumble = afAmount;
+		rumble.mfTime = 0;
+		rumble.mfDuration = afTime<0 ? 1.0f: afTime;
+		rumble.mfFadeInTime = afFadeInTime;
+		rumble.mfFadeOutTime = cMath_Max(afFadeOutTime, 0.001f);
+		
+		rumble.mlID = mlIdCounter++;
+
+		mvRumble.push_back(rumble);
+
+		mBaseObj.SetActive(true);
+		
+		return rumble.mlID;
+	}
+
+	int StartColorFade(cColor aColor, float afTime)
+	{		
+		cLuxEffect_ColorInstance color;
+		color.mColor = aColor;
+		color.mfTime = 0;
+		color.mfDuration = afTime<0 ? 1.0f: afTime;
+		
+		color.mlID = mlIdCounter++;
+
+		mvColor.push_back(color);
+
+		mBaseObj.SetActive(true);
+		
+		return color.mlID;
+	}
+	
+	void WakeUp()
+	{
+		mBaseObj.SetActive(true);
+	}
+	
+	//----------------------------------
+
+	void StopRumble(int alID)
+	{
+		for(uint i = 0; i < mvRumble.size(); ++i)
+		{
+			if(alID==-1 || mvRumble[i].mlID  == alID)
+			{				
+				mvRumble[i].mfTime = mvRumble[i].mfDuration;
+			}
+		}
+	}
+	
+	void StopColorFade(int alID)
+	{
+		for(uint i = 0; i < mvColor.size(); ++i)
+		{
+			if(alID==-1 || mvColor[i].mlID  == alID)
+			{				
+				float fT = 0;
+
+				if(mvColor[i].mfTime < mvColor[i].mfDuration)
+				{
+					fT = mvColor[i].mfTime / mvColor[i].mfDuration;
+				}
+				else										  
+				{
+					fT = 1.0f;
+				}
+
+				mvColor[i].mColor = (mvColor[i].mColor * fT + mLedColor * (1.0 - fT));
+				mvColor[i].mfTime = cMath_Max(mvColor[i].mfTime, mvColor[i].mfDuration);
+			}
+		}
+	}
+	
+	void SetShakeRumbleMul(float afX)
+	{
+		mfShakeRumbleMul = afX;
+	}
+
+	//----------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL CALLBACKS
+	/////////////////////////////////////////
+	
+	//----------------------------------
+	
+	void OnStart()
+	{
+	}
+
+	//----------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+	}
+	
+	//----------------------------------
+	
+	void OnMapLeave(cLuxMap @apMap)
+	{
+		return;
+	}
+
+	//----------------------------------
+	
+	void Reset()
+	{
+		mvRumble.resize(0);
+		mvColor.resize(0);
+		mLedColor = cColor(0,0);
+		mfShakeRumbleMul = 1.0f;
+		cLux_GetInputHandler().SetRumble(0, 0, 0);
+		cLux_GetInputHandler().SetGamepadColor(0, mLedColor);
+	}
+
+	//----------------------------------
+	
+	int mlDebugUpdateCount=0;
+	void Update(float afTimeStep)
+	{
+		////////////////
+		// Rumble
+		float fRumble = 0.0f;
+		
+		float fShakeT = cMath_Clamp(Effect_Shake_GetCurrentShakeAmount()*mfShakeRumbleMul*10.0f, 0.0f, 1.0f);
+		
+		fRumble = cMath_Easing(eEasing_CubicOut, fShakeT)* 0.415;
+		if(fRumble >0.1f && fRumble<0.3) fRumble=0.3;
+		
+		
+		for(uint i = 0; i < mvRumble.size(); ++i)
+		{
+			mvRumble[i].mfTime += afTimeStep;
+
+			float fValue = mvRumble[i].mfRumble;
+
+			if(mvRumble[i].mfTime >= mvRumble[i].mfDuration)
+			{
+				mvRumble[i] = mvRumble[mvRumble.size()-1];
+				mvRumble.resize(mvRumble.size()-1);
+				i--;
+			}
+			else
+			{
+				if(mvRumble[i].mfTime < mvRumble[i].mfFadeInTime)
+				{
+					fValue *= mvRumble[i].mfTime / mvRumble[i].mfFadeInTime;
+				}
+				if(mvRumble[i].mfDuration - mvRumble[i].mfTime < mvRumble[i].mfFadeOutTime)
+				{
+					fValue *= (mvRumble[i].mfDuration - mvRumble[i].mfTime) / mvRumble[i].mfFadeOutTime;
+				}
+
+				fRumble = cMath_Max(fRumble, fValue);
+			}
+		}
+
+		///////////////
+		// Color led
+		float fWeightSum = 0.001;
+		cColor color = mLedColor * fWeightSum;
+
+		for(uint i = 0; i < mvColor.size(); ++i)
+		{
+			float fWeight = 0.001;
+			float fT = 0.0;
+			mvColor[i].mfTime += afTimeStep;
+			
+			if(mvColor[i].mfTime > mvColor[i].mfDuration * 2.0)
+			{
+				mvColor[i] = mvColor[mvColor.size()-1];
+				mvColor.resize(mvColor.size()-1);
+				i--;
+				continue;
+			}
+			else
+			{
+				// Fade in and then fade out weight
+				if(mvColor[i].mfTime < mvColor[i].mfDuration)
+				{
+					fT = mvColor[i].mfTime / mvColor[i].mfDuration;
+					fWeight += fT;
+				}
+				else										  
+				{
+					fT = 1.0f;
+					fWeight += (mvColor[i].mfDuration - mvColor[i].mfTime) / mvColor[i].mfDuration;
+				}
+			}
+
+			color = color + (mvColor[i].mColor * fT + mLedColor * (1.0 - fT)) * fWeight;
+			fWeightSum += fWeight;
+		}
+
+		mLedColor = color / fWeightSum;
+
+		/////////////////
+		// Set rumble and color
+		cLux_GetInputHandler().SetRumble(0, fRumble, afTimeStep * 6.0f); //Make it last 6 frames if the game freezes
+		cLux_GetInputHandler().SetGamepadColor(0, mLedColor);
+
+		if(mvRumble.size() == 0 && mvColor.size() == 0 && fShakeT<0.00001f)
+		{
+			mBaseObj.SetActive(false);
+		}
+	}
+	
+	//----------------------------------
+	
+	void OnDraw(float afFrameTime)
+	{
+	}
+	
+	//----------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//----------------------------------
+	
+	array<cLuxEffect_RumbleInstance> mvRumble;
+	array<cLuxEffect_ColorInstance> mvColor;
+	cColor mLedColor = cColor(0,0);
+	int mlIdCounter;
+	
+	float mfShakeRumbleMul = 1.0f;
+	
+	//----------------------------------
+}

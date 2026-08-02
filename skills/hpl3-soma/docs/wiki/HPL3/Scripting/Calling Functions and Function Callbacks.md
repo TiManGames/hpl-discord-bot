@@ -1,0 +1,1 @@
+#REDIRECT [[HPL3/Scripting/Scripting Guide/Calling Functions and Function Callbacks]]

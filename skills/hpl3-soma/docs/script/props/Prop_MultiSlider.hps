@@ -1,0 +1,469 @@
+#include "interfaces/Prop_Interface.hps"
+#include "base/Player_Types.hps"
+#include "helper_audio.hps"
+#include "helper_modules.hps"
+
+class InteractData_Slide
+{
+	float mfSlideMaxSpeed;
+	float mfSlideSlowDownFactor;
+	float mfSlideSpeedFactor;
+	float mfSlideThrowImpulse;
+};
+
+class cScrPropMultiSlider : iScrProp, iScrProp_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		mlCurrentState  = -1;
+		mlStuckState = -1;
+		mbInteractionDisablesStuck = false;
+
+		mAutoMovePid.SetErrorNum(10);
+		mAutoMovePid.p = 40.0f;
+		mAutoMovePid.i = 0.0f;
+		mAutoMovePid.d = 0.0f;
+
+		mfStuckSoundTimer =0;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		///////////////////////////////////////
+		// Type vars
+		mSlideData.mfSlideMaxSpeed = apVars.GetVarFloat("SlideMaxSpeed", 5.0f);
+		mSlideData.mfSlideSlowDownFactor = apVars.GetVarFloat("SlideSlowDownFactor", 1.0f);
+		mSlideData.mfSlideSpeedFactor = apVars.GetVarFloat("SlideSpeedFactor", 1.0f);
+		mSlideData.mfSlideThrowImpulse = apVars.GetVarFloat("SlideThrowImpulse", 3.0f);
+
+		mlNumOfStates = apVars.GetVarInt("NumOfStates", 2);
+		if(mlNumOfStates < 2)
+		{
+			Warning("MultiSlider " + GetBase().GetName() + " has fewer than 2 states! It will not function properly!");
+		}
+		mfStickToStateMaxDist = apVars.GetVarFloat("StickToStateMaxDist", 0.1f);
+
+		mbCanInteractWithStaticBody = apVars.GetVarBool("CanInteractWithStaticBody", true);
+		
+		mbAutoMoveToCurrentState = apVars.GetVarBool("AutoMoveToCurrentState", true);
+		mfAutoMoveSpeedFactor = apVars.GetVarFloat("AutoMoveSpeedFactor", 2);
+		mfAutoMoveMaxSpeed = apVars.GetVarFloat("AutoMoveMaxSpeed", 8);
+		
+		msChangeStateSound = apVars.GetVarString("ChangeStateSound", "");
+		
+		msStuckSound = apVars.GetVarString("StuckSound", "");
+		
+		///////////////////////////////////////
+		// Setup
+		iPhysicsJoint@ pJoint = GetBase().GetJoint(0);
+		if(pJoint is null || pJoint.GetType() != ePhysicsJointType_Slider)
+		{
+			Error("MultiSlider " + GetBase().GetName() + " does not have a hinge joint!");
+			return;
+		}
+
+		@mpSliderJoint = cast<iPhysicsJointSlider>(pJoint);
+
+		@mpSliderBody = mpSliderJoint.GetChildBody();
+
+		///////////////////////
+		//Set up data
+		mfDefaultMinDist = mpSliderJoint.GetMinDistance();
+		mfDefaultMaxDist = mpSliderJoint.GetMaxDistance();
+		
+		///////////////////////
+		// Setup joint sounds
+		tString sMoveSound = apVars.GetVarString("MoveSound", "");
+		if (sMoveSound != "")
+		{
+			mpSliderJoint.SetMoveSound(sMoveSound);
+			mpSliderJoint.SetMoveSpeedType(ePhysicsJointSpeed_Linear);
+		}
+		float fMinMoveSoundSpeed = apVars.GetVarFloat("MinMoveSoundSpeed", -1);
+		if (fMinMoveSoundSpeed >= 0)
+		{
+			mpSliderJoint.SetMinMoveSpeed(fMinMoveSoundSpeed);
+		}
+
+		///////////////////////
+		//Set up limits
+		mvStates.resize(mlNumOfStates);
+		float fTotalDist = mfDefaultMaxDist - mfDefaultMinDist;
+		float fStatePosAdd = fTotalDist / float(mlNumOfStates-1);
+		float fStatePos = mfDefaultMinDist;
+		for(uint i=0; i<mvStates.length(); ++i)
+		{
+			mvStates[i] = fStatePos;
+			fStatePos += fStatePosAdd;
+		}
+		
+		////////////////////////////////////
+		// Instance vars
+		int lStuckState = apInstanceVars.GetVarInt("StuckState", -1);
+		SetStuckState(lStuckState, false);
+
+		mbInteractionDisablesStuck = apInstanceVars.GetVarBool("InteractionDisablesStuck", false);
+
+		msChangeStateCallback = apInstanceVars.GetVarString("ChangeStateCallback", "");
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnUpdate(float afTimeStep)
+	{
+		float fDist = mpSliderJoint.GetDistance();
+
+		UpdateCheckStuckSound(afTimeStep);
+		UpdateCheckNewState(fDist, afTimeStep);
+		UpdateAutoMove(fDist, afTimeStep);
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateCheckStuckSound(float afTimeStep)
+	{
+		if(mlStuckState <0 || !GetBase().IsInteractedWith()) return;
+
+		if(mfStuckSoundTimer >0)
+		{
+			mfStuckSoundTimer-=afTimeStep; 
+			return;
+		}
+		
+		float fSpeedSqr = mpSliderJoint.GetChildBody().GetLinearVelocity().SqrLength();
+		if(fSpeedSqr > 0.01f)
+		{
+			Sound_Play(msStuckSound, 0);
+			mfStuckSoundTimer = 1.5f;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateCheckNewState(float afPos, float afTimeStep)
+	{
+		if(mlStuckState >=0) return;
+
+		for(uint i=0; i<mvStates.length(); ++i)
+		{
+			if(i==mlCurrentState) continue;
+
+			float fDistToState = cMath_Abs(afPos-mvStates[i]);
+			if(fDistToState <= mfStickToStateMaxDist)
+			{
+				ChangeState(i, true);
+				break;
+			}
+		}
+	}
+
+	//-----------------------------------------------------------------------
+
+	void UpdateAutoMove(float afPos, float afTimeStep)
+	{
+		if(GetBase().IsInteractedWith() || mbAutoMoveToCurrentState==false || mlStuckState!=-1 || mlCurrentState==-1) return;
+		
+		///////////////////////////
+		// Get the wanted speed
+		float fGoalPos = mvStates[mlCurrentState];
+		
+		float fWantedSpeed = mfAutoMoveSpeedFactor * (fGoalPos - afPos);
+		if(cMath_Abs(fWantedSpeed)<0.003f) return;
+		
+		if(fWantedSpeed > mfAutoMoveMaxSpeed)	fWantedSpeed = mfAutoMoveMaxSpeed;
+		if(fWantedSpeed < -mfAutoMoveMaxSpeed)	fWantedSpeed = -mfAutoMoveMaxSpeed;
+
+		///////////////////////////
+		// Calculate the torque
+		cVector3f vMoveDir = mpSliderJoint.GetPinDir();
+		cVector3f vBodyVel = mpSliderBody.GetLinearVelocity();
+		float fSliderSpeed = cMath_Vector3Dot(vMoveDir, vBodyVel);
+		
+		//mpMultiSliderBody->SetAngularVelocity(vWantedVel);
+		
+		float fForceSize = mAutoMovePid.Output(fWantedSpeed - fSliderSpeed, afTimeStep);
+		fForceSize *= mpSliderBody.GetMass();
+		
+		mpSliderBody.AddForce(vMoveDir*fForceSize);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnPostUpdate(float afTimeStep)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetProperties()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void BeforeEntityDestruction()
+	{
+	}
+		
+	//------------------------------------------------------------
+	
+	void OnStartMove()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnConnectionStateChange(iLuxEntity@ apEntity,int alState)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/*bool OnUpdateAutoSleep()
+	{
+		return true;
+	}*/
+		
+	//------------------------------------------------------------
+		
+	bool CanInteract(int alType, iPhysicsBody@ apBody)
+	{
+		if(apBody.GetMass() == 0 && mbCanInteractWithStaticBody == false) return false;
+
+		return true;
+	}
+	
+	//------------------------------------------------------------
+		
+	bool OnInteract(int alType, iPhysicsBody@ apBody, const cVector3f &in avFocusPos, const tString&in asData)
+	{
+		if(apBody.GetMass()==0 && mbCanInteractWithStaticBody)
+		{
+			for(int i=0; i < GetBase().GetBodyNum(); ++i)
+			{
+				if(GetBase().GetBody(i).GetMass() > 0)
+				{
+					@apBody = GetBase().GetBody(i);
+					break;
+				}
+			}
+		}
+
+		if(mlStuckState !=0 && mbInteractionDisablesStuck)
+			SetStuckState(-1, true);
+
+		//Not sure if this is right, was initially a hint, not a description.
+		//Description_Add("Hints", "EntitySlide", 0, false);
+
+		cScript_SetGlobalArgID(0, mBaseObj.GetID()); //Object ID
+		cScript_SetGlobalArgInt(1, apBody.GetUniqueID()); //Body Id
+		cScript_SetGlobalArgVector3f(2, avFocusPos);//The grab postion
+		
+		cScript_SetGlobalArgFloat(3, mSlideData.mfSlideMaxSpeed);
+		cScript_SetGlobalArgFloat(4, mSlideData.mfSlideSlowDownFactor);
+		cScript_SetGlobalArgFloat(5, mSlideData.mfSlideSpeedFactor);
+		
+		cScript_SetGlobalArgFloat(10, 1.0f);	// Pad multiplier
+		
+		cScript_RunGlobalFunc("State_Interact_Slide", "", "SetupSlide");
+		cLux_GetPlayer().ChangeState(ePlayerState_Slide);
+
+		mAutoMovePid.Reset();
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	int GetInteractIconId(int alType, iPhysicsBody@ apBody)
+	{
+		return eCrossHairState_PullSideways;
+	}
+	
+	
+	//------------------------------------------------------------
+	
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnSetActive(bool abX)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void GiveDamage(float afAmount, int alStrength, const tString&in asType, const tString&in asSource)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnHealthChange()
+	{
+	}
+	//------------------------------------------------------------
+	
+	//NOTE: This is only useable if SetScriptCollisionCallbackActive is true
+	void OnPhysicsCollision(iPhysicsBody @apBody, iPhysicsBody @apCollideBody, cPhysicsContactData&in apContactData)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// SPECIFIC ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetStuckState(int alState, bool abEffects)
+	{
+		if(mlStuckState == alState) return;
+
+		mlStuckState = alState;
+
+		mfStuckSoundTimer =0; //Reset the stuck timer!
+
+		//////////////////////////
+		//Stuck on
+		if(mlStuckState >= 0)
+		{
+			ChangeState(alState, abEffects);
+
+			float fPos = mvStates[mlStuckState];
+			float fMin = mlStuckState==0 ? fPos : fPos - 0.05f;
+			float fMax = mlStuckState== int(mvStates.size())-1 ? fPos : fPos + 0.05f;
+			
+			mpSliderJoint.SetMinDistance(fMin);
+			mpSliderJoint.SetMaxDistance(fMax);
+		}
+		//////////////////////////
+		//Stuck off
+		else
+		{
+			mpSliderJoint.SetMinDistance(mfDefaultMinDist);
+			mpSliderJoint.SetMaxDistance(mfDefaultMaxDist);
+		}
+
+		mpSliderBody.Enable();
+	}
+	
+	//------------------------------------------------------------
+	
+	void ChangeState(int alState, bool abEffects)
+	{
+		if(mlCurrentState == alState) return;
+
+		mlCurrentState = alState;
+		
+		cLuxMap@ pMap = GetBase().GetMap();
+
+		///////////////////////
+		//Play sound
+		if(abEffects && msChangeStateSound != "")
+		{
+			cSoundEntity @pSound = pMap.GetWorld().CreateSoundEntity("MultiSliderSound", msChangeStateSound, true);
+			if(pSound !is null) pSound.SetPosition(mpSliderBody.GetLocalPosition());
+		}
+
+		///////////////////////
+		//Callback
+		if(msChangeStateCallback!="")
+		{
+			if (pMap.ScriptPrepare("void " + msChangeStateCallback + "(const tString &in asName, int alState)"))
+			{
+				tString sName = GetBase().GetName();
+				pMap.SetArgString(0, sName);
+				pMap.SetArgInt(1, mlCurrentState);
+				
+				pMap.ScriptExecute();
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	[nosave] InteractData_Slide mSlideData;
+
+	[nosave] iPhysicsJointSlider@ mpSliderJoint;
+	[nosave] iPhysicsBody@ mpSliderBody;
+	[nosave] array<float> mvStates;
+
+	[nosave] int mlNumOfStates;
+	[nosave] float mfStickToStateMaxDist;
+	
+	[nosave] bool mbCanInteractWithStaticBody;
+	
+	[nosave] bool mbAutoMoveToCurrentState;
+	[nosave] float mfAutoMoveSpeedFactor;
+	[nosave] float mfAutoMoveMaxSpeed;
+	
+	[nosave] tString msChangeStateSound;
+	[nosave] tString msStuckSound;
+
+	[nosave] float mfDefaultMinDist;
+	[nosave] float mfDefaultMaxDist;
+	
+	//------------------------------------------------------------
+
+	int mlCurrentState;
+	int mlStuckState;
+	float mfStuckSoundTimer;
+
+	bool mbInteractionDisablesStuck;
+
+	cPidControllerf mAutoMovePid;
+
+	tString msChangeStateCallback;
+	
+	//------------------------------------------------------------
+		
+}	

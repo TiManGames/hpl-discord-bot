@@ -1,0 +1,419 @@
+#include "player/PlayerState_Interact.hps"
+#include "helpers/helper_player.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_map.hps"
+#include "helpers/helper_modules.hps"
+#include "player_types.hps"
+#include "base/InputHandler_Types.hps"
+
+/////////////////////////////////////////
+// SETTINGS
+/////////////////////////////////////////
+
+//------------------------------------------------------------
+
+const float gfHeadMoveAcc = 6.0f;
+const float gfHeadMoveSpeed = 1.5f;
+const float gfHeadMoveSlowdownDist = 0.3f;
+
+const float gfHeadRotateAcc = 6.0f;
+const float gfHeadRotateMaxSpeed = 1.5f;
+const float gfHeadRotateSpeedMul = 2;
+
+const float gfCheckMaxPushDist = 2.5f;
+const float gfCheckPushDistTolerance = 0.1f;
+const int glCheckMaxPushTries = 3;
+
+//------------------------------------------------------------
+
+class cScrPlayerState_Interact_Terminal : iScrPlayerState_Interact, iScrPlayerState_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// USER SETTINGS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void LoadUserConfig()
+	{
+	
+	}
+	void SaveUserConfig()
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ENTER MAP
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+	
+	}
+	void OnMapLeave(cLuxMap @apMap)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void CreateWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	void DestroyWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL FUNCTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupTerminal()
+	{
+		////////////////////////////////
+		// Get basic params & setup
+		SetupInteractVars();
+		mfCurrentCameraSpeed = 0;
+		
+		////////////////////////////////
+		// Get specific params
+		cVector3f vDirection = cMath_Vector3Normalize(cScript_GetGlobalArgVector3f(3));
+		cVector3f vTerminalPosition = cScript_GetGlobalArgVector3f(4);
+		float vCameraDistance = cScript_GetGlobalArgFloat(5);
+		msLeaveCallback = cScript_GetGlobalArgString(6);
+		tString sPlayerPosEntity = cScript_GetGlobalArgString(7);
+
+		///////////////////////////////////////////
+		// Get target camera and feet positions
+		iCharacterBody@ pCharBody = cLux_GetPlayer().GetCharacterBody();
+		
+		cVector3f vCurrentFeetPos = pCharBody.GetFeetPosition();
+		mvTargetCameraPosition = vTerminalPosition + vDirection * vCameraDistance;
+		cVector3f vFeetPosition = mvTargetCameraPosition;
+		vFeetPosition.y = vCurrentFeetPos.y;
+		
+		///////////////////////////////////////////
+		// Get custom player position from instance
+		if (sPlayerPosEntity != "")
+		{
+			iLuxEntity@ pPosEntity = Map_GetEntity(sPlayerPosEntity);
+			if (pPosEntity !is null)
+			{
+				vFeetPosition = pPosEntity.GetPosition();
+				vFeetPosition.y -= gvBodySize.y*0.5f;
+			}
+			else
+			{
+				Error("Could not find entity with name "+sPlayerPosEntity+" to use as player position entity for terminal " + mBaseObj.GetName());
+			}
+		}
+	
+		////////////////////////////////////
+		//Try to find a position in front of terminal where the player fits
+		cVector3f vPushBack;
+		bool bFitting = false;
+		int lTries = 0;
+		while (lTries < glCheckMaxPushTries && vPushBack.y > -0.01 && vPushBack.Length() <= gfCheckMaxPushDist)
+		{
+			lTries++;
+			
+			bFitting = pCharBody.CheckCharacterFits(vFeetPosition, true,0, vPushBack);
+			if(bFitting) break;
+				
+			vFeetPosition += vPushBack;
+		}
+
+		if (bFitting || vPushBack.Length() < gfCheckPushDistTolerance)
+			pCharBody.SetFeetPosition(vFeetPosition, false);
+		
+		////////////////////////////////
+		// Move camera back to initial position
+		cVector3f vPosAdd = cLux_GetPlayer().GetCameraPosAdd(eCameraAddType_Terminal);
+		cVector3f vPosDifference = vCurrentFeetPos - pCharBody.GetFeetPosition();
+
+		cMatrixf mtxCharBodyRotation = cMath_MatrixInverse(cMath_MatrixUnitVectors(pCharBody.GetRight(), pCharBody.GetUp(), pCharBody.GetForward(), cVector3f(0)));
+		cLux_GetPlayer().SetCameraPosAdd(eCameraAddType_Terminal, cMath_MatrixMul(mtxCharBodyRotation, vPosDifference));
+		
+		////////////////////////////////
+		//Stop character body
+		pCharBody.SetMoveSpeed(eCharDir_Forward, 0);
+		pCharBody.SetMoveSpeed(eCharDir_Right, 0);
+		pCharBody.SetForceVelocity(cVector3f(0));
+
+		///////////////////////////////////////////
+		// Rotate camera towards screen
+		cLux_GetPlayer().RotateCameraTowards(gfHeadRotateAcc, gfHeadRotateSpeedMul, gfHeadRotateMaxSpeed, vDirection * -1, true);
+	}
+	
+	//------------------------------------------------------------
+	
+	void Exit()
+	{
+		mbExit=true;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnEnterState(int alPrevStateId)
+	{
+		mbExit = false;
+		EnterInteractState(alPrevStateId);
+		
+		// Disable screen shakes etc.
+		Effect_Shake_EnableAll(false);
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnLeaveState(int alNextStateId)
+	{	
+		//////////////
+		// Restore fov
+		Player_FadeFOVToDefault(4.0f);
+
+		// Enable screen shakes etc.
+		Effect_Shake_EnableAll(true);
+		
+		////////////////////////////////////////
+		// Reset prop
+		cLuxProp@ pProp = cLux_ID_Prop(mPropID);
+		if (pProp !is null)
+		{
+			pProp.SetGuiIsFocused(false);
+			ResetPropInteractVars();
+		}
+		
+		////////////////////////////////////////
+		// Callback
+		if(pProp !is null && msLeaveCallback!="")
+		{
+			cLuxMap @pMap = cLux_GetCurrentMap();
+			if(pMap.ScriptPrepare("void " + msLeaveCallback + "(const tString &in asEntityName)" ) )
+			{
+				tString sName = pProp.GetName();
+				pMap.SetArgString(0, sName);
+				pMap.ScriptExecute();
+			}
+		}
+		
+		////////////////////////////////////////
+		// Reset camera
+		cLux_GetPlayer().MoveCameraPosAdd(eCameraAddType_Terminal, cVector3f(0), gfHeadMoveAcc, gfHeadMoveSpeed, gfHeadMoveSlowdownDist);
+		cLux_GetPlayer().StopCameraRotate(0);
+	}
+		
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	void Update(float afTimeStep)
+	{
+		if(CheckShouldUpdate()==false) return;
+		
+		if(mbExit) {
+			mBaseObj.mpPlayer.ChangeState(mlPreviousState);
+			return;
+		}
+				
+		iCharacterBody@ pCharBody = cLux_GetPlayer().GetCharacterBody();
+		
+		///////////////////////////////////////////
+		//Calculate direction to target position in the player's local space
+		cVector3f vPosAdd = cLux_GetPlayer().GetCameraPosAdd(eCameraAddType_Terminal);
+		cVector3f vToTarget = mvTargetCameraPosition - cLux_GetPlayer().GetCamera().GetPosition();
+		float fDist = vToTarget.Length();
+		cMatrixf mtxCharBodyRotation = cMath_MatrixUnitVectors(pCharBody.GetRight(), pCharBody.GetUp(), pCharBody.GetForward(), cVector3f(0));
+		cVector3f vLocalToTarget = cMath_MatrixMul(mtxCharBodyRotation, vToTarget);
+		vLocalToTarget.Normalize();
+		
+		///////////////////////////////////////////
+		//Move camera
+		vPosAdd += vLocalToTarget * cMath_Min(fDist, mfCurrentCameraSpeed*afTimeStep);
+		cLux_GetPlayer().SetCameraPosAdd(eCameraAddType_Terminal, vPosAdd);
+		
+		///////////////////////////////////////////
+		//Update camera speed
+		float fMaxSpeed = gfHeadMoveSpeed;
+		if (fDist < gfHeadMoveSlowdownDist)
+			fMaxSpeed *= fDist/gfHeadMoveSlowdownDist;
+		
+		mfCurrentCameraSpeed = cMath_Min(fMaxSpeed, mfCurrentCameraSpeed + gfHeadMoveAcc * afTimeStep);
+				
+		//Show no crosshair!
+		Player_SetCrossHairState(eCrossHairState_None);
+	}
+	
+	//------------------------------------------------------------
+	
+	void PostUpdate(float afTimeStep)
+	{
+		if(CheckShouldUpdate()==false) return;
+	}
+	
+	
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool OnAction(int alAction, bool abPressed)
+	{
+		if (alAction == eAction_Crouch || alAction == eAction_Jump)
+			return false;
+		
+		if(alAction == eAction_InteractCancel)
+		{
+			mBaseObj.mpPlayer.ChangeState(mlPreviousState);
+
+			return false;
+		}
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnAnalogInput(int alAnalogId, const cVector3f &in avAmount)
+	{
+		///////////////////////////////////
+		// Disable look and move
+		if(alAnalogId == eAnalogType_Look || alAnalogId == eAnalogType_GamepadMove || alAnalogId == eAnalogType_Move)
+		{			
+			return false;
+		}
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnExitPressed()
+	{
+		mBaseObj.mpPlayer.ChangeState(mlPreviousState);
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// BODY CALLBACKS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool AllowBuoyancy(iPhysicsBody @apBody)
+	{
+		return false;
+	}
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// CHARACTER CALLBACK
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void CharBody_GravityCollide(iCharacterBody@ apCharBody, iPhysicsBody@ apBody, cCollideData @apCollideData)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void CharBody_HitGround(iCharacterBody@ apCharBody,const cVector3f &in avVel)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPER METHODS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	void SaveBodyProperties(iPhysicsBody @apBody)
+	{
+		
+	}
+
+	//-----------------------------------------------------------------------
+
+
+	bool BodyIsAdded(iPhysicsBody @apBody)
+	{
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	cVector3f mvTargetCameraPosition;
+	cVector3f mvOffset;
+	float mfCurrentCameraSpeed;
+	tString msLeaveCallback;
+	bool mbExit;
+	
+	//------------------------------------------------------------
+		
+}

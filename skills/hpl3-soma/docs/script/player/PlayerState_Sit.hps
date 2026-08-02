@@ -1,0 +1,418 @@
+#include "interfaces/PlayerState_Interface.hps"
+#include "base/InputHandler_Types.hps"
+#include "player/Player_Types.hps"
+#include "utility/Utility_PickBasics.hps"
+#include "helpers/helper_player.hps"
+#include "helpers/helper_map.hps"
+
+/////////////////////////////////////////
+// SETTINGS
+/////////////////////////////////////////
+
+//------------------------------------------------------------
+
+//------------------------------------------------------------
+
+class cScrPlayerState_Sit : iScrPlayerState, iScrPlayerState_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		mbPlayerIsSitting = false;
+		mfTotalTimeToSit = 1.5f;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// USER SETTINGS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void LoadUserConfig()
+	{
+	
+	}
+	void SaveUserConfig()
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ENTER MAP
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+
+	}
+	
+	void OnMapLeave(cLuxMap @apMap)
+	{
+
+	}
+	
+	//------------------------------------------------------------
+	
+	void CreateWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	void DestroyWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnEnterState(int alPrevStateId)
+	{		
+		/////////////////////////////////
+		// Initialize variables
+		mfYaw = 0;
+		mfPitch = 0;
+		mbShouldReset = false;
+		mbPlayerIsSitting = false;
+		mfCurrentTimeToSit = 0.0f;
+		
+		/////////////////////////////////
+		// Setup player camera
+		cLuxPlayer@ pPlayer = mBaseObj.mpPlayer;
+		pPlayer.GetCharacterBody().SetCamera(null);
+		pPlayer.GetCamera().SetRotateMode(eCameraRotateMode_Matrix);
+		
+		mvCameraOriginPosition = pPlayer.GetCamera().GetPosition();
+		m_mtxCameraOriginRotation = pPlayer.GetCamera().GetRotationMatrix().GetTranspose();
+		
+		
+		//pPlayer.GetCamera().SetRotationMatrix(m_mtxCameraRotation.GetRotation().GetTranspose());
+		//pPlayer.GetCamera().SetForward(m_mtxCameraRotation.GetTranspose().GetForward() * -1);
+		//pPlayer.GetCamera().SetPosition(mvCameraPosition);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnLeaveState(int alNextStateId)
+	{	
+		///////////////////////////////////////////////////////////
+		// Skip resetting camera if not leaving to Normal state.
+		if(!mbShouldReset) return;
+		
+		/////////////////////////////////
+		// Reactivates area.
+		Entity_SetActive(msAreaName, true);
+		
+		cVector3f vFwd = mBaseObj.mpPlayer.GetCamera().GetForward();
+		
+		float fYaw = -cMath_ATan2(vFwd.x, -vFwd.z);
+		float fPitch = cMath_ATan2(vFwd.y, cMath_Sqrt(vFwd.x*vFwd.x + vFwd.z * vFwd.z));
+		
+		////////////////////////////////////////
+		// Orient camera.
+		cLuxPlayer@ pPlayer = mBaseObj.mpPlayer;
+		pPlayer.GetCamera().SetRotateMode(eCameraRotateMode_EulerAngles);
+		pPlayer.GetCharacterBody().SetYaw(fYaw);
+		pPlayer.GetCamera().SetPitch(fPitch);
+		
+		pPlayer.GetCharacterBody().SetCamera(pPlayer.GetCamera());
+	}
+		
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+		mPickBasics.Reset();
+		
+		/////////////////////////////////
+		// Reset player cam.
+		cLuxPlayer@ pPlayer = mBaseObj.mpPlayer;
+		if (pPlayer.GetCharacterBody() !is null)
+			pPlayer.GetCharacterBody().SetCamera(pPlayer.GetCamera());
+	}
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep)
+	{		
+		cLuxPlayer@ pPlayer = mBaseObj.mpPlayer;
+	
+		if(mbPlayerIsSitting)
+		{
+			/////////////////////////////////
+			// Update camera rotation
+			cMatrixf mtxCamRotation = m_mtxCameraCurrentRotation.GetRotation();
+			mtxCamRotation = cMath_MatrixMul(mtxCamRotation, cMath_MatrixRotateXYZ(cVector3f(mfPitch, mfYaw, 0)));
+			pPlayer.GetCamera().SetRotationMatrix(mtxCamRotation.GetTranspose());
+			
+			////////////////////////////
+			// Update picking
+			if(mPickBasics.UpdatePickCheck(pPlayer.GetCamera(), true))
+			{
+				int lState = mPickBasics.GetFocusedEntity().GetInteractIconId(0, mPickBasics.GetFocusedBody());
+				if(eCrossHairState(lState) == eCrossHairState_Read )
+					Player_SetCrossHairState(eCrossHairState(lState));
+				else
+					Player_SetCrossHairState(eCrossHairState_Default);
+			}
+			
+		}
+		////////////////////////////
+		// Update animation
+		else
+		{
+			mfCurrentTimeToSit += cMath_Clamp(afTimeStep, 0.0f, 1.0f);
+			
+			m_mtxCameraCurrentRotation = cMath_MatrixSlerp(cMath_Clamp(mfCurrentTimeToSit / mfTotalTimeToSit, 0.0f, 1.0f),
+											m_mtxCameraOriginRotation, m_mtxCameraGoalRotation, false);
+											
+			mvCameraCurrentPosition = mvCameraOriginPosition + ((mvCameraGoalPosition - mvCameraOriginPosition) * 
+										cMath_Clamp(mfCurrentTimeToSit / mfTotalTimeToSit, 0.0f, 1.0f));
+		}
+		
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void PostUpdate(float afTimeStep)
+	{
+		if(!mbPlayerIsSitting)
+		{
+			cLuxPlayer@ pPlayer = mBaseObj.mpPlayer;
+			pPlayer.GetCamera().SetRotationMatrix(m_mtxCameraCurrentRotation.GetRotation().GetTranspose());
+			pPlayer.GetCamera().SetPosition(mvCameraCurrentPosition);
+			if(mfCurrentTimeToSit>mfTotalTimeToSit)
+				mbPlayerIsSitting = true;
+		}
+	}
+	
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// GLOBAL FUNCTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_Setup()
+	{		
+		////////////////////////////
+		// Setting up the state.
+		mfMaxYaw = cScript_GetGlobalArgFloat(0);
+		mfMaxPitch = cScript_GetGlobalArgFloat(1);
+		
+		msAreaName = cScript_GetGlobalArgString(2);
+		
+		m_mtxCameraGoalRotation = Map_GetEntity(msAreaName).GetMatrix();
+		
+		mvCameraGoalPosition = m_mtxCameraGoalRotation.GetTranslation();
+	}
+	
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool OnAction(int alAction, bool abPressed)
+	{
+		////////////////////////////
+		// Physical Interaction
+		if(alAction == eAction_Interact)
+		{
+			if(mPickBasics.GetFocusedEntity() is null || mPickBasics.GetFocusedEntity().GetEntityType() != eLuxEntityType_Prop) return false;
+			
+			//Call entity OnInteract
+			mPickBasics.GetFocusedEntity().OnInteract(0, mPickBasics.GetFocusedBody(), mPickBasics.mvFocusPosition, "");
+			
+			return false;
+		}
+		
+		////////////////////////////
+		// Leave state
+		if(alAction == eAction_InteractCancel || alAction == eAction_Forward || alAction == eAction_Jump)
+		{
+			///////////////////////////////////////////////////
+			// Will reset the state. Because leaving willingly.
+			mbShouldReset = true;
+			
+			mBaseObj.mpPlayer.ChangeState(ePlayerState_Normal);
+		}
+		
+		
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnAnalogInput(int alAnalogId, const cVector3f &in avAmount)
+	{
+		///////////////////////////////////
+		// Override move
+		if(alAnalogId == eAnalogType_GamepadMove || alAnalogId == eAnalogType_Move)
+		{			
+			return false;
+		}
+	
+		///////////////////////////////////
+		// Override look
+		if(alAnalogId == eAnalogType_Look)
+		{			
+			////////////////////////////////////////
+			// Calculating pitch and clamping it.
+			{
+				mfPitch += avAmount.y;
+				mfPitch = cMath_Clamp(mfPitch, -mfMaxPitch, mfMaxPitch);
+			}
+			
+			////////////////////////////////////////
+			// Calculating yaw and clamping it.
+			{
+				mfYaw -= avAmount.x;
+				mfYaw = cMath_Clamp(mfYaw, -mfMaxYaw, mfMaxYaw);
+			}
+			return false;
+		}
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnExitPressed()
+	{
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// SPECIFIC METHODS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// BODY CALLBACKS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool AllowBuoyancy(iPhysicsBody @apBody)
+	{
+		return false;
+	}
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// CHARACTER CALLBACK
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void CharBody_GravityCollide(iCharacterBody@ apCharBody, iPhysicsBody@ apBody, cCollideData @apCollideData)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void CharBody_HitGround(iCharacterBody@ apCharBody,const cVector3f &in avVel)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPER METHODS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		tString sBodyName = "Null";
+		if(mPickBasics.GetFocusedBody() !is null) sBodyName = mPickBasics.GetFocusedBody().GetName();
+		
+		apSet.DrawFont(tWString("Focus Body:"+sBodyName), apFont, cVector3f(5,afStartY,0), cVector2f(14), cColor(1,1) );
+		afStartY += 14;
+						
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+
+	////////////////////
+	// Rotation
+	cMatrixf m_mtxCameraGoalRotation;
+	cMatrixf m_mtxCameraCurrentRotation;
+	cMatrixf m_mtxCameraOriginRotation;
+	float mfYaw;
+	float mfMaxYaw;
+	float mfPitch;
+	float mfMaxPitch;
+	
+	////////////////////
+	// Position
+	cVector3f mvCameraGoalPosition;
+	cVector3f mvCameraCurrentPosition;
+	cVector3f mvCameraOriginPosition;
+	
+	////////////////////
+	// Picking
+	cUtility_PickBasics mPickBasics;
+	bool mbShouldReset;
+	
+	////////////////////
+	// Sit area
+	tString msAreaName;
+	
+	////////////////////
+	// Animation
+	bool mbPlayerIsSitting;
+	float mfCurrentTimeToSit;
+	float mfTotalTimeToSit;
+	
+	//------------------------------------------------------------
+		
+}

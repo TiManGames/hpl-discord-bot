@@ -1,0 +1,511 @@
+#include "interfaces/PlayerState_Interface.hps"
+#include "base/InputHandler_Types.hps"
+
+#include "player/Playerstate_PickBasics.hps"
+
+/////////////////////////////////////////
+// SETTINGS
+/////////////////////////////////////////
+
+//------------------------------------------------------------
+
+//Large numbers so it does not collide with normal prop ids.
+enum ePropHudToolMethod
+{
+	ePropHudToolMethod_OnToolUse=1001,
+	ePropHudToolMethod_EntitySupportToolUse=1002
+}
+
+//------------------------------------------------------------
+
+//------------------------------------------------------------
+
+class cScrPlayerState_Interact_Tool : iScrPlayerState, iScrPlayerState_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// USER SETTINGS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void LoadUserConfig()
+	{
+	
+	}
+	void SaveUserConfig()
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ENTER MAP
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+	
+	}
+	void OnMapLeave(cLuxMap @apMap)
+	{
+		DropCurrentTool();
+	}
+	
+	//------------------------------------------------------------
+	
+	void CreateWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	void DestroyWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL FUNCTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupTool()
+	{
+		///////////////////////////////
+		// Get params
+		mlPickedEntityId  = cScript_GetGlobalArgID(0);
+		tString sHudObjectEntity = cScript_GetGlobalArgString(1);
+		msUseCallback = cScript_GetGlobalArgString(2);
+		msDropCallback = cScript_GetGlobalArgString(3);
+		msCanBeUsedCallback = cScript_GetGlobalArgString(4);
+		
+		////////////////////////////////
+		// Init vars
+		mHudObjectID = tID_Invalid;
+		
+		////////////////////////////////
+		// Create Entity
+		if(sHudObjectEntity == "")
+		{
+			Error("Hud object string for tool prop is empty!");
+			return;
+		}
+		
+		cLux_GetCurrentMap().CreateEntity("HudObject", sHudObjectEntity, GetHudObjectMatrix(),cVector3f(1) );
+		iLuxEntity @pEntity = cLux_GetCurrentMap().GetLatestEntity();
+		if(pEntity.GetEntityType() == eLuxEntityType_Prop)
+		{
+			mHudObjectID = pEntity.GetID();	
+			
+			cLuxProp@ pProp = cast<cLuxProp>(pEntity);
+			pProp.SetAllowMapTransfer(false);
+		}
+		else
+		{
+			cLux_GetCurrentMap().DestroyEntity(pEntity);
+			Error("Hud object '"+sHudObjectEntity+"' is of wrong type!\n");
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void DropCurrentTool()
+	{
+		cLux_GetPlayer().ChangeState(mlPreviousState);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnEnterState(int alPrevStateId)
+	{
+		if(alPrevStateId<0) mlPreviousState = ePlayerState_Normal;
+		else				mlPreviousState = alPrevStateId;
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnLeaveState(int alNextStateId)
+	{
+		/////////////////////////////////
+		// Destroy hud object
+		if(mHudObjectID != tID_Invalid) 
+		{
+			cLux_GetCurrentMap().DestroyEntity(cLux_ID_Entity(mHudObjectID));
+			mHudObjectID = tID_Invalid;
+		}
+		
+		/////////////////////////////////
+		// Drop the held object
+		cLuxProp @pProp =cLux_ID_Prop(mlPickedEntityId);
+		if(pProp !is null)
+		{
+			///////////////////////
+			// Init variables
+			cCamera @pCam = cLux_GetPlayer().GetCamera();
+			
+			///////////////////////
+			// Callback
+			if(msDropCallback != "")
+			{
+				cLuxMap@ pMap = cLux_GetCurrentMap();
+				if(pMap.ScriptPrepare("bool "+msDropCallback+"(tString &in asName)" ) )
+				{
+					tString sToolName = pEntity.GetName();
+				
+					pMap.SetArgString(0, sToolName);
+					
+					if(pMap.ScriptExecute())
+					{
+						if(pMap.GetReturnBool()==false) return;
+					}
+				}
+			}
+			
+			///////////////////////
+			// Reset rotation and velocity
+			pProp.SetMatrix(cMath_MatrixScale(pProp.GetOnLoadScale()) );
+			pProp.GetMainBody().SetAngularVelocity(cVector3f(0));
+			pProp.GetMainBody().SetLinearVelocity(cVector3f(0));
+								
+			///////////////////////
+			// Check if there is a surface to place the item on.
+			bool bDroppedOnSurface = false;
+			{
+				float fPropHeight = pEntity.GetMainBody().GetBoundingVolume().GetSize().y;
+				float fOutDistance = 9999.0f;
+				cVector3f vOutNormal;
+				bool bFoundSurface = false;
+				
+				cVector3f vStart = pCam.GetPosition();
+				
+				//////////////////////////////////////
+				// Cast many rays looking for a place to set it down
+				for(int i=0; i<8;++i)
+				{
+					float fTestDistance;
+					cVector3f vTestNormal;
+					
+					iPhysicsBody@ pBody = cLux_GetClosestBody(vStart, pCam.GetForward(), 3, fTestDistance, vTestNormal);
+					if(pBody !is null && fTestDistance < fOutDistance && cMath_Vector3Dot(vTestNormal, cVector3f(0,1,0))>0.8)
+					{
+						//TODO: Check if fits!
+						
+						fOutDistance = fTestDistance;
+						vOutNormal = vTestNormal;
+						
+						bFoundSurface = true;
+					}
+					
+					vStart.y -= 0.05;
+				}
+				
+				//////////////////////////////////////
+				// Surface was found!
+				if(bFoundSurface)
+				{
+					pEntity.SetPosition(pCam.GetPosition() + pCam.GetForward()*fOutDistance + cVector3f(0,fPropHeight/2+fPropHeight*0.05f,0));
+					bDroppedOnSurface = true;
+				}
+			}
+			///////////////////////
+			// Drop normally
+			if(bDroppedOnSurface==false)
+			{
+				//TODO: Check for space!
+				
+				pEntity.SetPosition(pCam.GetPosition() + pCam.GetForward()*0.75f);
+			}
+			
+			
+			///////////////////////
+			// Activate item
+			pEntity.SetActive(true);
+			pProp.SetDisableCollisionUntilOutSidePlayer(true);
+		}
+		else
+		{
+			Error("Could not find prop tool with id "+mlPickedEntityId+" to drop in tool state.");
+		}
+		
+	}
+		
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+		mHudObjectID = tID_Invalid;
+		
+		mPickBasics.Reset();
+	}
+	
+	//------------------------------------------------------------
+
+	void Update(float afTimeStep)
+	{
+		if(mHudObjectID == tID_Invalid)
+		{
+			cLux_GetPlayer().ChangeState(mlPreviousState);
+			return;
+		}
+		
+		//////////////////////////
+		//Check if if anything in focus can be used by tool
+		cCamera @pCam = mBaseObj.mpPlayer.GetCamera();
+		mPickBasics.UpdatePickCheck(pCam);
+		
+		//////////////////////////
+		//Check if if anything in focus can be used by tool
+		if(msCanBeUsedCallback!="")
+		{
+			cLuxMap@ pMap = cLux_GetCurrentMap();
+			if(pMap.ScriptPrepare("bool "+msCanBeUsedCallback+"(tString &in asToolName, tString &in asFocusEntity)" ) )
+			{
+				iLuxEntity @pEntity = cLux_GetCurrentMap().GetEntityByID(mlPickedEntityId, eLuxEntityType_Prop, "cScrPropTool");
+			
+				tString sToolName = pEntity.GetName();
+				pMap.SetArgString(0, sToolName);
+				
+				tString sFocusEntityName = mPickBasics.mpFocusedEntity is null ? "" : mPickBasics.mpFocusedEntity.GetName();
+				pMap.SetArgString(1, sFocusEntityName);
+				
+				if(pMap.ScriptExecute())
+				{
+					if(pMap.GetReturnBool())
+						Player_SetCrossHairState(eCrossHairState_Active);
+					else
+						Player_SetCrossHairState(eCrossHairState_Default);
+				}
+			}
+		}
+		else
+		{
+			cLuxProp@ pHudObject =cLux_ID_Prop(mHudObjectID);
+			if(pHudObject.ScriptPrepareFast("bool EntitySupportToolUse(int alEntityId)", ePropHudToolMethod_EntitySupportToolUse))
+			{
+				pHudObject.SetArgInt(0, mPickBasics.mpFocusedEntity is null ? -1 : mPickBasics.mpFocusedEntity.GetID());	
+				if(pHudObject.ScriptExecute())
+				{
+					if(pHudObject.GetReturnBool())
+						Player_SetCrossHairState(eCrossHairState_Active);
+					else
+						Player_SetCrossHairState(eCrossHairState_Default);
+				}
+			}
+		}
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void PostUpdate(float afTimeStep)
+	{
+		if(mHudObjectID == tID_Invalid) return;
+		
+		//////////////////////////
+		//Update object
+		cLux_ID_Prop(mHudObjectID).SetMatrix(GetHudObjectMatrix());
+	}
+	
+	
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool OnAction(int alAction, bool abPressed)
+	{
+		if(abPressed==false) return true;
+		if(mHudObjectID == tID_Invalid) return true;
+		
+		////////////////////////////
+		// Use Tool
+		if(alAction == eAction_Interact)
+		{
+			iLuxEntity @pEntity = cLux_ID_Entity(mlPickedEntityId);
+			cLuxProp@ pHudObject = cLux_ID_Prop(mHudObjectID);
+			if(pEntity is null) return true;
+			
+			///////////////////////
+			// Callback
+			if(msUseCallback != "")
+			{
+				cLuxMap@ pMap = cLux_GetCurrentMap();
+				if(pMap.ScriptPrepare("bool "+msUseCallback+"(tString &in asToolName, tString &in asFocusEntity)" ) )
+				{
+					tString sToolName = pEntity.GetName();
+					pMap.SetArgString(0, sToolName);
+					
+					tString sFocusEntityName = mPickBasics.mpFocusedEntity is null ? "" : mPickBasics.mpFocusedEntity.GetName();
+					pMap.SetArgString(1, sFocusEntityName);
+					
+					if(pMap.ScriptExecute())
+					{
+						if(pMap.GetReturnBool()==false) return false;
+					}
+				}
+			}
+
+			///////////////////////
+			// Normal Action
+			if(pHudObject.ScriptPrepareFast("void OnToolUse(int alEntityId)", ePropHudToolMethod_OnToolUse))
+			{
+				pHudObject.SetArgInt(0, mPickBasics.mpFocusedEntity is null ? -1 : mPickBasics.mpFocusedEntity.GetID());	
+				pHudObject.ScriptExecute();
+			}
+	
+			return false;
+		}
+		
+		////////////////////////////
+		// Drop Tool
+		if(alAction == eAction_Cancel)
+		{
+			cLux_GetPlayer().ChangeState(mlPreviousState);
+				
+			return false;
+		}
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnAnalogInput(int alAnalogId, cVector3f &in avAmount)
+	{
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnExitPressed()
+	{
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// BODY CALLBACKS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool AllowBuoyancy(iPhysicsBody @apBody)
+	{
+		return false;
+	}
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// CHARACTER CALLBACK
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void CharBody_GravityCollide(iCharacterBody@ apCharBody, iPhysicsBody@ apBody, cCollideData @apCollideData)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void CharBody_HitGround(iCharacterBody@ apCharBody,const cVector3f &in avVel)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPER METHODS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	cMatrixf GetHudObjectMatrix()
+	{
+		cCamera @pCam = cLux_GetPlayer().GetCamera();
+		
+		cMatrixf mtxTrans = cMath_MatrixRotateXYZ(cVector3f(pCam.GetPitch(), pCam.GetYaw(), pCam.GetRoll()));
+		
+		cVector3f vPosAddTotat = cLux_GetPlayer().GetCameraPosAdd(eCameraAddType_Bob);
+		vPosAddTotat += cLux_GetPlayer().GetCameraPosAdd(eCameraAddType_Shake);
+		
+		cVector3f vPosNeg = cMath_MatrixMul(mtxTrans, vPosAddTotat*0.1);
+		
+		mtxTrans.SetTranslation(pCam.GetPosition() - vPosNeg);
+		
+		return mtxTrans;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		//apSet.DrawFont(tWString("Something:"+mBaseObj.mpPlayer.GetCamera().GetPitch()), apFont, cVector3f(5,afStartY,0), cVector2f(14), cColor(1,1) );
+		//afStartY += 14;
+						
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	tID mHudObjectID;
+	
+	//------------------------------------------------------------
+	
+	cScrPlayerState_PickBasics mPickBasics;
+	
+	//------------------------------------------------------------
+	
+	tID mlPickedEntityId;
+	int mlPreviousState;
+	
+	tString msUseCallback;
+	tString msDropCallback;
+	tString msCanBeUsedCallback;
+			
+	//------------------------------------------------------------
+		
+}

@@ -1,0 +1,506 @@
+#include "interfaces/Critter_Interface.hps"
+#include "helper_custom_depth_audio.hps"
+#include "helper/helper_player.hps"
+#include "helper/helper_audio.hps"
+#include "helper/helper_modules.hps"
+
+enum eSwarmFishAnim
+{
+	eSwarmFishAnim_Normal,
+	eSwarmFishAnim_Fast,
+	eSwarmFishAnim_Hunt,
+}
+
+const float gfPlayerLightTriggerLevel = 0.6f;
+
+class cScrCritterWauSwarmAgentFish : iScrCritter, iScrCritter_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		/////////////////////////////////////////
+		// Varialbes
+		msAgent = apInstanceVars.GetVarString("Agent","");
+		
+		mBaseObj.mlAnimState = 0; //Moving
+		mBaseObj.msMoveAnim = "swim_normal";
+		mBaseObj.SetIsFlying(true);
+		mBaseObj.SetTestCollision(false);
+		
+		mfChangeCanChargePlayerCount = cMath_RandRectf(1, 10.0f);
+		mfChangeCanWanderCount = cMath_RandRectf(1, 10.0f);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnAfterWorldLoad()
+	{
+		if(msAgent != "")
+		{
+			iLuxEntity@ pEnt = mBaseObj.GetMap().GetEntityByName(msAgent, eLuxEntityType_Agent);
+			if(pEnt !is null)
+			{
+				m_idAgent = pEnt.GetID();
+			}
+			else
+			{
+				Error("Could not find agent '"+msAgent+"' for WauSwarmAgentFish '"+mBaseObj.GetName()+"'");
+			}
+		}
+			
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	/*void OnUpdate(float afTimeStep) 
+	{
+		mBaseObj.Move_ChangeMaxSpeed(1.5f, 1, afTimeStep);
+		
+		//mBaseObj.mvWantedVel += mBaseObj.Move_GetWanderAdd2D(1, 0.7f, afTimeStep);
+		
+		cVector3f vAway = mBaseObj.Move_GetTowardPlayerAdd(false, afTimeStep)*-2.0f;
+		vAway.y=0;
+		mBaseObj.mvWantedVel += vAway;
+		
+		cVector3f vAdd =mBaseObj.Move_GetWallAvoidAdd(mBaseObj.mfMaxVelocity*0.5f, afTimeStep);
+		if(vAdd.y<0) vAdd.y=0;
+		vAdd.Normalize();
+		mBaseObj.mvWantedVel += vAdd*0.5;
+	}*/
+	
+	//------------------------------------------------------------
+	
+	void OnUpdate(float afTimeStep) 
+	{	
+		//////////////////////////////////
+		// Variable Init
+		cLuxAgent @pAgent = cLux_ToAgent(cLux_ID_Entity(m_idAgent));
+		if(pAgent is null) return;
+		iCharacterBody@ pCharBody = pAgent.GetCharBody();
+		
+		float fBuildUp = cScript_GetGlobalVarFloat("__Swarm__BuildUpCount");
+		if(Player_GetHealth()<0.2f) fBuildUp -= 0.5f;
+		else if(Player_GetHealth()<0.5f) fBuildUp -= 0.25f;
+		
+		//////////////////////////////////
+		// Check anim
+		{
+			float fSpeed = mBaseObj.mvWantedVel.Length();
+			
+			/////////////////////////////
+			// To Hunt
+			if(mbChargingPlayer && mAnim != eSwarmFishAnim_Hunt)
+			{
+				mBaseObj.mlAnimState=0;
+				mBaseObj.msMoveAnim = "charge";
+				mAnim = eSwarmFishAnim_Hunt;
+			}
+			/////////////////////////////
+			// Hunt over
+			else if(mbChargingPlayer==false && mAnim == eSwarmFishAnim_Hunt)
+			{
+				mBaseObj.mlAnimState=0;
+					
+				if(fSpeed > 4.0f)
+				{
+					mBaseObj.msMoveAnim = "swim_fast";
+					mAnim = eSwarmFishAnim_Fast;
+				}
+				else
+				{
+					mBaseObj.msMoveAnim = "swim_normal";
+					mAnim = eSwarmFishAnim_Normal;
+				}
+			}
+			/////////////////////////////
+			// To Fast
+			else if(mAnim == eSwarmFishAnim_Normal)
+			{
+				if(fSpeed > 4.0f)
+				{
+					mBaseObj.mlAnimState=0;
+					mBaseObj.msMoveAnim = "swim_fast";
+					mAnim = eSwarmFishAnim_Fast;
+				}
+			}
+			/////////////////////////////
+			// To Normal
+			else if(mAnim == eSwarmFishAnim_Fast)
+			{
+				if(fSpeed < 3.0f)
+				{
+					mBaseObj.mlAnimState=0;
+					mBaseObj.msMoveAnim = "swim_normal";
+					mAnim = eSwarmFishAnim_Normal;
+				}
+			}
+		}
+
+		//////////////////////////////
+		// Wall avoid
+		bool bWallAhead=false;
+		{
+			cVector3f vAdd = mBaseObj.Move_GetWallAvoidAdd(2.0f, afTimeStep);
+			if(vAdd.Length()>0.001f) bWallAhead=true;
+			
+			if(vAdd.y<0)
+				vAdd.y=0;
+			else
+				vAdd.y*=0.1f;
+				
+			vAdd.Normalize();
+			mBaseObj.mvWantedVel += vAdd*0.5;
+		}
+		
+		//////////////////////////////////
+		// Can Charge Player Update
+		{
+			float fMul = 1.0f;
+			if(mBaseObj.GetDistanceToPlayer()<6 && mbCanChargePlayer==false) fMul = 2.0f;
+			
+			mfChangeCanChargePlayerCount -= afTimeStep*fMul;
+			if(mfChangeCanChargePlayerCount <0)
+			{
+				mbCanChargePlayer = !mbCanChargePlayer;
+				
+				if(mbCanChargePlayer)
+					mfChangeCanChargePlayerCount = cMath_RandRectf(3, 10);
+				else
+					mfChangeCanChargePlayerCount = cMath_RandRectf(15 - fBuildUp*10.0f, 50 - fBuildUp*20.0f);
+			}
+		}
+		
+		//////////////////////////////////
+		// Check Player charge
+		if(mbChargingPlayer==false)
+		{
+			if(	mbCanChargePlayer && mBaseObj.GetDistanceToPlayer() < 10 && 
+				cScript_GetGlobalVarBool("__Swarm__ChargePlayer")==false &&
+				mfPlayerLightAmount<gfPlayerLightTriggerLevel &&
+				mbPlayerIsInTheOpen &&
+				mbPlayerIsInBuilding==false &&
+				mbDeactivating==false &&
+				bWallAhead==false &&
+				 (cLux_GetExplorationModeActive() && cScript_GetGlobalVarBool("__Swarm__AllowCharge") == true || 
+				  cLux_GetExplorationModeActive() == false))
+			{
+				ChargeStart();
+			}
+		}
+		else
+		{
+			if(	mbCanChargePlayer==false || 
+				mfPlayerLightAmount>gfPlayerLightTriggerLevel || 
+				mbPlayerIsInTheOpen==false || 
+				mbPlayerIsInBuilding ||
+				mbDeactivating ||
+				bWallAhead)
+			{
+				ChargeStop();
+			}
+		}
+		
+		//////////////////////////////////
+		// Check wandering
+		mfChangeCanWanderCount -= afTimeStep;
+		if(mfChangeCanWanderCount<0)
+		{
+			mbCanWander = !mbCanWander;
+			
+			if(mbCanWander)
+				mfChangeCanWanderCount = cMath_RandRectf(1, 3);
+			else
+				mfChangeCanWanderCount = cMath_RandRectf(2, 10);
+		}
+				
+		//////////////////////////////
+		// Charge player
+		if(mbChargingPlayer)
+		{
+			mBaseObj.mvWantedVel += mBaseObj.Move_GetTowardPosAdd(mBaseObj.GetPlayerHeadPos(),true, afTimeStep)*2;
+			
+			mBaseObj.Move_ChangeMaxSpeed(6, 6, afTimeStep);
+			
+			if(mBaseObj.GetDistanceToPlayer()<1.5)
+			{
+				Player_GiveDamage(cMath_RandRectf(0.015f, 0.03f), 0.1f, eDamageType_Hit, "");
+				
+				if(Player_GetHealth()< 0.2f)
+				{
+					AttackMeter_AddInstance(pAgent.GetID(), 200, 100,0.1f, true, true, true);
+				}
+				
+				tString sBite = "NPC_Creatures/special/underwater/wau_viperfish/wau_viperfish_bite";
+				Sound_PlayGui(sBite, 1.0f, eSoundEntryType_GuiWorld);
+				Depth_Audio_SimonHurt_Damage();
+				Depth_Audio_PlayerTakeDamage();
+				
+				mbCanChargePlayer = false;
+				mfChangeCanChargePlayerCount = cMath_RandRectf(15 - fBuildUp*10.0f, 50 - fBuildUp*20.0f);
+				ChargeStop();
+			}
+		}
+		//////////////////////////////
+		// Normal movement
+		else
+		{
+			cVector3f vFollowPos = pCharBody.GetPosition() + pCharBody.GetForward()*1.5f;
+			
+			//////////////////////////////////
+			// Wanted Vel updates
+			{
+				if(mbPlayerIsInBuilding&&!mbDeactivating)
+				{
+					float fDistToPlayer = mBaseObj.GetDistanceToPlayer();
+					
+					if(fDistToPlayer<10)
+					{
+						float fT = (1.0f - fDistToPlayer/10)*3;
+						mBaseObj.mvWantedVel += mBaseObj.Move_GetTowardPlayerAdd(true, afTimeStep)*-fT;
+					}
+				}
+				
+				mBaseObj.mvWantedVel += mBaseObj.Move_GetWanderAdd3D(1,2, afTimeStep)*3;
+			
+				if(mbCanWander==false)
+				{
+					cVector3f vFollowAdd = (vFollowPos - mBaseObj.GetPosition())*1.5f*afTimeStep;
+					vFollowAdd.y *= 1.25;
+					mBaseObj.mvWantedVel += vFollowAdd;
+					
+					mBaseObj.mvWantedVel += mBaseObj.Move_GetFlockingAdd(0,0,//1.5 ,1.25f, //Center and CenterYMul
+																1.25f, //Separation
+																0.5, //Alignment
+																0.5f, //Cohesion
+																7, //Max group member checks
+																afTimeStep);
+					mBaseObj.mvWantedVel += mBaseObj.Move_GetTowardsGroundAdd(1.5f, afTimeStep)*-1;
+				}
+			}
+			
+			//////////////////////////////////
+			// Calc speed
+			if(mbCanWander==false)
+			{
+				float fAgentSpeed = pAgent.GetCharBody().GetVelocity(afTimeStep).Length();
+				float fDist = cMath_Vector3Dist(vFollowPos, mBaseObj.GetPosition());										
+				
+				float fAgetMaxMove = pCharBody.GetMaxPositiveMoveSpeed(eCharDir_Forward);
+				float fMaxSpeed = fDist<(fAgentSpeed*0.95 +mfSwimLineAdd) ? fAgetMaxMove*0.95f : fAgetMaxMove*1.5f;
+				
+				float fSpeed = cMath_Min(fDist *fAgentSpeed, fMaxSpeed);
+				mBaseObj.Move_ChangeMaxSpeed(fSpeed, fSpeed, afTimeStep);
+			}
+		}
+	}
+	//------------------------------------------------------------
+	
+	void ChargeStart()
+	{
+		DistortionEffect_AddInstance(mBaseObj.GetID(), 10, 1, 1.0f);
+		
+		mbChargingPlayer = true;
+		cScript_SetGlobalVarBool("__Swarm__ChargePlayer", true);
+		cScript_SetGlobalVarBool("__Swarm__AllowCharge", false);
+	}
+	
+	void ChargeStop()
+	{
+		DistortionEffect_RemoveInstance(mBaseObj.GetID());
+		
+		mbChargingPlayer = false;
+		cScript_SetGlobalVarBool("__Swarm__ChargePlayer", false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetProperties()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void BeforeEntityDestruction()
+	{
+	}
+		
+	//------------------------------------------------------------
+	
+	void OnStartMove()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnConnectionStateChange(iLuxEntity@ apEntity,int alState)
+	{
+	}
+		
+	//------------------------------------------------------------
+	
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnSetActive(bool abX)
+	{
+		if(abX==false)
+		{
+			DistortionEffect_RemoveInstance(mBaseObj.GetID());
+		}
+		else if (abX)
+		{
+			mbDeactivating = false;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void GiveDamage(float afAmount, int alStrength, const tString&in asType, const tString&in asSource)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnHealthChange()
+	{
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	bool CanInteract(int alType, iPhysicsBody@ apBody)
+	{
+		return false;
+	}
+	
+	//------------------------------------------------------------
+		
+	bool OnInteract(int alType, iPhysicsBody@ apBody, const cVector3f &in avFocusPos, const tString&in asData)
+	{
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetSwimLineAdd()
+	{
+		mfSwimLineAdd = cScript_GetGlobalArgFloat(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetPlayerLightAmount()
+	{
+		mfPlayerLightAmount = cScript_GetGlobalArgFloat(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetPlayerIsInTheOpen()
+	{
+		mbPlayerIsInTheOpen = cScript_GetGlobalArgBool(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetPlayerIsInBuilding()
+	{
+		mbPlayerIsInBuilding = cScript_GetGlobalArgBool(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_StartDeactivation()
+	{
+		mbDeactivating = true;
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float mfTowardsCenterMul;
+	
+	//------------------------------------------------------------
+	
+	tString msAgent;
+	tID m_idAgent;
+	
+	bool mbCanChargePlayer=false;
+	bool mbChargingPlayer=false;
+	bool mbDeactivating=false;
+	float mfChangeCanChargePlayerCount;
+	
+	bool mbCanWander=false;
+	float mfChangeCanWanderCount;
+	
+	float mfSwimLineAdd=0;
+	float mfPlayerLightAmount=1.0f;
+	bool mbPlayerIsInTheOpen=false;
+	bool mbPlayerIsInBuilding=false;
+	
+	bool mbExplorationMode_AllowAttack = false;
+	
+	eSwarmFishAnim mAnim = eSwarmFishAnim_Normal;
+	
+	//------------------------------------------------------------
+		
+}	

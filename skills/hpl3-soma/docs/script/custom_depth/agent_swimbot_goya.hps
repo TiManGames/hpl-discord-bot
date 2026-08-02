@@ -1,0 +1,630 @@
+#include "interfaces/Agent_SwimBot.hps"
+#include "helpers/helper_map.hps"
+#include "helpers/helper_audio.hps"
+
+enum eGoyaState
+{
+	eGoyaState_Idle,
+	eGoyaState_Wander,
+	eGoyaState_FleeFromPlayer,
+	eGoyaState_Crash,
+}
+
+enum eGoyaSpeed
+{
+	eGoyaSpeed_Wander,
+	eGoyaSpeed_WanderTalking,
+	eGoyaSpeed_FleeNormal,
+	eGoyaSpeed_FleeSlower,
+	eGoyaSpeed_FleeSlowest,
+	eGoyaSpeed_FleeSprint,
+	eGoyaSpeed_Crash,
+	eGoyaSpeed_FleeForLife,
+}
+
+enum eGoyaBark
+{
+	eGoyaBark_Silent,
+	eGoyaBark_Wander,
+	eGoyaBark_Damaged_1,
+	eGoyaBark_Damaged_2,
+}
+
+//-------------------------------------------------------
+
+const tString gsScaredSound = "";
+const tString gsPlayfulSound = "";
+
+const tString gsMoveLoopSound = "NPC_Creatures/Foley/Underwater/Construct_Worker/loop";
+const tString gsIdleLoopSound = "NPC_Creatures/Foley/Underwater/Construct_Worker/idle";
+const tString gsMoveLoopStartSound = "NPC_Creatures/Foley/Underwater/Construct_Worker/start";
+const tString gsMoveLoopStopSound = "NPC_Creatures/Foley/Underwater/Construct_Worker/stop";
+const float gfMoveLoopSoundMinSpeed =0.1;
+
+const float gfGoyaBarkDistance = 10;
+const float gfGoyaFirstBarkDistance = 8;
+	
+//-------------------------------------------------------
+
+class cScrAgentGoya : cScrAgentSwimBot
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		cScrAgentSwimBot::Init();
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupCharBody()
+	{
+		cScrAgentSwimBot::SetupCharBody();
+		
+		iCharacterBody@ pCharBody = mBaseObj.GetCharBody();
+		
+		pCharBody.SetMass(60);
+		
+		pCharBody.SetMaxPositiveMoveSpeed(eCharDir_Forward,3.25f);
+		pCharBody.SetMoveAcc(eCharDir_Forward,3);
+		pCharBody.SetMoveDeacc(eCharDir_Forward,3);
+		pCharBody.SetMoveOppositeDirAccMul(eCharDir_Forward,1);
+		
+		pCharBody.SetEntityPitchAmount(0.8f);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld @apWorld,  cResourceVarsObject@ apVars,  cResourceVarsObject@ apInstanceVars)
+	{
+		cScrAgentSwimBot::SetupAfterLoad(apWorld, apVars, apInstanceVars);
+		
+		/////////////////////////////////
+		// Genral Setup
+		//DisableMovementAnimations();
+		
+		msLoopSound_Move = gsMoveLoopSound;
+		msLoopSound_Idle = gsIdleLoopSound;
+		mfLoopSoundMinMoveSpeed = gfMoveLoopSoundMinSpeed;
+		msLoopSound_MoveStart = gsMoveLoopStartSound;
+		msLoopSound_MoveStop = gsMoveLoopStopSound;
+		mbBubbleEffectsActive = true;
+		
+		//Idle sound: NPC_Kate/kate/kate_idle
+		
+		mpForceEmitter.SetActive(true);
+		mpForceEmitter.SetRadius(1.4f);
+		
+		/////////////////////////////////
+		// Mover
+		mpMover.SetMaxForwardSpeed(3.25f);
+		mpMover.SetMaxBackwardSpeed(1);
+		
+		/////////////////////////////////
+		// Speed States
+		mpMover.SetSpeedState_TurnBreakMul(0);
+		
+		mpMover.AddSpeedState(eGoyaSpeed_Wander);
+		mpMover.SetSpeedState_Forward(0.75f);
+		mpMover.SetSpeedState_TurnSpeedMul(0.6);
+		mpMover.SetSpeedState_TurnMaxSpeed(0.8f);
+		
+		mpMover.AddSpeedState(eGoyaSpeed_WanderTalking);
+		mpMover.SetSpeedState_Forward(1.5f);
+		
+		mpMover.AddSpeedState(eGoyaSpeed_FleeNormal);
+		mpMover.SetSpeedState_Forward(3.5f);
+		mpMover.SetSpeedState_TurnMaxSpeed(6.0f);
+		mpMover.AddSpeedState(eGoyaSpeed_FleeSlower);
+		mpMover.SetSpeedState_Forward(2.5f);
+		mpMover.AddSpeedState(eGoyaSpeed_FleeSlowest);
+		mpMover.SetSpeedState_Forward(1.f);
+		
+		mpMover.AddSpeedState(eGoyaSpeed_FleeSprint);
+		mpMover.SetSpeedState_Forward(4.f);
+		mpMover.SetSpeedState_TurnMaxSpeed(6.0f);
+		
+		mpMover.AddSpeedState(eGoyaSpeed_Crash);
+		mpMover.SetSpeedState_Forward(4.f);
+		mpMover.SetSpeedState_TurnMaxSpeed(6.0f);
+		
+		mpMover.AddSpeedState(eGoyaSpeed_FleeForLife);
+		mpMover.SetSpeedState_Forward(5.f);
+		mpMover.SetSpeedState_TurnMaxSpeed(7.0f);
+		
+		/////////////////////////////////
+		// States
+		mpStateMachine.AddState("Idle", eGoyaState_Idle);
+		mpStateMachine.AddState("Wander", eGoyaState_Wander);
+		mpStateMachine.AddState("FleeFromPlayer", eGoyaState_FleeFromPlayer);
+		mpStateMachine.AddState("Crash", eGoyaState_Crash);
+		
+		/////////////////////////////////
+		// Barks
+		@mpBarkMachine = cLux_CreateEntityComponent_BarkMachine(mBaseObj);
+		mpBarkMachine.SetupVoice("Goya", true, 2, 15, 15);
+		
+		mpBarkMachine.AddState(eGoyaBark_Silent);
+		
+		mpBarkMachine.AddState(eGoyaBark_Wander);
+		mpBarkMachine.SetState_VoiceBark("2_ConfusedRobotIdling", 10, 17, true);
+		
+		mpBarkMachine.AddState(eGoyaBark_Damaged_1);
+		mpBarkMachine.SetState_VoiceBark("2_ConfusedRobotIdling_Damaged_1", 10, 17, true);
+		
+		mpBarkMachine.AddState(eGoyaBark_Damaged_2);
+		mpBarkMachine.SetState_VoiceBark("2_ConfusedRobotIdling_Damaged_2", 10, 17, true);
+
+		///////////
+		// Preload particles
+		cLux_PreloadParticleSystem("elec_sparks_katebot.ps");
+		cLux_PreloadParticleSystem("oil_leak_underwater.ps");
+	}
+	
+	//------------------------------------------------------------
+	
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnUpdate(float afTimeStep)
+	{
+		cScrAgentSwimBot::OnUpdate(afTimeStep);
+		
+		///////////////////////
+		// Scared effects
+		if (mfScaredTimer > 0)
+		{
+			mfScaredTimer-=afTimeStep;
+			mfScaredEffectToggleTimer-=afTimeStep*8;
+			
+			if (mfScaredTimer <= 0)
+			{
+				mbScaredEffectsActive = true;
+				mfScaredEffectToggleTimer = 1;
+			}
+			else if (mfScaredEffectToggleTimer <= 0)
+			{
+				mbScaredEffectsActive = !mbScaredEffectsActive;
+				mfScaredEffectToggleTimer = 1;
+			}
+			
+			mBaseObj.SetEffectBaseColor(mbScaredEffectsActive ? cColor_White*mfHealth : cColor(0));
+		}
+		
+		///////////////////////
+		// Hurt effects
+		if (mfHealth < 0.5f && mpPathfinder.IsMoving())
+		{
+			mfOilTimer -= afTimeStep;
+			if (mfOilTimer <= 0)
+			{
+				mBaseObj.CreateParticleSystem(mBaseObj.GetName()+"Oil", "oil_leak_underwater.ps", true, false);
+				mfOilTimer = 0.2f;
+			}
+		}
+	}
+	
+	float mfOilTimer = 0;
+	
+	//------------------------------------------------------------
+	
+	void ResetProperties()
+	{
+		cScrAgentSwimBot::ResetProperties();
+	}
+	
+	//------------------------------------------------------------
+	
+	void BeforeEntityDestruction()
+	{
+		cScrAgentSwimBot::BeforeEntityDestruction();
+	}
+		
+	//------------------------------------------------------------
+	
+	void OnStartMove()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnConnectionStateChange(iLuxEntity@ apEntity,int alState)
+	{
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// STATES
+	/////////////////////////////////////////
+		
+	//------------------------------------------------------------
+	
+	void SetWanderBarkState()
+	{
+		if (mfHealth == 1.0f)
+			mpBarkMachine.ChangeState(eGoyaBark_Wander);
+		else if (mfHealth > 0.5)
+			mpBarkMachine.ChangeState(eGoyaBark_Damaged_1);
+		else if (mfHealth > 0.01)
+			mpBarkMachine.ChangeState(eGoyaBark_Damaged_2);
+		else
+			mpBarkMachine.ChangeState(eGoyaBark_Silent);
+	}
+		
+	//------------------------------------------------------------
+		
+		///////////////////////////////////
+		// STATE: Idle
+		///////////////////////////////////
+	
+		//------------------------------------------------------------
+	
+		//----------------------------------------------
+		
+		///////////////////////////////////
+		// STATE: Wander
+		///////////////////////////////////
+	
+		//----------------------------------------------
+	
+		bool mbHasSpoken = false;
+	
+		//----------------------------------------------
+		
+		void State_Wander_Enter()
+		{						
+			SetWanderBarkState();
+			mpMover.SetSpeedState(eGoyaSpeed_Wander);
+			
+			mpStateMachine.AddTimer(1, 1.0f);
+			mpStateMachine.AddTimer(2, cMath_RandRectf(7, 15));
+		}
+	
+		//----------------------------------------------
+		
+		void State_Wander_Leave()
+		{
+			//mpPathfinder.Stop();
+		}
+	
+		//----------------------------------------------
+		
+		void State_Wander_TimerUp(uint64 alId) 
+		{
+			if (alId == 1)
+			{
+				float fDistance = mBaseObj.GetDistanceToPlayer2D();
+				if (fDistance > gfGoyaBarkDistance || (mbHasSpoken == false && fDistance > gfGoyaFirstBarkDistance))
+					mpBarkMachine.ChangeState(eGoyaBark_Silent);
+				else
+				{
+					if (mbHasSpoken == false && mbSoundsDisabled==false)
+					{
+						mbHasSpoken = true;
+						mpBarkMachine.PlayVoice("2_ConfusedRobotIdling", 0);
+					}
+					SetWanderBarkState();
+				}
+
+				mpStateMachine.AddTimer(1, 1.0f);
+			}
+			if (alId == 2)
+			{
+				cLux_AddDebugMessage("Goya PAUSED");
+				mpPathfinder.SetTrackPaused(true);
+				mpPathfinder.Stop();
+				mpMover.StopTurning();
+				mpStateMachine.AddTimer(3, cMath_RandRectf(1, 7));
+			}
+			if (alId == 3)
+			{
+				cLux_AddDebugMessage("Goya RESUME");
+				mpPathfinder.SetTrackPaused(false);
+				mpStateMachine.AddTimer(2, cMath_RandRectf(7, 15));
+			}
+		}
+		
+		//----------------------------------------------
+		
+		///////////////////////////////////
+		// STATE: Flee from Player
+		///////////////////////////////////
+		
+		//----------------------------------------------
+		
+		float mfFleeFromPlayerDist = -1;
+		float mfMaxDistFromHome = -1;
+		cVector3f mvFleeHomePos;
+		eGoyaSpeed mCurrentFleeSpeed = eGoyaSpeed_FleeNormal;
+		
+		//----------------------------------------------
+		
+		void State_FleeFromPlayer_Enter()
+		{
+			mfScaredTimer = 1;
+					
+			mpMover.SetSpeedState(eGoyaSpeed_FleeSprint); // Temporarily increase speed
+			
+			mpStateMachine.AddTimer(1, 6); // check if far enough from player
+			mpStateMachine.AddTimer(2, 2); // reduce speed
+			
+			mpPathfinder.SetTrackPaused(false);
+			
+			SetWanderBarkState();
+		}
+		
+		//----------------------------------------------
+
+		void State_FleeFromPlayer_TimerUp(uint64 alId) 
+		{
+			if (alId == 1)
+			{
+				mpStateMachine.ChangeState(eGoyaState_Wander);
+			}
+			else if (alId == 2)
+			{
+				mpMover.SetSpeedState(mCurrentFleeSpeed);
+			}
+		}
+		
+		//----------------------------------------------
+		
+		///////////////////////////////////
+		// STATE: Crash
+		///////////////////////////////////
+		
+		//----------------------------------------------
+		
+		cVector3f mvCrashPos;
+		cVector3f mvCrashMove_PrevPos;
+		
+		//----------------------------------------------
+		
+		void State_Crash_Enter()
+		{				
+			mpPathfinder.MoveTo(mvCrashPos, 2, true); //Needs to update every once in a while in case it gets stuck
+			mpMover.SetSpeedState(eGoyaSpeed_Crash);
+			
+			mpStateMachine.AddTimer(0, 2); // check so progress is being made
+			mpStateMachine.AddTimer(1, 20); // extra failsafe
+			
+			mvCrashMove_PrevPos = mBaseObj.GetCharBody().GetPosition();
+		}
+		
+		//----------------------------------------------
+
+		void State_Crash_TimerUp(uint64 alId) 
+		{
+			iCharacterBody@ body = mBaseObj.GetCharBody();
+			if (alId == 0)
+			{
+				cVector3f vCurrPos = mBaseObj.GetCharBody().GetPosition();
+				float fMoveDist = cMath_Vector3Dist(mvCrashMove_PrevPos, vCurrPos);
+				mvCrashMove_PrevPos = vCurrPos;
+				
+				if (fMoveDist < 1)
+				{
+					cLux_AddDebugMessage("Goya is STUCK!");
+					body.SetTestCollision(false);
+					
+					// NOT SAVED, but will repeat check often enough that it shouldn't matter
+					body.SetCollideFlags(cLux_GetCurrentMap().GetCollideFlag("-player"));
+					
+					mpPathfinder.MoveTo(mvCrashPos, 2, true);
+				}
+				
+				mpStateMachine.AddTimer(0, 2);
+			}
+			else if (alId == 1)
+			{
+				mpStateMachine.StopTimer(0);
+				body.SetPosition(mvCrashPos, true);
+			}
+		}
+		
+		//----------------------------------------------
+		
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnSetActive(bool abX)
+	{
+		cScrAgentSwimBot::OnSetActive(abX);
+	}
+	
+	//------------------------------------------------------------
+	
+	void GiveDamage(float afAmount, int alStrength, const tString&in asType, const tString&in asSource)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnHealthChange()
+	{
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_Wander()
+	{
+		mpStateMachine.ChangeState(eGoyaState_Wander);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_FleeFromPlayer()
+	{
+		mfFleeFromPlayerDist = cScript_GetGlobalArgFloat(0);
+		tString sFleeHomeNode = cScript_GetGlobalArgString(1);
+		if (Entity_Exists(sFleeHomeNode))
+		{
+			mvFleeHomePos = Map_GetEntity(sFleeHomeNode).GetPosition();
+		}
+		else
+		{
+			Error("Entity " + sFleeHomeNode + " does not exist and cannod be used as Goya's home!");
+			mvFleeHomePos = mBaseObj.GetPosition();
+			return;
+		}
+		mfMaxDistFromHome = cScript_GetGlobalArgFloat(2);
+		mpStateMachine.ChangeState(eGoyaState_FleeFromPlayer);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SlowDownFleeSpeed()
+	{
+		mCurrentFleeSpeed = eGoyaSpeed(mCurrentFleeSpeed+1);
+		//mpMover.SetSpeedState(mCurrentFleeSpeed);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetMoveSpeedToFleeForLife()
+	{
+		mpMover.SetSpeedState(eGoyaSpeed_FleeForLife);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_ReduceHealth()
+	{
+		mfHealth -= cScript_GetGlobalArgFloat(0);
+		
+		/////////////////
+		// Hurt effects
+		mBaseObj.SetEffectBaseColor(cColor_White*mfHealth);
+		
+		cParticleSystem@ pPS = cLux_GetCurrentMap().GetWorld().CreateParticleSystem(mBaseObj.GetName()+"Sparks", "elec_sparks_katebot.ps", cVector3f(1), true, false);
+		mBaseObj.GetAttachEntity().AddChild(pPS);
+		pPS.SetBrightness(7);
+		pPS.SetFadeAtDistance(false);
+		
+		mBaseObj.PlayAnimation("hurt", 0.2, false, true);
+		
+		////////////////////////////////////////////////////////////
+		// If fleeing from player, make sure speed is increased
+		if (mpStateMachine.GetCurrentState() == eGoyaState_FleeFromPlayer)
+		{
+			mpStateMachine.StopTimer(2);
+			mpStateMachine.AddTimer(2, 3.5);
+			mpMover.SetSpeedState(eGoyaSpeed_FleeSprint);
+		}
+		
+		mpMover.SetIdleAnimName("idle_hurt");
+		mpMover.SetRunAnimName("move_hurt");
+		mpMover.SetWalkAnimName("move_hurt");
+		
+		SetWanderBarkState();
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_Scare()
+	{
+		if (mbSoundsDisabled==false && mfScaredTimer <= 0)
+		{
+			mBaseObj.PlaySound("ScaredGoya", gsScaredSound, true, true);
+		}
+		mfScaredTimer = 1;
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_Crash()
+	{
+		tString sCrashEnt = cScript_GetGlobalArgString(0);
+		if (Entity_Exists(sCrashEnt))
+		{
+			mvCrashPos = Map_GetEntity(sCrashEnt).GetPosition();
+		}
+		mpStateMachine.ChangeState(eGoyaState_Crash);
+		mpPathfinder.SetEndOfPathCallbackFunc(cScript_GetGlobalArgString(1));
+	}
+		
+	//------------------------------------------------------------
+	
+	void _Global_IsMoving()
+	{
+		bool bMoving = mpPathfinder.IsMoving() || mpPathfinder.GetTrackPaused();
+		cScript_SetGlobalReturnBool(bMoving);
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPER
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetSoundsDisabled(bool abState)
+	{
+		cScrAgentSwimBot::SetSoundsDisabled(abState);
+		mpBarkMachine.SetActive(!abState);
+	}
+			
+	//------------------------------------------------------------
+		
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	float mfHealth = 1.f;
+	
+	float mfScaredTimer = 0;
+	float mfScaredEffectToggleTimer = 0;
+	bool mbScaredEffectsActive = true;
+	
+	cVector3f mvHurtRot = cVector3f_Zero;
+	
+	//------------------------------------------------------------
+	
+	cLuxBarkMachine@ mpBarkMachine;
+	
+}

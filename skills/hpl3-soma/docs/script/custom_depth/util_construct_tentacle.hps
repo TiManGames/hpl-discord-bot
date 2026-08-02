@@ -1,0 +1,384 @@
+
+//-------------------------------------------------------
+
+class cConstructTentacle
+{
+	[nosave] iPhysicsRope@ mpRope;
+	[nosave] iRopeEntity@ mpRopeGfx;
+	[nosave] cNode3D@ mpSocket;
+	cVector3f mvPrevSocketPos;
+	float mfBendAmount;
+	float mfLength;
+	float mfWaveOffset;
+	cVector3f mvLocalIdlePos=cVector3f(0);
+	
+	bool mbCustomMoveTarget=false;
+	cVector3f mvMovePos;
+	cVector3f mvMoveTarget;
+	
+	bool mbRetracting=false;
+	bool mbActive=false;
+}
+
+//-------------------------------------------------------
+
+class cConstructTentacleContainer
+{
+	//------------------------------------------------------------
+	
+	void Init(iLuxEntity@ apEntity, iCharacterBody@ apCharBody = null)
+	{
+		@mpEntity = apEntity;
+		@mpCharBody = apCharBody;
+	}
+	
+	//------------------------------------------------------------
+	
+	void Hide()
+	{
+		for(int i=0; i<mvTentacles.size(); ++i)
+		{
+			cConstructTentacle@ pTent = @mvTentacles[i];
+			pTent.mpRope.SetActive(false);
+			pTent.mpRopeGfx.SetActive(false);
+			pTent.mpRopeGfx.SetVisible(false);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep)
+	{
+		mfT += afTimeStep;
+		
+		//////////////////////////
+		// Update tentacles
+		for(int i=0; i<mvTentacles.size(); ++i)
+		{
+			cConstructTentacle@ pTent = @mvTentacles[i];
+			if(pTent.mbActive==false) continue;			
+			
+			///////////////////////////
+			// Get current socket movement
+			cVector3f vMove = pTent.mpSocket.GetWorldPosition() - pTent.mvPrevSocketPos;
+			if(vMove.Length()>0.5f) vMove = cVector3f(0); //In order to manage teleporting.
+			
+			///////////////////////////
+			// Get Amount out of hole
+			float fRopeDistance = cMath_Vector3Dist(pTent.mpRope.GetEndParticle().GetPosition(), 
+													pTent.mpRope.GetStartParticle().GetPosition());
+			float fOutAmount = cMath_Min(1.0f, fRopeDistance/0.5f);
+			
+			///////////////////////////
+			// Move
+			{
+				///////////////////////////
+				// Update idle position
+				if(pTent.mbRetracting)
+				{
+					pTent.mvLocalIdlePos.z -= pTent.mvLocalIdlePos.z*0.5f*afTimeStep;
+					
+					if(pTent.mvLocalIdlePos.z<0.01f)
+					{
+						pTent.mvLocalIdlePos.z =0;
+						
+						pTent.mbActive =false;
+						pTent.mbRetracting =false;
+						
+						pTent.mpRope.SetActive(false);
+						pTent.mpRopeGfx.SetActive(false);
+						pTent.mpRopeGfx.SetVisible(false);
+						continue;
+					}
+				}
+				else
+				{
+					pTent.mvLocalIdlePos.z += (pTent.mfLength - pTent.mvLocalIdlePos.z)*0.3f*afTimeStep;
+				}
+				
+				///////////////////////////
+				// Set idle as move target
+				if(pTent.mbCustomMoveTarget==false)
+				{
+					cVector3f vAdd(-cMath_Cos(mfT*2 + pTent.mfWaveOffset)*0.15f, cMath_Sin(mfT*2 + pTent.mfWaveOffset)*0.15f,0 );
+					
+					pTent.mvMoveTarget = cMath_MatrixMul(pTent.mpSocket.GetWorldMatrix(),pTent.mvLocalIdlePos+vAdd*fOutAmount);
+					if(cMath_Vector3Dist(pTent.mvMoveTarget, pTent.mvMovePos)<0.02f)
+					{
+						pTent.mvMovePos = pTent.mvMoveTarget;
+					}
+				}
+				
+				///////////////////////////
+				// Update Move position
+				pTent.mvMovePos += vMove;
+				pTent.mvMovePos += (pTent.mvMoveTarget-pTent.mvMovePos)*0.5f*afTimeStep;
+			}
+			
+			///////////////////////////
+			// Set up rope
+			{
+				float fLength = cMath_Vector3Dist(pTent.mpSocket.GetWorldPosition(), pTent.mvMovePos);
+				pTent.mpRope.SetTotalLength(fLength);
+				
+				//////////////////////////
+				//The start pos is always firmly attached to the socket
+				pTent.mpRope.GetParticle(0).SetPosition(pTent.mpSocket.GetWorldPosition(), true);
+				
+				/////////////
+				//Add extra movement
+				cVector3f vAdd(-cMath_Cos(mfT*2 + pTent.mfWaveOffset)*0.15f, cMath_Sin(mfT*2 + pTent.mfWaveOffset)*0.15f, 0);
+				vAdd *= fOutAmount;
+				
+				/////////////
+				//Move the end pos close to the wanted one.
+				cVector3f vPos = pTent.mpRope.GetEndParticle().GetPosition();
+				vPos += (pTent.mvMovePos - vPos)*6.95f*afTimeStep;
+				pTent.mpRope.GetEndParticle().SetPosition(vPos, true);
+				
+				/////////////
+				//Curve
+				{
+					cVector3f vBasePosition;
+					cVector3f vForward;
+					if (mpCharBody!=null)
+					{
+						vBasePosition = mpCharBody.GetPosition();
+						vForward = mpCharBody.GetForward();
+					}
+					else
+					{
+						vBasePosition = mpEntity.GetPosition();
+						vForward = mpEntity.GetMatrix().GetForward();
+					}
+					
+					vBasePosition.y += mfCenterYOffset;
+					
+					cVector3f vFromCenter = pTent.mpSocket.GetWorldPosition() - vBasePosition;
+					vFromCenter.Normalize();
+					cVector3f vUp = cMath_Vector3Cross(vForward, vFromCenter);
+					cVector3f vCurve = cMath_Vector3Cross(vUp, vForward);
+					
+					for(int p=1; p<pTent.mpRope.GetParticleNum(); ++p)
+					{
+						cVerletParticle@ pPart = pTent.mpRope.GetParticle(p);
+						
+						float fT = float(p) / float(pTent.mpRope.GetParticleNum()-1);
+						float fAmount = (1.0f - fT)*0.06f*pTent.mfBendAmount;
+						fAmount += cMath_Cos(mfT*5 + fT*8 + pTent.mfWaveOffset)* 0.036f*fOutAmount;
+											
+						pPart.SetPosition(pPart.GetPosition()+vCurve*fAmount, true);
+					}
+				}
+				
+				/////////////
+				//Update particles according to movement
+				for(int p=1; p<pTent.mpRope.GetParticleNum(); ++p)
+				{
+					cVerletParticle@ pPart = pTent.mpRope.GetParticle(p);
+					
+					float fAmount = float(p) / float(pTent.mpRope.GetParticleNum()-1);
+					fAmount = 1.0f - (fAmount*fAmount*0.5);
+										
+					pPart.SetPosition(pPart.GetPosition()+vMove*fAmount, true);
+				}
+				
+				/////////////
+				//Update some constraints
+				pTent.mpRope.UpdateConstraints();
+				
+				/////////////
+				//Cement end particle pos!
+				if(pTent.mbCustomMoveTarget && pTent.mbRetracting==false)
+				{
+					pTent.mpRope.GetEndParticle().SetPosition(vPos, true);
+				}
+					
+				//pTent.mpRope.UpdateConstraints();
+			}
+			
+			//////////////////////////
+			// Set up variables
+			pTent.mvPrevSocketPos = pTent.mpSocket.GetWorldPosition();
+			pTent.mpRope.IncUpdateCount();
+		}
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetTarget(int alIdx, const cVector3f &in avPos)
+	{
+		cConstructTentacle @pTent = mvTentacles[alIdx];
+		
+		SetActive(alIdx, true);
+		
+		pTent.mbCustomMoveTarget = true;
+		pTent.mvMoveTarget = avPos;
+	}
+	
+	void SetTargetAll(const cVector3f &in avPos)
+	{
+		for(int i=0; i<mvTentacles.size(); ++i)
+			SetTarget(i, avPos);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetIdle(int alIdx)
+	{
+		cConstructTentacle @pTent = mvTentacles[alIdx];
+		pTent.mbCustomMoveTarget = false;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetIdleAll()
+	{
+		for(int i=0; i<mvTentacles.size(); ++i)
+			SetIdle(i);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetActive(int alIdx, bool abX)
+	{
+		cConstructTentacle @pTent = mvTentacles[alIdx];
+		
+		////////////////////////
+		// Activate
+		if(abX)
+		{
+			if(pTent.mbActive==false)
+			{
+				cVector3f vPos = pTent.mpSocket.GetWorldPosition();
+				cVector3f vDir = cMath_MatrixInverse(pTent.mpSocket.GetWorldMatrix()).GetForward();
+			
+				pTent.mpRope.GetStartParticle().SetPosition(vPos, true);
+				pTent.mpRope.GetEndParticle().SetPosition(vPos+vDir*0.01f, true);
+			
+				pTent.mvMovePos = vPos+vDir*0.01f;
+				
+				pTent.mpRope.SetActive(true);
+				pTent.mpRopeGfx.SetActive(true);
+				pTent.mpRopeGfx.SetVisible(true);
+				
+				pTent.mpRope.IncUpdateCount();
+			}
+			
+			pTent.mbActive = true;
+			pTent.mbRetracting =false;
+		}
+		////////////////////////
+		// Deactivate	
+		else
+		{
+			if(pTent.mbActive==false) return;
+			
+			pTent.mbRetracting = true;
+			pTent.mbCustomMoveTarget = false;
+		}
+	}
+	
+	void SetActiveAll(bool abX)
+	{
+		for(int i=0; i<mvTentacles.size(); ++i)
+			SetActive(i, abX);
+	}
+	
+	//------------------------------------------------------------
+
+	void PreloadMaterial()
+	{
+		cLux_PreloadMaterial("textures/procedural/robot_infected/tentacle.mat");
+	}
+
+	//------------------------------------------------------------
+	
+	void Add(const tString& in asSocket, float afLength, float afBendAmount)
+	{
+		cWorld@ pWorld = mpEntity.GetMap().GetWorld();
+		
+		///////////////////////////////
+		// Get Socket where the starts from
+		cNode3D@ pNode = mpEntity.GetMeshEntity().GetSocket(asSocket);
+		if(pNode is null)
+		{
+			Error("Socket '"+asSocket+"' does not exist!");
+			return;
+		}
+		
+		cConstructTentacle tentacle;
+		@tentacle.mpSocket = pNode;
+		tentacle.mvPrevSocketPos = pNode.GetWorldPosition();
+		tentacle.mfLength = afLength;
+		tentacle.mfBendAmount = afBendAmount;
+		tentacle.mfWaveOffset = cMath_RandRectf(0, 3);
+				
+		///////////////////////////////
+		// Create the rope
+		iPhysicsWorld@ pPhysicsWorld = pWorld.GetPhysicsWorld();
+		
+		cVector3f vDir = cMath_MatrixInverse(pNode.GetWorldMatrix()).GetForward();
+		
+		@tentacle.mpRope = pPhysicsWorld.CreateRope("Tentacle_"+asSocket, pNode.GetWorldPosition(),
+													pNode.GetWorldPosition()+vDir*0.05f);
+		tentacle.mpRope.SetPhysicsActive(false);
+		tentacle.mpRope.SetActive(false);
+		tentacle.mpRope.SetSegmentLength(0.25f);
+															
+		///////////////////////////////
+		// Create the rope graphics
+		@tentacle.mpRopeGfx = pWorld.CreateRopeEntity("Tentacle_"+asSocket, eRopeType_3D, tentacle.mpRope, 32, 6);
+		cMaterial@ pMat = cResources_CreateMaterial("textures/procedural/robot_infected/tentacle.mat");
+		tentacle.mpRopeGfx.SetMaterial(pMat);
+		tentacle.mpRopeGfx.SetRadius(0.025f);
+		tentacle.mpRopeGfx.SetRenderFlagBit(eRenderableFlag_ShadowCaster, true);
+		tentacle.mpRopeGfx.SetActive(false);
+		tentacle.mpRopeGfx.SetVisible(false);
+		tentacle.mpRopeGfx.SetScriptableIsSaved(false);
+		//tentacle.mpRope.SetStiffness(0.01f);
+		
+		//////////////////////////////
+		// Add the data
+		mvTentacles.push_back(tentacle);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnRenderSolid(cRendererCallbackFunctions@ apFunctions)
+	{
+		apFunctions.SetDepthTest(false);
+		
+		for(int i=0; i<mvTentacles.size(); ++i)
+		{
+			cConstructTentacle@ pTent = @mvTentacles[i];
+			if(pTent.mbActive==false) continue;
+			
+			pTent.mpRope.RenderDebug(apFunctions.GetLowLevelGfx());
+			
+			apFunctions.GetLowLevelGfx().DrawSphere(pTent.mvMovePos, 0.15f, cColor(0,0.5f,1));
+			apFunctions.GetLowLevelGfx().DrawSphere(pTent.mvMoveTarget, 0.15f, cColor(0.5f,0.5f,1));
+		}
+		
+		
+		apFunctions.SetDepthTest(true);
+	}
+	
+	//------------------------------------------------------------
+	
+	[nosave] iLuxEntity@ mpEntity = null;
+	[nosave] iCharacterBody@ mpCharBody = null;
+	array<cConstructTentacle> mvTentacles;
+	float mfT =0;
+	
+	//------------------------------------------------------------
+	
+	float mfCenterYOffset=0;
+		
+	//------------------------------------------------------------
+}
+
+
+//-------------------------------------------------------
+

@@ -1,0 +1,503 @@
+#include "interfaces/PlayerState_Interface.hps"
+#include "base/InputHandler_Types.hps"
+#include "player/Player_Types.hps"
+
+
+#include "helpers/helper_player.hps"
+#include "helpers/helper_modules.hps"
+
+/////////////////////////////////////////
+// SETTINGS
+/////////////////////////////////////////
+
+//------------------------------------------------------------
+
+cVector2f gvMaxHeadLimits = cVector2f(cMath_ToRad(50),cMath_ToRad(79));
+cVector2f gvMinHeadLimits = cVector2f(cMath_ToRad(-50),cMath_ToRad(-5));
+
+//------------------------------------------------------------
+
+class cScrPlayerState_ClimbLedge : iScrPlayerState, iScrPlayerState_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnAttachBodyToStickyArea()
+	{
+		//Do nothing!
+	}
+	
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// USER SETTINGS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void LoadUserConfig()
+	{
+	
+	}
+	void SaveUserConfig()
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ENTER MAP
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+	
+	}
+	void OnMapLeave(cLuxMap @apMap)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void CreateWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	void DestroyWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupClimbLedge()
+	{
+		/////////////////////////////////////
+		// Load the data
+		mvFeetPosition = cScript_GetGlobalArgVector3f(0);
+		mbCrouch = cScript_GetGlobalArgBool(1);
+		mvAreaDirection = cScript_GetGlobalArgVector3f(2);
+		mvAreaPosition = cScript_GetGlobalArgVector3f(3);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnEnterState(int alPrevStateId)
+	{
+		/////////////////////////////////////
+		// Get data
+		iCharacterBody@ pCharBody = cLux_GetPlayer().GetCharacterBody();
+		cCamera@ pCam = cLux_GetPlayer().GetCamera();
+		
+		/////////////////////////////////////
+		// Set up player
+		cLux_GetPlayer().ChangeMoveState(eMoveState_Normal);
+		pCharBody.SetGravityActive(false);
+		pCharBody.SetTestCollision(false);
+		pCharBody.SetPhysicsBodyActive(false);
+		pCharBody.StopMovement();
+		pCharBody.ResetClimbing();
+		
+		Player_SetCrouching(false);
+
+		Player_CancelJump();
+		
+		///////////////////////////////////////
+		// Set up variables
+		mbCrouchCompleted = false;
+		mbPlayingAnimation= false;
+		mlState =0;
+		
+		///////////////////////////////////////
+		// Save pitch limits
+		mfPitchMinLimit = pCam.GetPitchMinLimit();
+		mfPitchMaxLimit = pCam.GetPitchMaxLimit();
+		
+		//////////////////////////////////////
+		// Set up positions
+		cVector3f vPlayerArmPosition =  mvAreaPosition + mvAreaDirection*0.2+cVector3f(0,0.05, 0);
+		
+		/////////////////////////////////////
+		//Set up the position and rotation fade
+		mvFadePosStart = cLux_GetPlayer().GetCharacterBody().GetFeetPosition();
+		mvFadePosEnd = 	vPlayerArmPosition - 
+						cVector3f(0,pCharBody.GetSize().y+cLux_GetPlayer().GetBaseCameraPosAdd().y,0);
+					
+		float fAngle = cMath_GetAngleFromPoints3D(cVector3f(0,0,0), mvAreaDirection*-1).y;
+		
+		mvFadeRotStart = cVector3f(pCam.GetPitch(),pCam.GetYaw(),0);
+		mvFadeRotEnd = cVector3f(0, fAngle,0);
+		
+		///////////////////////////////////////
+		// Check if high or low
+		int lLedgeHeight =0; //0=low, 1= medium 2=high.
+		
+		if(mvAreaPosition.y > pCam.GetPosition().y+0.1)
+			lLedgeHeight=2;
+		else if(mvAreaPosition.y > pCam.GetPosition().y-0.2)
+			lLedgeHeight=1;
+			
+		///////////////////////////////////////
+		// Set time		
+		float fTime = 0.3f;
+		if(lLedgeHeight>0)
+			fTime = lLedgeHeight==2 ? 0.6f : 0.4f;
+		
+		mfTimeCount=0;
+		mfTimeCountAdd = 1.0f / fTime; 
+		
+		////////////////////////////////////
+		// Play attach sound
+		tString sName="low";
+		if(lLedgeHeight>0)
+			sName= lLedgeHeight==2 ? "high" : "low";
+		if(cLux_GetUnderwaterEffectsActive()) sName += "_underwater";
+		
+		tString sSound = "player/climb_ledge/"+sName;
+		cLux_PlayGuiSoundData(sSound, eSoundEntryType_WorldClean,1, true);
+		
+		////////////////////////////////////
+		// Player Hands
+		PlayerHands_SetActive(false);
+		PlayerHands_SetUseCustomPosition(true);
+		PlayerHands_SetCustomPosition(vPlayerArmPosition, true);
+		
+		PlayerHands_SetUseCustomRotation(true);
+		PlayerHands_SetCustomRotation(cVector3f(0, fAngle, 0));
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnLeaveState(int alNextStateId)
+	{
+		cLux_GetPlayer().GetCharacterBody().SetTestCollision(true);
+		
+		//////////////////////////////
+		//Reset variables
+		// Need to so pointer exists! (as this might be on leave!)
+		if(cLux_GetPlayer().GetCharacterBody() !is null)
+		{
+			cLux_GetPlayer().GetCharacterBody().SetGravityActive(true);
+			cLux_GetPlayer().GetCharacterBody().SetTestCollision(true);
+			cLux_GetPlayer().GetCharacterBody().SetPhysicsBodyActive(true);
+		}
+
+		cLux_GetPlayer().GetCamera().SetPitchLimits(mfPitchMinLimit, mfPitchMaxLimit);
+		cLux_GetPlayer().GetCamera().SetYawLimits(0, 0);
+		
+		cLux_GetPlayer().FadeCameraRollTo(ePlayerRoll_Climb, 0, 3, 5);
+	}
+		
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep)
+	{
+		iCharacterBody@ pCharBody = cLux_GetPlayer().GetCharacterBody();
+		cCamera@ pCam = cLux_GetPlayer().GetCamera();
+		
+		mfTimeCount += afTimeStep*mfTimeCountAdd;
+		if(mfTimeCount>=1) mfTimeCount=1;
+					
+		
+		////////////////////////////////////
+		// Set position
+		if(mlState==0 || mlState==2)
+		{
+			float fT = cMath_Easing(eEasing_QuadIn, mfTimeCount);
+			cVector3f vPos = mvFadePosStart*(1-fT) + mvFadePosEnd*fT;
+		
+			pCharBody.SetFeetPosition(vPos, true);
+		}
+		
+		////////////////////////////////////
+		// Set rotation
+		if(mlState==0)
+		{
+			float fRotTotalX = cMath_GetAngleDistance(mvFadeRotStart.x, mvFadeRotEnd.x, cMath_PiMul2);
+			float fRotTotalY = cMath_GetAngleDistance(mvFadeRotStart.y, mvFadeRotEnd.y, cMath_PiMul2);
+			
+			float fRotXT = cMath_Easing(eEasing_QuadInOut, mfTimeCount);
+			float fRotYT = cMath_Easing(eEasing_QuadIn, mfTimeCount);
+								
+			cVector3f vRot;
+			vRot.x = mvFadeRotStart.x + fRotTotalX*fRotXT;
+			vRot.y = mvFadeRotStart.y + fRotTotalY*fRotYT;
+			vRot.z =0;
+			
+			pCam.SetPitch(vRot.x);
+			pCharBody.SetYaw(vRot.y);
+		}
+		
+		////////////////////////////////////
+		// Roll
+		if(mlState==1)
+		{
+			float fRollT = cMath_Easing(eEasing_QuadInOut, mfTimeCount);
+			float fRollAmount = cMath_Sin(fRollT* (cMath_Pi)) *14;
+			fRollAmount *= cMath_Easing(eEasing_QuadOut, 1-mfTimeCount);
+		
+			cLux_GetPlayer().SetCameraRoll(ePlayerRoll_Climb,cMath_ToRad(fRollAmount));
+		}
+		
+		////////////////////////////////////
+		// State 0: Move to arm postion.
+		if(mlState==0)
+		{
+			if(mfTimeCount==1)
+			{
+				PlayerHands_PlayAnimation("climb_ledge", false, true,0.0f, "", true);
+				mlState++;
+				
+				mfTimeCount=0;
+			}
+		}
+		////////////////////////////////////
+		// State 1: Follow along with animation
+		else if(mlState==1)
+		{
+			//cBoneState@ pNode = PlayerHands_GetBoneState("j_Root");
+			cBoneState@ pNode = PlayerHands_GetBoneState("Socket_Camera");
+			
+			cVector3f vPos = pNode.GetWorldPosition()-cVector3f(0, pCharBody.GetSize().y+cLux_GetPlayer().GetBaseCameraPosAdd().y, 0);
+			pCharBody.SetFeetPosition(vPos, true);
+			
+			if(PlayerHands_GetAnimationPlaying()==false)
+			{
+				mvFadePosStart = cLux_GetPlayer().GetCharacterBody().GetFeetPosition();
+				mvFadePosEnd = 	mvFeetPosition+cVector3f(0, 0.01, 0);
+				
+				mlState++;
+				
+				mfTimeCount=0;
+				mfTimeCountAdd=1.2f;
+			}
+		}
+		////////////////////////////////////
+		// State 2: Go to final position
+		else if(mlState==2)
+		{
+			////////////////////////////////////
+			// Crouch if needed
+			if(mbCrouch &&mbCrouchCompleted==false && mfTimeCount>0.65)
+			{
+				Player_SetCrouching(true);
+				mbCrouchCompleted = true;
+			}
+				
+			////////////////////////////////////
+			// End
+			if(mfTimeCount>=1)
+			{
+				cLux_GetPlayer().ChangeState(ePlayerState_Normal);
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void PostUpdate(float afTimeStep)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool OnAction(int alAction, bool abPressed)
+	{
+		if(abPressed==false) return true;
+		
+		///////////////////////////////////
+		// Jump or Interaction
+		if(alAction==eAction_Jump || alAction ==eAction_Interact)
+		{
+			return false;
+		}
+		else if(alAction == eAction_Crouch)
+		{
+			return false;			
+		}
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnAnalogInput(int alAnalogId, const cVector3f &in avAmount)
+	{
+		////////////////////////////////////
+		// Look
+		if(alAnalogId == eAnalogType_Look)
+		{
+			return false;
+		}
+		////////////////////////////////////
+		// Move
+		if(alAnalogId == eAnalogType_Move)
+		{
+			return false;	
+		}
+		////////////////////////////////////
+		// Gamepad Move
+		else if(alAnalogId == eAnalogType_GamepadMove)
+		{
+			return false;
+		}
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnExitPressed()
+	{
+		return true;
+	}
+	
+	//-----------------------------------------------------------------------
+	
+	//////////////////////////////////////////////////////////////////////////
+	// HELPER FUNCTIONS
+	//////////////////////////////////////////////////////////////////////////
+
+	//-----------------------------------------------------------------------
+
+	void SetupHeadTurnLimits()
+	{
+		cCamera@ pCam = cLux_GetPlayer().GetCamera();
+
+		float fXmax = pCam.GetYaw() + gvMaxHeadLimits.x;
+		float fYmax = pCam.GetPitch() + gvMaxHeadLimits.y;
+
+		float fXmin = pCam.GetYaw() + gvMinHeadLimits.x;
+		float fYmin = pCam.GetPitch() + gvMinHeadLimits.y;
+		
+		pCam.SetPitchLimits(fYmin, fYmax);
+		pCam.SetYawLimits(fXmin, fXmax);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// BODY CALLBACKS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool AllowBuoyancy(iPhysicsBody @apBody)
+	{
+		return true;
+	}
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// CHARACTER CALLBACK
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void CharBody_GravityCollide(iCharacterBody@ apCharBody, iPhysicsBody@ apBody, cCollideData @apCollideData)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void CharBody_HitGround(iCharacterBody@ apCharBody,const cVector3f &in avVel)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		//apSet.DrawFont(tWString("Focus Body:"+sBodyName), apFont, cVector3f(5,afStartY,0), cVector2f(14), cColor(1,1) );
+		//afStartY += 14;
+						
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	cVector3f mvFeetPosition;
+	cVector3f mvAreaDirection;
+	cVector3f mvAreaPosition;
+	
+	bool mbCrouch;
+	bool mbCrouchCompleted;
+	
+	float mfTimeCount;
+	float mfTimeCountAdd;
+	
+	cMatrixf m_mtxInvStart;
+
+	cVector3f mvFadePosStart;
+	cVector3f mvFadePosEnd;
+	
+	cVector3f mvFadeRotStart;
+	cVector3f mvFadeRotEnd;
+	
+	float mfPitchMaxLimit;
+	float mfPitchMinLimit;
+	
+	int mlState=0;
+	
+	bool mbPlayingAnimation;
+	
+	//------------------------------------------------------------
+		
+}

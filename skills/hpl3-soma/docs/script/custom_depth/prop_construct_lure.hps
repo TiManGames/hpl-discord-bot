@@ -1,0 +1,310 @@
+#include "interfaces/Prop_Interface.hps"
+#include "player/Player_Types.hps"
+
+class cScrPropConstructLure : iScrProp, iScrProp_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		mfUpdateAttractCount = cMath_RandRectf(0, 0.5f);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		SetEnabled(apInstanceVars.GetVarBool("Enabled", true), false);
+		
+		mfAttractDistance = apInstanceVars.GetVarFloat("AttractDistance", 0);
+		mbCanBeInteractedWith = apInstanceVars.GetVarBool("CanBeInteractedWith", false);
+		msStopAtPathNode = apInstanceVars.GetVarString("StopAtPathNode", "");
+		mfEatTime = apInstanceVars.GetVarFloat("EatTime", 3);
+		
+		cString_GetStringVec(apInstanceVars.GetVarString("EatAttachAreas", ""), mvAttachAreaNames, "");
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnAfterWorldLoad()
+	{
+		for(int i=0; i<mvAttachAreaNames.size(); ++i)
+		{
+			iLuxEntity @pEntity = mBaseObj.GetMap().GetEntityByName(mvAttachAreaNames[i], eLuxEntityType_Area,"");
+			if(pEntity !is null)
+				mvAttachAreas.push_back(pEntity.GetPosition());
+			else
+				Error("Could not find attach area '"+mvAttachAreaNames[i]+"' for '"+mBaseObj.GetName()+"'");
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnUpdate(float afTimeStep)
+	{
+		if(mbEnabled==false) return;
+		
+		if(mbHasLuredConstruct) return;
+		
+		////////////////////////
+		// Time for update?
+		mfUpdateAttractCount += afTimeStep;
+		if(mfUpdateAttractCount<0.5f) return;
+		mfUpdateAttractCount =0;
+		
+		////////////////////////
+		// Any agents near?
+		array<iPhysicsBody@> vBodies;
+		cLux_GetCurrentMap().GetPhysicsWorld().GetBodiesInAABB(	mBaseObj.GetPosition() - cVector3f(mfAttractDistance), 
+																mBaseObj.GetPosition() + cVector3f(mfAttractDistance),
+																vBodies);
+		
+		for(int i=0; i<vBodies.size(); ++i)
+		{
+			///////////////////////////////////
+			// Get the agent
+			iPhysicsBody@ pBody = vBodies[i];
+			if(pBody.IsCharacter()==false) continue;
+			
+			iLuxEntity@ pEntity = cLux_GetBodyEntity(pBody);
+			
+			if(pEntity is null) continue;
+			if(pEntity.GetEntityType() != eLuxEntityType_Agent) continue;
+			
+			cLuxAgent@ pAgent = cast<cLuxAgent>(pEntity);
+			
+			///////////////////////////////////
+			// Check if distance is correct
+			float fDist = cMath_Vector3Dist(pAgent.GetPosition(), mBaseObj.GetPosition());
+			if(fDist > mfAttractDistance) continue;
+			
+			///////////////////////////////////
+			// Send callback that they are attracted.
+			cScript_SetGlobalArgID(0, mBaseObj.GetID());
+			cScript_SetGlobalArgString(1, msStopAtPathNode);
+			cScript_SetGlobalArgFloat(2, mfEatTime);
+			cScript_SetGlobalArgBool(3, false); //Setting that this is NOT a scripted feed.
+			
+			cScript_SetGlobalArgInt(4, mvAttachAreas.size());
+			for(int i=0; i<mvAttachAreas.size(); ++i)
+			{
+				cScript_SetGlobalArgVector3f(5+i, mvAttachAreas[i]);
+			}
+			
+			cScript_RunGlobalFunc(pEntity.GetName(), "", "_Global_StartFeed");
+			
+			if(cScript_GetGlobalReturnBool())
+			{
+				break;
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/*void OnPostUpdate(float afTimeStep)
+	{
+	
+	}*/
+	//------------------------------------------------------------
+	
+	void ResetProperties()
+	{
+		mbHasLuredConstruct = false;
+		mbDrained = false;
+	}
+	
+	//------------------------------------------------------------
+	
+	void BeforeEntityDestruction()
+	{
+	}
+		
+	//------------------------------------------------------------
+	
+	void OnStartMove()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnConnectionStateChange(iLuxEntity@ apEntity,int alState)
+	{
+		if(alState==0) return;
+		
+		SetEnabled(alState==1 ? true : false, true);
+	}
+		
+	//------------------------------------------------------------
+	
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnSetActive(bool abX)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void GiveDamage(float afAmount, int alStrength, const tString&in asType, const tString&in asSource)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnHealthChange()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	//NOTE: This is only useable if SetScriptCollisionCallbackActive is true
+	void OnPhysicsCollision(iPhysicsBody @apBody, iPhysicsBody @apCollideBody, cPhysicsContactData&in apContactData)
+	{
+	
+	}
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// LURE SPECIFIC ACTIONS
+	/////////////////////////////////////////
+	
+	void _Global_ConstructedLured_Start()
+	{
+		mbHasLuredConstruct = true;
+	}
+	
+	void _Global_ConstructedLured_End()
+	{
+		mbHasLuredConstruct = false;
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_Drain()
+	{
+		mbDrained = true;
+		SetEnabled(false, true);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetEnabled()
+	{
+		SetEnabled(cScript_GetGlobalArgBool(0), cScript_GetGlobalArgBool(1));
+	}
+	
+	void SetEnabled(bool abEnabled, bool abEffects)
+	{
+		if(mbEnabled == abEnabled) return;
+		
+		mbEnabled = abEnabled;
+	
+		mBaseObj.SetEffectsActive(mbEnabled, abEffects);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetEnabled()
+	{
+		cScript_SetGlobalReturnBool(mbEnabled);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	bool CanInteract(int alType, iPhysicsBody@ apBody)
+	{
+		return mbCanBeInteractedWith && mbDrained==false;
+	}
+	
+	//------------------------------------------------------------
+		
+	bool OnInteract(int alType, iPhysicsBody@ apBody, const cVector3f &in avFocusPos, const tString&in asData)
+	{
+		bool bEnabled = mbEnabled ? false : true;
+		SetEnabled(bEnabled, true);
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	int GetInteractIconId(int alType, iPhysicsBody@ apBody)
+	{
+		return eCrossHairState_PushButton;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+		
+		/*apSet.DrawFont(tWString("Lamp: "+ mBaseObj.GetName()), apFont, cVector3f(5,afStartY,0), cVector2f(14), cColor(1,1) );
+		afStartY += 14;
+		
+		return afStartY;*/
+	}
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	float mfAttractDistance=10;	
+	bool mbCanBeInteractedWith=false;
+	tString msStopAtPathNode=false;
+	array<cVector3f> mvAttachAreas;
+	array<tString> mvAttachAreaNames;
+	float mfEatTime;
+	
+	//------------------------------------------------------------
+	
+	bool mbEnabled = true;
+	bool mbDrained=false;
+	bool mbHasLuredConstruct=false;
+	
+	//------------------------------------------------------------
+	
+	float mfUpdateAttractCount=0;
+	
+	//------------------------------------------------------------
+		
+}	

@@ -1,0 +1,286 @@
+#include "interfaces/Area_Interface.hps"
+#include "player/player_types.hps"
+
+class cScrAreaLadder : iScrArea, iScrArea_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject @apVars)
+	{
+		msMaterial = apVars.GetVarString("Material","");
+		if(msMaterial == "") msMaterial = "metal";
+		
+		msExitBottomArea = apVars.GetVarString("Exit_Bottom","");
+		mbExitBottomCrouch = apVars.GetVarBool("Exit_BottomCrouching",false);
+		msExitTopArea = apVars.GetVarString("Exit_Top","");
+		mbExitTopCrouch = apVars.GetVarBool("Exit_TopCrouching",false);
+		
+		mBaseObj.SetMaxInteractDistance(1.2f);
+		
+		mBaseObj.SetCheckCollision(false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnAfterWorldLoad()
+	{
+		if(msExitBottomArea != "")
+		{
+			iLuxEntity@ pArea = mBaseObj.GetMap().GetEntityByName(msExitBottomArea, eLuxEntityType_Area);
+			if(pArea !is null)
+				m_idExitBottomArea = pArea.GetID();
+			else
+				Error("Cannot find bottom exit area'"+msExitBottomArea+"' for ladder area '"+mBaseObj.GetName()+"'");
+		}
+		if(msExitTopArea != "")
+		{
+			iLuxEntity@ pArea = mBaseObj.GetMap().GetEntityByName(msExitTopArea, eLuxEntityType_Area);
+			if(pArea !is null)
+				m_idExitTopArea = pArea.GetID();
+			else
+				Error("Cannot find top exit area'"+msExitTopArea+"' for ladder area '"+mBaseObj.GetName()+"'");
+		}
+	}		
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnUpdate(float afTimeStep)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnPostUpdate(float afTimeStep)
+	{
+	
+	}
+	//------------------------------------------------------------
+	
+	void ResetProperties()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void BeforeEntityDestruction()
+	{
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INTERACTION
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	bool CanInteract(int alType, iPhysicsBody@ apBody)
+	{
+		return true;
+	}
+	
+	//------------------------------------------------------------
+		
+	bool OnInteract(int alType, iPhysicsBody@ apBody, const cVector3f &in avFocusPos, const tString&in asData)
+	{
+		///////////////////////////////
+		//Check if the pos in front of the ladder is free.
+		iCharacterBody@ pCharBody = cLux_GetPlayer().GetCharacterBody();
+		iPhysicsWorld@ pWorld = cLux_GetCurrentMap().GetPhysicsWorld();
+		iPhysicsBody@ pBody = mBaseObj.GetAreaBody();
+		
+		
+		cMatrixf mtxInv = cMath_MatrixInverse(pBody.GetLocalMatrix());
+		cVector3f vForward = mtxInv.GetForward();
+		
+		float fMaxY = pBody.GetWorldPosition().y + pBody.GetShape().GetSize().y/2.0f;
+		float fMinY = pBody.GetWorldPosition().y - pBody.GetShape().GetSize().y/2.0f;
+			
+		cVector3f vStartPos = GetStartPosition(vForward, fMinY, fMaxY);
+		bool bFound = false;
+		bool bFirstTry = true;
+		
+		cVector3f vPushBack;
+
+		//Check higher and higher positions until a free is found.
+		bFound = true; //Skipping this test for now.
+		/*do
+		{
+			if(pCharBody.CheckCharacterFits(vStartPos, false,0,vPushBack))
+			{
+				if(bFirstTry==false)
+				{
+					vStartPos+=cVector3f(0,0.1f,0);
+				}
+				
+				bFound = true;
+				break;
+			}
+
+			bFirstTry = false;
+			vStartPos += cVector3f(0,0.1f,0);
+		}
+		while(vStartPos.y <= fMaxY-0.2f);*/
+
+		//If not found, the skip
+		if(bFound==false)
+		{
+			//TODO: Message?
+			cLux_AddDebugMessage("Area in front of ladder not free!");
+			return false;
+		}
+		
+		///////////////////////////////
+		//Set up arguments
+		cScript_SetGlobalArgID(0, mBaseObj.GetID());
+		cScript_SetGlobalArgString(1, msMaterial);
+		cScript_SetGlobalArgID(2, m_idExitBottomArea);
+		cScript_SetGlobalArgBool(3, mbExitBottomCrouch);
+		cScript_SetGlobalArgID(4, m_idExitTopArea);
+		cScript_SetGlobalArgBool(5, mbExitTopCrouch);
+		
+		///////////////////////////////
+		//Call the function
+		cScript_RunGlobalFunc("State_Ladder", "", "SetupLadder");
+		
+		cLux_GetPlayer().ChangeState(ePlayerState_Ladder);	
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	int GetInteractIconId(int alType, iPhysicsBody@ apBody)
+	{
+		return eCrossHairState_ClimbLadder;
+	}
+	
+	//-----------------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPERS
+	/////////////////////////////////////////
+	
+	//-----------------------------------------------------------------------
+	
+	cVector3f GetStartPosition(const cVector3f&in avForward, float afMinY, float afMaxY)
+	{
+		iCharacterBody @pCharBody = cLux_GetPlayer().GetCharacterBody();
+
+		cVector3f vCharSize = pCharBody.GetShape(0).GetSize();
+
+		cVector3f vPos = pCharBody.GetPosition();
+		cVector3f vLadderPos =	mBaseObj.GetAreaBody().GetWorldPosition() + avForward*vCharSize.x *0.6f;
+		vLadderPos.y = vPos.y+0.05f;
+
+		if(vLadderPos.y > afMaxY - vCharSize.y*0.3f) vLadderPos.y = afMaxY - vCharSize.y*0.3f;
+
+		if(vLadderPos.y - vCharSize.y/2 < afMinY) vLadderPos.y = afMinY + vCharSize.y/2+0.1f;
+
+		return vLadderPos;
+	}
+	
+	/////////////////////////////////////////
+	// COLLISIONS
+	/////////////////////////////////////////
+	
+	//-----------------------------------------------------------------------
+
+	bool OnStartCheckCollision(float afTimeStep, float afTimeSinceCheck)
+	{
+		return false;
+	}
+	
+	//-----------------------------------------------------------------------
+
+	bool OnCheckCollision(iPhysicsBody@ apBody, iLuxEntity@ apEntity)
+	{
+		return true;
+	}
+	
+	//-----------------------------------------------------------------------
+
+	void OnEndCheckCollision(float afTimteStep)
+	{
+	}
+	
+	//-----------------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//-----------------------------------------------------------------------
+	
+	void OnSetActive(bool abX)
+	{
+	
+	}
+	
+	//-----------------------------------------------------------------------
+	
+	
+	void OnConnectionStateChange(iLuxEntity@ apEntity,int alState)
+	{
+		if(alState==0) return;
+	}
+	
+	
+	//-----------------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	tString msMaterial;
+	
+	tString msExitBottomArea;
+	tID m_idExitBottomArea = tID_Invalid;
+	bool mbExitBottomCrouch;
+	tString msExitTopArea;
+	tID m_idExitTopArea = tID_Invalid;
+	bool mbExitTopCrouch;
+	
+	//------------------------------------------------------------
+		
+}	

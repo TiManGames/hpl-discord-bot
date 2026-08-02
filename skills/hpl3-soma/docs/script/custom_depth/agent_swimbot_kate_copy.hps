@@ -1,0 +1,574 @@
+#include "interfaces/Agent_SwimBot.hps"
+#include "helpers/helper_map.hps"
+#include "helpers/helper_audio.hps"
+
+enum eKateCopyState
+{
+	eKateCopyState_Travel,
+	eKateCopyState_TravelFast,
+	eKateCopyState_Investigate,
+	eKateCopyState_Refuel,
+}
+
+enum eKateCopySpeed
+{
+	eKateCopySpeed_Travel,
+	eKateCopySpeed_TravelFast,
+	eKateCopySpeed_Wander,
+	eKateCopySpeed_Slow,
+}
+
+//-------------------------------------------------------
+
+const tString gsMoveLoopSound = "NPC_Kate/kate/kate_engine";
+const tString gsIdleLoopSound = "";
+const float gfMoveLoopSoundMinSpeed =0.1f;
+	
+//-------------------------------------------------------
+
+class cScrAgentKateCopy : cScrAgentSwimBot
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		cScrAgentSwimBot::Init();
+		mbLanternOn =true;
+		mfLanternBrightness =0;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupCharBody()
+	{
+		cScrAgentSwimBot::SetupCharBody();
+		
+		iCharacterBody@ pCharBody = mBaseObj.GetCharBody();
+		
+		pCharBody.SetMass(60);
+		
+		pCharBody.SetMaxPositiveMoveSpeed(eCharDir_Forward,3.25f);
+		pCharBody.SetMoveAcc(eCharDir_Forward,3);
+		pCharBody.SetMoveDeacc(eCharDir_Forward,3);
+		pCharBody.SetMoveOppositeDirAccMul(eCharDir_Forward,1);
+	}
+		
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld @apWorld,  cResourceVarsObject@ apVars,  cResourceVarsObject@ apInstanceVars)
+	{
+		cScrAgentSwimBot::SetupAfterLoad(apWorld, apVars, apInstanceVars);
+		
+		/////////////////////////////////
+		// Genral Setup
+		DisableMovementAnimations();
+		
+		msLoopSound_Move = gsMoveLoopSound;
+		msLoopSound_Idle = gsIdleLoopSound;
+		mfLoopSoundMinMoveSpeed = gfMoveLoopSoundMinSpeed;
+		mbBubbleEffectsActive = true;
+		
+		//Idle sound: NPC_Kate/kate/kate_idle
+		
+		mpForceEmitter.SetActive(true);
+		mpForceEmitter.SetRadius(1.4f);
+
+		/////////////////////////////////
+		// Mover
+		mpMover.SetMaxForwardSpeed(3.25f);
+		mpMover.SetMaxBackwardSpeed(1);
+		
+		/////////////////////////////////
+		// Speed States
+		mpMover.AddSpeedState(eKateCopySpeed_Travel);
+		mpMover.SetSpeedState_Forward(1.5);
+		
+		mpMover.AddSpeedState(eKateCopySpeed_TravelFast);
+		mpMover.SetSpeedState_Forward(5.7);
+		
+		mpMover.AddSpeedState(eKateCopySpeed_Wander);
+		mpMover.SetSpeedState_Forward(1.25f);
+		mpMover.SetSpeedState_TurnSpeedMul(1.5);
+		mpMover.SetSpeedState_TurnMaxSpeed(1.5f);
+		
+		mpMover.AddSpeedState(eKateCopySpeed_Slow);
+		mpMover.SetSpeedState_Forward(0.75f);
+		mpMover.SetSpeedState_TurnSpeedMul(0.6);
+		mpMover.SetSpeedState_TurnMaxSpeed(0.8f);
+				
+		
+		/////////////////////////////////
+		// States
+		mpStateMachine.AddState("Travel", eKateCopyState_Travel);
+		mpStateMachine.AddState("TravelFast", eKateCopyState_TravelFast);
+		mpStateMachine.AddState("Investigate", eKateCopyState_Investigate);
+		mpStateMachine.AddState("Refuel", eKateCopyState_Refuel);
+		
+		/////////////////////////////////
+		// Misc
+		@mpSpotLight = mBaseObj.GetLightFromName("SpotLight_1");
+		if(mpSpotLight !is null) mfDefaultLightBrightness = mpSpotLight.GetBrightness();
+		
+		@mpBillboard = mBaseObj.GetBillboardFromName("Billboard_1");
+		if(mpBillboard !is null) mfDefaultBBBrightness = mpBillboard.GetBrightness();
+		
+		SetFlashLightActive(false, false);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnUpdate(float afTimeStep)
+	{
+		cScrAgentSwimBot::OnUpdate(afTimeStep);
+		
+		///////////////////////////////
+		// Lantern Update
+		bool bChangedValue =false;
+		if(mbLanternOn==false && mfLanternBrightness>0.04f)
+		{
+			mfLanternBrightness = cMath_IncreaseTo(mfLanternBrightness, afTimeStep*3, 0.04f);
+			bChangedValue = true;
+		}
+		else if(mbLanternOn && mfLanternBrightness<1)
+		{
+			mfLanternBrightness = cMath_IncreaseTo(mfLanternBrightness, afTimeStep*3, 1.0f);
+			bChangedValue = true;
+		}
+		if(bChangedValue)
+		{
+			if(mpSpotLight !is null)
+				mpSpotLight.SetBrightness(mfDefaultLightBrightness *mfLanternBrightness);
+				
+			if(mpBillboard !is null)
+				mpBillboard.SetBrightness(mfDefaultBBBrightness *mfLanternBrightness);
+		}
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetProperties()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void BeforeEntityDestruction()
+	{
+		cScrAgentSwimBot::BeforeEntityDestruction();
+	}
+		
+	//------------------------------------------------------------
+	
+	void OnStartMove()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnConnectionStateChange(iLuxEntity@ apEntity,int alState)
+	{
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// STATES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+		///////////////////////////////////
+		// STATE: Default
+		///////////////////////////////////
+	
+		//------------------------------------------------------------
+		
+		
+		//------------------------------------------------------------
+	
+		///////////////////////////////////
+		// STATE: Travel
+		///////////////////////////////////
+	
+		//------------------------------------------------------------
+	
+		void State_Travel_Enter()
+		{
+			mpMover.SetSpeedState(eKateCopySpeed_Travel);
+		}
+		
+		//----------------------------------------------
+		
+		///////////////////////////////////
+		// STATE: Travel Fast
+		///////////////////////////////////
+	
+		//------------------------------------------------------------
+	
+		void State_TravelFast_Enter()
+		{
+			mpMover.SetSpeedState(eKateCopySpeed_TravelFast);
+		}
+		
+		//----------------------------------------------
+		
+		///////////////////////////////////
+		// STATE: Investigate
+		///////////////////////////////////
+		
+		//----------------------------------------------
+		
+		cVector3f mvInvestigateStart;
+	
+		//----------------------------------------------
+		
+		void State_Investigate_Enter()
+		{
+			mvInvestigateStart = mBaseObj.GetPosition();
+			mpMover.SetSpeedState(eKateCopySpeed_Wander);
+			
+			mpStateMachine.AddTimer(2, 1.0f);
+			
+			InvestigateNewGoal();
+		}
+		
+		void State_Investigate_Leave()
+		{
+			SetFlashLightActive(false, true);
+		}
+		
+		
+		//----------------------------------------------
+		
+		bool State_Investigate_Message(int alMessageId)
+		{
+			if(alMessageId == eLuxEntityMessage_EndOfPath)
+			{
+				mpMover.TurnToAngles(mBaseObj.GetCharBody().GetYaw(), -0.4f);
+				mpStateMachine.AddTimer(0, 1.7f);
+				mpStateMachine.AddTimer(1, cMath_RandRectf(2.5f, 8));
+				
+				SetFlashLightActive(true, true);
+			}
+			
+			return true;
+		}
+		
+		//----------------------------------------------
+		
+		void State_Investigate_TimerUp(uint64 alId) 
+		{
+			/////////////////////////////////
+			// Update look target
+			if(alId == 0)
+			{
+				cVector3f vAngles = cMath_GetAngleFromPoints3D(cVector3f(0), mBaseObj.GetCharBody().GetForward());
+				vAngles.x += cMath_RandRectf(-0.5, 0.2);
+				vAngles.y += cMath_RandRectf(-0.5, 0.5);
+			
+				mpMover.TurnToAngles(vAngles.y, vAngles.x + cMath_ToRad(45));
+				
+				mpStateMachine.AddTimer(0, cMath_RandRectf(1, 3));
+			}
+			/////////////////////////////////
+			// Find new place
+			else if(alId == 1)
+			{
+				mpStateMachine.StopTimer(0);
+				InvestigateNewGoal();
+			}
+			///////////////////////////////// 
+			// Player to near
+			else if(alId == 2)
+			{
+				if(mBaseObj.GetDistanceToPlayer()<3 && mpPathfinder.IsMoving()==false)
+				{
+					mpStateMachine.StopTimer(0);
+					mpStateMachine.StopTimer(1);
+					InvestigateNewGoal();
+				}
+				mpStateMachine.AddTimer(2, 1.0f);
+			}
+		}
+		//----------------------------------------------
+		
+		void InvestigateNewGoal()
+		{
+			SetFlashLightActive(false, true);
+			
+			cAINode @pNode = mpPathfinder.GetNodeAtPos(mvInvestigateStart, 2, 6,false, false, true, null);
+			if(pNode is null)
+			{
+				mpStateMachine.AddTimer(1, cMath_RandRectf(2.5f, 8));
+				return;
+			}
+						
+			mpPathfinder.MoveTo(pNode.GetPosition(), 0.5f, true);
+		}
+		//----------------------------------------------
+		
+		///////////////////////////////////
+		// STATE: Refuel
+		///////////////////////////////////
+		
+		//----------------------------------------------
+		
+		cVector3f mvRefuelPosition;
+		cVector3f mvRefuelTarget;
+		int mlRefuelState;
+		
+		//----------------------------------------------
+		
+		void State_Refuel_Enter()
+		{
+			mpMover.SetSpeedState(eKateCopySpeed_Travel);
+			
+			mpPathfinder.MoveTo(mvRefuelPosition,0.3f, true);
+			
+			mlRefuelState =0;
+		}
+		
+		//----------------------------------------------
+		
+		void State_Refuel_Update(float afTimeStep)
+		{	
+			/////////////////////////////
+			// Go to refuel point
+			if(mlRefuelState == 0)
+			{
+				if (mpPathfinder.IsMoving())
+				{
+					//Slow down if near enough
+					float fDistToRefuel = mBaseObj.GetDistanceToPos(mvRefuelPosition);
+					if(fDistToRefuel < 4)
+					{
+						mpMover.SetSpeedState(eKateCopySpeed_Slow);
+					}
+				}
+				else
+				{
+					/////////////////////////
+					//Move toward point
+					cVector3f vDiff = mvRefuelPosition - mBaseObj.GetCharBody().GetPosition();
+					cVector3f vVel = mBaseObj.GetCharBody().GetForceVelocity();
+					mBaseObj.GetCharBody().AddForce(vDiff*100.0f - vVel*50.0f);
+					
+					/////////////////////////
+					//Turn toward point
+					mpMover.TurnToPos(mvRefuelTarget);
+					
+					
+					/////////////////////////
+					//Check if near enough.
+					if(vDiff.Length()<0.42f && mBaseObj.GetAngleToPos3D(mvRefuelTarget)<0.06)
+					{
+						mlRefuelState =1;		
+						mpPathfinder.Stop();
+						
+						/////////////////////////
+						//Call Script
+						if(msRefuelReadyCallback!="")
+						{
+							cLuxMap @pMap = mBaseObj.GetMap();
+							if(pMap.ScriptPrepare("void "+msRefuelReadyCallback+"(const tString&in asEntityName)"))
+							{
+								tString sName = mBaseObj.GetName();								
+								pMap.SetArgString(0, sName);
+								pMap.ScriptExecute();
+							}
+						}
+					}
+				}
+			}
+			/////////////////////////////
+			// Idle at destination
+			else if(mlRefuelState == 1)
+			{
+				
+			}
+		}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPER
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetFlashLightActive(bool abX, bool abFade)
+	{
+		mbLanternOn = abX;
+		
+		if(abFade = false)
+		{
+			mfLanternBrightness = abX ? 1.0f : 0.04f;
+			
+			if(mpSpotLight !is null)
+				mpSpotLight.SetBrightness(mfDefaultLightBrightness *mfLanternBrightness);
+				
+			if(mpBillboard !is null)
+				mpBillboard.SetBrightness(mfDefaultBBBrightness *mfLanternBrightness);
+		}
+	}
+		
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnSetActive(bool abX)
+	{
+		cScrAgentSwimBot::OnSetActive(abX);
+	}
+	
+	//------------------------------------------------------------
+	
+	void GiveDamage(float afAmount, int alStrength, const tString&in asType, const tString&in asSource)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnHealthChange()
+	{
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_RefuelAt()
+	{
+		tString sRefuelAtTarget = cScript_GetGlobalArgString(0);
+		msRefuelReadyCallback = cScript_GetGlobalArgString(1);
+		iLuxEntity @pEntity = Map_GetEntity(sRefuelAtTarget);
+		if(pEntity !is null)
+		{
+			mvRefuelTarget = pEntity.GetPosition();
+			
+			float fBodyLength = mBaseObj.GetCharBody().GetSize().x;
+			cVector3f vForward = cMath_MatrixInverse(pEntity.GetMatrix()).GetForward();
+			mvRefuelPosition = mvRefuelTarget + vForward * fBodyLength*0.5f;
+			
+			mpStateMachine.ChangeState(eKateCopyState_Refuel);
+		}
+		else
+		{
+			Error("Could not find refuel target entity '"+sRefuelAtTarget+"'");
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_MoveTo()
+	{
+		tString sNode = cScript_GetGlobalArgString(0);
+		tString sCallback = cScript_GetGlobalArgString(1);
+		int lState = cScript_GetGlobalArgInt(2);
+		
+		if(lState == 0)
+			mpStateMachine.ChangeState(eKateCopyState_Travel);
+		else
+			mpStateMachine.ChangeState(eKateCopyState_TravelFast);
+		
+		mpPathfinder.MoveToNode(sNode, 2, false);
+		mpPathfinder.SetEndOfPathCallbackFunc(sCallback);
+	}
+	
+	void _Global_SetSpeedState()
+	{
+		int lState = cScript_GetGlobalArgInt(0);
+		if(lState == 0)
+			mpStateMachine.ChangeState(eKateCopyState_Travel);
+		else
+			mpStateMachine.ChangeState(eKateCopyState_TravelFast);
+	}
+	
+	//------------------------------------------------------------
+	void _Global_Investigate()
+	{
+		mpStateMachine.ChangeState(eKateCopyState_Investigate);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	bool CanInteract(int alType, iPhysicsBody@ apBody)
+	{
+		return false;
+	}
+	
+	//------------------------------------------------------------
+		
+	bool OnInteract(int alType, iPhysicsBody@ apBody, const cVector3f &in avFocusPos, const tString&in asData)
+	{
+		return false;
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	[nosave] iLight @mpSpotLight;
+	[nosave] cBillboard @mpBillboard;
+	[nosave] float mfDefaultLightBrightness;
+	[nosave] float mfDefaultBBBrightness;
+	
+	
+	//------------------------------------------------------------
+	
+	float mfLanternBrightness;
+	bool mbLanternOn;
+	tString msRefuelReadyCallback;
+	
+	//------------------------------------------------------------
+	
+}

@@ -1,0 +1,1666 @@
+#include "interfaces/Agent_SwimBot.hps"
+#include "helpers/helper_map.hps"
+#include "helpers/helper_audio.hps"
+#include "helpers/helper_modules.hps"
+
+enum eKateState
+{
+	eKateState_Idle,
+	eKateState_FollowPlayer,
+	eKateState_CloseToPlayer,
+	eKateState_Wander,
+	eKateState_LookAt,
+	eKateState_Investigate,
+	eKateState_InvestigateMultiple,
+	eKateState_ChaseEntities,
+	eKateState_FleeFromPlayer,
+	eKateState_ScaredOfPlayer,
+	eKateState_Crash,
+	eKateState_Weld,
+}
+
+enum eKateSpeed
+{
+	eKateSpeed_FollowPlayer,
+	eKateSpeed_Wander,
+	eKateSpeed_WanderTalking,
+	eKateSpeed_CloseToPlayer,
+	eKateSpeed_Investigate,
+	eKateSpeed_InvestigateStill,
+	eKateSpeed_FleeNormal,
+	eKateSpeed_FleeSlower,
+	eKateSpeed_FleeSlowest,
+	eKateSpeed_FleeSprint,
+	eKateSpeed_Crash,
+	eKateSpeed_FleeForLife,
+}
+
+//-------------------------------------------------------
+//{BARKS
+
+const tString gsTalkingSound = "NPC_Kate/talk/katebot_idle_talk";
+const float gfMinTalkDelay = 8;
+const float gfMaxTalkDelay = 15;
+
+const tString gsScaredSound = "NPC_Kate/talk/katebot_cower";
+const tString gsPlayfulSound = "NPC_Kate/talk/katebot_playful_talk";
+
+//}ENDBARKS
+//-------------------------------------------------------
+
+const tString gsMoveLoopSound = "NPC_Kate/katebot_engine/katebot_engine";
+const tString gsIdleLoopSound = "";
+const tString gsMoveLoopStartSound = "NPC_Kate/katebot_engine/katebot_engine_start";
+const tString gsMoveLoopStopSound = "NPC_Kate/katebot_engine/katebot_engine_stop";
+const float gfMoveLoopSoundMinSpeed =0.2;
+
+const float gfFollowSpeed = 3.5;
+const float gfChaseEntitiesSpeed = 5;
+	
+//-------------------------------------------------------
+
+class cScrAgentKate : cScrAgentSwimBot
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		cScrAgentSwimBot::Init();
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupCharBody()
+	{
+		cScrAgentSwimBot::SetupCharBody();
+		
+		iCharacterBody@ pCharBody = mBaseObj.GetCharBody();
+		
+		pCharBody.SetMass(60);
+		
+		pCharBody.SetMaxPositiveMoveSpeed(eCharDir_Forward,3.25f);
+		pCharBody.SetMoveAcc(eCharDir_Forward,3);
+		pCharBody.SetMoveDeacc(eCharDir_Forward,3);
+		pCharBody.SetMoveOppositeDirAccMul(eCharDir_Forward,1);
+		
+		pCharBody.SetEntityPitchAmount(0.8f);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld @apWorld,  cResourceVarsObject@ apVars,  cResourceVarsObject@ apInstanceVars)
+	{
+		cScrAgentSwimBot::SetupAfterLoad(apWorld, apVars, apInstanceVars);
+		
+		/////////////////////////////////
+		// Genral Setup		
+		msLoopSound_Move = gsMoveLoopSound;
+		msLoopSound_Idle = gsIdleLoopSound;
+		mfLoopSoundMinMoveSpeed = gfMoveLoopSoundMinSpeed;
+		msLoopSound_MoveStart = gsMoveLoopStartSound;
+		msLoopSound_MoveStop = gsMoveLoopStopSound;
+		mbBubbleEffectsActive = true;
+		
+		//Idle sound: NPC_Kate/kate/kate_idle
+		
+		mpForceEmitter.SetActive(true);
+		mpForceEmitter.SetRadius(1.4f);
+		
+		/////////////////////////////////
+		// Mover
+		mpMover.SetMaxForwardSpeed(3.25f);
+		mpMover.SetMaxBackwardSpeed(1);
+		
+		/////////////////////////////////
+		// Speed States
+		mpMover.SetSpeedState_TurnBreakMul(0);
+		
+		mpMover.AddSpeedState(eKateSpeed_FollowPlayer);
+		mpMover.SetSpeedState_Forward(gfFollowSpeed);
+		
+		mpMover.AddSpeedState(eKateSpeed_Wander);
+		mpMover.SetSpeedState_Forward(0.75f);
+		mpMover.SetSpeedState_TurnSpeedMul(0.6);
+		mpMover.SetSpeedState_TurnMaxSpeed(0.8f);
+		
+		mpMover.AddSpeedState(eKateSpeed_WanderTalking);
+		mpMover.SetSpeedState_Forward(1.5f);
+		
+		mpMover.AddSpeedState(eKateSpeed_CloseToPlayer);
+		mpMover.SetSpeedState_Forward(0.5f);
+		mpMover.SetSpeedState_TurnSpeedMul(1.6);
+		mpMover.SetSpeedState_TurnMaxSpeed(2.8f);
+		
+		mpMover.AddSpeedState(eKateSpeed_Investigate);
+		mpMover.SetSpeedState_Forward(2.5f);
+		
+		mpMover.AddSpeedState(eKateSpeed_InvestigateStill);
+		mpMover.SetSpeedState_TurnSpeedMul(1);
+		mpMover.SetSpeedState_TurnMaxSpeed(1.5f);
+		
+		mpMover.AddSpeedState(eKateSpeed_FleeNormal);
+		mpMover.SetSpeedState_Forward(3.5f);
+		mpMover.SetSpeedState_TurnMaxSpeed(6.0f);
+		mpMover.AddSpeedState(eKateSpeed_FleeSlower);
+		mpMover.SetSpeedState_Forward(2.5f);
+		mpMover.AddSpeedState(eKateSpeed_FleeSlowest);
+		mpMover.SetSpeedState_Forward(1.f);
+		
+		mpMover.AddSpeedState(eKateSpeed_FleeSprint);
+		mpMover.SetSpeedState_Forward(4.f);
+		mpMover.SetSpeedState_TurnMaxSpeed(6.0f);
+		
+		mpMover.AddSpeedState(eKateSpeed_Crash);
+		mpMover.SetSpeedState_Forward(4.f);
+		mpMover.SetSpeedState_TurnMaxSpeed(6.0f);
+		
+		mpMover.AddSpeedState(eKateSpeed_FleeForLife);
+		mpMover.SetSpeedState_Forward(5.f);
+		mpMover.SetSpeedState_TurnMaxSpeed(7.0f);
+		
+		/////////////////////////////////
+		// States
+		mpStateMachine.AddState("Idle", eKateState_Idle);
+		mpStateMachine.AddState("FollowPlayer", eKateState_FollowPlayer);
+		mpStateMachine.AddState("CloseToPlayer", eKateState_CloseToPlayer);
+		mpStateMachine.AddState("LookAt", eKateState_LookAt);
+		mpStateMachine.AddState("Wander", eKateState_Wander);
+		mpStateMachine.AddState("Investigate", eKateState_Investigate);
+		mpStateMachine.AddState("InvestigateMultiple", eKateState_InvestigateMultiple);
+		mpStateMachine.AddState("ChaseEntities", eKateState_ChaseEntities);
+		mpStateMachine.AddState("FleeFromPlayer", eKateState_FleeFromPlayer);
+		mpStateMachine.AddState("ScaredOfPlayer", eKateState_ScaredOfPlayer);
+		mpStateMachine.AddState("Crash", eKateState_Crash);
+		mpStateMachine.AddState("Weld", eKateState_Weld);
+
+		///////////
+		// Preload particles
+		cLux_PreloadParticleSystem("elec_sparks_katebot.ps");
+		cLux_PreloadParticleSystem("oil_leak_underwater.ps");
+		cLux_PreloadParticleSystem("welding_flare.ps");
+		
+		EyeTracking_RegisterEntity(mBaseObj.GetID());
+	}
+	
+	//------------------------------------------------------------
+	
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnUpdate(float afTimeStep)
+	{
+		cScrAgentSwimBot::OnUpdate(afTimeStep);
+		
+		///////////////////////
+		// Scared effects
+		if (mfScaredTimer > 0)
+		{
+			mfScaredTimer-=afTimeStep;
+			mfScaredEffectToggleTimer-=afTimeStep*8;
+			
+			if (mfScaredTimer <= 0)
+			{
+				mbScaredEffectsActive = true;
+				mfScaredEffectToggleTimer = 1;
+			}
+			else if (mfScaredEffectToggleTimer <= 0)
+			{
+				mbScaredEffectsActive = !mbScaredEffectsActive;
+				mfScaredEffectToggleTimer = 1;
+			}
+			
+			mBaseObj.SetEffectBaseColor(mbScaredEffectsActive ? cColor_White*mfHealth : cColor(0));
+		}
+		
+		///////////////////////
+		// Pulse effect on gaze
+		if (EyeTracking_IsAiReactive())
+		{
+			if (EyeTracking_IsEntityBeingLookedAt(mBaseObj.GetID()) && mfScaredTimer <= 0.0f)
+			{
+				bool bGood = mpStateMachine.GetCurrentState() != eKateState_FleeFromPlayer && mpStateMachine.GetCurrentState() != eKateState_ScaredOfPlayer;
+				cColor onColor = bGood ? cColor(0.8, 1.0, 0.8f, 1.0f) : cColor(1.0, 0.5, 0.5f, 1.0f);
+				cColor offColor = bGood ? cColor(0.3, 0.5, 0.3f, 1.0f) : cColor(0.5, 0.2, 0.2f, 1.0f);
+				
+				mfGazeEffectTimer += mfGazeEffectDirection * afTimeStep;
+				if (mfGazeEffectTimer >= mfGazeEffectPulseTime)
+				{
+					mfGazeEffectDirection = -1.0f;
+					mBaseObj.FadeEffectBaseColor(offColor, mfGazeEffectPulseTime);
+				}
+				if (mfGazeEffectTimer <= 0.0f)
+				{
+					mfGazeEffectDirection = 1.0f;
+					mBaseObj.FadeEffectBaseColor(onColor, mfGazeEffectPulseTime);
+				}
+			}
+			else
+			{
+				if (mBaseObj.GetEffectBaseColor() != cColor(1.0f, 1.0f, 1.0f, mfGazeEffectPulseTime))
+					mBaseObj.FadeEffectBaseColor(cColor_White, 0.2f);	
+			}
+		}
+		
+		///////////////////////
+		// Hurt effects
+		if (mfHealth < 0.5f && mpPathfinder.IsMoving())
+		{
+			mfOilTimer -= afTimeStep;
+			if (mfOilTimer <= 0)
+			{
+				mBaseObj.CreateParticleSystem(mBaseObj.GetName()+"Oil", "oil_leak_underwater.ps", true, false);
+				mfOilTimer = 0.2f;
+			}
+		}
+	}
+	
+	float mfOilTimer = 0;
+	
+	//------------------------------------------------------------
+	
+	void ResetProperties()
+	{
+		cScrAgentSwimBot::ResetProperties();
+	}
+	
+	//------------------------------------------------------------
+	
+	void BeforeEntityDestruction()
+	{
+		cScrAgentSwimBot::BeforeEntityDestruction();
+	}
+		
+	//------------------------------------------------------------
+	
+	void OnStartMove()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnConnectionStateChange(iLuxEntity@ apEntity,int alState)
+	{
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// STATES
+	/////////////////////////////////////////
+	
+		///////////////////////////////////
+		// STATE: Idle
+		///////////////////////////////////
+	
+		//------------------------------------------------------------
+	
+		//----------------------------------------------
+		
+		///////////////////////////////////
+		// STATE: Follow player
+		///////////////////////////////////
+	
+		//----------------------------------------------
+		
+		float mfPreviousFollowDist = 10000.f;
+		
+		//----------------------------------------------
+		
+		void State_FollowPlayer_Enter()
+		{
+			mpPathfinder.MoveTo(mBaseObj.GetPlayerHeadPos(), 0, true);
+			mpStateMachine.AddTimer(0, 1.0f);
+			
+			mpMover.SetSpeedState(eKateSpeed_FollowPlayer);
+		}
+		
+		//----------------------------------------------
+			
+		void State_FollowPlayer_Update(float afTimeStep) 
+		{		
+			float fDist = cMath_Vector3Dist(mBaseObj.GetPosition(), mBaseObj.GetPlayerHeadPos());
+			
+			//////////////////////////////////////////
+			// Stop
+			if (fDist < 3.5f)
+			{
+				if (mvChaseEntities.length() > 0 && cMath_RandRectl(0, 4)==4)
+					ChaseEntities();
+				else
+					mpStateMachine.ChangeState(eKateState_CloseToPlayer);
+				mpPathfinder.Stop();
+			}
+			//////////////////////////////////////////
+			// Slow down
+			else if(fDist < 8)
+			{				
+				float fWantedSpeed = gfFollowSpeed*0.25f + gfFollowSpeed * 0.75f * ((fDist-3.5f) / 4.5f);
+				mBaseObj.GetCharBody().SetMaxPositiveMoveSpeed(eCharDir_Forward, fWantedSpeed);
+			}
+			else
+			{
+				mBaseObj.GetCharBody().SetMaxPositiveMoveSpeed(eCharDir_Forward,gfFollowSpeed);
+			}
+			
+			mfPreviousFollowDist = fDist;
+		}
+		
+		//----------------------------------------------
+		
+		void State_FollowPlayer_TimerUp(uint64 alId) 
+		{
+			mpPathfinder.MoveTo(mBaseObj.GetPlayerHeadPos(), 0, true);
+			
+			mpStateMachine.AddTimer(0, 1.0f);
+		}
+	
+		//----------------------------------------------
+	
+		///////////////////////////////////
+		// STATE: Close to player
+		///////////////////////////////////
+	
+		//----------------------------------------------
+		
+		float mfGoalHeightCount;
+		
+		//----------------------------------------------
+		
+		void State_CloseToPlayer_Enter()
+		{
+			cLux_AddDebugMessage("State_CloseToPlayer_Enter");
+			//Want a slow but fast turning kate
+			mpMover.SetSpeedState(eKateSpeed_CloseToPlayer);
+			
+			//Look at player
+			mpStateMachine.AddTimer(0, 0.1f);
+			
+			//Check if Kate should wander a bit.
+			mpStateMachine.AddTimer(1, cMath_RandRectf(1.0f, 3.0f));
+			
+			//Talk to player
+			mpStateMachine.AddTimer(2, cMath_RandRectf(gfMinTalkDelay, gfMaxTalkDelay));
+			
+			mfGoalHeightCount =0;
+		}
+		
+		void State_CloseToPlayer_Leave()
+		{
+			//JUst to make sure the body is not moving up / down afterwards.
+			mBaseObj.GetCharBody().SetForceVelocity(cVector3f(0,0,0));
+		}
+		
+		//----------------------------------------------
+	
+		void State_CloseToPlayer_TimerUp(uint64 alId) 
+		{
+			/////////////////////////////////
+			// Look at player
+			if(alId == 0)
+			{
+				cVector3f vCamPos = mBaseObj.GetPlayerHeadPos();
+				float fDist =cMath_Vector3Dist(mBaseObj.GetPosition(), vCamPos);
+				
+				//////////////////////////////////
+				// If far away, start following
+				if (fDist > 7.0f)
+				{
+					mpStateMachine.ChangeState(eKateState_FollowPlayer);
+				}
+				//////////////////////////////////
+				//If out if view, start to wander or 
+				else if(mBaseObj.GetEntityIsInPlayerFOV()==false)
+				{
+					mpStateMachine.ChangeState(eKateState_Wander);
+				}
+				
+				mpStateMachine.AddTimer(0, 0.1f);
+			}
+			/////////////////////////////////
+			// Start Wander or chase entities
+			else if(alId == 1)
+			{
+				
+				if (mvChaseEntities.length() > 0 && cMath_RandRectl(0, 1) == 0)
+					ChaseEntities();
+				else
+					mpStateMachine.ChangeState(eKateState_Wander);
+			}
+			
+			else if(alId == 2)
+			{
+				if (mbSoundsDisabled==false)
+					mBaseObj.PlaySound("TalkingKate", gsTalkingSound, true, true);
+				mpStateMachine.AddTimer(2, cMath_RandRectf(gfMinTalkDelay, gfMaxTalkDelay));
+			}
+		}
+		
+		//----------------------------------------------
+		
+		void State_CloseToPlayer_Update(float afTimeStep)
+		{
+			cVector3f vCamPos = mBaseObj.GetPlayerHeadPos();
+			float fDist =cMath_Vector3Dist(mBaseObj.GetPosition(), vCamPos);
+				
+			////////////////////////////
+			// Look at player
+			mpMover.TurnToPos(vCamPos);
+			
+			////////////////////////////
+			// Keep distance
+			if(fDist < 3.75f || fDist > 4.25f)
+			{
+				float fDistDiff = fDist - 4.0f;
+				mBaseObj.GetCharBody().Move(eCharDir_Forward, fDistDiff);
+			}
+			
+			////////////////////////////
+			// Move up/down
+			float fGroundDist = mBaseObj.GetDistanceToGround(2.5f, false);
+			
+			float fGoalHeight = fGroundDist<2 ? 
+									mBaseObj.GetCharBody().GetPosition().y + (2.5-fGroundDist) :
+									vCamPos.y + 0.3f;
+			float fGoalDiff = fGoalHeight - mBaseObj.GetPosition().y;
+			
+			float fAmount = fGoalDiff*10 + mBaseObj.GetCharBody().GetVelocity(afTimeStep).y*-20;
+			mBaseObj.GetCharBody().AddForce(cVector3f(0,1,0) * fAmount);
+		}
+	
+		//----------------------------------------------
+		
+		///////////////////////////////////
+		// STATE: Wander
+		///////////////////////////////////
+	
+		//----------------------------------------------
+		
+		void State_Wander_Enter()
+		{
+			// Check if player is too far away
+			mpStateMachine.AddTimer(0, cMath_RandRectf(1, 2));
+			
+			mpStateMachine.AddTimer(3, cMath_RandRectf(gfMinTalkDelay, gfMaxTalkDelay));
+			
+			//Go some place
+			GoOffAndWander();
+		}
+		
+		void State_Wander_Leave()
+		{
+			mpPathfinder.Stop();
+		}
+		
+		//----------------------------------------------
+	
+		bool State_Wander_Message(int alMessageId)
+		{
+			if(alMessageId == eLuxEntityMessage_EndOfPath)
+			{
+				SelectWanderAction();
+			}
+			return true;
+		}
+		
+		//----------------------------------------------
+		
+		void State_Wander_TimerUp(uint64 alId) 
+		{
+			/////////////////////////////////
+			// Check if within distance
+			if(alId == 0)
+			{
+				if (mBaseObj.GetDistanceToPlayer() > 9.0f)
+					mpStateMachine.ChangeState(eKateState_CloseToPlayer);
+				else
+					mpStateMachine.AddTimer(0, cMath_RandRectf(1, 2));
+			}
+			/////////////////////////////////
+			// Wait at wander goal is over
+			else if(alId == 1)
+			{
+				SelectWanderAction();
+			}
+			/////////////////////////////////
+			// Wait at wander goal is over
+			else if(alId == 2)
+			{
+				GoOffAndWander();
+			}
+			
+			else if(alId == 3)
+			{
+				if (mbSoundsDisabled==false)
+					mBaseObj.PlaySound("TalkingKate", gsTalkingSound, true, true);
+				mpStateMachine.AddTimer(3, cMath_RandRectf(gfMinTalkDelay, gfMaxTalkDelay));
+			}
+		}
+		
+		//----------------------------------------------
+		
+		void SelectWanderAction()
+		{
+			int lRand = cMath_RandRectl(0, 7);
+			
+			//Go back to looking at player
+			if(lRand<=1)
+				mpStateMachine.ChangeState(eKateState_CloseToPlayer);
+			// Chase fishes
+			if(lRand<=2 && mvChaseEntities.length() > 0)
+				ChaseEntities();
+			// Rest a bit
+			else if(lRand <= 4)
+				mpStateMachine.AddTimer(2, cMath_RandRectf(1, 4));
+			else
+				GoOffAndWander();
+		}
+		
+		//----------------------------------------------
+	
+		void GoOffAndWander()
+		{
+			//////////////////////////////
+			//Speed state
+			if(mBaseObj.GetEntityIsInPlayerFOV()==false)
+				mpMover.SetSpeedState(eKateSpeed_WanderTalking);
+			else
+				mpMover.SetSpeedState(eKateSpeed_Wander);
+			
+			//////////////////////////////
+			// Wander location
+			cVector3f vCamPos = cLux_GetPlayer().GetCamera().GetPosition();
+			cVector3f vCamFwd = cLux_GetPlayer().GetCamera().GetForward();
+			
+			cVector3f vCenter = vCamPos + vCamFwd * 5;
+			
+			float fRadius = cMath_RandRectf(0, 3);
+			float fAngle = cMath_RandRectf(0, cMath_PiMul2);
+			cVector3f vPos = vCenter + cMath_MatrixMul(cMath_MatrixRotateY(fAngle), cVector3f(0,0,1)) *  fRadius;
+			vPos.y += cMath_RandRectf(0.5, 1);
+			
+			//////////////////////////////
+			//Move
+			mpPathfinder.MoveTo(vPos, 1.0f, false);
+			
+			mpStateMachine.StopTimer(1);
+			mpStateMachine.AddTimer(1, cMath_RandRectf(4, 8));
+		}
+		
+		//----------------------------------------------
+		
+		///////////////////////////////////
+		// STATE: Investigate
+		///////////////////////////////////
+		
+		//----------------------------------------------
+		
+		tString msInvestigateEntity;
+		tString msInvestigatePathNode;
+		tString msInvestigateCallback;
+		float mfTimeToLeave;
+		bool mbInvestigateAtGoal;
+		bool mbLookWithFlashlight = true;
+		
+		//----------------------------------------------
+		
+		void State_Investigate_Enter()
+		{
+			mpMover.SetSpeedState(eKateSpeed_Investigate);
+			
+			mpPathfinder.MoveToNode(msInvestigatePathNode, 1.0f, true, "State_Investigate_Enter_MoveToNode");
+			
+			mbInvestigateAtGoal = false;
+		}
+		
+		//----------------------------------------------
+		
+		void State_Investigate_Enter_MoveToNode(bool abSuccessful)
+		{
+			if (!abSuccessful)
+				mpStateMachine.ChangeState(eKateState_FollowPlayer);
+		}
+		
+		//----------------------------------------------
+	
+		bool State_Investigate_Message(int alMessageId)
+		{
+			///////////////////////////
+			// End of Path
+			if(alMessageId == eLuxEntityMessage_EndOfPath)
+			{
+				/////////////////////////
+				// Check if the end was found
+				if(mpStateMachine.GetCurrentMessageData().mlX==0)
+				{
+					mpStateMachine.ChangeState(eKateState_FollowPlayer);
+					return true;
+				}
+
+				/////////////////////////
+				// Look At the Entity
+				mpMover.SetSpeedState(eKateSpeed_InvestigateStill);
+				
+				InvestigateLookAtEntity(0);
+				
+				mpStateMachine.AddTimer(2, cMath_RandRectf(1, 2));
+				
+				/////////////////////////
+				// Callback
+				if(msInvestigateCallback != "")
+				{
+					cLuxMap @pMap = mBaseObj.GetMap();
+					
+					pMap.ScriptPrepare("void "+msInvestigateCallback+"(const tString&in asEntity)");
+					{
+						tString sName = mBaseObj.GetName();
+						pMap.SetArgString(0, sName);
+						pMap.ScriptExecute();
+					}
+					
+				}
+				
+				if (mfTimeToLeave >= 0)
+					mpStateMachine.AddTimer(1, mfTimeToLeave);
+			}
+			
+			return true;
+		}
+		
+		//----------------------------------------------
+
+		void State_Investigate_TimerUp(uint64 alId) 
+		{
+			/////////////////////////////////
+			// Waiting is up
+			if(alId == 1)
+			{
+				mpStateMachine.ChangeState(eKateState_CloseToPlayer);
+			}
+			/////////////////////////////////
+			// Look at movement
+			else if(alId == 2)
+			{
+				InvestigateLookAtEntity(1.0f);
+					
+				mpStateMachine.AddTimer(2, cMath_RandRectf(1, 2));
+			}
+		}
+		
+		//----------------------------------------------
+
+		void InvestigateLookAtEntity(float afAngleRandomOffset)
+		{
+			iLuxEntity @pEntity = mBaseObj.GetMap().GetEntityByName(msInvestigateEntity);
+				
+			cVector3f vAngles = cMath_GetAngleFromPoints3D(mBaseObj.GetPosition(), pEntity.GetPosition());
+			vAngles.x += cMath_RandRectf(-afAngleRandomOffset, afAngleRandomOffset);
+			vAngles.y += cMath_RandRectf(-afAngleRandomOffset, afAngleRandomOffset);
+			
+			if (mbLookWithFlashlight) vAngles.x += cMath_ToRad(45); //+45 to make sure the flash light points at it. 
+			
+			mpMover.TurnToAngles(vAngles.y, vAngles.x); 
+		}
+		
+		//----------------------------------------------
+		
+		///////////////////////////////////
+		// STATE: Investigate Multiple
+		///////////////////////////////////
+		
+		//----------------------------------------------
+		
+		array<tString> mvInvestigateEntities;
+		array<tString> mvInvestigatePathNodes;
+		int mlCurrentMultiInvestigateTarget;
+		
+		//----------------------------------------------
+		
+		void State_InvestigateMultiple_Enter()
+		{
+			if (mvInvestigatePathNodes.length() == 0)
+			{
+				Error("KateBot tried to enter Investigate Multiple state without any investigation targets!");
+				mpStateMachine.ChangeState(eKateState_FollowPlayer);
+				return;
+			}
+			else if (mvInvestigatePathNodes.length() != mvInvestigateEntities.length())
+			{
+				Error("The number of path nodes and entities differ in the KateBot's Investigate Multiple state!");
+				mpStateMachine.ChangeState(eKateState_FollowPlayer);
+				return;
+			}
+			
+			mpMover.SetSpeedState(eKateSpeed_Investigate);
+			
+			mlCurrentMultiInvestigateTarget = cMath_RandRectl(0, mvInvestigateEntities.length()-1);
+			mpPathfinder.MoveToNode(mvInvestigatePathNodes[mlCurrentMultiInvestigateTarget], 1.0f, true);
+		}
+		
+		//----------------------------------------------
+		
+		void State_InvestigateMultiple_Leave()
+		{
+			mvInvestigatePathNodes.resize(0);
+			mvInvestigateEntities.resize(0);
+		}
+		
+		//----------------------------------------------
+	
+		bool State_InvestigateMultiple_Message(int alMessageId)
+		{
+			///////////////////////////
+			// End of Path
+			if(alMessageId == eLuxEntityMessage_EndOfPath)
+			{
+				/////////////////////////
+				// Check if the end was found
+				if(mpStateMachine.GetCurrentMessageData().mlX==0)
+				{
+					mlCurrentMultiInvestigateTarget = cMath_RandRectl(0, mvInvestigateEntities.length()-1);
+					mpPathfinder.MoveToNode(mvInvestigatePathNodes[mlCurrentMultiInvestigateTarget], 1.0f, true);
+					return true;
+				}
+
+				/////////////////////////
+				// Look At the Entity
+				mpMover.SetSpeedState(eKateSpeed_InvestigateStill);
+				
+				InvestigateLookAtEntity(mvInvestigateEntities[mlCurrentMultiInvestigateTarget], 0);
+				
+				mpStateMachine.AddTimer(2, cMath_RandRectf(1, 2));
+								
+				mpStateMachine.AddTimer(1, 4);
+			}
+			
+			return true;
+		}
+		
+		//----------------------------------------------
+
+		void State_InvestigateMultiple_TimerUp(uint64 alId) 
+		{
+			/////////////////////////////////
+			// Waiting is up
+			if(alId == 1)
+			{
+				mlCurrentMultiInvestigateTarget = cMath_RandRectl(0, mvInvestigateEntities.length()-1);
+				mpPathfinder.MoveToNode(mvInvestigatePathNodes[mlCurrentMultiInvestigateTarget], 1.0f, true);
+			}
+			/////////////////////////////////
+			// Look at movement
+			else if(alId == 2)
+			{
+				InvestigateLookAtEntity(mvInvestigateEntities[mlCurrentMultiInvestigateTarget], 1.0f);
+					
+				mpStateMachine.AddTimer(2, cMath_RandRectf(1, 2));
+			}
+		}
+		
+		//----------------------------------------------
+
+		void InvestigateLookAtEntity(const tString &in asEntity, float afAngleRandomOffset)
+		{
+			iLuxEntity @pEntity = mBaseObj.GetMap().GetEntityByName(asEntity);
+				
+			cVector3f vAngles = cMath_GetAngleFromPoints3D(mBaseObj.GetPosition(), pEntity.GetPosition());
+			vAngles.x += cMath_RandRectf(-afAngleRandomOffset, afAngleRandomOffset);
+			vAngles.y += cMath_RandRectf(-afAngleRandomOffset, afAngleRandomOffset);
+			
+			mpMover.TurnToAngles(vAngles.y, vAngles.x + cMath_ToRad(45)); //+45 to make sure the flash light points at it. 
+		}
+		
+		//----------------------------------------------
+		
+		///////////////////////////////////
+		// STATE: Chase Entity
+		///////////////////////////////////
+		
+		//----------------------------------------------
+		
+		array<tID> mvChaseEntities;
+		tID mChaseEntityID = tID_Invalid;
+		bool mbForcedChase = false;
+		
+		//----------------------------------------------
+		
+		void ChaseEntities()
+		{
+			if (mvChaseEntities.length() > 0)
+				mChaseEntityID = mvChaseEntities[cMath_RandRectl(0, mvChaseEntities.length()-1)];
+			else 
+				mChaseEntityID = tID_Invalid;
+				
+			mpStateMachine.ChangeState(eKateState_ChaseEntities);
+		}
+		
+		//----------------------------------------------
+		
+		void State_ChaseEntities_Enter()
+		{
+			if (mChaseEntityID == tID_Invalid)
+			{
+				mpStateMachine.ChangeState(eKateState_FollowPlayer);
+				return;
+			}
+			
+			mpStateMachine.AddTimer(0, 0.25f);
+			mpStateMachine.AddTimer(1, 3.f);
+			mpStateMachine.AddTimer(2, 2.f);
+			
+			mpMover.SetSpeedState(eKateSpeed_FollowPlayer);
+			
+			if (mbSoundsDisabled==false)
+				mBaseObj.PlaySound("PlayfulKate", gsPlayfulSound, true, true);
+			
+			mpPathfinder.MoveTo(cLux_ID_Entity(mChaseEntityID).GetPosition(), 0, true);
+		}
+		
+		//----------------------------------------------
+		
+		void State_ChaseEntities_Leave()
+		{
+			mbForcedChase = false;
+		}
+		
+		//----------------------------------------------
+			
+		void State_ChaseEntities_Update(float afTimeStep) 
+		{		
+			float fDist = cMath_Vector3Dist(mBaseObj.GetPosition(), cLux_ID_Entity(mChaseEntityID).GetPosition());
+			
+			//////////////////////////////////////////
+			// Stop
+			if (fDist < 1.5f)
+			{
+				mpPathfinder.Stop();
+				mpMover.TurnToPos(cLux_ID_Entity(mChaseEntityID).GetPosition());
+			}
+			
+			//////////////////////////////////////////
+			// Slow down
+			else if(fDist < 8)
+			{				
+				float fWantedSpeed = gfChaseEntitiesSpeed*0.25f + gfChaseEntitiesSpeed * 0.75f * ((fDist-3.5f) / 4.5f);
+				mBaseObj.GetCharBody().SetMaxPositiveMoveSpeed(eCharDir_Forward, fWantedSpeed);
+			}
+			else
+			{
+				mBaseObj.GetCharBody().SetMaxPositiveMoveSpeed(eCharDir_Forward,gfChaseEntitiesSpeed);
+			}
+		}
+		
+		//----------------------------------------------
+		
+		void State_ChaseEntities_TimerUp(uint64 alId) 
+		{
+			if (alId == 0)
+			{
+				mpPathfinder.MoveTo(cLux_ID_Entity(mChaseEntityID).GetPosition(), 0, true);
+				mpStateMachine.AddTimer(0, 0.25f);
+			}
+			if (alId == 1)
+			{
+				mpStateMachine.AddTimer(1, 3.f);
+				if (mbForcedChase) return;
+				
+				// Do something else for a bit?
+				int lNewBehavior = cMath_RandRectl(0, 5);
+				if (lNewBehavior==0)
+				{
+					mChaseEntityID = mvChaseEntities[cMath_RandRectl(0, mvChaseEntities.length()-1)];
+				}
+				else if (lNewBehavior==1)
+				{
+					mpStateMachine.ChangeState(eKateState_Wander);
+				}
+			}
+			if (alId == 2)
+			{						
+				//////////////////////////////////
+				// If far away, start following
+				if (!mbForcedChase && mBaseObj.GetDistanceToPlayer2D() > 10.0f)
+				{
+					mpStateMachine.ChangeState(eKateState_FollowPlayer);
+				}
+				
+				//////////////////////////////////
+				//If out if view, start to wander
+				else if(!mbForcedChase && mBaseObj.GetEntityIsInPlayerFOV()==false)
+				{
+					mpStateMachine.ChangeState(eKateState_Wander);
+				}
+				else
+				{
+					mpStateMachine.AddTimer(2, 2.f);
+				}
+			}
+		}
+		
+		//----------------------------------------------
+	
+		///////////////////////////////////
+		// STATE: Look At
+		///////////////////////////////////
+		
+		//----------------------------------------------
+		
+		cVector3f mvLookAtTarget;
+		
+		//----------------------------------------------
+		
+		void State_LookAt_Update(float afTimeStep)
+		{		
+			if (mpPathfinder.IsMoving()) return;
+			
+			if (mbLookWithFlashlight==false)
+			{
+				mpMover.TurnToPos(mvLookAtTarget);
+			}
+			else
+			{
+				cVector3f vAngles = cMath_GetAngleFromPoints3D(mBaseObj.GetPosition(), mvLookAtTarget);
+				vAngles.x += cMath_ToRad(45); //+45 to make sure the flash light points at it. 
+				
+				mpMover.TurnToAngles(vAngles.y, vAngles.x); 
+			}
+		}
+		
+		//----------------------------------------------
+		
+		///////////////////////////////////
+		// STATE: Flee from Player
+		///////////////////////////////////
+		
+		//----------------------------------------------
+		
+		float mfFleeFromPlayerDist = -1;
+		float mfMaxDistFromHome = -1;
+		cVector3f mvFleeHomePos;
+		eKateSpeed mCurrentFleeSpeed = eKateSpeed_FleeNormal;
+		
+		//----------------------------------------------
+		
+		void State_FleeFromPlayer_Enter()
+		{
+			mfScaredTimer = 1;
+					
+			mpMover.SetSpeedState(eKateSpeed_FleeSprint); // Temporarily increase speed
+			
+			//MoveToNewFleeNode();
+			
+			mpStateMachine.AddTimer(0, 0.5); // update where to go
+			mpStateMachine.AddTimer(1, 0.3); // check if far enough from player
+			mpStateMachine.AddTimer(2, 2.5); // reduce speed
+		}
+		
+		//----------------------------------------------
+
+		int mlStuckCount = 0;
+		void State_FleeFromPlayer_TimerUp(uint64 alId) 
+		{
+			if(alId == 0)
+			{	
+				/////////////////////////////////
+				// Move towards "home"
+				if (mBaseObj.GetDistanceToPos2D(mvFleeHomePos) >= mfMaxDistFromHome)
+				{
+					cAINode@ pFleeNode = mpPathfinder.GetNodeAtPos(mvFleeHomePos, mfMaxDistFromHome*0.5f, mfMaxDistFromHome*0.9f, false, false, true, null);
+					if (pFleeNode !is null)
+					{
+						mlStuckCount = 0;
+						mpMover.SetDirection(eLuxCharMoveDirection_Forward);
+						
+						cLux_AddDebugMessage("GetDistanceToPos2D "+mBaseObj.GetDistanceToPos2D(mvFleeHomePos));
+						mpPathfinder.MoveTo(pFleeNode.GetPosition(), 0, false);
+			
+						mpStateMachine.AddTimer(0, 2);
+					}
+					else
+					{
+						mlStuckCount++;
+						if (mlStuckCount>2)
+						{
+							mpMover.SetDirection(eLuxCharMoveDirection_Backward);
+							mpPathfinder.MoveTo(mBaseObj.GetPosition()-mBaseObj.GetCharBody().GetForward()*2, 0, false);
+						}
+						mpStateMachine.AddTimer(0, 0.5);
+					}
+				}
+				/////////////////////////////////
+				// Escape to next node
+				else
+				{
+					MoveToNewFleeNode();
+					mpStateMachine.AddTimer(0, 1);
+				}
+			}
+			else if (alId == 1)
+			{
+				/////////////////////////////////
+				// Scared of player
+				if (mBaseObj.GetDistanceToPlayer2D() >= mfFleeFromPlayerDist*1.2 && 
+					mBaseObj.GetDistanceToPos2D(mvFleeHomePos) < mfMaxDistFromHome)
+				{
+					mpStateMachine.ChangeState(eKateState_ScaredOfPlayer);
+				}
+				mpStateMachine.AddTimer(1, 0.3);
+			}
+			else if (alId == 2)
+			{
+				mpMover.SetSpeedState(mCurrentFleeSpeed);
+			}
+		}
+		
+		//------------------------------------------------------------
+		
+		void MoveToNewFleeNode()
+		{			
+			cVector3f vDirFromPlayer = mBaseObj.GetPosition() - mBaseObj.GetPlayerPos();
+			vDirFromPlayer.y = 0;
+			vDirFromPlayer.Normalize();
+			
+			///////////////////////////////////////////////////
+			// Find best node to flee to
+			cAINode@ pFleeNode = null;
+			for (int i = 0; i < 4 && pFleeNode is null; i++)
+			{
+				cVector3f vDir;
+				if (i == 0) 	 vDir = vDirFromPlayer;
+				else if (i == 1) vDir = cMath_Vector3Cross(vDirFromPlayer, cVector3f_Up);
+				else if (i == 2) vDir = cMath_Vector3Cross(cVector3f_Up, vDirFromPlayer);
+				else 			 vDir = vDirFromPlayer*-1;
+				
+				@pFleeNode = mpPathfinder.GetNodeAtPos(cLux_GetPlayer().GetCharacterBody().GetPosition() + vDir*mfFleeFromPlayerDist*2, 0, 5, true, false, true, null);
+			}
+			
+			if (pFleeNode !is null)
+				mpPathfinder.MoveTo(pFleeNode.GetPosition(), 0, false);
+		}
+		
+		//----------------------------------------------
+		
+		///////////////////////////////////
+		// STATE: Scared of player
+		///////////////////////////////////
+		
+		//----------------------------------------------
+		
+		void State_ScaredOfPlayer_Enter()
+		{
+			mpPathfinder.Stop();
+			mpMover.SetSpeedState(mCurrentFleeSpeed);
+			
+			mpStateMachine.AddTimer(0, 0.3);
+		}
+		
+		//----------------------------------------------
+		
+		void State_ScaredOfPlayer_Update(float afTimeStep)
+		{		
+			if (mpPathfinder.IsMoving()) return;
+			
+			mpMover.TurnToPos(cLux_GetPlayer().GetCharacterBody().GetPosition());
+		}
+		
+		//----------------------------------------------
+
+		void State_ScaredOfPlayer_TimerUp(uint64 alId) 
+		{
+			if(alId == 0)
+			{	
+				/////////////////////////////////
+				// Move towards "home"
+				if (mBaseObj.GetDistanceToPos2D(mvFleeHomePos) >= mfMaxDistFromHome)
+				{
+					cAINode@ pFleeNode = mpPathfinder.GetNodeAtPos(mvFleeHomePos, 0, mfMaxDistFromHome*0.5f, false, false, true, null);
+					if (pFleeNode !is null)
+						mpPathfinder.MoveTo(pFleeNode.GetPosition(), 0, false);
+					mpStateMachine.AddTimer(0, 3);
+				}
+				/////////////////////////////////
+				// Flee
+				else if (mBaseObj.GetDistanceToPlayer2D() < mfFleeFromPlayerDist)
+				{
+					if (mbSoundsDisabled==false)
+						mBaseObj.PlaySound("ScaredKate", gsScaredSound, true, true);
+					mpStateMachine.ChangeState(eKateState_FleeFromPlayer);
+				}
+				else
+				{
+					mpStateMachine.AddTimer(0, 0.3);
+				}
+			}
+		}
+		
+		//----------------------------------------------
+		
+		///////////////////////////////////
+		// STATE: Crash
+		///////////////////////////////////
+		
+		//----------------------------------------------
+		
+		cVector3f mvCrashPos;
+		cVector3f mvCrashMove_PrevPos;
+		
+		//----------------------------------------------
+		
+		void State_Crash_Enter()
+		{
+			mpPathfinder.MoveTo(mvCrashPos, 2, true); //Needs to update every once in a while in case it gets stuck
+			mpMover.SetSpeedState(eKateSpeed_Crash);
+			
+			mpStateMachine.AddTimer(0, 2); // check so progress is being made
+			mpStateMachine.AddTimer(1, 20); // extra failsafe
+			
+			mvCrashMove_PrevPos = mBaseObj.GetCharBody().GetPosition();
+		}
+		
+		//----------------------------------------------
+
+		void State_Crash_TimerUp(uint64 alId) 
+		{
+			iCharacterBody@ body = mBaseObj.GetCharBody();
+			if (alId == 0)
+			{
+				cVector3f vCurrPos = mBaseObj.GetCharBody().GetPosition();
+				float fMoveDist = cMath_Vector3Dist(mvCrashMove_PrevPos, vCurrPos);
+				mvCrashMove_PrevPos = vCurrPos;
+				
+				if (fMoveDist < 1)
+				{
+					cLux_AddDebugMessage("Kate is STUCK!");
+					body.SetTestCollision(false);
+					
+					// NOT SAVED, but will repeat check often enough that it shouldn't matter
+					body.SetCollideFlags(cLux_GetCurrentMap().GetCollideFlag("-player"));
+					
+					mpPathfinder.MoveTo(mvCrashPos, 2, true);
+				}
+				
+				mpStateMachine.AddTimer(0, 2);
+			}
+			else if (alId == 1)
+			{
+				mpStateMachine.StopTimer(0);
+				body.SetPosition(mvCrashPos, true);
+			}
+		}
+		
+		//----------------------------------------------
+		
+		///////////////////////////////////
+		// STATE: Weld
+		///////////////////////////////////
+		
+		//----------------------------------------------
+		
+		tString msWeldFlare = "";
+		tString msWeldExitNode = "";
+		tString msWeldCallback = "";
+		float mfWeldSpeedMul = 1.0f;
+		
+		int mlWeldTargetIndex = 0;
+		float mfWeldTargetT = 0;
+		array<tID> mvWeldTargets;
+		bool mbWeldingDone = false;
+		cVector3f mvStartPos;
+		
+		//----------------------------------------------
+		
+		void State_Weld_Enter()
+		{
+			Entity_SetActive(msWeldFlare, true);
+			Entity_SetEffectsActive(msWeldFlare, true, true);
+			ParticleSystem_CreateAtEntityExt("KateWelding_PS", "welding_flare.ps", msWeldFlare, true, cColor(1,0.885,0.613,1), 30);
+			//LensFlare_SetVisible(msWeldFlare+"_LensFlare_*", false);
+			Entity_AttachToSocket(msWeldFlare, mBaseObj.GetName(), "FlareSocket", true, true);
+			
+			mBaseObj.SetStaticCollider(true);
+			mpMover.SetUseMoveStateAnimations(false);
+			mBaseObj.PlayAnimation("welding", 0.1, true);
+			
+			Sound_CreateAtEntity("KateWelding", "NPC_Kate/tool/torch", msWeldFlare, 0.0, true);
+						
+			mfWeldTargetT = 0;
+			mlWeldTargetIndex = 0;
+			mbWeldingDone = false;
+			mvStartPos = mBaseObj.GetPosition();
+		}
+		
+		//----------------------------------------------
+		
+		void State_Weld_Leave()
+		{
+			if (mbWeldingDone==false)
+			{
+				mBaseObj.SetStaticCollider(false);
+				mBaseObj.GetCharBody().SetGravityActive(false);
+				Entity_RemoveEntityAttachment(msWeldFlare);
+				mBaseObj.GetMeshEntity().Stop();
+				mpMover.SetUseMoveStateAnimations(true);
+			}
+			mpMover.SetDirection(eLuxCharMoveDirection_Forward);
+			mpMover.TurnToPos(cLux_GetPlayer().GetCamera().GetPosition());
+			Entity_SetActive(msWeldFlare, false);
+			
+			if (ParticleSystem_Exists("KateWelding_PS")) ParticleSystem_Destroy("KateWelding_PS");
+			if (Sound_Exists("KateWelding")) Sound_Stop("KateWelding", 0.1);
+		}		
+		
+		//----------------------------------------------
+		
+		void State_Weld_Update(float afTimeStep) 
+		{
+			if (mbWeldingDone) return;
+			
+			/////////////////
+			// Finished
+			if (mfWeldTargetT >= 1.0f)
+			{				
+				mBaseObj.SetStaticCollider(false);
+				mBaseObj.GetCharBody().SetGravityActive(false);
+				Entity_RemoveEntityAttachment(msWeldFlare);
+				mpMover.SetDirection(eLuxCharMoveDirection_Backward);
+				mpPathfinder.MoveToNode(msWeldExitNode, 0.5, true);
+
+				Sound_Stop("KateWelding", 0);
+				Entity_SetEffectsActive(msWeldFlare, false, true);
+				if (ParticleSystem_Exists("KateWelding_PS")) ParticleSystem_Destroy("KateWelding_PS");
+				//LensFlare_SetVisible(msWeldFlare+"_LensFlare_*", false);
+				
+				mBaseObj.GetMeshEntity().Stop();
+				mpMover.SetUseMoveStateAnimations(true);
+				
+				mbWeldingDone = true;
+				mpStateMachine.AddTimer(0, 0.5);
+				mpStateMachine.AddTimer(1, 6);
+				
+				cLux_AddDebugMessage("Welding done");
+				DoWeldCallback(0);
+			}
+			
+			iLuxEntity@ pNextTarget = cLux_ID_Entity(mvWeldTargets[mlWeldTargetIndex]);
+			
+			////////////////
+			// Update T
+			mfWeldTargetT += afTimeStep*mfWeldSpeedMul;
+			if (mfWeldTargetT >= 1.0f)
+			{
+				if (mlWeldTargetIndex >= mvWeldTargets.length()-1)
+				{
+					mfWeldTargetT=1.0f;
+				}
+				else
+				{
+					mlWeldTargetIndex++;
+					mfWeldTargetT-=1.0f;
+				}
+			}
+			
+			cVector3f vBodyOffset = mBaseObj.GetCharBody().GetForward()*-0.75+mBaseObj.GetCharBody().GetUp()*0.375;
+			
+			////////////////
+			// Movement
+			cVector3f vPos0;
+			cVector3f vPrevTargetPos;
+			cVector3f vTarget;
+			cVector3f vPos3;
+			if (mlWeldTargetIndex==0)
+			{
+				cVector3f vAngles = cMath_GetAngleFromPoints3D(mBaseObj.GetPosition(), pNextTarget.GetPosition());
+				mpMover.TurnToAngles(vAngles.y, 0);
+				
+				vPrevTargetPos = mvStartPos-vBodyOffset;
+				vTarget = pNextTarget.GetPosition();
+				vPos0 = vPrevTargetPos + (vPrevTargetPos - vTarget);
+			}
+			else
+			{
+				iLuxEntity@ pPrevTarget = cLux_ID_Entity(mvWeldTargets[mlWeldTargetIndex-1]);
+				vPrevTargetPos = pPrevTarget.GetPosition();
+				vTarget = pNextTarget.GetPosition();
+			}
+			
+			iLuxEntity@ pPos0 = mlWeldTargetIndex < 2 ? null : cLux_ID_Entity(mvWeldTargets[mlWeldTargetIndex-2]);
+			iLuxEntity@ pPos3 = mlWeldTargetIndex >= mvWeldTargets.length()-1 ? null : cLux_ID_Entity(mvWeldTargets[mlWeldTargetIndex+1]);
+			vPos0 = pPos0 == null ? (vPrevTargetPos + (vPrevTargetPos - vTarget)) : pPos0.GetPosition();
+			vPos3 = pPos3 == null ? (vTarget + (vTarget - vPrevTargetPos)) : pPos3.GetPosition();
+				
+			cVector3f vFinalPos = cMath_Vector3CatmullRom(vPos0, vPrevTargetPos, vTarget, vPos3, mfWeldTargetT);
+			mBaseObj.SetPosition(vFinalPos+vBodyOffset);
+		}
+		
+		void State_Weld_TimerUp(uint64 alId) 
+		{
+			if (alId == 0)
+			{
+				if (mpPathfinder.IsMoving())
+				{
+					mpStateMachine.AddTimer(0, 0.5);
+				}
+				else
+				{
+					mpStateMachine.ChangeState(mpStateMachine.GetPrevState());
+					cLux_AddDebugMessage("State_Weld_TimerUp");
+					DoWeldCallback(1);
+				}
+			}
+			if (alId == 1)
+			{
+				mpStateMachine.ChangeState(mpStateMachine.GetPrevState());
+				DoWeldCallback(1);
+			}
+		}
+		
+		void DoWeldCallback(int alArg)
+		{
+			if (msWeldCallback != "" && cLux_GetCurrentMap().ScriptPrepare("void " + msWeldCallback + "(int alState)" ) )
+			{
+				cLux_GetCurrentMap().SetArgInt(0, alArg);	
+				cLux_GetCurrentMap().ScriptExecute();
+			}
+		}
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnSetActive(bool abX)
+	{
+		cScrAgentSwimBot::OnSetActive(abX);
+	}
+	
+	//------------------------------------------------------------
+	
+	void GiveDamage(float afAmount, int alStrength, const tString&in asType, const tString&in asSource)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnHealthChange()
+	{
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL
+	/////////////////////////////////////////
+	
+	void _Global_Investigate()
+	{
+		msInvestigatePathNode = cScript_GetGlobalArgString(0);
+		msInvestigateEntity = cScript_GetGlobalArgString(1);
+		msInvestigateCallback = cScript_GetGlobalArgString(2);
+		mfTimeToLeave = cScript_GetGlobalArgFloat(3);
+		mbLookWithFlashlight = cScript_GetGlobalArgBool(4);
+		
+		if (mpStateMachine.GetCurrentState() != eKateState_Investigate)
+		{
+			mpStateMachine.ChangeState(eKateState_Investigate);
+		}
+		else
+		{
+			State_Investigate_Enter();
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_AddInvestigateTarget()
+	{		
+		tString sNode = cScript_GetGlobalArgString(0);
+		tString sEntity = cScript_GetGlobalArgString(1);
+		mvInvestigatePathNodes.push_back(sNode);
+		mvInvestigateEntities.push_back(sEntity);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_InvestigateMultiple()
+	{		
+		mpStateMachine.ChangeState(eKateState_InvestigateMultiple);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_LookAt()
+	{
+		mpStateMachine.ChangeState(eKateState_LookAt);
+		mvLookAtTarget = cScript_GetGlobalArgVector3f(0);
+		mbLookWithFlashlight = cScript_GetGlobalArgBool(1);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_FollowPlayer()
+	{
+		mpStateMachine.ChangeState(eKateState_FollowPlayer);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_AddChaseEntity()
+	{
+		iLuxEntity@ pEntity = Map_GetEntity(cScript_GetGlobalArgString(0));
+		if (pEntity !is null) mvChaseEntities.push_back(pEntity.GetID());
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_RemoveChaseEntity()
+	{
+		iLuxEntity@ pEntity = Map_GetEntity(cScript_GetGlobalArgString(0));
+		if (pEntity !is null)
+		{
+			for (int i = 0; i < mvChaseEntities.length(); i++)
+			{
+				if (mvChaseEntities[i] != pEntity.GetID()) continue;
+				
+				mvChaseEntities.removeAt(i);
+				i--;
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_ChaseEntity()
+	{
+		iLuxEntity@ pEntity = Map_GetEntity(cScript_GetGlobalArgString(0));
+		if (pEntity !is null) mChaseEntityID = pEntity.GetID();
+		else mChaseEntityID = tID_Invalid;
+		
+		if (mChaseEntityID == tID_Invalid)
+		{
+			cLux_AddDebugMessage("What is this entity called "+cScript_GetGlobalArgString(0));
+		}
+		mpStateMachine.ChangeState(eKateState_ChaseEntities);
+		
+		mbForcedChase = true;
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_FleeFromPlayer()
+	{
+		mfFleeFromPlayerDist = cScript_GetGlobalArgFloat(0);
+		tString sFleeHomeNode = cScript_GetGlobalArgString(1);
+		if (Entity_Exists(sFleeHomeNode))
+		{
+			mvFleeHomePos = Map_GetEntity(sFleeHomeNode).GetPosition();
+		}
+		else
+		{
+			Error("Entity " + sFleeHomeNode + " does not exist and cannod be used as Kate's home!");
+			mvFleeHomePos = mBaseObj.GetPosition();
+			return;
+		}
+		mfMaxDistFromHome = cScript_GetGlobalArgFloat(2);
+		mpStateMachine.ChangeState(eKateState_FleeFromPlayer);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SlowDownFleeSpeed()
+	{
+		mCurrentFleeSpeed = eKateSpeed(mCurrentFleeSpeed+1);
+		//mpMover.SetSpeedState(mCurrentFleeSpeed);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetMoveSpeedToFleeForLife()
+	{
+		mpMover.SetSpeedState(eKateSpeed_FleeForLife);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_ReduceHealth()
+	{
+		mfHealth -= cScript_GetGlobalArgFloat(0);
+		
+		/////////////////
+		// Hurt effects
+		mBaseObj.SetEffectBaseColor(cColor_White*mfHealth);
+		
+		cParticleSystem@ pPS = cLux_GetCurrentMap().GetWorld().CreateParticleSystem(mBaseObj.GetName()+"Sparks", "elec_sparks_katebot.ps", cVector3f(1), true, false);
+		mBaseObj.GetAttachEntity().AddChild(pPS);
+		pPS.SetBrightness(7);
+		pPS.SetFadeAtDistance(false);
+		
+		mBaseObj.PlayAnimation("hurt", 0.2, false, true);
+		
+		////////////////////////////////////////////////////////////
+		// If fleeing from player, make sure speed is increased
+		if (mpStateMachine.GetCurrentState() == eKateState_FleeFromPlayer)
+		{
+			mpStateMachine.StopTimer(2);
+			mpStateMachine.AddTimer(2, 3.5);
+			mpMover.SetSpeedState(eKateSpeed_FleeSprint);
+		}
+		
+		mpMover.SetIdleAnimName("idle_hurt");
+		mpMover.SetWalkAnimName("move_hurt");
+		mpMover.SetRunAnimName("move_hurt");
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_Scare()
+	{
+		if (mfScaredTimer <= 0 && mbSoundsDisabled==false)
+		{
+			mBaseObj.PlaySound("ScaredKate", gsScaredSound, true, true);
+		}
+		mfScaredTimer = 1;
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_Crash()
+	{
+		tString sCrashEnt = cScript_GetGlobalArgString(0);
+		if (Entity_Exists(sCrashEnt))
+		{
+			mvCrashPos = Map_GetEntity(sCrashEnt).GetPosition();
+		}
+		mpStateMachine.ChangeState(eKateState_Crash);
+		mpPathfinder.SetEndOfPathCallbackFunc(cScript_GetGlobalArgString(1));
+	}
+		
+	//------------------------------------------------------------
+	
+	void _Global_Weld()
+	{
+		msWeldFlare = cScript_GetGlobalArgString(0);
+		
+		/////////////////////////////
+		// Get the target entities
+		tString sTargetPrefix = cScript_GetGlobalArgString(1);
+		mvWeldTargets.resize(0);
+		tID id_ent = Map_GetEntityID(sTargetPrefix+"_1", eLuxEntityType_LastEnum, "");
+		for (int i = 2; id_ent != tID_Invalid; i++)
+		{
+			mvWeldTargets.push_back(id_ent);
+			id_ent = Map_GetEntityID(sTargetPrefix+"_"+i, eLuxEntityType_LastEnum, "");
+		}
+		
+		msWeldExitNode = cScript_GetGlobalArgString(2);
+		msWeldCallback = cScript_GetGlobalArgString(3);
+		mfWeldSpeedMul = cScript_GetGlobalArgFloat(4);
+		
+		mpStateMachine.ChangeState(eKateState_Weld);
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPER
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetSoundsDisabled(bool abState)
+	{
+		cScrAgentSwimBot::SetSoundsDisabled(abState);
+	}
+			
+	//------------------------------------------------------------
+		
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	float mfHealth = 1.f;
+	
+	float mfScaredTimer = 0;
+	float mfScaredEffectToggleTimer = 0;
+	bool mbScaredEffectsActive = true;
+	float mfGazeEffectTimer = 0.0f;
+	float mfGazeEffectDirection = 1.0f;
+	float mfGazeEffectPulseTime = 0.8f;
+	
+	cVector3f mvHurtRot = cVector3f_Zero;
+	
+	//------------------------------------------------------------
+	
+}

@@ -1,0 +1,14 @@
+{{ScriptingStub}}
+
+Have some helpful descriptions to add to this class? Edit this page and add your insight to the Wiki!
+
+==Fields==
+tID has no public fields.
+
+==Functions==
+tID has no public functions
+
+==Details==
+{{ReferencesSection}}
+
+{{HPL3The BunkerScriptingCategories}}

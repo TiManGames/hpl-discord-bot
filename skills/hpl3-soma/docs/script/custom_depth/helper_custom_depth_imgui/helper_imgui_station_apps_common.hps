@@ -1,0 +1,819 @@
+#include "helper_imgui_station_basics.hps"
+#include "helper_font.hps"
+
+//-------------------------------------------------------
+
+/////////////////////////////////////////
+// LOADING DIALOG BOX
+/////////////////////////////////////////
+
+//-------------------------------------------------------
+
+bool StationGui_LoadingWindow(const tString &in asName, const tString &in asCaption, const tString &in asText, float afLoadTime, bool abReset, const cVector2f &in avNrmSize = cVector2f(0.6, 0.2), float afZ=1.5f)
+{		
+	StationGui_DialogBox_Start(asCaption, asText, avNrmSize, afZ);
+		bool bDone = Depth_ImGui_LoadingGauge(asName, afLoadTime, abReset, ImGui_NrmPosGroup(cVector3f(0.1, 0.5, 1)), 
+											  ImGui_NrmSizeGroup(cVector2f(0.8, 0.3)), StationGui_CreateDefaultGaugeData());
+	StationGui_DialogBox_End();
+	
+	return bDone;
+}
+
+//-------------------------------------------------------
+
+/////////////////////////////////////////
+// BIG STATUS MESSAGE
+/////////////////////////////////////////
+
+//-------------------------------------------------------
+
+class cStationGui_BigStatusMessageSettings
+{
+	cStationGui_BigStatusMessageSettings()
+	{
+		mTextFrameData.mFont.SetFile(Helper_Font_GetFontName(eLuxFontType_Sansation_Large));
+		mTextFrameData.mFont.mvSize = ImGui_NrmSizeKeepRatio(0.1);
+		mTextFrameData.mFontAlign = eFontAlign_Center;
+		mTextFrameData.mFont.mColor = cColor_White;
+		mTextFrameData.mColorBase = cColor(0, 0, 0, 0.75);
+		
+		mvEdgeSpacing = cVector2f_Zero;
+		mColor = gStationGuiColor_Warning;
+	}
+	
+	cImGuiTextFrameData mTextFrameData;
+	cVector2f mvEdgeSpacing;
+	cColor mColor;
+	float mfTextSizeMul = 1.0f;
+	bool mbBlinking = false;
+	float mfBlinkTime = 0.5f;
+	eEasing mBlinkEasing = eEasing_Linear;
+	bool mbForceFit = true;
+}
+		 
+void StationGui_BigStatusMessage_Old(const tString&in asText, const cColor &in aColor = gStationGuiColor_Warning, float afTextSizeMul = 1.0f, 
+							  bool abBlinking = false, float afBlinkTime = 0.5, eEasing aBlinkEasing = eEasing_Linear, 
+							  cStationGui_BigStatusMessageSettings &in aSettings = cStationGui_BigStatusMessageSettings())
+{
+	aSettings.mColor = aColor;
+	aSettings.mfTextSizeMul = afTextSizeMul;
+	aSettings.mbBlinking = abBlinking;
+	aSettings.mfBlinkTime = afBlinkTime;
+	aSettings.mBlinkEasing = aBlinkEasing;
+	StationGui_BigStatusMessage(asText, aSettings);
+}
+		 
+void StationGui_BigStatusMessage(const tString&in asText, cStationGui_BigStatusMessageSettings &in aSettings = cStationGui_BigStatusMessageSettings())
+{
+	aSettings.mTextFrameData.mFont.mvSize = aSettings.mTextFrameData.mFont.mvSize*aSettings.mfTextSizeMul;
+	aSettings.mTextFrameData.mFont.mColor = aSettings.mColor;
+	
+	if (aSettings.mbForceFit)
+	{
+		array<tWString> vRows;
+		float fMaxWidth = ImGui_GetCurrentGroupSize().x-(aSettings.mvEdgeSpacing.x*2);
+		GetFontWordWrapRows(aSettings.mTextFrameData.mFont, 1, asText, fMaxWidth, vRows);
+		
+		for(int i = 0; i < vRows.length(); i++)
+			ImGui_ResizeFontToFit(vRows[i], aSettings.mTextFrameData.mFont, fMaxWidth);
+	}
+
+	cVector2f vSize = ImGui_NrmSizeGroup(1);
+	vSize.y = ImGui_GetStateFloat(asText+"_StatusHeight", 0);
+
+	if (aSettings.mbBlinking)
+	{
+		float fBlinkVal = ImGui_FadeOscillateFloat(asText+"_Blinking", 0.5, 1, aSettings.mfBlinkTime, aSettings.mBlinkEasing);
+		aSettings.mTextFrameData.mFont.mColor = aSettings.mTextFrameData.mFont.mColor*fBlinkVal;
+	}
+
+	float fOverflow = ImGui_DoTextFrameExt(asText, aSettings.mvEdgeSpacing, 0, 0, aSettings.mTextFrameData, ImGui_NrmPosGroup(0.0, 0.5, 1)-cVector3f_Up*vSize.y*0.5f, vSize);
+
+	// Hack to make text appear at the center of the screen
+	if (fOverflow > 0)
+	{
+		if (vSize.y > 0)
+			ImGui_SetStateFloat(asText+"_StatusHeight", 0);
+		else
+			ImGui_SetStateFloat(asText+"_StatusHeight", aSettings.mTextFrameData.mFont.mvSize.y*fOverflow);
+	}
+}
+
+
+	
+//-------------------------------------------------------
+
+/////////////////////////////////////////
+// STATION MAIN MENU
+/////////////////////////////////////////
+
+//-------------------------------------------------------
+
+class cStationGui_MainMenuSettings
+{
+	cStationGui_MainMenuSettings()
+	{
+		mButton = StationGui_CreateDefaultButtonData();
+		mButton.mFont.mvSize = ImGui_NrmSizeKeepRatio(cVector2f(0.05, 0.05));
+		
+		mButton.mbUseTriggeredColor = false;
+		mButton.mbClipText = false;
+		mWindow = StationGui_CreateDefaultWindowData();
+		mWindow.mGfxWindowData.mGfxCornerBottomRight.SetFile("station/window/sleek_corner_bottomright_alt");
+	}
+	
+	cImGuiButtonData mButton;
+	cImGuiWindowData mWindow;
+	tString msCustomSound = "";
+	float mfEdgePadding = 0.25f;
+	float mfButtonHeight = 0.11f;
+	bool mbExpandToFitText = true;
+}
+
+//-------------------------------------------------------
+
+enum eStationGuiMainMenu
+{
+	eStationGuiMainMenu_Name = 0,
+	eStationGuiMainMenu_Enabled,
+	eStationGuiMainMenu_ChangeState,
+	eStationGuiMainMenu_App,
+}
+
+//-------------------------------------------------------
+
+/**
+ * Adds an application to the main menu. Call this before StationGui_MainMenu. 
+ * The App List is cleared automatically by StationGui_MainMenu, use StationGui_ClearApps if manual clearing is needed.
+ * 
+ * @param asName, Name of the app and lang entry used to display it in the menu.
+ * @param abEnabled, If the button is enabled, if false it's grayed out and can't be clicked.
+ * @param abChangeState, If clicking the button should automatically change the state of the terminal. If true the first app added will change state to 0, the next one to 1 etc.
+ **/
+array<array<tString>> gvStationGuiApps;
+void StationGui_AddApp(const tString &in asName, bool abEnabled=true, bool abChangeState=true)
+{
+	array<tString> app = {asName, abEnabled, abChangeState, gvStationGuiApps.size()};
+	gvStationGuiApps.push_back(app);
+}
+
+//-------------------------------------------------------
+
+/**
+ * Adds an application to the main menu. Call this before StationGui_MainMenu. 
+ * The App List is cleared automatically by StationGui_MainMenu, use StationGui_ClearApps if manual clearing is needed.
+ * 
+ * @param asName, Name of the app and lang entry used to display it in the menu.
+ * @param abEnabled, If the button is enabled, if false it's grayed out and can't be clicked.
+ * @param alCustomState, If the app should change to a custom state, not the automatically assigned one.
+ **/
+void StationGui_AddApp(const tString &in asName, bool abEnabled, int alCustomState)
+{
+	array<tString> app = {asName, abEnabled, true, alCustomState};
+	gvStationGuiApps.push_back(app);
+}
+
+//-------------------------------------------------------
+
+/**
+ * Clears the list of Apps. Keep in mind that StationGui_MainMenu clears the apps automatically.
+ *  
+ **/
+void StationGui_ClearApps()
+{
+	gvStationGuiApps.resize(0);
+}
+
+//-------------------------------------------------------
+
+/**
+ * Draws a default main menu.
+ *  
+ * @return int, index of button pressed this frame. -1 if no button was pressed.
+ **/
+int StationGui_MainMenu(const cStationGui_MainMenuSettings &in aSettings = cStationGui_MainMenuSettings())
+{
+	///////////////////////
+	// Data		
+	cImGuiLabelData label;
+	label.mFont.mvSize = ImGui_NrmSizeKeepRatio(0.0234375);
+	label.mbUseBackgroundGfx = false;
+	label.mFont.SetFile(Helper_Font_GetFontName(eLuxFontType_Sansation_Large_Additive));
+	
+	cImGuiGfx gfx_menu_ornamentOS("stationV2/background/background_logo_pathOS_small");
+	cImGuiGfx gfx_menu_ornament1("station/chinsymbol/big_default_help");
+	cImGuiGfx gfx_menu_ornament2("station/chinsymbol/big_default_tools");
+	gfx_menu_ornament1.mColor = gStationGuiColor_Normal;
+	gfx_menu_ornament2.mColor = gStationGuiColor_Normal;
+
+	tString sName = "";
+	bool bEnabled = false;
+	bool bChangeState = false;
+	int lApp = -1;
+		
+	int lSelection = -1;
+	int lAppCount = gvStationGuiApps.size();
+	
+	float fWindowWidth = 1.0f-aSettings.mfEdgePadding*2.0f;
+	float fButtonWidthNrm = fWindowWidth-0.06;
+	
+	//////////////////////////////
+	// Check if text fits buttons
+	float fExtraWidth = 0;
+	if (aSettings.mbExpandToFitText)
+	{
+		float fButtonWidth = ImGui_NrmSize(fButtonWidthNrm).x;
+		for (int i=0; i < lAppCount; i++)
+		{		
+			tString sName = gvStationGuiApps[i][eStationGuiMainMenu_Name];
+			float fWidth = GetFontLengthW(aSettings.mButton.mFont, 1, ImGui_Translate(sName));
+			if (fWidth <= (fButtonWidth - 40)) continue;
+			
+			float fPossibleExtraWidth = fWidth-(fButtonWidth - 40);
+			if (fPossibleExtraWidth > fExtraWidth)
+			{
+				fExtraWidth = fPossibleExtraWidth;
+			}
+		} 
+		fWindowWidth += (fExtraWidth/ImGui_GetSize().x);
+		fButtonWidthNrm = fWindowWidth-0.06;
+	}
+	
+	/////////////////////////////////////////////////////////////
+	// Handle focus when going back to Main Menu from other app
+	int lFocusedApp = ImGui_GetStateInt("FocusedApp", -1);
+	if (lFocusedApp >= 0 && lFocusedApp < lAppCount)
+	{
+		if (ImGui_ActionIsDown(eImGuiAction_MouseLeft)==false)
+			ImGui_SetFocus(gvStationGuiApps[lFocusedApp][eStationGuiMainMenu_Name]);
+		
+		ImGui_SetStateInt("FocusedApp", -1);
+	}
+	
+	ImGui_DoWindowStart("", aSettings.mWindow, 
+						ImGui_NrmPos(cVector3f(aSettings.mfEdgePadding, 0.2-0.035*lAppCount, 1))-(cVector3f_Right*fExtraWidth*0.5), 
+						ImGui_NrmSize(cVector2f(fWindowWidth, 0.25+(aSettings.mfButtonHeight+0.01)*lAppCount)));
+	
+		
+		// Draw buttons
+		for (int i=0; i < lAppCount; i++)
+		{			
+			sName = gvStationGuiApps[i][eStationGuiMainMenu_Name];
+			bEnabled = cString_ToBool(gvStationGuiApps[i][eStationGuiMainMenu_Enabled], true);
+			bChangeState = cString_ToBool(gvStationGuiApps[i][eStationGuiMainMenu_ChangeState], true);
+			lApp = cString_ToInt(gvStationGuiApps[i][eStationGuiMainMenu_App], i);
+			
+			ImGui_SetModUseInput(bEnabled);
+			if (ImGui_DoButtonExt(sName, sName, aSettings.mButton, ImGui_NrmPos(cVector3f(0.03, i*(aSettings.mfButtonHeight+0.0233)+0.025, 1.1)), ImGui_NrmSize(fButtonWidthNrm, aSettings.mfButtonHeight)))
+			{
+				lSelection = i;
+				if (bChangeState)
+				{
+					ImGui_SetStateInt("FocusedApp", i);
+					ImGui_SetStateInt("StationGui_ActiveApp", lApp);
+				}
+				
+				if (aSettings.msCustomSound == "")
+					Depth_Audio_Terminal_Forward(ImGui_GetName());
+				else
+					Sound_CreateAtEntity(ImGui_GetName()+"MenuButton", aSettings.msCustomSound, ImGui_GetName());
+			}
+				
+			ImGui_SetModUseInput(true);
+		}
+		
+		// Ornaments
+		tString sCurrentTransCat = ImGui_GetTransCategory();
+		ImGui_SetTransCategory("StationGUI");
+		ImGui_DoLabelExt("StationGUI_VersionNO", label, ImGui_NrmPosGroup(cVector3f(0.03, 0.89+0.015*lAppCount, 1.1)));
+		ImGui_DrawGfx(gfx_menu_ornamentOS, ImGui_NrmPos(cVector3f(aSettings.mfEdgePadding+0.011, 0.337+0.085*lAppCount, 1.1))-cVector3f_Right*fExtraWidth*0.5, ImGui_GetRatioCorrectSizeByWidth(gfx_menu_ornamentOS, 0.2*ImGui_GetSize().x));
+		
+		float fRightEdge = 1.0f-aSettings.mfEdgePadding;
+		ImGui_SetAlignment(eImGuiAlign_TopRight);
+		ImGui_DrawGfx(gfx_menu_ornament1, ImGui_NrmPos(fRightEdge-0.095, 0.384+0.085*lAppCount, 1.1)+cVector3f_Right*fExtraWidth*0.5, ImGui_GetRatioCorrectSizeByWidth(gfx_menu_ornament1, 0.0325*ImGui_GetSize().x));
+		ImGui_DrawGfx(gfx_menu_ornament2, ImGui_NrmPos(fRightEdge-0.055, 0.33+0.085*lAppCount, 1.1)+cVector3f_Right*fExtraWidth*0.5, ImGui_GetRatioCorrectSizeByWidth(gfx_menu_ornament2, 0.045*ImGui_GetSize().x));
+		ImGui_SetTransCategory(sCurrentTransCat);
+		ImGui_SetAlignment(eImGuiAlign_TopLeft);
+		
+	ImGui_DoWindowEnd();
+	
+	StationGui_ClearApps();
+	return lSelection;
+}
+	
+//-------------------------------------------------------
+
+/////////////////////////////////////////
+// STATION SCREENSAVER
+/////////////////////////////////////////
+
+//-------------------------------------------------------
+
+cGuiScreenSaverSettings StationGui_CreateDefaultScreenSaver()
+{
+	cGuiScreenSaverSettings settings;
+
+	settings.mCenterGfx = cImGuiGfx("screensaver_01.dds", eImGuiGfx_TextureAnimated);
+	settings.mCenterGfx.mfAnimationTime = 0.1f;
+	settings.mvCenterGfxNrmSize = cVector2f(0.75, 0.75);
+	settings.mFullscreenGfx = cImGuiGfx("");
+	settings.mFullscreenGfx.mColor = cColor(0, 1);
+	
+	settings.mbStartOn = true;
+	settings.mfTime = 60;
+	
+	return settings;
+}
+	
+//-------------------------------------------------------
+
+/////////////////////////////////////////
+// STATION TEXT READERS
+/////////////////////////////////////////
+
+//-------------------------------------------------------
+
+class cStationGui_TextReaderSettings
+{
+	cStationGui_TextReaderSettings()
+	{
+		msCustomHeader = "";
+		mvTextFontSize = ImGui_NrmSizeKeepRatio(0.0325);
+		mWindow = StationGui_CreateDefaultWindowData();
+		mButton = StationGui_CreateDefaultButtonData();
+		mButton.mFont.mvSize = mvTextFontSize;
+	}
+	
+	tString msCustomHeader;
+	cVector2f mvTextFontSize;
+	cImGuiWindowData mWindow;
+	cImGuiButtonData mButton;
+	float mfFileListButtonHeight = 0.1f;
+	bool mbDrawAppIcon = true;
+	bool mbCorrectImageRatioForUV = false;
+	bool mbFullScreen = false;
+}
+
+//-------------------------------------------------------
+
+/**
+ * Default station text reader for terminals with a single text entry.
+ * 
+ * @param asTransCat, translation category to use.
+ * @param asCaption, caption for the window.
+ * @param asText, text entry to display.
+ * @param aSettings, custom settings for the reader.
+ * @param avWindowNrmPosGroup, custom position for window if desired
+ * @param avWindowNrmSizeGroup, custom size for window if desired
+ * 
+ **/
+void StationGui_TextReaderSingle(const tString&in asTransCat, const tString&in asCaption, const tString&in asText, 
+	const cStationGui_TextReaderSettings &in aSettings = cStationGui_TextReaderSettings(), 
+	cVector3f avWindowNrmPosGroup=cVector3f(0.05, 0.05, 1), cVector2f avWindowNrmSizeGroup=cVector2f(0.9, 0.8))
+{
+	tString sPrevTransCat = ImGui_GetTransCategory();
+	ImGui_SetTransCategory(asTransCat);
+	StationGui_TextReaderSingle(asCaption, asText, aSettings, avWindowNrmPosGroup, avWindowNrmSizeGroup);
+	ImGui_SetTransCategory(sPrevTransCat);
+}
+
+//-------------------------------------------------------
+
+/**
+ * Default station text reader for terminals with a single text entry.
+ * 
+ * @param asCaption, caption for the window.
+ * @param asText, text entry to display.
+ * @param aSettings, custom settings for the reader.
+ * @param avWindowNrmPosGroup, custom position for window if desired
+ * @param avWindowNrmSizeGroup, custom size for window if desired
+ * 
+ **/
+void StationGui_TextReaderSingle(const tString&in asCaption, const tString&in asText, const cStationGui_TextReaderSettings &in aSettings = cStationGui_TextReaderSettings(), 
+	cVector3f avWindowNrmPosGroup=cVector3f(0.05, 0.02, 1), cVector2f avWindowNrmSizeGroup=cVector2f(0.9, 0.775))
+{
+	Depth_ImGui_AddTextFile(asCaption, asText);
+	StationGui_TextReaderSingle(aSettings, avWindowNrmPosGroup, avWindowNrmSizeGroup);
+}
+
+//-------------------------------------------------------
+
+/**
+ * Default station text reader for terminals with a single text entry. 
+ * Use Depth_ImGui_AddTextFile() to specify what should be displayed on it.
+ * 
+ * @param aSettings, custom settings for the reader.
+ * @param avWindowNrmPosGroup, custom position for window if desired
+ * @param avWindowNrmSizeGroup, custom size for window if desired
+ * 
+ **/
+void StationGui_TextReaderSingle(const cStationGui_TextReaderSettings &in aSettings = cStationGui_TextReaderSettings(), 
+	cVector3f avWindowNrmPosGroup=cVector3f(0.05, 0.02, 1), cVector2f avWindowNrmSizeGroup=cVector2f(0.9, 0.775))
+{	
+	cGuiTextFile file = gvTextFiles[0];
+	
+	ImGui_DoWindowStart(file.msTitle, aSettings.mWindow, ImGui_NrmPosGroup(avWindowNrmPosGroup), ImGui_NrmSizeGroup(avWindowNrmSizeGroup));
+		_StationGui_TextReader_DrawBody(file, aSettings);
+	ImGui_DoWindowEnd();
+	
+	Depth_ImGui_ClearTextFiles();
+}
+
+//-------------------------------------------------------
+
+/**
+ * Multi-article reader for datapads.
+ * 
+ * @param asCaption, caption for the window.
+ * @param afFontSize, size of font.
+ * 
+ **/
+void StationGui_DatapadMultiReader(const cStationGui_TextReaderSettings &in aSettings = cStationGui_TextReaderSettings())
+{
+	////////////////////////////
+	// Data
+	cImGuiButtonData nextButton = StationGui_CreateDefaultButtonData();
+	nextButton.mFont.mvSize = ImGui_NrmSizeKeepRatio(0.047);
+	nextButton.mGfxFrame.mGfxCornerBottomRight.SetFile("stationV2/button/big_corner_bottomright");
+	nextButton.mGfxFrame.mGfxCornerTopRight.SetFile("stationV2/button/big_corner_slanted_topright");
+	cImGuiButtonData prevButton = StationGui_CreateDefaultButtonData();
+	prevButton.mFont.mvSize = ImGui_NrmSizeKeepRatio(0.047);
+	prevButton.mGfxFrame.mGfxCornerBottomRight.SetFile("stationV2/button/big_corner_bottomright");
+	prevButton.mGfxFrame.mGfxCornerTopLeft.SetFile("stationV2/button/big_corner_slanted_topleft");
+	
+	tString sPrevTransCat = ImGui_GetTransCategory();
+	
+	int lArticleID = ImGui_GetStateInt("ArticleID", 0);
+	ImGui_DoWindowStart(gvTextFiles[lArticleID].msTitle, aSettings.mWindow, 
+						ImGui_NrmPosGroup(cVector3f(0.05, 0.175, 1)), ImGui_NrmSizeGroup(cVector2f(0.9, aSettings.mbFullScreen ? 0.8 : 0.65)));
+		_StationGui_TextReader_DrawBody(gvTextFiles[lArticleID], aSettings);
+	ImGui_DoWindowEnd();
+	
+	////////////////////////
+	//Next/Prev buttons			
+	ImGui_SetTransCategory("GUI");
+	ImGui_SetModUseInput(lArticleID > 0 && ImGui_IsFirstRun()==false);
+	if (ImGui_DoButtonExt("Prev", "Prev", prevButton, ImGui_NrmPosGroup(cVector3f(0.05, 0.05, 1)), ImGui_NrmSizeGroup(cVector2f(0.3, 0.1))))
+	{
+		ImGui_IncStateInt("ArticleID", -1);
+	}
+	ImGui_SetModUseInput(lArticleID < gvTextFiles.length()-1 && ImGui_IsFirstRun()==false);
+	if (ImGui_DoButtonExt("Next", "Next", nextButton, ImGui_NrmPosGroup(cVector3f(0.65, 0.05, 1)), ImGui_NrmSizeGroup(cVector2f(0.3, 0.1))))
+	{
+		ImGui_IncStateInt("ArticleID", 1);
+	}
+	ImGui_SetModUseInput(true);
+	
+	ImGui_SetTransCategory(sPrevTransCat);
+	
+	Depth_ImGui_ClearTextFiles();
+}
+
+//-------------------------------------------------------
+
+/**
+ * Default station text reader for terminals with multiple text entries.
+ * 
+ * @param asTransCat, translation category to use.
+ * @param asCaption, caption for the file list window.
+ * @param asFileContentPrefix, prefix for the contents of the files. Assumes the first entry name in the lang file is MyPrefix_1.
+ * @param asFileNamePrefix, prefix for the names of the files. Assumes the first entry name in the lang file is MyPrefix_1.
+ * @param alFileCount, The number of files that should be displayed.
+ * @param aSettings, custom settings for the text reader.
+ * 
+ * @return int, the currently selected file.
+ **/		
+int StationGui_TextReaderMulti(const tString&in asTransCat, const tString&in asCaption, const tString&in asFileContentPrefix, 
+							   const tString&in asFileNamePrefix, int alFileCount, const cStationGui_TextReaderSettings &in aSettings = cStationGui_TextReaderSettings())
+{
+	tString sPrevTransCat = ImGui_GetTransCategory();
+	ImGui_SetTransCategory(asTransCat);
+	int lSelection = StationGui_TextReaderMulti(asCaption, asFileContentPrefix, asFileNamePrefix, alFileCount, aSettings);
+	ImGui_SetTransCategory(sPrevTransCat);
+	return lSelection;
+}
+
+//-------------------------------------------------------
+
+/**
+ * Default station text reader for terminals with multiple text entries.
+ * 
+ * @param asCaption, caption for the file list window.
+ * @param asFileContentPrefix, prefix for the contents of the files. Assumes the first entry name in the lang file is MyPrefix_1.
+ * @param asFileNamePrefix, prefix for the names of the files. Assumes the first entry name in the lang file is MyPrefix_1.
+ * @param alFileCount, The number of files that should be displayed.
+ * @param aSettings, custom settings for the text reader.
+ * 
+ * @return int, the currently selected file.
+ **/
+int StationGui_TextReaderMulti(const tString&in asCaption, const tString&in asFileContentPrefix, 
+							   const tString&in asFileNamePrefix, int alFileCount, cStationGui_TextReaderSettings &in aSettings = cStationGui_TextReaderSettings())
+{	
+	for (int i = 1; i <= alFileCount; i++)
+	{
+		Depth_ImGui_AddTextFile(asFileNamePrefix+"_"+i, asFileContentPrefix+"_"+i);
+	}
+	
+	aSettings.msCustomHeader = asCaption;
+	return StationGui_TextReaderMulti(aSettings);
+}
+
+//-------------------------------------------------------
+
+/**
+ * Default station text reader for terminals with multiple text entries.
+ * 
+ * @param aSettings, custom settings for the text reader.
+ * 
+ * @return int, the currently selected file.
+ **/
+int StationGui_TextReaderMulti(const cStationGui_TextReaderSettings &in aSettings = cStationGui_TextReaderSettings())
+{
+	tString sCurrentTransCat = ImGui_GetTransCategory();
+	
+	for (uint i = 0; i < gvTextFiles.length(); i++)
+	{		
+		ImGui_AddItemString(gvTextFiles[i].msTitle);
+	}
+	
+	/////////////
+	// Default setup
+	
+	cImGuiLabelData label = ImGui_GetDefaultLabel();
+	label.mFont.SetFile(Helper_Font_GetFontName(eLuxFontType_Sansation_Large));
+	label.mFont.mColor = cColor_White;
+	label.mFontAlign = eFontAlign_Left;
+	label.mFont.mvSize = ImGui_NrmSizeKeepRatio(0.045);
+	
+	cImGuiTextFrameData textData = StationGui_CreateDefaultTextFrameData();
+	textData.mFont.mvSize = aSettings.mvTextFontSize;
+	
+	tString sHeader = "ReaderApp_Header";
+	if (aSettings.msCustomHeader == "")
+		ImGui_SetTransCategory("StationGUI");
+	else
+		sHeader = aSettings.msCustomHeader;
+	ImGui_DoWindowStart(sHeader, aSettings.mWindow, ImGui_NrmPosGroup(cVector3f(0.02, 0.02, 1)), ImGui_NrmSizeGroup(cVector2f(0.96, aSettings.mbFullScreen ? 0.9 : 0.775)));
+		ImGui_SetTransCategory(sCurrentTransCat);
+	
+		/////////////////////
+		// File list
+		int lSelection = StationGui_FileList(gvTextFiles.length(), gvTextFiles[0].msBody, 0, ImGui_NrmPosGroup(0.02, 0.03, 1), 
+											 ImGui_NrmSizeGroup(0.30, 0.9), aSettings.mfFileListButtonHeight);
+		if (ImGui_PrevUpdated())
+		{
+			Depth_Audio_Terminal_Forward(ImGui_GetName());
+			Depth_ImGui_SetScrollValue("TextBody", 0);
+		}
+		
+		//////////////////
+		// Text Body
+		ImGui_GroupBegin(ImGui_NrmPosGroup(0.32, 0.0, 1), ImGui_NrmSizeGroup(0.6525, 0.9));
+			cImGuiGfx gfx_line("stationV2/misc/GUI_line");
+			ImGui_DrawLineExt(ImGui_NrmPos2Group(0, 0.075, true), ImGui_NrmPos2Group(1, 0.075, true), 2.1, ImGui_NrmSize(0.00375).y, gStationGuiColor_Normal*0.8, gfx_line);
+			
+			float fOverlap = 0;
+			float fOffs = 0;
+			if (lSelection < gvTextFiles.length())
+			{
+				ImGui_DoLabelExt(gvTextFiles[lSelection].msTitle, label, ImGui_NrmPosGroup(cVector3f(0.0375, 0,1)), ImGui_NrmSizeGroup(cVector2f(1, -1)));
+				
+				ImGui_GroupBegin(ImGui_NrmPosGroup(0, 0.13, 1.1), ImGui_NrmSizeGroup(1, 0.95), true);
+					_StationGui_TextReader_DrawBody(gvTextFiles[lSelection], aSettings);
+				ImGui_GroupEnd();
+			}
+		ImGui_GroupEnd();
+		
+		if (aSettings.mbDrawAppIcon)
+			StationGui_DrawAppIcon("stationV2/ossymbols/ossymbol_reader");
+	
+		Depth_ImGui_ClearTextFiles();
+	ImGui_DoWindowEnd();
+	
+	return lSelection;
+}
+	
+//-------------------------------------------------------
+
+void _StationGui_TextReader_DrawBody(const cGuiTextFile &in aFile, const cStationGui_TextReaderSettings &in aSettings)
+{
+	cImGuiTextFrameData textData = StationGui_CreateDefaultTextFrameData();
+	textData.mFont.mvSize = aSettings.mvTextFontSize;
+	
+	float fOffs = Depth_ImGui_GetScrollValue(aFile.msBody);
+	cVector2f vImgSize = 0;
+	
+	float fImageYStart = -fOffs*(aSettings.mvTextFontSize.y*1.06);
+	
+	if (aFile.mbHasImage)
+	{
+		vImgSize = ImGui_GetRatioCorrectSizeByRect(aFile.mGfx, ImGui_NrmSizeGroup(1, 0.5), aSettings.mbCorrectImageRatioForUV);
+		ImGui_SetAlignment(eImGuiAlign_TopCenter);
+		ImGui_DoImage(aFile.mGfx, ImGui_NrmPosGroup(cVector3f(0.5, 0.025, 1))+cVector3f(0, fImageYStart, 0), vImgSize);
+		ImGui_SetAlignment(eImGuiAlign_TopLeft);
+	}
+	
+	float fTextYStart = vImgSize.y + fImageYStart + 0.025f*ImGui_GetCurrentGroupSize().y;
+	
+	float fLineOverlap = ImGui_DoTextFrameExt(aFile.msBody, ImGui_NrmSizeGroup(cVector2f(0.075, 0.05)), aSettings.mvTextFontSize.y*0.06, 0, textData, 
+											cVector3f(0, fTextYStart, 0), ImGui_NrmSizeGroup(cVector2f(1,0.975))-cVector2f(0, fTextYStart));
+
+	float fOverlap = ImGui_GetStateFloat(aFile.msBody+"_Overlap", fLineOverlap);
+	
+	if (fOverlap>0.0f)
+	{
+		cImGuiSliderData sliderData = StationGui_CreateDefaultSliderData();
+		ImGui_SetModUseUIPos(false);
+		float fMax = fOverlap+2;
+		fOffs = fMax-ImGui_DoSliderVerticalExt("TextSlider", fMax-fOffs, 0, fMax, 0.01f, sliderData, 
+												   ImGui_NrmPosGroup(cVector3f(0.93, 0.05, 1.1)),  ImGui_NrmSizeGroup(cVector2f(0.05, 0.8625)));
+		ImGui_SetModUseUIPos(true);
+		Depth_ImGui_InputScroll(aFile.msBody, fOffs, fMax);
+	}
+}
+	
+//-------------------------------------------------------
+
+/////////////////////////////////////////
+// DIALOG BOX
+/////////////////////////////////////////
+
+//-------------------------------------------------------
+
+cGuiDialogBoxSettings StationGui_CreateDefaultDialogBox()
+{
+	cGuiDialogBoxSettings settings;
+	settings.mButton = StationGui_CreateDefaultButtonData();
+	settings.mButton.mvDefaultSize = ImGui_NrmSizeKeepRatio(cVector2f(0.25, 0.1));
+	settings.mTextFrame = StationGui_CreateDefaultTextFrameData();
+	settings.mTextFrame.mFontAlign = eFontAlign_Center;
+	settings.mTextFrame.mFont.mvSize = ImGui_NrmSizeKeepRatio(0.045);
+	settings.mWindow = StationGui_CreateDefaultWindowData();
+	settings.mWindow.SetPadding(20,20,20,20);
+	settings.mvSize = ImGui_NrmSize(0.5, 0.4);
+	return settings;
+}
+
+//-------------------------------------------------------
+
+/**
+ * Default station dialog box. Good for error messages and the like.
+ * 
+ * @param asCaption, caption for the window.
+ * @param asText, Text to display in box.
+ * @param avNrmSize, normalized size of the dialog. Defaults to 0.6, 0.2. Dialog will be drawn at the center of the screen regardless of size.
+ * @param afZ, at what depth the dialog should be drawn.
+ * @param avFontSizeMul, multiplier for the text size.
+ * 
+ **/
+void StationGui_DialogBox_Start(const tString&in asCaption, const tString&in asText, const cVector2f &in avNrmSize = cVector2f(0.6, 0.2), float afZ=1.5f, const cVector2f &in avFontSizeMul =1.0f)
+{
+	//////////////////////////////////
+	// Setup widget data
+	cImGuiWindowData window = StationGui_CreateDefaultWindowData();
+	
+	///////////////////////////////////////
+	// Show message 
+	ImGui_DoWindowStart(asCaption, window, ImGui_NrmPosGroup(cVector3f((1.f-avNrmSize.x)*0.5, (1.f-avNrmSize.y)*0.5, afZ)), ImGui_NrmSizeGroup(avNrmSize));
+		
+	if (asText == "") return;
+	StationGui_DialogBox_Text(asText, avFontSizeMul);
+}
+
+//-------------------------------------------------------
+
+/**
+ * Draws text in a previously defined dialog box. Useful when the text has to be modified separate to the box.
+ * 
+ * @param asText, Text to display.
+ * 
+ **/
+void StationGui_DialogBox_Text(const tString&in asText, const cVector2f &in avFontSizeMul =1.0f)
+{
+	cImGuiTextFrameData textData;
+	textData.mFont.SetFile(Helper_Font_GetFontName(eLuxFontType_Sansation_Large));
+	textData.mbUseBackgroundGfx = false;
+	textData.mFont.mvSize = cVector2f(24, 24)*avFontSizeMul;
+	textData.mFontAlign = eFontAlign_Center;
+	textData.mColorText = cColor(0.8, 1);
+	ImGui_DoTextFrameExt(asText, ImGui_NrmSizeGroup(cVector2f(0.05, 0)), 0, 0, textData, 
+					  ImGui_NrmPosGroup(cVector3f(0.0, 0.1, 1)), ImGui_NrmSizeGroup(cVector2f(1, 1)));
+}
+
+//-------------------------------------------------------
+
+void StationGui_DialogBox_End()
+{
+	ImGui_DoWindowEnd();
+}	
+	
+//-------------------------------------------------------
+
+/////////////////////////////////////////
+// GRAPH APP
+//{///////////////////////////////////////
+
+//-------------------------------------------------------
+
+class cStationGui_GraphSettings
+{
+	cStationGui_GraphSettings()
+	{
+		mvPos = ImGui_NrmPosGroup(cVector3f(0.05, 0.02, 1));
+		mvSize = ImGui_NrmSizeGroup(cVector2f(0.9, 0.775));
+	}
+	
+	cVector3f mvPos;
+	cVector2f mvSize;
+	float mfGraphicsSizeMul = 1;
+	cVector3f mvNrmGraphicsOffset = 0;
+}
+
+void StationGui_Graph(const cImGuiGfx &in aBaseGfx, const tString &in asHeader="", const cStationGui_GraphSettings &in aSettings = cStationGui_GraphSettings())
+{
+	ImGui_DoWindowStart(asHeader, StationGui_CreateDefaultWindowData(), aSettings.mvPos, aSettings.mvSize);
+	ImGui_GroupBegin(ImGui_NrmPosGroup(-(aSettings.mfGraphicsSizeMul-1)*0.5)+ImGui_NrmPosGroup(aSettings.mvNrmGraphicsOffset), 
+					 ImGui_NrmSizeGroup(aSettings.mfGraphicsSizeMul));
+		ImGui_SetAlignment(eImGuiAlign_CenterCenter);
+		ImGui_DoImage(aBaseGfx, ImGui_NrmPosGroup(cVector3f(0.5, 0.5, 0.5)), ImGui_GetRatioCorrectSizeByRect(aBaseGfx, ImGui_NrmSizeGroup(1)));
+		
+		float fLoadTime = ImGui_GetStateFloat("GraphLoad", 0);
+		ImGui_FadeStateFloat("GraphLoad", 1, 1.25, eEasing_QuadInOut, false);
+		
+		//ImGui_SetAlignment(eImGuiAlign_CenterLeft);
+		
+		/////////////////////////
+		// Draw overlays
+		for (int i = 0; i < gvGraphOverlays.length(); i++)
+		{
+			// Calculate overlay size
+			float fOverlayLoad = i*(-0.25/gvGraphOverlays.length())+(fLoadTime*1.25);
+			fOverlayLoad = cMath_Clamp(fOverlayLoad, 0.0f, 1.0f);
+			gvGraphOverlays[i].mGfx.mvUVMax = cVector2f(fOverlayLoad, 1);
+			
+			cVector2f vOverlaySize = ImGui_GetRatioCorrectSizeByRect(gvGraphOverlays[i].mGfx, ImGui_NrmSizeGroup(1));
+			float fMaxX = vOverlaySize.x;
+			vOverlaySize.x *= fOverlayLoad;
+			cVector3f vOverlayPos = ImGui_NrmPosGroup(cVector3f(0.5, 0.5, gvGraphOverlays[i].mfZ));
+			vOverlayPos.x -= fMaxX*0.5*(1.0f-fOverlayLoad);
+			
+			ImGui_DoImage(gvGraphOverlays[i].mGfx, vOverlayPos, vOverlaySize);
+		}
+		ImGui_SetAlignment(eImGuiAlign_TopLeft);
+	ImGui_GroupEnd();
+	ImGui_DoWindowEnd();
+	
+	Depth_ImGui_ClearGraphOverlays();
+}
+ 
+//--------------------------------------------------
+
+void StationGui_ResetGraph()
+{
+	ImGui_SetStateFloat("GraphLoad", 0);
+	ImGui_StopFade("GraphLoad");
+}
+
+//} END GRAPH APP
+
+//-------------------------------------------------------
+
+/////////////////////////////////////////
+// WAU LEECHING
+/////////////////////////////////////////
+
+//-------------------------------------------------------
+	
+/**
+ * Draws the dirtorted image gibberish stuff on the terminal screen.
+ * 
+ * @param aColorMul, color multiplier.
+ * @param afDistortion, how distorted the image should be.
+ * @param afZ, z value to render the gibberish at.
+ * 
+ **/	
+void Depth_ImGui_WauLeechGibberish(const cColor &in aColorMul, float afDistortion, float afZ = 2.0f)
+{
+	// Static overlay
+	if (ImGui_RepeatTimer("StaticIndex", 0.1))
+	{
+		ImGui_SetStateInt("StaticImageIndex", cMath_RandRectl(0, 1));
+		ImGui_SetStateInt("AnimationRotation", cMath_RandRectl(0, 1));
+	}
+	ImGui_SetModColorMul(gStationGuiColor_Normal*cColor(1, 0.8)*aColorMul);
+	ImGui_SetModRotateAngle(ImGui_GetStateInt("AnimationRotation", 0)*180);
+	ImGui_DoImage(cImGuiGfx("static_"+ImGui_GetStateInt("StaticImageIndex", 0)+""), cVector3f(0, 0, afZ+0.1f), ImGui_NrmSizeGroup(1));
+	
+	if (ImGui_RepeatTimer("ImageIndex", 0.14))
+	{
+		ImGui_SetStateInt("GibberishImageIndex", cMath_RandRectl(0, 2));
+	}
+	ImGui_SetModRotateAngle(ImGui_GetStateInt("AnimationRotation", 0)*180);
+	
+	Depth_ImGui_DrawLineDistortedGfx(	cImGuiGfx("leechgibberish_"+ImGui_GetStateInt("GibberishImageIndex", 0)), 
+										cVector3f(0, 0, afZ), 
+										 ImGui_NrmSizeGroup(1),
+										aColorMul,
+										afDistortion, 1.0f);
+	ImGui_ResetModifiers();
+}

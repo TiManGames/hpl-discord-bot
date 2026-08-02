@@ -1,0 +1,181 @@
+#include "Prop_Rigid.hps"
+#include "helpers/helper_props.hps"
+#include "helpers/helper_player.hps"
+#include "helpers/helper_map.hps"
+
+#include "helper_custom_depth_audio.hps"
+
+const cColor gReadyColor = cColor(1, 0.5, 0);
+const cColor gAttachedColor = cColor_Green;
+const cColor gDetachColor = cColor_Red;
+
+class cScrPropOmniSlot : cScrPropRigid
+{
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		cScrPropRigid::SetupAfterLoad(apWorld, apVars, apInstanceVars);
+		
+		mvSlotPosOffset = apVars.GetVarVector3f("SlotPositionOffset", 0);
+		
+		msOnLamp = apInstanceVars.GetVarString("OnLamp", "");
+		msOffLamp = apInstanceVars.GetVarString("OffLamp", "");
+		mBaseObj.SetVarString("Setup_AttachedTool", apInstanceVars.GetVarString("AttachedTool", ""));
+		mBaseObj.SetVarBool("Setup_DetachAllowed", apInstanceVars.GetVarBool("DetachAllowed", false));
+		mbAttachAllowed = apInstanceVars.GetVarBool("AttachAllowed", true);
+		
+		mBaseObj.SetVariableUpdateRate(0.2f); //call variable update no faster than once per 0.2 sec
+		mBaseObj.SetAutoSleep(false);
+		
+		mBaseObj.SetVarBool("IsOmniSlot", true);
+	}
+	
+	//------------------------------------------------------------
+	
+	bool mbFirstUpdate = true;
+	void OnUpdate(float afTimeStep)
+	{
+		if (!mbFirstUpdate) return;
+		
+		mbFirstUpdate = false;
+		tString sAttachedTool = mBaseObj.GetVarString("Setup_AttachedTool");
+		
+		if (sAttachedTool=="")
+		{
+			SetAttachAllowed(mbAttachAllowed, false);
+			return;
+		}
+		
+		InsertTool(sAttachedTool, false);
+		if (mBaseObj.GetVarBool("Setup_DetachAllowed"))
+		{
+			AllowDetach(sAttachedTool, false);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL
+	/////////////////////////////////////////
+
+	//-------------------------------------------------------
+	
+	void _Global_SetAttachAllowed()
+	{
+		SetAttachAllowed(cScript_GetGlobalArgBool(0), cScript_GetGlobalArgBool(1));
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetAttachAllowed(bool abState, bool abEffects)
+	{
+		if (msOffLamp != "") 
+		{
+			Entity_SetEffectBaseColor(msOffLamp, abState ? gReadyColor : gDetachColor);
+			Lamp_SetLit(msOffLamp, abState, abEffects);
+			Lamp_SetFlickerActive(msOffLamp, abState);
+		}
+		
+		if (msOnLamp != "") 
+			Lamp_SetLit(msOnLamp, false, abEffects);
+		
+		mbAttachAllowed = abState;
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetAttachAllowed()
+	{
+		cScript_SetGlobalReturnBool(mbAttachAllowed);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_Insert()
+	{
+		InsertTool(cScript_GetGlobalArgString(0), cScript_GetGlobalArgBool(1));
+	}
+
+	//-------------------------------------------------------
+	
+	void InsertTool(const tString &in asTool, bool abEffects)
+	{
+		cLuxProp@ pTool = Map_GetProp(asTool);
+			
+		cMatrixf offsetMtx = pTool.GetBodyExtraData(0).m_mtxLocalTransform;
+		
+		// Rotate and place tool
+		cMatrixf mtx_orientation = cMath_MatrixTranslate(mvSlotPosOffset);
+		mtx_orientation = cMath_MatrixMul(mBaseObj.GetMatrix(), mtx_orientation);
+		mtx_orientation = cMath_MatrixMul(mtx_orientation, cMath_MatrixRotateX(cMath_PiDiv2));
+		
+		cVector3f vWorldOffset = cMath_MatrixMul(mtx_orientation.GetRotation(), offsetMtx.GetTranslation());
+		mtx_orientation.SetTranslation(mtx_orientation.GetTranslation()+vWorldOffset);
+		pTool.SetMatrix(mtx_orientation);
+		
+		if (abEffects) Depth_Audio_Omnitool_Insert(asTool);
+		
+		tString sName = mBaseObj.GetName();
+		cScript_SetGlobalArgString(0, sName);
+		cScript_RunGlobalFunc(asTool, "cScrPropCatherineTool", "Insert");
+		
+		if (msOffLamp != "")
+			Lamp_SetLit(msOffLamp, false, abEffects);
+		
+		if (msOnLamp != "")
+		{
+			Entity_SetEffectBaseColor(msOnLamp, gAttachedColor);
+			Lamp_SetLit(msOnLamp, true, abEffects);
+		}
+	}
+
+	//-------------------------------------------------------
+	
+	void _Global_AllowDetach()
+	{
+		AllowDetach(cScript_GetGlobalArgString(0), cScript_GetGlobalArgBool(1));
+	}
+
+	//------------------------------------------------------------
+	
+	void AllowDetach(const tString &in asTool, bool abEffects)
+	{		
+		if (abEffects) Depth_Audio_Omnitool_Popout(asTool);
+		
+		cScript_RunGlobalFunc(asTool, "cScrPropCatherineTool", "Detach");
+		
+		if (msOffLamp != "")
+		{
+			Entity_SetEffectBaseColor(msOffLamp, gDetachColor);
+			Lamp_SetLit(msOffLamp, true, abEffects);
+			Lamp_SetFlickerActive(msOffLamp, true);
+		}
+		
+		if (msOnLamp != "")
+			Lamp_SetLit(msOnLamp, false, abEffects);
+	}
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	cVector3f mvSlotPosOffset;
+	
+	tString msOnLamp;
+	tString msOffLamp;
+	
+	bool mbAttachAllowed = true;
+}

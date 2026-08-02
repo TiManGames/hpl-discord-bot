@@ -1,0 +1,479 @@
+#include "interfaces/Prop_Interface.hps"
+
+enum eMoveObjectType
+{
+	eMoveObjectType_Linear,
+	eMoveObjectType_Angular,
+}
+
+enum eAxis
+{
+	eAxis_X,
+	eAxis_Y,
+	eAxis_Z,
+}
+
+#include "interfaces/Prop_Interface.hps"
+#include "base/Player_Types.hps"
+
+class cScrPropMoveObject : iScrProp, iScrProp_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		mvAngularOffsetPos = cVector3f(0);
+		mbUseAngularLocalOffset = false;
+		mbAutoMoveReachedGoal = false;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// LOADING
+	/////////////////////////////////////////
+	
+	//-----------------------------------------------------------------------
+
+	eMoveObjectType ToMoveObjectType(const tString &in asType)
+	{
+		tString sLowType = cString_ToLowerCase(asType);
+
+		if(sLowType == "linear")	return eMoveObjectType_Linear;
+		if(sLowType == "angular")	return eMoveObjectType_Angular;
+
+		Error("MoveObjectType " + asType + " does not exist!");
+
+		return eMoveObjectType_Linear;
+	}
+	
+	//------------------------------------------------------------
+	
+	eAxis StringToAxis(const tString &in asAxis)
+	{
+		tString sLowAxis = cString_ToLowerCase(asAxis);
+
+		if(sLowAxis == "x") return eAxis_X;
+		if(sLowAxis == "y") return eAxis_Y;
+		if(sLowAxis == "z") return eAxis_Z;
+
+		Error("Axis " + asAxis + " does not exist!");
+
+		return eAxis_X;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		//////////////////////////////////////
+		// Type vars
+		mMoveObjectType = ToMoveObjectType(apVars.GetVarString("MoveObjectType","Linear"));
+
+		mfOpenAmount = apVars.GetVarFloat("OpenAmount", 1.0f);
+		mMoveAxis = StringToAxis(apVars.GetVarString("MoveAxis", "y"));
+
+		mfOpenAcc = apVars.GetVarFloat("OpenAcc", 1.0f);
+		mfOpenSpeed = apVars.GetVarFloat("OpenSpeed", 0.8f);
+
+		mfCloseAcc = apVars.GetVarFloat("CloseAcc", 9.0f);
+		mfCloseSpeed = apVars.GetVarFloat("CloseSpeed", 5.0f);
+
+		mbAutoMove = apVars.GetVarBool("AutoMove", false);
+		mfAutoMoveStateGoal = apVars.GetVarFloat("AutoMoveStateGoal", 0.0f);
+		mfAutoMoveAcc = apVars.GetVarFloat("AutoMoveAcc", 9.0f);
+		mfAutoMoveSpeed = apVars.GetVarFloat("AutoMoveSpeed", 4.0f);
+		mfAutoMoveSlowdownDist = apVars.GetVarFloat("AutoMoveSlowdownDist", 0.1f);
+		
+		///////////////////
+		// Get closed and open transforms
+		iPhysicsBody@ pBody = GetBase().GetMainBody();
+
+		m_mtxClosedTransform = pBody.GetLocalMatrix();
+		
+		array<cVector3f> vMul = {cVector3f(1,0,0), cVector3f(0,1,0), cVector3f(0,0,1) };
+
+		///////////////////
+		// Linear
+		if(mMoveObjectType == eMoveObjectType_Linear)
+		{
+			cVector3f vLocalSize = pBody.GetBoundingVolume().GetLocalMax() - pBody.GetBoundingVolume().GetLocalMin();
+			cVector3f vAdd = vLocalSize * vMul[mMoveAxis] * mfOpenAmount;
+
+			m_mtxOpenTransform = m_mtxClosedTransform.GetRotation();
+			m_mtxOpenTransform.SetTranslation(m_mtxClosedTransform.GetTranslation() + vAdd);
+		}
+		///////////////////
+		// Angular
+		else
+		{
+			CalculateOpenRotateMatrix();
+		}
+		
+		///////////////////////////////////
+		// Instance Vars
+		msAngularOffsetArea = apInstanceVars.GetVarString("AngularOffsetEntity", "");
+		
+		mCustomInteractIcon = PlayerTypes_StringToCrossHairState( apInstanceVars.GetVarString("CustomInteractIcon", "None"));
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnUpdate(float afTimeStep)
+	{
+		//////////////////////
+		//Check the anglular offset area
+		if(msAngularOffsetArea != "")
+		{
+			cLuxArea@ pArea = cLux_ToArea(cLux_GetCurrentMap().GetEntityByName(msAngularOffsetArea, eLuxEntityType_Area, ""));
+			if(pArea !is null)
+			{
+				SetAngularOffsetPos(pArea.GetPosition());
+			}
+			else
+			{
+				Error("Angular offset area " + msAngularOffsetArea + " does not exist!\n");
+			}
+			msAngularOffsetArea = "";
+		}
+
+		
+		//////////////////////
+		//Update Automove
+		UpdateAutoMove(afTimeStep);
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateAutoMove(float afTimeStep)
+	{
+		///////////////////////
+		//Skip update if update is off, the entity is moving or the goal is reached.
+		if(mbAutoMove==false || GetBase().IsMoving() || mbAutoMoveReachedGoal) return;
+		
+		///////////////////////
+		//Check if the auto move goal has been reached
+		if(cMath_Abs(GetMoveState() - mfAutoMoveStateGoal) < 0.001f)
+		{
+			mbAutoMoveReachedGoal = true;
+		}
+		///////////////////////
+		//Goal not yet reached, do some
+		else
+		{
+			MoveToState(mfAutoMoveStateGoal, mfAutoMoveAcc, mfAutoMoveSpeed, mfAutoMoveSlowdownDist, true);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnPostUpdate(float afTimeStep)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetProperties()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void BeforeEntityDestruction()
+	{
+	}
+		
+	//------------------------------------------------------------
+	
+	void OnStartMove()
+	{
+		mbAutoMoveReachedGoal = false;
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnConnectionStateChange(iLuxEntity@ apEntity,int alState)
+	{
+		if(alState == 1)	MoveToState(1.0f);
+		if(alState == -1)	MoveToState(0.0f);
+	}
+	
+	//------------------------------------------------------------
+	
+	/*bool OnUpdateAutoSleep()
+	{
+		return true;
+	}*/
+		
+	//------------------------------------------------------------
+	
+	void OnAttachmentUpdate(const cMatrixf&in a_mtxTransformAdd)
+	{
+		m_mtxClosedTransform = cMath_MatrixMul(a_mtxTransformAdd, m_mtxClosedTransform);
+		m_mtxOpenTransform = cMath_MatrixMul(a_mtxTransformAdd, m_mtxOpenTransform);
+		mvAngularOffsetPos = cMath_MatrixMul(a_mtxTransformAdd, mvAngularOffsetPos);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnSetActive(bool abX)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void GiveDamage(float afAmount, int alStrength, const tString&in asType, const tString&in asSource)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnHealthChange()
+	{
+	}
+	//------------------------------------------------------------
+	
+	//NOTE: This is only useable if SetScriptCollisionCallbackActive is true
+	void OnPhysicsCollision(iPhysicsBody @apBody, iPhysicsBody @apCollideBody, cPhysicsContactData&in apContactData)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	bool CanInteract(int alType, iPhysicsBody@ apBody)
+	{
+		return GetBase().HasPlayerInteractCallback();
+	}
+	
+	//------------------------------------------------------------
+		
+	bool OnInteract(int alType, iPhysicsBody@ apBody, const cVector3f &in avFocusPos, const tString&in asData)
+	{
+		return GetBase().HasPlayerInteractCallback();
+	}
+	
+	//------------------------------------------------------------
+	
+	int GetInteractIconId(int alType, iPhysicsBody@ apBody)
+	{
+		return mCustomInteractIcon;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// SPECIFIC ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetCustomInteractIcon()
+	{
+		mCustomInteractIcon =  eCrossHairState(cScript_GetGlobalArgInt(0));
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_MoveToStateExt()
+	{
+		MoveToState(cScript_GetGlobalArgFloat(0), cScript_GetGlobalArgFloat(1), cScript_GetGlobalArgFloat(2), 
+				    cScript_GetGlobalArgFloat(3), cScript_GetGlobalArgBool(4));
+	}
+	
+	void MoveToState(float afState, float afAcc, float afMaxSpeed, float afSlowdownDist, bool abResetSpeed)
+	{
+		///////////////////
+		// Linear
+		if(mMoveObjectType == eMoveObjectType_Linear)
+		{
+			cVector3f vWanted = m_mtxClosedTransform.GetTranslation() * (1-afState) + 
+								m_mtxOpenTransform.GetTranslation() * afState;
+								
+			//If acceleration is negative, set the positon instantly instead.
+			if(afAcc == -1)
+				GetBase().SetPosition(vWanted);
+			else
+				GetBase().MoveLinearTo(vWanted, afAcc, afMaxSpeed,afSlowdownDist,abResetSpeed);
+		}
+		///////////////////
+		// Angular
+		else
+		{			
+			cMatrixf mtxWanted = cMath_MatrixSlerp(afState, m_mtxClosedTransform,m_mtxOpenTransform, true);
+
+			cMatrixf mtxInvClose = cMath_MatrixInverse(m_mtxClosedTransform);
+			cVector3f vLocalOffset = cMath_MatrixMul(mtxInvClose, mvAngularOffsetPos);
+
+			//If acceleration is negative, set the positon instantly instead.
+			if(afAcc == -1)
+				GetBase().SetMatrix(mtxWanted);
+			else
+			{
+				if(mbUseAngularLocalOffset)
+					GetBase().MoveAngularTo(mtxWanted, afAcc, afMaxSpeed,afSlowdownDist,abResetSpeed, true, mvAngularOffsetPos ,vLocalOffset);
+				else
+					GetBase().MoveAngularTo(mtxWanted, afAcc, afMaxSpeed,afSlowdownDist,abResetSpeed, false, cVector3f(0), cVector3f(0));
+			}
+		
+		}
+
+		mBaseObj.WakeUp();
+	}
+	
+	//-----------------------------------------------------------------------	
+	void _Global_MoveToState()
+	{
+		MoveToState(cScript_GetGlobalArgFloat(0));
+	}
+
+	void MoveToState(float afState)
+	{
+		float fCurrent = GetMoveState();
+
+		if(afState < fCurrent)
+			MoveToState(afState, mfCloseAcc, mfCloseSpeed, 0.3f, true);
+		else
+			MoveToState(afState, mfOpenAcc, mfOpenSpeed, 0.3f, true);
+	}
+
+	//-----------------------------------------------------------------------
+
+	void SetAngularOffsetPos(const cVector3f &in avWorldPos)
+	{
+		mvAngularOffsetPos = avWorldPos;
+		mbUseAngularLocalOffset = true;
+
+		if(mMoveObjectType == eMoveObjectType_Angular)
+		{
+			CalculateOpenRotateMatrix();
+		}
+	}
+
+	//-----------------------------------------------------------------------
+
+	float GetMoveState()
+	{
+		cVector3f vCurrent, vClosed, vOpen, vDelta, vT;
+
+		///////////////////
+		// Linear
+		if(mMoveObjectType == eMoveObjectType_Linear)
+		{
+			vCurrent = GetBase().GetMainBody().GetLocalPosition();
+			vClosed = m_mtxClosedTransform.GetTranslation();
+			vOpen = m_mtxOpenTransform.GetTranslation();
+
+			vDelta = vCurrent - vClosed;
+			vT = vDelta / (vOpen - vClosed);
+		}
+		///////////////////
+		// Angular
+		else
+		{
+			vDelta = cMath_MatrixEulerAngleDistance(m_mtxClosedTransform, GetBase().GetMainBody().GetLocalMatrix());
+			vT =	vDelta / cMath_MatrixEulerAngleDistance(m_mtxClosedTransform, m_mtxOpenTransform);
+		}
+
+		float fT = 0; 
+		if(vDelta.x != 0)		fT = vT.x;
+		else if(vDelta.y != 0)	fT = vT.y;
+		else if(vDelta.z != 0)	fT = vT.z;
+		
+		return fT;
+	}
+
+	//------------------------------------------------------------
+	
+	void CalculateOpenRotateMatrix()
+	{
+		array<cVector3f> vMul = {cVector3f(1,0,0), cVector3f(0,1,0), cVector3f(0,0,1) };
+
+		m_mtxOpenTransform = m_mtxClosedTransform.GetRotation();
+
+		cMatrixf mtxRot = cMath_MatrixRotateXYZ(vMul[mMoveAxis] *  cMath_PiDiv2 * mfOpenAmount);
+		m_mtxOpenTransform = cMath_MatrixMul(m_mtxOpenTransform, mtxRot);
+
+		m_mtxOpenTransform.SetTranslation(m_mtxClosedTransform.GetTranslation());
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	[nosave] eMoveObjectType mMoveObjectType;
+
+	[nosave] float mfOpenAmount;
+	[nosave] eAxis mMoveAxis;
+
+	[nosave] float mfOpenAcc;
+	[nosave] float mfOpenSpeed;
+
+	[nosave] float mfCloseAcc;
+	[nosave] float mfCloseSpeed;
+
+	[nosave] bool mbAutoMove;
+	[nosave] float mfAutoMoveStateGoal;
+	[nosave] float mfAutoMoveAcc;
+	[nosave] float mfAutoMoveSpeed;
+	[nosave] float mfAutoMoveSlowdownDist;
+	
+	//------------------------------------------------------------
+	
+	eCrossHairState mCustomInteractIcon;
+	
+	tString msAngularOffsetArea;
+	
+	cVector3f mvAngularOffsetPos;
+	bool mbUseAngularLocalOffset;
+	bool mbAutoMoveReachedGoal;
+	
+	cMatrixf m_mtxClosedTransform;
+	cMatrixf m_mtxOpenTransform;
+	
+	//------------------------------------------------------------
+		
+}	

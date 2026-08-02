@@ -1,0 +1,730 @@
+#include "interfaces/Agent_Interface.hps"
+//#include "helpers/helper_map.hps"
+//#include "helpers/helper_modules.hps"
+//#include "helpers/helper_entity.hps"
+#include "custom_depth/helper_custom_depth.hps"
+
+enum eViperfishState 
+{
+    eViperfishState_Idle,
+	eViperfishState_Circle,
+	eViperfishState_GoToPos,
+	eViperfishState_Patrol,
+    eViperfishState_Converge,
+	eViperfishState_Attack
+}
+
+enum eViperfishSpeed 
+{
+    eViperfishSpeed_Idle,
+	eViperfishSpeed_Circle,
+    eViperfishSpeed_Converge,
+	eViperfishSpeed_Attack
+}
+
+const float gfAppearDist = 40.0f;
+const float gfCircleDist = 20.0f;
+
+class cScrViperfish:  iScrAgent, iScrAgent_Interface
+{
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+
+	//------------------------------------------------------------
+
+	void Init() 
+	{
+		mBaseObj.SetUpdatePlayerDetection(true);
+	}
+
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// LOADING
+	/////////////////////////////////////////
+
+	//------------------------------------------------------------
+
+	void SetupCharBody() 
+	{
+		iCharacterBody@ pCharBody = mBaseObj.GetCharBody();
+
+		pCharBody.SetGravityActive(false);
+		pCharBody.SetMass(60);
+
+		pCharBody.SetAccurateClimbing(false);
+		pCharBody.SetMaxNoSlideSlopeAngle(cMath_ToRad(30) );
+		pCharBody.SetMaxPushMass(16);
+		pCharBody.SetMaxPushForce(300);
+		pCharBody.SetPushImpulse(100);
+		pCharBody.SetPushIn2D(false);
+		pCharBody.SetCharacterMaxPushMass(10);
+		pCharBody.SetCharacterPushForce(100);
+		pCharBody.SetMaxStepSize(0.0f);
+		pCharBody.SetMaxStepSizeInAir(0.0f);
+		pCharBody.SetStepClimbSpeed(0.5f);
+
+		pCharBody.SetEntityPitchAmount(0.3f);
+
+		pCharBody.SetMaxPositiveMoveSpeed(eCharDir_Forward,2);
+		pCharBody.SetMoveAcc(eCharDir_Forward,1);
+		pCharBody.SetMoveDeacc(eCharDir_Forward,1);
+		pCharBody.SetMoveOppositeDirAccMul(eCharDir_Forward,1);
+		pCharBody.SetDeaccelerateMoveSpeedInAir(true);
+	}
+
+	//------------------------------------------------------------
+
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)	
+	{
+		/////////////////////////////////////////
+		// Mover
+		@mpMover = cLux_CreateEntityComponent_CharMover(mBaseObj, mBaseObj.GetCharBody());
+
+		mpMover.LoadFromVariables(apVars);
+
+		mpMover.SetMaxForwardSpeed(2);
+		mpMover.SetMaxBackwardSpeed(1);
+
+		mpMover.SetTurnMinBreakAngle(cMath_ToRad(40) );
+		mpMover.SetTurnBreakMul(0);
+		mpMover.SetTurnSpeedMul(3);
+		mpMover.SetTurnMaxSpeed(4);
+
+		mpMover.SetStoppedToWalkSpeed(0.2);
+		mpMover.SetWalkToRunSpeed(3);
+		mpMover.SetWalkToStoppedSpeed(0.15);
+		mpMover.SetRunToWalkSpeed(0.8);
+
+		mpMover.SetMoveSpeedAnimMul(1);
+
+		mpMover.SetUse3DMovement(true);
+
+		mpMover.SetBankingActive(true);
+		mpMover.SetBankingAngleMul(0.3f);
+		mpMover.SetBankingMaxAngle(cMath_ToRad(45));
+		mpMover.SetBankingSpeedMul(3.0f);
+		mpMover.SetBankingMaxSpeed(1.0f);
+
+		mpMover.SetupWallAvoidance(2.5f, 8.0f, 4);
+		mpMover.SetWallAvoidanceActive(true);
+
+		mpMover.SetupDynamicObjectAvoidance(2.0f, 5, 4);
+		mpMover.SetDynamicObjectAvoidanceActive(true);
+
+		mpMover.SetMaxForwardSpeed(3.0f);
+
+		mpMover.SetUseMoveStateAnimations(false);
+
+		/////////////////////////////////
+		// Speed States
+		mpMover.AddSpeedState(eViperfishSpeed_Idle);
+		mpMover.SetSpeedState_Forward(0.1f);
+		mpMover.SetSpeedState_ForwardAcc(0.2f);
+
+		mpMover.AddSpeedState(eViperfishSpeed_Circle);
+		mpMover.SetSpeedState_Forward(2.05f);
+		mpMover.SetSpeedState_ForwardAcc(2.3f);
+		
+		mpMover.AddSpeedState(eViperfishSpeed_Converge);
+		mpMover.SetSpeedState_Forward(2.75f);
+		mpMover.SetSpeedState_ForwardAcc(5.3f);
+		
+		mpMover.AddSpeedState(eViperfishSpeed_Attack);
+		mpMover.SetSpeedState_Forward(3.0f);
+		mpMover.SetSpeedState_ForwardAcc(6.0f);
+		
+		/////////////////////////////////////////
+		// Backbone Tail
+		@mpBackboneTail = cLux_CreateEntityComponent_BackboneTail(mBaseObj);
+		
+		mpBackboneTail.SetAddTrailFreq(10.0f);
+		mpBackboneTail.SetMaxTrailSize(13);
+		mpBackboneTail.SetStiffness(1.0f);
+		
+		array<tString> vBoneNames;
+		vBoneNames.push_back("locator001Node");
+		vBoneNames.push_back("locator005Node");
+		vBoneNames.push_back("locator009Node");
+		vBoneNames.push_back("locator013Node");
+		vBoneNames.push_back("locator017Node");
+		vBoneNames.push_back("locator021Node");
+		mpBackboneTail.Setup(vBoneNames);
+
+
+		/////////////////////////////////
+		// State machine Module
+		@mpStateMachine = cLux_CreateEntityComponent_StateMachine(mBaseObj);
+
+		mpStateMachine.AddState("Idle", eViperfishState_Idle);
+		mpStateMachine.AddState("Circle", eViperfishState_Circle);
+		mpStateMachine.AddState("GoToPos", eViperfishState_GoToPos);
+		mpStateMachine.AddState("Patrol", eViperfishState_Patrol);
+		mpStateMachine.AddState("Converge", eViperfishState_Converge);
+		mpStateMachine.AddState("Attack", eViperfishState_Attack);
+
+		mpStateMachine.ChangeState(eViperfishState_Idle);
+		
+		/////////////////////////////////
+		// Pathfinder
+		
+		@mpPathfinder = cLux_CreateEntityComponent_Pathfinder(mBaseObj);
+		mpPathfinder.SetTrackPaused(true);
+		
+		/////////////////////////////////
+		// Senses
+		mBaseObj.SetFOV(cMath_ToRad(80.0f));
+		mBaseObj.SetSightRange(12.0f);
+	}
+
+	//------------------------------------------------------------
+
+	void OnAfterWorldLoad() 
+	{
+	}
+
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+
+	//------------------------------------------------------------
+
+	void OnUpdate(float afTimeStep) 
+	{
+	}
+
+	//------------------------------------------------------------
+
+	void ResetProperties() 
+	{
+	}
+
+	//------------------------------------------------------------
+
+	void BeforeEntityDestruction() 
+	{
+	}
+
+	//------------------------------------------------------------
+
+	void OnStartMove() 
+	{
+	}
+
+	//------------------------------------------------------------
+
+	void OnConnectionStateChange(iLuxEntity@ apEntity,int alState) 
+	{
+	}
+
+	//------------------------------------------------------------
+
+
+	/////////////////////////////////////////
+	// STATES
+	/////////////////////////////////////////
+
+	//------------------------------------------------------------
+	// Default
+	//------------------------------------------------------------
+			
+	bool State_Default_Message(int alMessageId)
+	{
+		if (alMessageId == eLuxEntityMessage_PlayerDetected)
+		{
+			//////////////////////
+			// Player Detected
+			if(mBaseObj.GetSensesActive()==false) return false;
+
+			if (mpStateMachine.GetCurrentState() != eViperfishState_Attack)
+			{
+				cLux_AddDebugMessage("Fish seen player - attacking!");			
+				mpStateMachine.ChangeState(eViperfishState_Attack);
+			}
+			
+			if (mBaseObj.Timer_Exists(3))
+				mBaseObj.Timer_Remove(3);
+			return true;
+		}
+		else if (alMessageId == eLuxEntityMessage_PlayerUndetected)
+		{
+			//////////////////////
+			// Lost track of player
+			
+			mBaseObj.Timer_Add(3, 3.0f, "TimerLostPlayer",false);
+		}
+		
+		return false;
+	}
+			
+	//------------------------------------------------------------
+	
+	void TimerLostPlayer(uint64 alTimerID)
+	{
+		if (mpStateMachine.GetCurrentState() == eViperfishState_Attack)
+		{
+			if (mpStateMachine.GetPrevState() == eViperfishState_Idle)
+				mpStateMachine.ChangeState(eViperfishState_Circle);
+			else
+				mpStateMachine.ChangeState(mpStateMachine.GetPrevState());
+			cLux_AddDebugMessage("Fish lost track of player!");
+		}
+	}
+			
+	//------------------------------------------------------------
+	// Idle
+	//------------------------------------------------------------
+
+	void State_Idle_Enter() 
+	{
+		mpMover.SetSpeedState(eViperfishSpeed_Idle);
+		
+		/////////////////////////
+		// Callback
+		cLuxMap@ pMap = cLux_GetCurrentMap();
+		if (msIdleCallback != "" && 
+			pMap.ScriptPrepare("void " + msIdleCallback + "(const tString &in asEntity)"))
+		{
+			pMap.SetArgString(0, mBaseObj.GetName());
+			pMap.ScriptExecute();
+		}
+	}
+
+	//------------------------------------------------------------
+
+	void State_Idle_Update(float afTimeStep)
+	{
+	}
+
+	//------------------------------------------------------------
+
+	void State_Idle_Leave() 
+	{
+	}
+	
+	//------------------------------------------------------------
+	// Circling
+	//------------------------------------------------------------
+
+	void State_Circle_Enter() 
+	{
+		mpMover.SetSpeedState(eViperfishSpeed_Circle);
+		PickTargetAwayFromPlayer(gfCircleDist);
+	}
+
+	//------------------------------------------------------------
+
+	void State_Circle_Update(float afTimeStep)
+	{
+		cVector3f vDist = mvTargetPos-mBaseObj.GetPosition();
+		cVector3f vPlayerDist = Player_GetPosition()-mBaseObj.GetPosition();
+		if ( (vDist.SqrLength()<0.5f) || (vPlayerDist.SqrLength()<5.0f) ) 
+		{
+			PickTargetAwayFromPlayer(gfCircleDist);
+		}
+		mpMover.MoveToPos(mvTargetPos);
+	}
+
+	//------------------------------------------------------------
+
+	void State_Circle_Leave() 
+	{
+	}
+	
+	//------------------------------------------------------------
+	// GoToPos
+	//------------------------------------------------------------
+
+	void State_GoToPos_Enter() 
+	{
+		mpMover.SetSpeedState(eViperfishSpeed_Circle);
+	}
+
+	//------------------------------------------------------------
+
+	void State_GoToPos_Update(float afTimeStep)
+	{
+		cVector3f vDist = mvTargetPos-mBaseObj.GetPosition();
+		if (vDist.SqrLength()<0.5f) 
+		{
+			mpStateMachine.ChangeState(eViperfishState_Idle);
+		}
+		mpMover.MoveToPos(mvTargetPos);
+	}
+
+	//------------------------------------------------------------
+
+	void State_GoToPos_Leave() 
+	{
+	}
+	
+	//------------------------------------------------------------
+	// GoToPos
+	//------------------------------------------------------------
+
+	void State_Patrol_Enter() 
+	{
+		mpMover.SetSpeedState(eViperfishSpeed_Circle);
+		mpPathfinder.SetTrackPaused(false);
+	}
+
+	//------------------------------------------------------------
+
+	void State_Patrol_Update(float afTimeStep)
+	{
+	}
+
+	//------------------------------------------------------------
+
+	void State_Patrol_Leave() 
+	{
+		mpPathfinder.SetTrackPaused(true);
+	}
+
+	//------------------------------------------------------------
+	// Converge
+	//------------------------------------------------------------
+
+	void State_Converge_Enter() 
+	{
+		mpMover.SetSpeedState(eViperfishSpeed_Converge);
+		PickConvergeTarget();
+	}
+
+	//------------------------------------------------------------
+
+	void State_Converge_Update(float afTimeStep) 
+	{
+		cVector3f vDist = mvTargetPos-mBaseObj.GetPosition();
+		if (vDist.SqrLength()<0.5f) 
+		{
+			PickConvergeTarget();
+		}
+		mpMover.MoveToPos(mvTargetPos);
+	}
+
+	//------------------------------------------------------------
+
+	void State_Converge_Leave() 
+	{
+	}
+
+	//------------------------------------------------------------
+	// Attack
+	//------------------------------------------------------------
+
+	void State_Attack_Enter() 
+	{
+		mpMover.SetSpeedState(eViperfishSpeed_Attack);
+		
+		/////////////////////////
+		// Callback
+		cLuxMap@ pMap = cLux_GetCurrentMap();
+		if (msAttackCallback != "" && 
+			pMap.ScriptPrepare("void " + msAttackCallback + "(const tString &in asEntity)"))
+		{
+			pMap.SetArgString(0, mBaseObj.GetName());
+			pMap.ScriptExecute();
+		}
+	}
+
+	//------------------------------------------------------------
+
+	void State_Attack_Update(float afTimeStep) 
+	{
+		if (!mBaseObj.GetSensesActive())
+		{
+			mpStateMachine.ChangeState(mpStateMachine.GetPrevState());
+			return;
+		}
+		
+		mvTargetPos = cLux_GetPlayer().GetCamera().GetPosition();
+		mvTargetPos.y += cMath_RandRectf(-0.5f,0.5f);
+		mpMover.MoveToPos(mvTargetPos);
+		
+		float fDist = mBaseObj.GetDistanceToPlayer();
+		if (fDist<10.0f)
+		{
+			AttackMeter_AddInstance(mBaseObj.GetID(), 0.7f, 0.15f, 0.3f);
+
+			if (fDist<2.0f) 
+				AttackMeter_AddInstance(mBaseObj.GetID(), 1.0f, 0.3f, 0.3f);
+		}
+	}
+
+	//------------------------------------------------------------
+
+	void State_Attack_Leave() 
+	{
+		AttackMeter_RemoveInstance(mBaseObj.GetID());
+	}
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PLAYER DEATH
+	/////////////////////////////////////////
+		
+	//------------------------------------------------------------
+	
+	void _Global_PlayerStartDamageCallback()
+	{
+		AttackMeter_RemoveInstance(mBaseObj.GetID());	
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_PlayerAfterDamageCallback()
+	{
+		mBaseObj.SetActive(false);
+	}
+	
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+
+	//------------------------------------------------------------
+
+	void OnSetActive(bool abX) 
+	{
+	}
+
+	//------------------------------------------------------------
+
+	void GiveDamage(float afAmount, int alStrength, const tString&in asType, const tString&in asSource) 
+	{
+	}
+
+	//------------------------------------------------------------
+
+	void OnHealthChange() 
+	{
+	}
+
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+
+	//------------------------------------------------------------
+
+	bool CanInteract(int alType, iPhysicsBody@ apBody) 
+	{
+		return false;
+	}
+
+	//------------------------------------------------------------
+
+	bool OnInteract(int alType, iPhysicsBody@ apBody, const cVector3f &in avFocusPos, const tString&in asData) 
+	{
+		return false;
+	}
+
+	//------------------------------------------------------------
+
+	void PickTargetAwayFromPlayer(float fDist) 
+	{
+		cVector3f vPlayerPos = Player_GetPosition();
+		cVector3f vDist = vPlayerPos-mBaseObj.GetPosition();
+
+		cVector3f vRight = cMath_Vector3Cross(vDist, cVector3f_Up);
+		float fOffset = cMath_RandRectf(-2.0f,2.0f);
+
+		cVector3f vNormal = mBaseObj.GetPosition()+vRight*fOffset;
+		vNormal-=vPlayerPos;
+		vNormal.Normalize();
+		vNormal*=fDist;
+
+		mvTargetPos.x = vPlayerPos.x+vNormal.x;
+		mvTargetPos.z = vPlayerPos.z+vNormal.z;
+		mvTargetPos.y = vPlayerPos.y+cMath_RandRectf(-0.5f,0.5f);
+
+		UpdateTargetGroundPos();
+	}
+
+	//------------------------------------------------------------
+
+	void PickConvergeTarget() 
+	{
+		cVector3f vTargetPos = Map_GetEntity(msTargetEntity).GetPosition();
+		cVector3f vDist = vTargetPos-mBaseObj.GetPosition();
+		vDist.y=0.0f;
+		float fDist = vDist.Length()-3.0f;
+		fDist = cMath_Clamp(fDist, 2.0f, 10.0f);
+		cVector2f vRand = cMath_RandomCircleEdgePoint(fDist);
+		mvTargetPos = vTargetPos;
+		mvTargetPos.x+=vRand.x;
+		mvTargetPos.z+=vRand.y;
+
+		cBoundingVolume @pVol = Map_GetEntity(msTargetEntity).GetMainBody().GetBoundingVolume();
+		mvTargetPos.y=cMath_RandRectf(pVol.GetMin().y+0.1f, pVol.GetMax().y+0.2f);
+
+		UpdateTargetGroundPos();
+	}
+
+	//------------------------------------------------------------
+
+	void UpdateTargetGroundPos() 
+	{
+		cVector3f vRayStart = mvTargetPos;
+		vRayStart.y+=10.0f;
+		mBaseObj.GetClosestBody("CallbackUpdateTargetGroundPos" ,vRayStart, cVector3f_Down, 50.0f);
+	}
+
+	//------------------------------------------------------------
+
+	void CallbackUpdateTargetGroundPos(bool abSuccessful, float afDistance, const cVector3f&in avNormal, iPhysicsBody@ apBody) 
+	{
+		if (!abSuccessful) 
+		{
+			mvTargetPos.y+=1.0f;
+			UpdateTargetGroundPos();
+			return;
+		}
+
+		afDistance-=11.0f;
+		if (afDistance<0.0f)
+			mvTargetPos.y-=afDistance;
+	}
+
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// GLOBAL
+	/////////////////////////////////////////
+
+	//------------------------------------------------------------
+
+	void _Global_SetConverge() 
+	{
+		msTargetEntity = cScript_GetGlobalArgString(0);
+		mpStateMachine.ChangeState(eViperfishState_Converge);
+	}
+
+	//------------------------------------------------------------
+
+	void _Global_SetIdle() 
+	{
+		mpStateMachine.ChangeState(eViperfishState_Idle);
+	}
+
+	//------------------------------------------------------------
+
+	void _Global_SetIdleCallback() 
+	{
+		msIdleCallback = cScript_GetGlobalArgString(0);
+	}
+	
+	//------------------------------------------------------------
+
+	void _Global_SetAttackCallback() 
+	{
+		msAttackCallback = cScript_GetGlobalArgString(0);
+	}
+	
+	//------------------------------------------------------------
+
+	void _Global_SetPatrol() 
+	{
+		mpStateMachine.ChangeState(eViperfishState_Patrol);
+	}
+	
+	//------------------------------------------------------------
+
+	void _Global_SetCircling() 
+	{
+		bool bShouldReposition = cScript_GetGlobalArgBool(0);
+		if (bShouldReposition)
+		{
+			// Move to a good distance from the player
+			cVector2f vRand = cMath_RandomCircleEdgePoint(gfAppearDist);
+			cVector3f vPos = cLux_GetPlayer().GetCharacterBody().GetPosition();
+			mvCirclePos.x = vPos.x+vRand.x;
+			mvCirclePos.z = vPos.z+vRand.y;
+			mvCirclePos.y = mBaseObj.GetPosition().y;
+			UpdateCircleGroundPos();
+			mBaseObj.SetActive(false);
+		}
+		mpStateMachine.ChangeState(eViperfishState_Circle);
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateCircleGroundPos() 
+	{
+		cVector3f vRayStart = mvCirclePos;
+		vRayStart.y+=10.0f;
+		mBaseObj.GetClosestBody("CallbackUpdateCircleGroundPos" ,vRayStart, cVector3f_Down, 50.0f);
+	}
+
+	//------------------------------------------------------------
+
+	void CallbackUpdateCircleGroundPos(bool abSuccessful, float afDistance, const cVector3f&in avNormal, iPhysicsBody@ apBody) 
+	{
+		if (!abSuccessful) 
+		{
+			mvCirclePos.y+=1.0f;
+			UpdateCircleGroundPos();
+			return;
+		}
+
+		afDistance-=11.0f;
+		if (afDistance<0.0f)
+			mvCirclePos.y-=afDistance;
+		mBaseObj.SetPosition(mvCirclePos);
+		mBaseObj.SetActive(true);
+	}
+	
+	//------------------------------------------------------------
+		
+	void _Global_SetGoToPos()
+	{
+		mvTargetPos = cScript_GetGlobalArgVector3f(0);
+		mpStateMachine.ChangeState(eViperfishState_GoToPos);
+	}
+
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+
+	//------------------------------------------------------------
+
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY) 
+	{
+		return afStartY;
+	}
+
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+
+	//------------------------------------------------------------
+
+	cLuxBackboneTail @mpBackboneTail;
+	cLuxStateMachine@ mpStateMachine;
+	cLuxCharMover@ mpMover;
+	cLuxPathfinder@ mpPathfinder;
+
+	tString msIdleCallback;
+	tString msAttackCallback;
+	
+	//------------------------------------------------------------
+
+	tString msTargetEntity;
+	[nosave] cVector3f mvTargetPos;
+	[nosave] cVector3f mvCirclePos;
+
+	//------------------------------------------------------------
+}

@@ -1,0 +1,468 @@
+
+	
+//-------------------------------------------------------
+
+/////////////////////////////////////////
+// STATION PLAYBACK
+/////////////////////////////////////////
+
+//-------------------------------------------------------
+
+class cStationGui_AudioPlaybackSettings
+{
+	int mlBarCount = 16;
+	bool mbDuckAudio = true;
+}
+
+//-------------------------------------------------------
+
+int StationGui_AudioPlaybackApp(cStationGui_AudioPlaybackSettings aSettings = cStationGui_AudioPlaybackSettings())
+{
+	tString sCurrentTransCat = ImGui_GetTransCategory();
+	 
+	///////////////////
+	// Data
+	cImGuiWindowData window = StationGui_CreateDefaultWindowData();
+
+	cImGuiGaugeData gaugeData = StationGui_CreateDefaultGaugeData();
+	gaugeData.mOrientation = eImGuiGaugeOrientation_Vert;
+	gaugeData.mGfxFrame.mGfxCornerTopLeft.mColor = cColor(0.0f, 0.0f);
+	gaugeData.mGfxFrame.mGfxCornerTopRight.mColor = cColor(0.0f, 0.0f);
+	
+	cImGuiButtonData toggleButton = StationGui_CreateToggleButtonData();
+	toggleButton.mFont.mvSize = ImGui_NrmSizeKeepRatio(0.035);
+
+	Depth_ImGui_CheckAudioFilePlaybackEnd();
+	
+	////////////////////
+	// Setup window
+	int lFileCount = gvAudioAppEntries.length();
+	float fHeight = 0.15+( cMath_Max(lFileCount, 1)*0.104);
+	float fYPos = 0.02f+0.5f*(0.775-fHeight);
+	
+	///////////////////
+	// Window
+	ImGui_SetTransCategory("StationGUI");
+	ImGui_DoWindowStart("AudioApp_Header", window, ImGui_NrmPosGroup(0.06, fYPos, 1), ImGui_NrmSizeGroup(0.88, fHeight));
+		ImGui_SetTransCategory(sCurrentTransCat);
+	
+		////////////////////////////////////////////
+		// Deselects file when playback is over
+		int lSelection = ImGui_GetStateInt("AudioFileSelection", -1);
+		if (Depth_ImGui_PlaybackActive()==false)
+			lSelection = -1;
+			
+		/////////////////////
+		// File list
+		float fButtonHeight = 0.0675;
+		float fButtonSpace = 0.0344;
+		bool bStartPlayback = false;
+		for (int i = 0; i < lFileCount; i++)
+		{
+			ImGui_AddItemString(gvAudioAppEntries[i].msTitle);
+			bool bToggled = ImGui_DoToggleButtonExt(gvAudioAppEntries[i].msTitle, gvAudioAppEntries[i].msTitle, lSelection==i, 
+													toggleButton, ImGui_NrmPos(0.021, 0.03+(fButtonHeight+fButtonSpace)*i, 1), 
+													ImGui_NrmSize(0.3125, fButtonHeight));
+									
+			if (ImGui_PrevBecamePressed())
+			{
+				if (bToggled)
+				{
+					lSelection = i;
+					bStartPlayback = true;
+				}
+				else
+				{
+					lSelection = -1;
+					Depth_ImGui_StopAudioFilePlayback(ImGui_GetName());
+				}
+			}
+		}
+		cImGuiGfx gfx_line("stationV2/misc/GUI_line");
+		ImGui_DrawLineExt(ImGui_NrmPos2(0.415, 0.03)+cVector2f(0, ImGui_GetCurrentGroupPos().y), ImGui_NrmPos2(0.415, 1), 2, 
+						  ImGui_NrmSize(0.004).x, gStationGuiColor_Normal, gfx_line);
+		ImGui_SetStateInt("AudioFileSelection", lSelection);
+
+		/////////////////////
+		// Play new file
+		if (bStartPlayback)
+		{
+			Depth_ImGui_StopAudioFilePlayback(ImGui_GetName());
+			
+			if (gvAudioAppEntries[lSelection].mbIsVoice)
+				StationGui_StartVoicePlayback(ImGui_GetName(), gvAudioAppEntries[lSelection].msFile, gvAudioAppEntries[lSelection].msCallback);
+			else
+				StationGui_StartAudioPlayback(ImGui_GetName(), gvAudioAppEntries[lSelection].msFile);
+		}
+		
+		//////////////////////
+		// Frequency bars
+		float fBars = aSettings.mlBarCount;
+		float fSignalBoost = 10.0f;
+		for (int i = 0; i < lFileCount; i++)
+		{
+			bool bPlaybackActive = lSelection==i;
+			bool bResetSignals = false;
+			tString sAudioPrefix = "Audio"+i;
+			tString sSignalResetVar = sAudioPrefix + "_SignalReset";
+			tString sSignalValueVar = sAudioPrefix + "_Signal";
+				
+			if(bPlaybackActive)
+			{
+				ImGui_SetStateBool(sSignalResetVar, false);
+				
+				array<float> vSpectrum;
+				cLux_GetVoiceHandler().GetSpectrumFromScene(Entity_GetVarString(ImGui_GetName(), "VoicePlaybackScene"), vSpectrum);
+				
+				if(vSpectrum.length()>0)
+				{
+					for (int lBar = 0; lBar < fBars; lBar++)
+						ImGui_FadeStateFloat(sSignalValueVar+lBar, vSpectrum[lBar]*fSignalBoost, 0.015f, eEasing_Linear, false);
+				}
+			}
+			else
+			{
+				if(ImGui_GetStateBool(sSignalResetVar, false)==false)
+				{
+					ImGui_SetStateBool(sSignalResetVar, true);
+					bResetSignals = true;
+				}
+			}
+			
+			if(bResetSignals)
+			{
+				for (int lBar = 0; lBar < fBars; lBar++)
+				{
+					ImGui_FadeStateFloat(sSignalValueVar+lBar, 0.0f, 0.075f, eEasing_QuadInOut, true);
+				}
+			}
+			
+			
+			// Draw the actual bars
+			ImGui_GroupBegin(ImGui_NrmPos(cVector3f(0.4, 0.03+0.102*i, 2)), ImGui_NrmSize(cVector2f(0.425, 0.075)));
+				
+				for (int lBar = 0; lBar < fBars; lBar++)
+				{
+					float fSignal = ImGui_GetStateFloat(sSignalValueVar+lBar);
+					ImGui_DoGauge(gaugeData, fSignal, ImGui_NrmPosGroup(cVector3f(lBar*(1/fBars), 0, 2)), ImGui_NrmSizeGroup(cVector2f(1/fBars, 0.9)));
+				}
+								
+			ImGui_GroupEnd();
+		}
+		
+		ImGui_SetModUseInput(true);
+		
+		StationGui_DrawAppIcon("ossymbol_player");
+		
+		Depth_ImGui_ClearAudioFiles();
+		
+	ImGui_DoWindowEnd();
+	
+	ImGui_SetModColorMul(cColor_White);
+	
+	/////////////////
+	// Sound ducking
+	if (aSettings.mbDuckAudio)
+	{
+		bool bDucked = ImGui_GetStateBool("AudioDucked", false);
+		if (bDucked && (ImGui_InFocus()==false || Depth_ImGui_PlaybackActive()==false))
+		{
+			Sound_FadeGlobalVolume(1.0f, 3.5f, eSoundEntryType_WorldAll);
+			Music_FadeVolumeMul(1.0f, 3.5f);
+			bDucked = false;
+		}
+		else if (bDucked==false && ImGui_InFocus() && Depth_ImGui_PlaybackActive())
+		{
+			Sound_FadeGlobalVolume(0.5f, 2.0f, eSoundEntryType_WorldAll);
+			Music_FadeVolumeMul(0.25f, 2.0f);
+			bDucked = true;
+		}
+		ImGui_SetStateBool("AudioDucked", bDucked);
+	}
+	
+	return lSelection;
+}
+	
+//-------------------------------------------------------
+
+/////////////////////////////////////////
+// STATION PLAYBACK - VOICE
+/////////////////////////////////////////
+
+//-------------------------------------------------------
+
+/**
+ * Default station voice playback window.
+ * 
+ * @param asFile, displayed name of file to be played, if "" no text or playback controls will be visible.
+ * @param asSubject, subject to play.
+ * @param asVoiceCallback, callback called when voice has finished playing.
+ * @param avPos, position of window.
+ * @param avSize, size of window.
+ * @param afFontSizeMul, font size multiplier.
+ * 
+ * @return bool, true if playback button was pressed.
+ * 
+ **/
+bool StationGui_VoicePlaybackWindow(const tString &in asFile, const tString &in asSubject, const tString &in asVoiceCallback,
+									const cVector3f &in avPos, const cVector2f &in avSize, float afFontSizeMul=1.0f)
+{
+	float fPlaybackTime = ImGui_GetStateFloat("FilePlayback", 0);
+	tString sCurrentTransCat = ImGui_GetTransCategory();
+	
+	///////////////////////////////
+	// Check if file has ended!
+	StationGui_CheckVoicePlaybackEnd();
+	
+	////////////////////
+	// Playback window
+	cImGuiWindowData windowData = StationGui_CreateDefaultWindowData();
+	ImGui_SetTransCategory("GUI");
+	StationGui_DoWindowStart("Playback", windowData, avPos, avSize, false);
+		
+		//text
+		cImGuiLabelData textData;
+		textData.mbUseBackgroundGfx = false;
+		textData.mFont.mvSize = 20.f*afFontSizeMul;
+		textData.mFontAlign = eFontAlign_Center;
+		textData.mColorText = cColor(0.8, 1);
+					
+		if (asFile != "")
+		{
+			ImGui_SetTransCategory(sCurrentTransCat);
+			ImGui_DoLabelExt(asFile, textData, 
+							  ImGui_NrmPosGroup(cVector3f(0.0, 0.12, 1)), ImGui_NrmSizeGroup(cVector2f(1, -1)), 0.75);
+			ImGui_SetTransCategory("");
+			ImGui_DoLabelExt(String_SecondsToClockDisplay(fPlaybackTime, false, true, true, true), textData, 
+							  ImGui_NrmPosGroup(cVector3f(0.0, 0.25, 1)), ImGui_NrmSizeGroup(cVector2f(1, -1)));
+		}
+		
+		//button
+		cImGuiButtonData buttonData = StationGui_CreateDefaultButtonData();
+		buttonData.mFont.mvSize = 20.f*afFontSizeMul;
+		
+		bool bButtonPressed = false;
+		if (asFile != "")
+		{
+			bButtonPressed = StationGui_VoicePlaybackButtonExt(asSubject, asVoiceCallback, ImGui_NrmPosGroup(cVector3f(0.25, 0.5, 1)), 
+																ImGui_NrmSizeGroup(cVector2f(0.5, 0.35)), buttonData);
+		}		
+	StationGui_DoWindowEnd();
+	return bButtonPressed;
+}
+
+//-------------------------------------------------------
+
+bool StationGui_CheckVoicePlaybackEnd()
+{
+	if (Depth_ImGui_PlaybackActive()==false) return false;
+
+	tString sScene = Entity_GetVarString(ImGui_GetName(), "VoicePlaybackScene");
+	if (sScene == "") return false;
+	
+	if (!Voice_SceneIsActive(sScene))
+	{
+		StationGui_StopVoicePlayback(ImGui_GetName(), false);
+		return true;
+	}
+	return false;
+}
+
+//-------------------------------------------------------
+
+bool StationGui_VoicePlaybackButton(const tString &in asSubject, const tString &in asVoiceCallback, const cVector3f &in avPos, const cVector2f &in avSize)
+{
+	cImGuiButtonData buttonData = StationGui_CreateDefaultButtonData();
+	buttonData.mFont.mvSize = ImGui_NrmSizeKeepRatio(0.0375);
+	return StationGui_VoicePlaybackButtonExt(asSubject, asVoiceCallback, avPos, avSize, buttonData);
+}
+
+//-------------------------------------------------------
+
+bool StationGui_VoicePlaybackButtonExt(const tString &in asSubject, const tString &in asVoiceCallback, const cVector3f &in avPos, const cVector2f &in avSize, 
+									   const cImGuiButtonData &in aButton)
+{
+	bool bPlaybackActive = Depth_ImGui_PlaybackActive();
+	bool bButtonPressed = false;
+	tString sCurrentTransCat = ImGui_GetTransCategory();
+	ImGui_SetTransCategory("GUI");
+	if (ImGui_DoButtonExt("StopStartVoicePlayback", bPlaybackActive ? "Stop" : "Play", aButton, avPos, avSize))
+	{	
+		if (bPlaybackActive) StationGui_StopVoicePlayback(ImGui_GetName(), true);
+		else				 StationGui_StartVoicePlayback(ImGui_GetName(), asSubject, asVoiceCallback);
+		bButtonPressed = true;
+	}
+	ImGui_SetTransCategory(sCurrentTransCat);
+	
+	return bButtonPressed;
+}
+
+//-------------------------------------------------------
+
+/**
+ * Starts the voice playback correctly when using the default station voice playback windows. Can be used outside of ImGui functions if needed.
+ * 
+ * @param asTerminal, name of the voice playback terminal.
+ * @param asSubject, subject to play.
+ * @param asCallback, callback called when voice has finished playing.
+ * 
+ **/
+void StationGui_StartVoicePlayback(const tString &in asTerminal, const tString &in asSubject, const tString &in asCallback)
+{			
+	Terminal_SetImGuiStateInt(asTerminal, "FilePlaybackActive", 1);
+	Terminal_SetImGuiStateFloat(asTerminal, "FilePlayback", 0);
+	Terminal_FadeImGuiStateFloat(asTerminal, "FilePlayback", 10000, 10000, eEasing_Linear);
+	
+	Terminal_SetUpdateWhenOutOfView(asTerminal, true);
+	
+	Entity_SetVarString(ImGui_GetName(), "VoicePlaybackScene", Voice_GetSubjectSceneName(asSubject));
+	
+	Voice_Play(asSubject, -1, asCallback);
+}
+
+//-------------------------------------------------------
+
+/**
+ * Stops the voice playback correctly when using the default station voice playback windows. Can be used outside of ImGui functions if needed.
+ * 
+ * @param asTerminal, name of the voice playback terminal.
+ * @param abResetTime, if the playback counter should be reset to zero.
+ * 
+ **/
+void StationGui_StopVoicePlayback(const tString &in asTerminal, bool abResetTime)
+{
+	Terminal_SetImGuiStateInt(asTerminal, "FilePlaybackActive", 0);
+	Terminal_StopImGuiFade(asTerminal, "FilePlayback");
+	if (abResetTime) Terminal_SetImGuiStateFloat(asTerminal, "FilePlayback", 0);
+	
+	Terminal_SetUpdateWhenOutOfView(asTerminal, false);
+	
+	tString sScene = Entity_GetVarString(asTerminal, "VoicePlaybackScene");
+	if (sScene=="")
+		return;
+		
+	cLux_AddDebugMessage("Stop scene "+sScene);
+	
+	Voice_Stop(sScene);
+	Entity_SetVarString(asTerminal, "VoicePlaybackScene", "");
+}
+	
+//-------------------------------------------------------
+
+/////////////////////////////////////////
+// STATION PLAYBACK - AUDIO
+/////////////////////////////////////////
+
+//-------------------------------------------------------
+
+/**
+ * Default station audio playback window.
+ * 
+ * @param asDisplayName, displayed name of file to be played, if "" no text or playback controls will be visible.
+ * @param asAudioFileName, audio file to play.
+ * @param avPos, position of window.
+ * @param avSize, size of window.
+ * @param afFontSizeMul, font size multiplier.
+ * 
+ **/
+void StationGui_AudioPlaybackWindow(const tString &in asDisplayName, const tString &in asAudioFileName,
+									const cVector3f &in avPos, const cVector2f &in avSize, float afFontSizeMul=1.0f)
+{
+	float fPlaybackTime = ImGui_GetStateFloat("FilePlayback", 0);
+	bool bPlaybackActive = Depth_ImGui_PlaybackActive();
+	tString sCurrentTransCat = ImGui_GetTransCategory();
+	
+	///////////////////////////////
+	// Check if file has ended!
+	if (bPlaybackActive && !Sound_Exists(ImGui_GetName()+"_AudioPlaybackSound"))
+	{
+		StationGui_StopAudioPlayback(ImGui_GetName(), false);
+	}
+	
+	////////////////////
+	// Playback window
+	cImGuiWindowData windowData = StationGui_CreateDefaultWindowData();
+	ImGui_SetTransCategory("GUI");
+	StationGui_DoWindowStart("Playback", windowData, avPos, avSize, false);
+		
+		//text
+		cImGuiLabelData textData;
+		textData.mbUseBackgroundGfx = false;
+		textData.mFont.mvSize = ImGui_NrmSizeKeepRatio(0.05)*afFontSizeMul;
+		textData.mFontAlign = eFontAlign_Center;
+		textData.mColorText = cColor(0.8, 1);
+					
+		if (asDisplayName != "")
+		{
+			ImGui_SetTransCategory(sCurrentTransCat);
+			ImGui_DoLabelExt(asDisplayName, textData, 
+							  ImGui_NrmPosGroup(cVector3f(0.0, 0.12, 1)), ImGui_NrmSizeGroup(cVector2f(1, -1)), 0.75);
+			ImGui_SetTransCategory("");
+			ImGui_DoLabelExt(String_SecondsToClockDisplay(fPlaybackTime, false, true, true, true), textData, 
+							  ImGui_NrmPosGroup(cVector3f(0.0, 0.25, 1)), ImGui_NrmSizeGroup(cVector2f(1, -1)));
+		}
+		
+		//button
+		cImGuiButtonData buttonData = StationGui_CreateDefaultButtonData();
+		buttonData.mFont.mvSize = ImGui_NrmSizeKeepRatio(0.05)*afFontSizeMul;
+		
+		ImGui_SetTransCategory("GUI");
+		if (asDisplayName != "" && 
+			ImGui_DoButtonExt("StopStartAudioPlayback", bPlaybackActive ? "Stop" : "Play", buttonData, 
+							  ImGui_NrmPosGroup(cVector3f(0.25, 0.5, 1)), ImGui_NrmSizeGroup(cVector2f(0.5, 0.35))))
+		{	
+			if (bPlaybackActive) StationGui_StopAudioPlayback(ImGui_GetName(), true);
+			else				 StationGui_StartAudioPlayback(ImGui_GetName(), asAudioFileName);
+		}
+		ImGui_SetTransCategory(sCurrentTransCat);
+		
+	StationGui_DoWindowEnd();
+}
+ 
+//-------------------------------------------------------
+
+/**
+ * Stops the audio playback correctly when using the default station audio playback windows. Can be used outside of ImGui functions if needed.
+ * 
+ * @param asTerminal, name of the audio playback terminal.
+ * @param abResetTime, if the playback counter should be reset to zero.
+ * 
+ **/
+void StationGui_StopAudioPlayback(const tString &in asTerminal, bool abResetTime)
+{
+	Terminal_SetImGuiStateInt(asTerminal, "FilePlaybackActive", 0);
+	Terminal_StopImGuiFade(asTerminal, "FilePlayback");
+	if (abResetTime) Terminal_SetImGuiStateFloat(asTerminal, "FilePlayback", 0);
+	
+	Terminal_SetUpdateWhenOutOfView(asTerminal, false);
+	
+	if (Sound_Exists(asTerminal+"_AudioPlaybackSound"))
+		Sound_Stop(asTerminal+"_AudioPlaybackSound", 0.3);
+}
+
+//-------------------------------------------------------
+
+/**
+ * Starts the audio playback correctly when using the default station audio playback windows. Can be used outside of ImGui functions if needed.
+ * 
+ * @param asTerminal, name of the audio playback terminal.
+ * @param asSoundFile, file to play.
+ * 
+ **/
+void StationGui_StartAudioPlayback(const tString &in asTerminal, const tString &in asSoundFile = "")
+{			
+	Terminal_SetImGuiStateInt(asTerminal, "FilePlaybackActive", 1);
+	Terminal_SetImGuiStateFloat(asTerminal, "FilePlayback", 0);
+	Terminal_FadeImGuiStateFloat(asTerminal, "FilePlayback", 10000, 10000, eEasing_Linear);
+	
+	Terminal_SetUpdateWhenOutOfView(asTerminal, true);
+	
+	if (asSoundFile == "")
+	{
+		cLux_AddTodoMessage("Sound: "+asTerminal+"_AudioPlaybackSound");
+	}
+	else
+	{
+		Sound_CreateAtEntity(asTerminal+"_AudioPlaybackSound", asSoundFile, asTerminal, 0, true);
+	}
+}

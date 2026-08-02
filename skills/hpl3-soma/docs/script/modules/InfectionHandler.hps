@@ -1,0 +1,446 @@
+#include "interfaces/UserModule_Interface.hps"
+#include "modules/ModuleInterfaces.hps"
+
+/////////////////////////////////////////
+// SETTINGS
+/////////////////////////////////////////
+
+//------------------------------------------------------------
+
+const tString gsInfectionLoopSound=""; 
+
+//------------------------------------------------------------
+
+class cInfectionTree
+{
+	array<cInfectionTreeAtom> mvAtoms;
+	array<cInfectionTreeLeaf> mvLeaves;
+	int mlRandSeed=0;
+	float mfSpeed;
+}
+
+class cInfectionTreeAtom
+{
+	cVector2f mvStart=cVector2f(0);
+	cVector2f mvEnd=cVector2f(0);
+	cVector2f mvDir;
+	float mfWidth=10;
+	float mfHeight=10;
+	float mfAlpha=1;
+	float mfStaticAlpha=1;
+	int mlGlobalCount;
+	int mlBranchCount;
+	int mlDepthCount;
+}
+
+class cInfectionTreeLeaf
+{
+	int mlAtomIdx;
+	cVector2f mvDir;
+	int mlMaxBranchSteps;
+	float mfAlpha =0;
+}
+
+//------------------------------------------------------------
+
+const float gfChildPosMul = 0.8;
+
+//------------------------------------------------------------
+
+class cScrInfectionHandler : iScrUserModule, iScrUserModule_Interface, iScrInfectionHandler_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		@mpLineAtomGfx = cGui_CreateGfxImage("infection_line_atom.tga", eGuiMaterial_Additive);
+		@mpLeafAtomGfx = cGui_CreateGfxImage("infection_leaf_atom.tga", eGuiMaterial_Additive);
+		@mpBgGfx = cGui_CreateGfxFilledRect(cColor(1,1), eGuiMaterial_Alpha);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// USER SETTINGS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void LoadUserConfig()
+	{
+	
+	}
+	void SaveUserConfig()
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ENTER MAP
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+	}
+	void OnMapLeave(cLuxMap @apMap)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void PreloadData(cLuxMap @apMap)
+	{
+	}
+
+	void CreateWorldEntities(cLuxMap @apMap)
+	{
+	}
+	void DestroyWorldEntities(cLuxMap @apMap)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PUBLIC FUNCTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void CreateBorderTree(int alBorder, float afOffset, const cVector2f& in avSize, float afSpeed)
+	{
+		cVector2f vDir, vPos;
+		
+		cVector2f vMin = cVector2f(-cLux_GetHudVirtualOffset().x, -cLux_GetHudVirtualOffset().y);
+		cVector2f vMax = cVector2f(cLux_GetHudVirtualSize().x+vMin.x, cLux_GetHudVirtualSize().y+vMin.y);
+		
+		if(alBorder==0) { 
+			vPos = cVector2f(cMath_RandRectf(vMin.x, vMax.x), -afOffset); vDir = cVector2f(0,1);
+		}
+		if(alBorder==1) { 
+			vPos = cVector2f(cMath_RandRectf(vMin.x, vMax.x), 768+afOffset); vDir = cVector2f(0,-1);
+		}
+		if(alBorder==2) {
+			vPos = cVector2f(vMin.x-afOffset, cMath_RandRectf(vMin.y, vMax.y)); vDir = cVector2f(1,0);
+		}
+		if(alBorder==3) {
+			vPos = cVector2f(vMax.x+afOffset, cMath_RandRectf(vMin.y, vMax.y)); vDir = cVector2f(-1,0);
+		}
+		
+		vDir = cMath_Vector2Rotate(vDir, cMath_RandRectf(-0.25, 0.25f));
+		
+		CreateTree(vPos, avSize, vDir, afSpeed);
+	}
+	
+	//------------------------------------------------------------
+		
+	void ClearTrees()
+	{
+		mvTrees.resize(0);
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERATION HELPERS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void CreateTree(const cVector2f& in avPos, const cVector2f& in avSize, const cVector2f& in avDir, float afSpeed)
+	{
+		cInfectionTree tree;
+		
+		tree.mlRandSeed = cMath_RandRectl(0, 32000);
+		tree.mfSpeed = afSpeed;
+		
+		///////////////////////////
+		// First Atom
+		cInfectionTreeAtom atom;
+		
+		atom.mlGlobalCount =0;
+		atom.mlBranchCount =0;
+		atom.mlDepthCount=0;
+		atom.mvStart = avPos;
+		atom.mfWidth = avSize.x;
+		atom.mfHeight = avSize.y;
+		
+		atom.mvEnd = atom.mvStart;
+		
+		atom.mvDir = avDir;
+		
+		atom.mfAlpha =0;
+		atom.mfStaticAlpha =1;
+		
+		tree.mvAtoms.push_back(atom);
+		
+		///////////////////////////
+		// First Leaf
+		cInfectionTreeLeaf leaf;
+		
+		leaf.mlAtomIdx =0;
+		leaf.mlMaxBranchSteps = 2;
+		
+		tree.mvLeaves.push_back(leaf);
+		
+		///////////////////////////
+		// Add tree
+		mvTrees.push_back(tree);
+	}
+	
+	//------------------------------------------------------------
+	
+	int CreateAtom(cInfectionTree@ apTree, cInfectionTreeAtom@ apParent, float afAngle, bool abNewBranch,
+					const cVector2f& in avSizeMul=cVector2f(1,1), int alDepthCountAdd=0)
+	{
+		cInfectionTreeAtom atom;
+		
+		atom.mlGlobalCount = apParent.mlGlobalCount+1;
+		atom.mlBranchCount = abNewBranch ? 0 : apParent.mlBranchCount+1;
+		atom.mlDepthCount = apParent.mlDepthCount+alDepthCountAdd;
+		
+		atom.mvStart = apParent.mvStart + apParent.mvDir*apParent.mfHeight*gfChildPosMul;
+		atom.mfWidth = apParent.mfWidth*avSizeMul.x;
+		atom.mfHeight = apParent.mfHeight*avSizeMul.y;
+		
+		cVector2f vDir = apParent.mvDir;
+		vDir = cMath_Vector2Rotate(vDir, afAngle);
+		
+		atom.mvDir = vDir;
+		atom.mvEnd = atom.mvStart;//atom.mvStart + atom.mvDir*atom.mfHeight;
+				
+		atom.mfAlpha =0;
+		atom.mfStaticAlpha = apParent.mfStaticAlpha-0.015f;
+		
+		apTree.mvAtoms.push_back(atom);
+		return apTree.mvAtoms.size()-1;
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateTree(cInfectionTree@ apTree, float afTimeStep)
+	{
+		/////////////////////////////////
+		// Atoms
+		cInfectionTreeAtom@ pAtom;
+		for(int i=0; i<apTree.mvAtoms.size(); ++i)
+		{
+			@pAtom = @apTree.mvAtoms[i];
+			
+			if(pAtom.mfAlpha>=1) continue;
+			
+			pAtom.mfAlpha += afTimeStep*apTree.mfSpeed;
+			if(pAtom.mfAlpha > 1) pAtom.mfAlpha = 1;
+			
+			pAtom.mvEnd = pAtom.mvStart + pAtom.mvDir*pAtom.mfHeight*(0.25+pAtom.mfAlpha*0.75f);
+		}
+		
+		/////////////////////////////////
+		// Leaves
+		cInfectionTreeLeaf@ pLeaf;
+		for(int i=0; i<apTree.mvLeaves.size(); ++i)
+		{
+			@pLeaf = @apTree.mvLeaves[i];
+			@pAtom = @apTree.mvAtoms[pLeaf.mlAtomIdx];
+			
+			pLeaf.mfAlpha += afTimeStep*apTree.mfSpeed;
+			if(pLeaf.mfAlpha>1) pLeaf.mfAlpha =1;
+			
+			if(pAtom.mfAlpha >= gfChildPosMul)
+			{
+				////////////////////////////
+				// Split
+				if(pAtom.mlBranchCount >= pLeaf.mlMaxBranchSteps)
+				{
+					////////////////////
+					// Remove this leaf
+					apTree.mvLeaves[i] = apTree.mvLeaves[apTree.mvLeaves.size()-1];
+					apTree.mvLeaves.pop_back();
+					--i;
+					
+					////////////////////
+					// Make it split paths, with new leaves
+					if(pAtom.mlDepthCount < 8)
+					{
+						for(int i=0; i<2; ++i)
+						{
+							if(pAtom.mlDepthCount>2 && cMath_RandRectl(0, pAtom.mlDepthCount)<=0) continue;
+							
+							float fAngle = i==0 ? 0.7f : -0.7f;
+							fAngle += cMath_RandRectf(-0.2f, 0.2f);
+							
+							cInfectionTreeLeaf leaf;
+							
+							leaf.mlMaxBranchSteps = 3 + cMath_RandRectl(-2, 14);
+							leaf.mlAtomIdx = CreateAtom(apTree, pAtom, fAngle, true, cVector2f(0.8f, 0.8f),1);
+							
+							apTree.mvLeaves.push_back(leaf);
+						}
+					}
+				}
+				////////////////////////////
+				// Step
+				else
+				{
+					pLeaf.mlAtomIdx = CreateAtom(	apTree, pAtom, 
+													cMath_RandRectf(-0.25f, 0.25f), 
+													false,
+													cVector2f(cMath_RandRectf(0.9, 1.1f), cMath_RandRectf(0.8, 1.2f))
+													);
+				}
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+		
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	float mfT=0;
+	void Update(float afTimeStep)
+	{	
+		mfT += afTimeStep;
+		
+		for(int i=0; i<mvTrees.size(); ++i)
+		{
+			UpdateTree(mvTrees[i], afTimeStep);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void PostUpdate(float afTimeStep)
+	{
+	}
+
+	void VariableUpdate(float afDeltaTime)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	float mfRotateTemp=0;
+	float mfScaleTemp=0;
+	
+	void OnDraw(float afFrameTime)
+	{
+		//if(true) return;
+		cInfectionTree@ pTree;
+		cVector2f vCenter, vSize;
+		float fW, fH;
+		float fAngle;
+		cInfectionTreeAtom@ pAtom;
+			
+			
+		for(int i=0; i<mvTrees.size(); ++i)
+		{
+			@pTree = @mvTrees[i];
+			
+			////////////////////////
+			// Leaf Atoms
+			/*for(int j=0; j<pTree.mvLeaves.size(); ++j)
+			{
+				cInfectionTreeLeaf@ pLeaf = pTree.mvLeaves[j];
+				cInfectionTreeAtom@ pAtom = pTree.mvAtoms[pLeaf.mlAtomIdx];
+				
+				cVector2f vSize = cVector2f(pAtom.mfWidth,pAtom.mfWidth);
+				cVector2f vChildPos = pAtom.mvStart + pAtom.mvDir*pAtom.mfHeight*pAtom.mfAlpha*gfChildPosMul;
+				cVector3f vPos = cVector3f(vChildPos.x-vSize.x/2, vChildPos.y-vSize.x/2, 1);
+				
+				cLux_GetGameHudSet().DrawGfx(	mpLeafAtomGfx, vPos,vSize, cColor(1, pLeaf.mfAlpha*pAtom.mfStaticAlpha));
+			}*/
+			
+			////////////////////////
+			// Line Atoms
+			for(int j=0; j<pTree.mvAtoms.size(); ++j)
+			{
+				@pAtom = @pTree.mvAtoms[j];
+				
+				vCenter = pAtom.mvStart;
+				fW = pAtom.mfWidth;
+				fH = cMath_Vector2Dist(pAtom.mvStart, pAtom.mvEnd)*1.0f;
+				fAngle = cMath_GetAngleFromPoints2D(pAtom.mvEnd, pAtom.mvStart);
+				
+				const float fLimitR0 = 2.0f/3.0f;
+				const float fLimitG0 = 1.0f/3.0f;
+				
+				float fA = pAtom.mfAlpha*pAtom.mfStaticAlpha;
+				
+				cLux_GetGameHudSet().DrawGfx(	mpLineAtomGfx, cVector3f(vCenter.x-fW/2, vCenter.y, 3), 
+												cVector2f(fW, fH), cColor(0, fA),
+												eGuiMaterial_Alpha, fAngle, true, cVector3f(fW/2, 0,0));
+												
+			}	
+		}
+	}
+	
+	//------------------------------------------------------------
+	void OnPostRender(float){}
+	void OnEnterContainer(const tString&in){}
+	void OnLeaveContainer(const tString&in){}
+	void AppGotInputFocus(){}
+	void AppLostInputFocus(){}	
+	void OnAction(int alAction, bool abPressed){}
+	void OnAnalogInput(int alAnalogId, const cVector3f &in avAmount){}
+	void OnExitPressed(){}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPER METHODS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	[nosave] cGuiGfxElement @mpLineAtomGfx;
+	[nosave] cGuiGfxElement @mpLeafAtomGfx;
+	[nosave] cGuiGfxElement @mpBgGfx;
+	
+	//------------------------------------------------------------
+	
+	array<cInfectionTree> mvTrees;
+	
+	//------------------------------------------------------------
+}

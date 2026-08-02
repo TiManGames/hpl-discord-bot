@@ -1,0 +1,268 @@
+#include "interfaces/Critter_Interface.hps"
+
+const float gfNautilusJetDecay = 0.25f;
+const float gfNautilusMinJetMul = 0.05f;
+
+const float gfNautilusMinNormalJetDelay = 0.5;
+const float gfNautilusMaxNormalJetDelay = 2;
+
+const float gfNautilusMinEscapeJetDelay = 0.1;
+const float gfNautilusMaxEscapeJetDelay = 0.75;
+
+const float gfNautilusNormalTurnSpeed = 0.6;
+const float gfNautilusEscapeTurnSpeed = 1.2;
+
+class cScrCritterNautilus : iScrCritter, iScrCritter_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{		
+		/////////////////////////////////////////
+		// Varialbes
+		mfNormalSpeed = apVars.GetVarFloat("NormalSpeed",2);
+		mfEscapeSpeed = apVars.GetVarFloat("EscapeSpeed",8);
+		mfEscapeDistance = apVars.GetVarFloat("EscapeDistance",4);
+		mfWanderMul = apVars.GetVarFloat("WanderMul",1);
+		mfFlockSeparation = apVars.GetVarFloat("FlockSeparation",0.7f);
+		mlMaxFlockMemberChecks = apVars.GetVarInt("MaxFlockMemberChecks",6);
+		
+		mfTowardsCenterMul = apInstanceVars.GetVarFloat("TowardsCenterMul",1);
+		mfExtraEscapeMul = apInstanceVars.GetVarFloat("ExtraEscapeMul",1);
+		msExtraEscapeEntities = apInstanceVars.GetVarString("ExtraEscapeEntities","");
+		
+		mBaseObj.mfForwardRotationYOffset = cMath_Pi;
+		
+		mBaseObj.mlAnimState = 1; //Moving
+		mBaseObj.SetIsFlying(true);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnAfterWorldLoad()
+	{
+		if (msExtraEscapeEntities == "") return;
+		
+		/////////////////////////////////
+		// Add extra escape entities
+		array<tString> vEscapeEntities;
+		cString_GetStringVec(msExtraEscapeEntities, vEscapeEntities, " ");
+		
+		for (int i = 0; i < vEscapeEntities.length(); i++)
+		{
+			tID id = mBaseObj.GetMap().GetEntityIDByName(vEscapeEntities[i]);
+			if (id == tID_Invalid) continue;
+				
+			mvExtraEscapeEntities.push_back(id);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnVariableUpdate(float afTimeStep)
+	{	
+		mfJetSpeedMul = cMath_IncreaseTo(mfJetSpeedMul, afTimeStep*gfNautilusJetDecay, gfNautilusMinJetMul);
+		
+		mBaseObj.mvWantedVel += mBaseObj.Move_GetWanderAdd3D(1,2, afTimeStep)*cVector3f(2,0.5f,2)*mfWanderMul;
+		
+		mBaseObj.mvWantedVel += mBaseObj.Move_GetFlockingAdd(	mfTowardsCenterMul*0.1f,0.5f, //Center and CenterYMul
+													mfFlockSeparation, //Separation
+													0, //Alignment
+													0, //Cohesion
+													mlMaxFlockMemberChecks, //Max group member checks
+													afTimeStep);
+		
+		mBaseObj.mvWantedVel += mBaseObj.Move_Normalize(mBaseObj.Move_GetTowardsGroundAdd(0.4f, afTimeStep))*-0.1f;
+		
+		bool bEscape = false;
+		if(mBaseObj.GetDistanceToPlayer()<mfEscapeDistance)
+		{
+			bEscape = true;
+			mBaseObj.mvWantedVel += mBaseObj.Move_Normalize(mBaseObj.Move_GetTowardPlayerAdd(false, afTimeStep))*-10*cVector3f(1,0.5f,1);
+		}
+		
+		cVector3f vPos;
+		for (int i = 0; i < mvExtraEscapeEntities.length(); i++)
+		{
+			vPos = cLux_ID_Agent(mvExtraEscapeEntities[i]).GetPosition();
+			if(mBaseObj.GetDistanceToPos(vPos)<mfEscapeDistance*0.75)
+			{
+				bEscape = true;
+				mBaseObj.mvWantedVel += mBaseObj.Move_Normalize(mBaseObj.Move_GetTowardPosAdd(vPos, false, afTimeStep))*-mfExtraEscapeMul*cVector3f(1,0.5f,1);
+			}
+		}
+		
+		if (bEscape)
+		{
+			mBaseObj.mfMaxTurnSpeed = gfNautilusEscapeTurnSpeed;
+			mBaseObj.Move_ChangeMaxSpeed(mfEscapeSpeed*mfJetSpeedMul, 8, afTimeStep);
+			if (mfJetSpeedMul <= gfNautilusMinJetMul && !mBaseObj.Timer_Exists(0)) 
+				mBaseObj.Timer_Add(0,cMath_RandRectf(gfNautilusMinEscapeJetDelay, gfNautilusMaxEscapeJetDelay),"JetPropulsion");
+		}
+		else
+		{
+			mBaseObj.mfMaxTurnSpeed = gfNautilusNormalTurnSpeed;
+			mBaseObj.Move_ChangeMaxSpeed(mfNormalSpeed*mfJetSpeedMul, 3, afTimeStep);
+			if (mfJetSpeedMul <= gfNautilusMinJetMul && !mBaseObj.Timer_Exists(0))
+			{
+				mBaseObj.Timer_Add(0,cMath_RandRectf(gfNautilusMinNormalJetDelay, gfNautilusMaxNormalJetDelay),"JetPropulsion");
+			}
+		}
+	}		
+	
+	//------------------------------------------------------------
+	
+	void JetPropulsion(uint64 aTimerID)
+	{
+		mfJetSpeedMul=1;
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetProperties()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void BeforeEntityDestruction()
+	{
+	}
+		
+	//------------------------------------------------------------
+	
+	void OnStartMove()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnConnectionStateChange(iLuxEntity@ apEntity,int alState)
+	{
+	}
+		
+	//------------------------------------------------------------
+	
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnSetActive(bool abX)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void GiveDamage(float afAmount, int alStrength, const tString&in asType, const tString&in asSource)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnHealthChange()
+	{
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	bool CanInteract(int alType, iPhysicsBody@ apBody)
+	{
+		return false;
+	}
+	
+	//------------------------------------------------------------
+		
+	bool OnInteract(int alType, iPhysicsBody@ apBody, const cVector3f &in avFocusPos, const tString&in asData)
+	{
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_AddExtraEscapeEntity()
+	{
+		mvExtraEscapeEntities.push_back(cScript_GetGlobalArgID(0));
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	//------------------------------------------------------------
+	
+	float mfJetSpeedMul = 0;
+	float mfTowardsCenterMul;
+	float mfExtraEscapeMul;
+	array<tID> mvExtraEscapeEntities;
+	
+	//------------------------------------------------------------
+	
+	[nosave] float mfNormalSpeed;
+	[nosave] float mfEscapeSpeed;
+	[nosave] float mfEscapeDistance;
+	[nosave] float mfWanderMul;
+	[nosave] float mfFlockSeparation;
+	[nosave] int mlMaxFlockMemberChecks;
+	[nosave] tString msExtraEscapeEntities;
+	
+	//------------------------------------------------------------
+		
+}	

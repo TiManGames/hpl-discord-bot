@@ -1,0 +1,309 @@
+#include "helpers/helper_font.hps"
+
+//-------------------------------------------------------
+
+/////////////////////////////////////////
+// STATION DOOR LOCK APP
+//{///////////////////////////////////////
+
+//-------------------------------------------------------
+
+enum eStationGui_DoorLockAppButtonType
+{
+	eStationGui_DoorLockAppButtonType_Button,
+	eStationGui_DoorLockAppButtonType_MovingButton,
+}
+
+//-------------------------------------------------------
+
+class cStationGui_DoorLockAppSettings
+{
+	int mlMinLockedCount = 0;
+	float mfSizeMul = 1;
+	cVector3f mvPosOffset = 0;
+	cImGuiGfx mMapBackground;
+}
+
+//-------------------------------------------------------
+
+class cDoorLockAppButton
+{
+	cDoorLockAppButton(){}
+	
+	cDoorLockAppButton(const tString &in asName)
+	{
+		msName = asName;
+	}
+	
+	tString msName;
+	tString msFocusText;
+	cVector3f mvNrmPos;
+	cVector2f mvNrmSize = cVector2f(0.175, 0.20);
+	eStationGui_DoorLockAppButtonType mButtonType = eStationGui_DoorLockAppButtonType_Button;
+	tString msCustomClickCallback = "";
+	
+	cVector2f mvUIPosExpandNeg = cVector2f_Zero;
+	cVector2f mvUIPosExpandPos = cVector2f_Zero;
+	
+	cImGuiGfx mGfx;
+	
+	array<tString> mvButtons;
+	
+	tString msSlideDoor="";
+}
+
+array<cDoorLockAppButton> gvDoorControlButtons;
+
+//-------------------------------------------------------
+	
+void StationGui_DoorLockApp(const cStationGui_DoorLockAppSettings &in aSettings = cStationGui_DoorLockAppSettings())
+{	
+	///////////
+	// Data
+	cImGuiLabelData label = ImGui_GetDefaultLabel();
+	label.mFontAlign = eFontAlign_Left;
+	label.mFont.SetFile(Helper_Font_GetFontName(eLuxFontType_Sansation_Large));
+	label.mFont.mvSize = ImGui_NrmSizeKeepRatio(0.04);
+	
+	cImGuiButtonData button = StationGui_CreateToggleButtonData();
+	button.mFont.mvSize = ImGui_NrmSizeKeepRatio(0.0375);
+	button.mColorBase = gStationGuiColor_Warning;
+	button.mColorTriggered = gStationGuiColor_Normal; 
+	ImGui_SetDefaultButton(button);
+	
+	cImGuiTextFrameData text = StationGui_CreateDefaultTextFrameData();
+	text.mFont.mvSize = ImGui_NrmSizeKeepRatio(0.04);
+	
+	////////////////
+	// Setup
+	tString sPrevLang = ImGui_GetTransCategory();
+	ImGui_SetTransCategory("StationGUI");
+	
+	ImGui_SetStateInt("DoorLockApp_FocusIndex", -1);
+	
+	if (ImGui_GetStateBool("LimitAlertActive", false) && ImGui_TimerExists("StopLimitAlert")==false)
+	{
+		ImGui_SetStateBool("LimitAlertActive", false);
+	}
+	
+	////////////////
+	// Map window
+	ImGui_DoWindowStart("DoorControlApp_Label", StationGui_CreateDefaultWindowData(), ImGui_NrmPos(cVector3f(0.02, 0.02, 1)), ImGui_NrmSize(cVector2f(0.648, 0.775)));
+	ImGui_SetTransCategory(sPrevLang);
+	
+	ImGui_SetAlignment(eImGuiAlign_CenterCenter);
+	
+	cVector2f vMapSize = ImGui_GetRatioCorrectSizeByRect(aSettings.mMapBackground, ImGui_NrmSizeGroup(1, 1));
+	ImGui_GroupBegin(ImGui_NrmPosGroup(cVector3f(0, 0, 1)+aSettings.mvPosOffset), vMapSize*aSettings.mfSizeMul);
+	
+	ImGui_DoImage(aSettings.mMapBackground, ImGui_NrmPosGroup(0.5, 0.5, 0.25), ImGui_NrmSizeGroup(1));
+	
+	////////////////////////
+	// Iterate buttons
+	int lLockedRoomCount = 0;
+	bool bFocusLocked = false;
+	for (uint i = 0; i < gvDoorControlButtons.length(); i++)
+	{
+		bool bLocked = StationGui_DoorLockApp_Button(gvDoorControlButtons[i], i, aSettings);
+		if (bLocked)
+		{
+			if (ImGui_GetStateInt("DoorLockApp_FocusIndex", -1)==i)
+				bFocusLocked = true;
+			lLockedRoomCount++;
+		}
+	}
+	ImGui_SetStateInt("LockedRoomCount", lLockedRoomCount);
+	ImGui_SetAlignment(eImGuiAlign_TopLeft);
+	
+	ImGui_GroupEnd();
+	ImGui_DoWindowEnd();
+	
+	/////////////////////////////////////
+	// Room info text
+	ImGui_SetTransCategory("StationGUI");
+	ImGui_DoWindowStart("DoorControlApp_RoomInfoHeader", StationGui_CreateDefaultWindowData(), 
+						ImGui_NrmPos(cVector3f(0.68, 0.02, 1)), ImGui_NrmSize(cVector2f(0.3, 0.5)));
+		int lFousIndex = ImGui_GetStateInt("DoorLockApp_FocusIndex", -1);
+		if (lFousIndex != -1)
+		{
+			ImGui_SetTransCategory(sPrevLang);
+			ImGui_DoTextFrameExt(gvDoorControlButtons[lFousIndex].msFocusText, ImGui_NrmSizeGroup(0.125, 0.12), 0, 0, text, 0, ImGui_NrmSizeGroup(1, 1));
+			ImGui_SetTransCategory("StationGUI");
+			
+			label.mFontAlign = eFontAlign_Center;
+			tString sEntry = bFocusLocked ? "DoorControlApp_Locked" : "DoorControlApp_Unlocked";
+			cVector2f vFontSize = label.mFont.mvSize;
+			ImGui_ResizeFontToFit(sEntry, label.mFont, ImGui_GetCurrentGroupSize().x*0.9, 1.5);
+			
+			ImGui_SetModColorMul(bFocusLocked ? gStationGuiColor_Warning : gStationGuiColor_Highlight2);
+			ImGui_DoLabelExt(sEntry, label, ImGui_NrmPosGroup(0, 0.825, 1), ImGui_NrmSizeGroup(1, -1), 1.5);
+			ImGui_SetModColorMul(cColor_White);
+			label.mFontAlign = eFontAlign_Left;
+			
+			label.mFont.mvSize = vFontSize;
+		}
+	ImGui_DoWindowEnd();
+	
+	/////////////////////////////////////
+	// Display power limit warning
+	if (aSettings.mlMinLockedCount > 0)
+	{
+		bool bLimitAlertActive = ImGui_GetStateBool("LimitAlertActive", false);
+		ImGui_SetTransCategory("StationGUI");
+		
+		// Blinking text color
+		cColor limitStatusCol = gStationGuiColor_Warning;
+		limitStatusCol = limitStatusCol * ImGui_FadeOscillateFloat("PowerLevelWarning", 
+																   bLimitAlertActive ? 0.8 : 1,
+																   bLimitAlertActive ? 0.4 : 0.65, 
+																   bLimitAlertActive ? 0.3 : 1);
+		limitStatusCol.a = 1;
+		
+		ImGui_SetModColorMul(limitStatusCol);
+		ImGui_ResizeFontToFit("DoorControlApp_PowerLevelHeader", label.mFont, ImGui_GetCurrentGroupSize().x*0.75);
+		ImGui_DoLabelExt("DoorControlApp_PowerLevelHeader", label, ImGui_NrmPosGroup(0.1, 0.806, 1), -1, 1);
+		
+		float fRemainingPower = (lLockedRoomCount-aSettings.mlMinLockedCount)/float(gvDoorControlButtons.length()-aSettings.mlMinLockedCount);
+		tWString sRemainingPower = ImGui_Translate("DoorControlApp_PowerLevel_Pre") + " " +int(fRemainingPower*100)+ImGui_Translate("DoorControlApp_PowerLevel_Post");
+		ImGui_SetTextOverride(sRemainingPower);
+		ImGui_DoLabelExt("", label, ImGui_NrmPosGroup(0.1, 0.85, 1), -1, 1);
+		ImGui_ClearTextOverride();
+		
+		ImGui_SetModColorMul(cColor_White);
+		ImGui_SetTransCategory(sPrevLang);
+	}
+	
+	gvDoorControlButtons.resize(0);
+}
+		
+//-------------------------------------------------------
+
+bool StationGui_DoorLockApp_Button(const cDoorLockAppButton &in aButton, int aIndex, const cStationGui_DoorLockAppSettings &in aSettings)
+{		
+	bool bLocked = false;
+	bool bDisabled = false;
+	
+	if (aButton.mButtonType == eStationGui_DoorLockAppButtonType_Button)
+	{
+		bLocked = Button_IsLocked(aButton.mvButtons[0]);
+		bDisabled = Button_IsDisabled(aButton.mvButtons[0]);
+	}
+	else
+	{
+		bLocked = MovingButton_IsLocked(aButton.mvButtons[0]);
+		bDisabled = MovingButton_IsDisabled(aButton.mvButtons[0]);
+	}
+
+	tString sDoorStatus = "Unlocked";
+	if (bDisabled)
+	{
+		ImGui_SetModUseInput(false);
+		sDoorStatus = "Broken";
+	}
+	else if (bLocked)
+	{
+		sDoorStatus = "Locked";
+	}
+	
+	bool bUnlockAllowed = ImGui_GetStateInt("LockedRoomCount", 0) > aSettings.mlMinLockedCount;
+	
+	///////////////////////////
+	// Draw invisible button
+	ImGui_SetModUISizeHoriExpansion(aButton.mvUIPosExpandNeg.x, aButton.mvUIPosExpandPos.x);
+	ImGui_SetModUISizeVertExpansion(aButton.mvUIPosExpandNeg.y, aButton.mvUIPosExpandPos.y);
+	cImGuiButtonData button = ImGui_GetDefaultButton();
+	button.mbUseFrame = false;
+	bool bButtonPressed = ImGui_DoButtonExt(aButton.msName+"_DoorLockButton", "", button, 
+											ImGui_NrmPosGroup(aButton.mvNrmPos), ImGui_NrmSizeGroup(aButton.mvNrmSize));
+	ImGui_SetModUISizeHoriExpansion(0, 0);
+	ImGui_SetModUISizeVertExpansion(0, 0);
+											
+	///////////////////////////
+	// Draw map room image
+	if (ImGui_PrevInFocus())
+	{
+		cColor col = button.mColorInFocus;
+		if(bLocked) col = col * cColor(1.5,0.6f,0.6f, 1.0f);
+		
+		ImGui_SetModColorMul(col);
+		ImGui_SetStateInt("DoorLockApp_FocusIndex", aIndex);
+	}
+	else
+	{
+		cColor col = button.mColorBase;
+		if(bDisabled) col = cColor(0.4, 1.0f);
+		else if(bLocked==false) col = button.mColorTriggered;
+		
+		ImGui_SetModColorMul(col);
+	}
+	ImGui_DoImage(aButton.mGfx, ImGui_NrmPosGroup(0.5, 0.5, 2), ImGui_GetRatioCorrectSizeByRect(aButton.mGfx, ImGui_NrmSizeGroup(1, 1)));
+	ImGui_SetModColorMul(cColor_White);
+	
+	ImGui_SetModUseInput(true);
+	if (bButtonPressed)
+	{
+		ImGui_StopTimer("StopLimitAlert");
+		
+		bool bLockDoor = !bLocked;
+		if (aButton.msCustomClickCallback != "")
+		{
+			bLockDoor = bLocked;
+			if (cLux_GetCurrentMap().ScriptPrepare("bool " + aButton.msCustomClickCallback + "()") )
+			{				
+				cLux_GetCurrentMap().ScriptExecute();
+				
+				bLockDoor = cLux_GetCurrentMap().GetReturnBool();
+			}
+		}
+		else if (bLockDoor)
+		{
+			Depth_Audio_Terminal_Negative(ImGui_GetName()); // locked
+		}
+		else if (bUnlockAllowed==false)
+		{
+			Depth_Audio_Terminal_Negative(ImGui_GetName()); // locked
+			ImGui_SetStateBool("LimitAlertActive", true);
+			ImGui_AddTimer("StopLimitAlert", 2);
+		}
+		else
+		{
+			 Depth_Audio_Terminal_Confirm(ImGui_GetName()); // not locked
+		}
+		
+		if (bLockDoor || bUnlockAllowed)
+		{
+			for (uint i = 0; i < aButton.mvButtons.length(); i++)
+			{
+				if (aButton.mButtonType == eStationGui_DoorLockAppButtonType_Button)
+				{
+					if (bLockDoor)
+						Button_SetSwitchedOn(aButton.mvButtons[i], false, false);
+					Button_SetLocked(aButton.mvButtons[i], bLockDoor);
+				}
+				else
+				{
+					if (bLockDoor)
+						MovingButton_SetSwitchedOn(aButton.mvButtons[i], false, false);
+					MovingButton_SetLocked(aButton.mvButtons[i], bLockDoor);
+				}
+			}
+			
+			if(aButton.msSlideDoor != "")
+			{
+				SlideDoor_SetOpenableByAgent(aButton.msSlideDoor, !bLockDoor);
+				if(bLockDoor)
+					SlideDoor_SetClosed(aButton.msSlideDoor,true);
+			}
+		}
+	}
+	return bLocked;
+}
+	
+//-------------------------------------------------------
+
+void StationGui_DoorLockApp_AddLock(const cDoorLockAppButton &in aButton)
+{
+	gvDoorControlButtons.push_back(aButton);
+}
+
+//} END STATION DOOR LOCK APP
