@@ -1,0 +1,91 @@
+////////////////////////////////////////////////////////
+// PostEffect Depth of Field Blur - Fragment Shader
+//
+////////////////////////////////////////////////////////
+
+uniform cTexture2D dofMap : 0;
+uniform cTexture2D guassianTable : 1;
+uniform cVector2f avOffsetMul;
+
+void main(in cVector4f px_vPosition,
+		  in cVector4f px_vTexCoord0,
+		  out cVector4f out_vColor : 0)
+{	
+	const int kSamples = $kNumSamples;
+	const int kSamplesDiv2 = ($kNumSamples + 1) / 2;
+	const int kSamplesDiv4 = ($kNumSamples + 3) / 4;
+	const int kSamplesDiv8 = ($kNumSamples + 7) / 8;
+	const float fRowStep = 2.0f / float(kSamplesDiv8);
+	
+	cVector2f vUV = px_vTexCoord0.xy;
+
+	////////////
+	// sample the center pixel
+	cVector4f vCore = sample(dofMap, vUV);
+	cVector4f vColor = vCore;
+
+	if(vCore.a * vCore.a > 1e-4f)
+	{
+		///////////
+		// samples texels in horizontal or vertical direction
+		cVector4f vSamples[kSamples];
+		for(int i = 0; i < kSamplesDiv2; ++i)
+		{
+			vSamples[i] = sample(dofMap, vUV - avOffsetMul * (i+1));
+			vSamples[kSamplesDiv2+i] = sample(dofMap, vUV + avOffsetMul * (i+1));
+		}
+
+		////////////////
+		// Get guassian weight based on CoC from lookup table
+		cVector4f vGuassian[kSamplesDiv8];
+		float fRow = 0;
+		for(int i = 0; i < kSamplesDiv8; ++i, fRow+=fRowStep)
+		{
+			vGuassian[i] = sample(guassianTable, cVector2f(abs(vCore.a),fRow));
+		}
+
+		///////////////
+		// Setup weights
+		cVector4f vWeights[kSamplesDiv4];
+		for(int i = 0; i < kSamplesDiv4; i++)
+		{
+			int lIdx = 4 * i;
+			vWeights[i] = cVector4f(vSamples[lIdx+0].a, vSamples[lIdx+1].a, vSamples[lIdx+2].a, vSamples[lIdx+3].a);
+		}
+
+		//////////
+		// Calculate weight of each sample
+		cVector4f vCoreWeight = cVector4f(vCore.a);
+		cVector4f vSign = sign(vCoreWeight);
+		vSign /= (vSign.x < 0 ? cVector4f(-0.00001f) : cVector4f(0.00001f)) + vCoreWeight;
+
+		for(int i = 0; i < kSamplesDiv4; ++i)
+		{
+			cVector4f vWeight = step(vCoreWeight, vWeights[i]);
+			vWeights[i] = mix(vSign * vWeights[i], cVector4f(1), vWeight) *  vGuassian[i % kSamplesDiv8];
+			vWeights[i] = max(vWeights[i], cVector4f(0));
+		}
+
+		/////////////
+		// Add all samples together
+		float fTotalWeight = 1;
+
+		for(int i=0; i<kSamples; i+=4)
+		{	
+			int lWeight = i>>2;
+			vColor += vSamples[i+0] * vWeights[lWeight].x + 
+					  vSamples[i+1] * vWeights[lWeight].y + 
+					  vSamples[i+2] * vWeights[lWeight].z + 
+					  vSamples[i+3] * vWeights[lWeight].w;
+
+			fTotalWeight += dot(cVector4f(1), vWeights[lWeight]);
+		}
+	
+		//////////////
+		// Normalize
+		vColor /= fTotalWeight;
+	}
+
+	out_vColor = cVector4f(vColor.rgb, vCore.a);
+
+}

@@ -1,0 +1,391 @@
+////////////////////////////////////////////////////////
+// Projected UV - Vertex Shader
+//
+//
+////////////////////////////////////////////////////////
+
+//---------------------------------------------
+
+@ifdef UseSway || UseScrollingNoise
+	@include helper_sway_offset.hpsl
+@endif
+
+@include helper_quaternion.hpsl
+
+//---------------------------------------------
+
+@ifdef UseTextureBuffer
+
+	// This contains all constant buffers and chooses the correct one based on MaterialType
+	@include helper_type_arguments.hpsl
+	
+	uniform cTextureBuffer aInstanceBuffer : 15;
+@else
+
+	//////////////////////////////////////
+	//Arguments
+	cBuffer cProjectedVertexArguments
+	{
+		//////////////
+		// Default input
+		cMatrixf a_mtxProjection;
+		cMatrixf a_mtxModelViewProjection;
+		cMatrixf a_mtxModelView;
+		cMatrixf a_mtxUV;
+		cMatrixf a_mtxModel;
+		cMatrixf a_mtxNormal;
+
+		cVector4f avColorMul;
+
+		float afInvFarPlane;
+		float afBlendHardnessVtx;
+
+		//////////
+		// Instancing
+		int alInstanceOffset;
+	};
+
+	@ifdef UseSkeleton
+	cBuffer cSkinningData
+	{
+		#define kMaxBones 96
+		cVector4f avDualQuatBones[kMaxBones*2];
+	};
+	@endif
+
+	///////////////////////
+	// Mesh instancing
+	@ifdef UseMeshInstancing  || UseStaticMeshInstancing
+		uniform cTexture2D aInstanceBuffer : 15;
+	@endif
+
+@endif
+
+//---------------------------------------------
+
+///////////////////////////////
+// Main program
+void main(in cVector4f vtx_vPosition,
+		  in cVector4f vtx_vTexCoord0,
+		  in cVector4f vtx_vTexCoord1,
+		  in cVector3f vtx_vNormal,
+		  in cVector4f vtx_vTangent,
+		  in cVector4f vtx_vColor,
+		  in cVector4f vtx_vBoneIndices,
+		  in cVector4f vtx_vBoneWeight,
+@ifdef UseUv
+		  out cVector4f px_vTexCoord0,
+@endif
+@ifdef UseLinearDepth
+		  out float px_fLinearDepth,
+@endif
+@ifdef UseColor
+		  out cVector4f px_vColor,
+@endif
+@ifdef UseTextureBuffer
+	@ifdef UseDissolve
+		  out float afDissolveAmount,
+	@endif
+@endif
+@ifdef UseNormals
+		  out cVector3f px_vNormal,
+	@ifdef UseSkeleton || UseMeshInstancing
+		  out cVector4f px_qBoneRotation,
+	@elseif UseStaticMeshInstancing || UseTextureBuffer
+		  out cMatrix3f px_mtxRotation,
+	@endif
+@endif
+@ifdef UseNormalMapping
+		  out cVector3f px_vTangent,
+		  out cVector3f px_vBinormal,
+@endif
+@ifdef UseBlend
+		  out cVector2f px_vBlendUV,
+	@ifdef UseBlendNormal
+		  out cVector3f px_vBlendNormal,
+		  out cVector3f px_vBlendTangent,
+		  out cVector3f px_vBlendBinormal,
+	@endif
+@endif
+		  out cVector4f px_vPosition)
+{
+	@ifdef UseTextureBuffer
+		int lBaseOffset = int(alInstanceOffset + vtx_lInstanceID * alInstanceStride);
+
+		@ifdef UseDetailMesh
+			/////////////
+			// Get instance data from instance buffer texture
+			cVector4f vInstancePositionScale = load(aInstanceBuffer, lBaseOffset);
+			cVector4f vInstanceRotation = load(aInstanceBuffer, lBaseOffset + 1);
+			cVector4f vInstanceColor = load(aInstanceBuffer, lBaseOffset + 2);
+		@else
+			//todo: load need what is needed
+			cMatrixf mtxModel = cMatrixf(load(aInstanceBuffer, lBaseOffset),
+										 load(aInstanceBuffer, lBaseOffset + 1),
+										 load(aInstanceBuffer, lBaseOffset + 2),
+										 load(aInstanceBuffer, lBaseOffset + 3));
+			lBaseOffset += 4;
+
+			@ifdef UseUv
+				cMatrixf a_mtxUV = cMatrixf(load(aInstanceBuffer, lBaseOffset),
+											load(aInstanceBuffer, lBaseOffset + 1),
+											load(aInstanceBuffer, lBaseOffset + 2),
+											load(aInstanceBuffer, lBaseOffset + 3));
+				lBaseOffset += 4;
+			@endif
+
+			@ifdef UseNormals
+				cMatrix4f a_mtxNormal = cMatrixf(load(aInstanceBuffer, lBaseOffset),
+												 load(aInstanceBuffer, lBaseOffset + 1),
+												 load(aInstanceBuffer, lBaseOffset + 2),
+												 load(aInstanceBuffer, lBaseOffset + 3));
+				lBaseOffset += 4;
+
+				px_mtxRotation = cMatrix3f(a_mtxView);
+			@endif
+		
+			@ifdef UseColorMul
+				cVector4f vInstanceColor = load(aInstanceBuffer, lBaseOffset);
+				lBaseOffset += 1;
+
+				cVector4f avColorMul = vInstanceColor;
+			@endif
+
+			@ifdef UseDissolve
+				afDissolveAmount = load(aInstanceBuffer, lBaseOffset).x;
+				lBaseOffset = lBaseOffset + 1;
+			@endif
+
+			int lBoneOffset = lBaseOffset;
+		@endif
+
+		float afBlendHardnessVtx = afBlendHardness;
+
+		//////////////////////
+		// Position - Skeleton
+		@ifdef UseSkeleton
+			cVector4l lvBoneIndices = max(cVector4l(vtx_vBoneIndices), cVector4l(0)) * 2;
+			cVector4f  vBoneWeight   = vtx_vBoneWeight;
+
+			cMatrix2x4f mtxBones[4];
+
+			for(int i = 0; i < 4; ++i)
+			{
+				mtxBones[i] = cMatrix2x4f(load(aInstanceBuffer, lBoneOffset + lvBoneIndices[i]), load(aInstanceBuffer, lBoneOffset + lvBoneIndices[i] + 1));
+			}
+
+			//Create bone matrix
+			cMatrix2x4f mtxDualQuat;
+			cMatrix2x4f mtxBase = mtxBones[0];
+
+			mtxDualQuat  = mtxBase * vBoneWeight.x;
+			mtxDualQuat += append(mtxBase, mtxBones[1], vBoneWeight.y);
+			mtxDualQuat += append(mtxBase, mtxBones[2], vBoneWeight.z);
+			mtxDualQuat += append(mtxBase, mtxBones[3], vBoneWeight.w);
+
+			//normalize both quaternions after adding the bones together
+			mtxDualQuat /= length(mtxDualQuat[0]);
+		
+			cVector4f qRotation = mtxDualQuat[0];
+			cVector4f vLocalVertexPos = cVector4f(dqmul(mtxDualQuat, vtx_vPosition.xyz), 1.0);
+			vLocalVertexPos = mul(mtxModel, vLocalVertexPos);
+			px_qBoneRotation = qRotation;
+			px_vPosition = mul(a_mtxViewProjection, vLocalVertexPos);
+	
+		
+		/////////////////////
+		// Position - Instancing
+		@elseif UseDetailMesh
+			///////////
+			// Apply instance rotation, scale and offset
+			cVector4f vLocalVertexPos = cVector4f(qmul(vInstanceRotation, vtx_vPosition.xyz) * vInstancePositionScale.w + vInstancePositionScale.xyz, 1.0);
+
+			cVector4f qRotation = vInstanceRotation;
+			px_qBoneRotation = qRotation;
+			px_vPosition = mul(a_mtxViewProjection, vLocalVertexPos);
+		/////////////////////
+		// Position - Static Instancing
+		@else
+			///////////
+			// Apply model matrix for instance
+			cVector4f vLocalVertexPos = mul(mtxModel, cVector4f(vtx_vPosition.xyz, 1.0));
+			px_vPosition = mul(a_mtxViewProjection,vLocalVertexPos);
+		@endif
+	@else	
+		// Keep this for backward combatablity for now
+
+		/////////////
+		// load instance data
+		@ifdef UseMeshInstancing
+			/////////////
+			// Get instance data from instance buffer texture
+			cVector4f vInstancePositionScale = load(aInstanceBuffer, cVector2l(vtx_lInstanceID + alInstanceOffset, 0), 0);
+			cVector4f vInstanceRotation = load(aInstanceBuffer, cVector2l(vtx_lInstanceID + alInstanceOffset, 1), 0);
+			cVector4f vInstanceColor = load(aInstanceBuffer, cVector2l(vtx_lInstanceID + alInstanceOffset, 2), 0);
+		@endif
+
+		@ifdef UseStaticMeshInstancing
+			/////////////
+			// Get instance data and convert it
+			cVector4f vRow0 = load(aInstanceBuffer, cVector2l(vtx_lInstanceID + alInstanceOffset, 0), 0);
+			cVector4f vRow1 = load(aInstanceBuffer, cVector2l(vtx_lInstanceID + alInstanceOffset, 1), 0);
+			cVector4f vRow2 = load(aInstanceBuffer, cVector2l(vtx_lInstanceID + alInstanceOffset, 2), 0);
+			cVector4f vRow3 = load(aInstanceBuffer, cVector2l(vtx_lInstanceID + alInstanceOffset, 3), 0);
+
+			cVector4f vInstanceColor = cVector4f(vRow0.w, vRow1.w, vRow2.w, vRow3.w);
+			cMatrixf mtxModel = cMatrixf(cVector4f(vRow0.xyz, 0),
+								 cVector4f(vRow1.xyz, 0),
+								 cVector4f(vRow2.xyz, 0),
+								 cVector4f(vRow3.xyz, 1));
+			@ifdef Lang_PSSL
+				mtxModel = transpose(mtxModel); //todo: fix this outside of shader?
+			@endif
+		@endif
+
+		//////////////////////
+		// Position - Skeleton
+		@ifdef UseSkeleton
+			cVector4l lvBoneIndices = clamp(cVector4l(vtx_vBoneIndices), cVector4l(0), cVector4l(kMaxBones-1))*2;
+			cVector4f  vBoneWeight   = vtx_vBoneWeights;
+
+			//Create bone matrix
+			cMatrix2x4f mtxDualQuat;
+			cMatrix2x4f mtxBase = cMatrix2x4f(avDualQuatBones[lvBoneIndices.x], avDualQuatBones[lvBoneIndices.x+1]);
+
+			mtxDualQuat  = mtxBase * vBoneWeight.x;
+			mtxDualQuat += append(mtxBase, cMatrix2x4f(avDualQuatBones[lvBoneIndices.y], avDualQuatBones[lvBoneIndices.y+1]), vBoneWeight.y);
+			mtxDualQuat += append(mtxBase, cMatrix2x4f(avDualQuatBones[lvBoneIndices.z], avDualQuatBones[lvBoneIndices.z+1]), vBoneWeight.z);
+			mtxDualQuat += append(mtxBase, cMatrix2x4f(avDualQuatBones[lvBoneIndices.w], avDualQuatBones[lvBoneIndices.w+1]), vBoneWeight.w);
+
+			//normalize both quaternions after adding the bones together
+			mtxDualQuat /= length(mtxDualQuat[0]);
+		
+			//Save the bone rotation for the normal transformation in pixel shader
+			px_qBoneRotation = mtxDualQuat[0];
+			cVector4f qRotation = px_qBoneRotation;
+
+			cVector4f vLocalVertexPos = cVector4f(vtx_vPosition.xyz, 1.0);
+			px_vPosition = mul(a_mtxModelViewProjection, cVector4f(dqmul(mtxDualQuat, vtx_vPosition.xyz), 1.0));
+		@elseif UseMeshInstancing
+			///////////
+			// Apply instance rotation, scale and offset
+			cVector4f vLocalVertexPos = cVector4f(qmul(vInstanceRotation, vtx_vPosition.xyz) * vInstancePositionScale.w + vInstancePositionScale.xyz, 1.0);
+		
+			cVector4f qRotation = vInstanceRotation;
+			px_qBoneRotation = vInstanceRotation;
+			px_vPosition = mul(a_mtxModelViewProjection, vLocalVertexPos);
+		@elseif UseStaticMeshInstancing
+			///////////
+			// Apply model matrix for instance
+			cVector4f vLocalVertexPos = mul(mtxModel, cVector4f(vtx_vPosition.xyz, 1.0));
+			px_mtxRotation = mtxModel;
+
+			px_vPosition = mul(a_mtxModelViewProjection, vLocalVertexPos);
+		//////////////////////
+		// Position - Default
+		@else
+			cVector4f vLocalVertexPos = cVector4f(vtx_vPosition.xyz, 1.0);
+			px_vPosition = mul(a_mtxModelViewProjection, vLocalVertexPos);
+		@endif
+	@endif
+
+	@ifdef UseUv
+		//////////////////////
+		// Uv
+		@ifdef UseDetailMesh
+			px_vTexCoord0 = cVector4f(vLocalVertexPos.xyz + vInstancePositionScale.xyz, 1.0);
+		@else
+			px_vTexCoord0 = mul(a_mtxUV, vLocalVertexPos);
+		@endif
+	@endif
+
+	//////////////////////
+	// Color
+	@ifdef UseColor
+		px_vColor = vtx_vColor;
+	@endif
+
+	@ifdef UseMeshInstancing || UseStaticMeshInstancing
+		px_vColor *= vInstanceColor;
+	@elseif UseColor
+		px_vColor *= avColorMul;
+	@endif
+
+
+	//////////////////////
+	// Normals
+	@ifdef UseNormals
+		@ifdef UseDetailMesh
+			px_vNormal = qmul(qRotation, vtx_vNormal); 
+		@else
+			////////////
+			// Dont transform the normal yet! need to be in world space
+			px_vNormal = normalize(mul(cMatrix3f(a_mtxUV), vtx_vNormal));
+		
+			@ifdef UseMeshInstancing
+				px_vNormal = qmul(qRotation, px_vNormal); 
+			@elseif UseStaticMeshInstancing
+				px_vNormal = normalize(mul(cMatrix3f(a_mtxNormal), vtx_vNormal));
+			@elseif UseTextureBuffer
+				px_vNormal = normalize(mul(cMatrix3f(mtxModel), vtx_vNormal));
+			@endif
+		@endif
+	@endif
+
+	//////////////////////
+	// Normalmapping
+	@ifdef UseNormalMapping
+		/////////////
+		// Create the tangent space for the procedural normal maps
+		cVector4f vNormal = cVector4f(px_vNormal, 0.0); //Store 0.0 in w to be able to skip multiply
+		cVector4f vAbsNormal = abs(vNormal);
+
+		//////////////
+		// Generate tangent space for the x-,y- and z-projections
+		cVector3f vTangentX  = vAbsNormal.wwx - vNormal.zyw;
+		cVector3f vBinormalX = vNormal.ywz - vAbsNormal.wxw;
+
+		cVector3f vTangentY  = vAbsNormal.yww - vNormal.wzx;
+		cVector3f vBinormalY = vNormal.zxw - vAbsNormal.wwy;
+
+		cVector3f vTangentZ  = vAbsNormal.zww - vNormal.wxy;
+		cVector3f vBinormalZ = vNormal.ywx - vAbsNormal.wzw;
+
+		/////////////////////
+		// Blend the tanget space projections together by the blend weights
+		cVector3f vBlendWeight = vAbsNormal.xyz;
+		vBlendWeight = max(cVector3f(0.0), vBlendWeight - max(vBlendWeight.x, max(vBlendWeight.y, vBlendWeight.z)) * afBlendHardnessVtx);
+		vBlendWeight /= dot(cVector3f(1.0), vBlendWeight);
+
+		px_vTangent  = normalize(vTangentX * vBlendWeight.x + vTangentY * vBlendWeight.y + vTangentZ * vBlendWeight.z);
+		px_vBinormal = normalize(vBinormalX * vBlendWeight.x + vBinormalY * vBlendWeight.y + vBinormalZ * vBlendWeight.z);
+	@endif
+
+	///////////////
+	// Blending
+	@ifdef UseBlend
+		px_vBlendUV = vtx_vTexCoord0.xy;
+
+		@ifdef UseBlendNormal
+			@ifdef UseSkeleton || UseMeshInstancing
+				px_vBlendNormal = normalize(mul(a_mtxNormal, qmul(qRotation, vtx_vNormal)));
+				px_vBlendTangent = normalize(mul(a_mtxNormal, qmul(qRotation, vtx_vTangent.xyz)));
+				px_vBlendBinormal = normalize(mul(a_mtxNormal, qmul(qRotation, cross(vtx_vTangent.xyz, vtx_vNormal) * vtx_vTangent.w)));
+			@else
+				px_vBlendNormal = normalize(mul(a_mtxNormal, vtx_vNormal));
+				px_vBlendTangent = normalize(mul(a_mtxNormal, vtx_vTangent.xyz));
+				px_vBlendBinormal = normalize(mul(a_mtxNormal, cross(vtx_vTangent.xyz, vtx_vNormal) * vtx_vTangent.w)); 
+			@endif
+		@endif
+	@endif
+	
+	//////////////////////
+	// Linear depth
+	@ifdef UseLinearDepth
+		@ifdef UseTextureBuffer
+			px_fLinearDepth = -mul(a_mtxView, vLocalVertexPos).z * afInvFarPlane; //Do not use near plane! Doing like this will make the calcs simpler in the light shader.
+		@else
+			px_fLinearDepth = -mul(a_mtxModelView, vLocalVertexPos).z * afInvFarPlane; //Do not use near plane! Doing like this will make the calcs simpler in the light shader.
+		@endif
+	@endif
+}

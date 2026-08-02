@@ -1,0 +1,423 @@
+////////////////////////////////////////////////////////
+// Deferred Light Box - Fragment Shader
+//
+// Fragment program to draw a light box. 
+////////////////////////////////////////////////////////
+
+@ifdef UseTextureBuffer
+
+@ifdef UseLinearColorSpaceCorrection
+	@include helper_gamma_correction.hpsl
+@endif
+
+////////////////////
+//Textures
+uniform cTexture2D  aDiffuseMap : 0;
+uniform cTexture2D  aNormalMap : 1;
+uniform cTexture2D  aSpecularMap : 2;
+
+////////////////////
+//Uniform varaibles
+
+cBuffer cLightArguments : 0
+{
+	cMatrixf a_mtxViewProjection;
+	cMatrixf a_mtxProjection;
+	cMatrixf a_mtxView;
+	cMatrixf a_mtxInvViewProjection;
+	cMatrixf a_mtxInvProjection;
+	cMatrixf a_mtxInvView;
+		
+	float afFarPlane;
+	float afNearPlane;
+	float afNearByFarPlane;
+	float afInvFarPlane;
+
+	cVector4f avScreenToFarPlane;
+	cVector2f avInvScreenSize;
+
+	cVector2f avFogStartAndLength;
+	cVector4f avFogColor;
+
+	cVector3f avViewSpaceUp;
+	float afFogFalloffExp;
+
+	int alInstanceOffset;
+	int alInstanceStride;
+	cVector2f avPadding;
+};
+
+@ifdef UseIrradiance
+	cVector3f GetSH(cVector3f avDir, in cVector4f avBands[9])
+	{
+		cVector3f vCoeff0 = avDir;
+		cVector3f vCoeff1 = avDir * avDir.yzx;
+		cVector3f vCoeff2 = avDir * avDir;
+
+		cVector4f vSH = avBands[0];
+
+		vSH += avBands[1] * vCoeff0.y;
+		vSH += avBands[2] * vCoeff0.z;
+		vSH += avBands[3] * vCoeff0.x;
+
+		vSH += avBands[4] * vCoeff1.x;
+		vSH += avBands[5] * vCoeff1.y;
+		vSH += avBands[6] * (3.0 * vCoeff2.z - 1.0);
+		vSH += avBands[7] * vCoeff1.z;
+		vSH += avBands[8] * (vCoeff2.x - vCoeff2.y);
+
+		return vSH.rgb;
+	}
+	
+	cVector3f GetReflectedSH(cVector3f avDir, float afSpecularPow, in cVector4f avBands[9])
+	{
+		cVector3f vRoughness = clamp((cVector3f(0.5, 0.75, 1.0) - cVector3f(afSpecularPow)) * 4.0, cVector3f(0.0), cVector3f(1.0));
+
+		cVector3f vCoeff0 = avDir * vRoughness.y;
+		cVector3f vCoeff1 = avDir * avDir.yzx * vRoughness.z;
+		cVector3f vCoeff2 = avDir * avDir * vRoughness.z;
+
+		cVector4f vSH = avBands[0] * vRoughness.x;
+
+		vSH += avBands[1] * vCoeff0.y;
+		vSH += avBands[2] * vCoeff0.z;
+		vSH += avBands[3] * vCoeff0.x;
+
+		vSH += avBands[4] * vCoeff1.x;
+		vSH += avBands[5] * vCoeff1.y;
+		vSH += avBands[6] * (3.0 * vCoeff2.z - 1.0);
+		vSH += avBands[7] * vCoeff1.z;
+		vSH += avBands[8] * (vCoeff2.x - vCoeff2.y);
+		
+		return vSH.rgb;
+	}
+@endif
+
+void main(in cVector4f px_vPosition,
+		  in cVector3f px_vBoxCenter,
+		  in cVector3f px_vBoxExtent,
+		  in cVector4f px_vSkyColor,
+		  in cVector4f px_vGroundColor,
+		  in float px_fFalloff,
+		  in float px_fBevel,
+		  in float px_fWeight,
+@ifdef UseIrradiance
+		  in cVector4f px_vBands[9],
+@endif
+@ifdef DebugComplexity
+		  in float px_fComplexity,
+@endif
+		  out cVector4f out_vColor : 0)
+{
+	cVector2l vMapCoords = cVector2l(px_vPosition.xy);
+	cVector4f vColorVal =  sample(aDiffuseMap, px_vPosition.xy * avInvScreenSize);
+	cVector4f vNormalVal = load(aNormalMap, vMapCoords, 0);
+	@ifdef UseIrradiance
+		cVector4f vSpecVal = sample(aSpecularMap, px_vPosition.xy * avInvScreenSize);
+	@endif
+	
+	float fDepth = vNormalVal.w;
+	cVector3f vPos = cVector3f(px_vPosition.xy * avScreenToFarPlane.xy + avScreenToFarPlane.zw, -afFarPlane) * fDepth;
+	cVector3f vWorldView = mul(a_mtxInvView, cVector4f(vPos, 0.0)).xyz;
+	cVector3f vBox = (px_vBoxCenter - vWorldView) / px_vBoxExtent;
+	
+	@ifdef Blend_Replace || Blend_Add || Blend_Blend
+		////////////////
+		// Falloff
+		vBox = abs(vBox);
+
+		//////////////
+		// Get the spherical and box falloff
+		float fSphereFalloff = length(vBox);
+
+		vBox = max(cVector3f(0.0), cVector3f(1.0) - vBox);
+		cVector3f vBoxFalloff = cVector3f(1.0) / vBox;
+		float fBoxFalloff = sqrt(1.0 / (vBoxFalloff.x + vBoxFalloff.y + vBoxFalloff.y));
+		float fCutoff = min(min(vBox.x, vBox.y), vBox.z);
+
+		//////////
+		// Perform smoothstep and add spherical and box togehter
+		float fBevel = sqrt(mix(3.0, 1.0, px_fBevel));
+		cVector3f vFalloff = smoothstep(cVector3f(0.0, 0.0, fBevel), 
+										cVector3f(1.0, 0.125, 0.0), cVector3f(fBoxFalloff, fCutoff, fSphereFalloff));
+		vFalloff.xz *= vFalloff.xz;
+
+		float fWeight = vFalloff.x * vFalloff.y * vFalloff.z;
+		float fFalloff = pow(fWeight, px_fFalloff+1e-5f) * px_fWeight;
+
+		if(fFalloff <= 0.0 || isnan(fFalloff)) discard;
+	@endif
+
+
+	//Convert color to linear space	if needed
+	@ifdef UseLinearColorSpaceCorrection
+		vColorVal.rgb = GammaToLinearCorrection(vColorVal.rgb);
+	@endif
+
+	/////////////////////////////////
+	//Unpack normal and normalize (if needed)
+	cVector3f vNormal = vNormalVal.xyz;
+		
+	///////////////////////////////
+	// Calculate color, multiply with 8.0 to increase precision
+	float fUpAmount = dot( avViewSpaceUp, vNormal.xyz)*0.5 + 0.5;
+	cVector4f vLightColor = mix(px_vGroundColor, px_vSkyColor, fUpAmount);
+
+	@ifdef UseIrradiance
+		////////////////
+		// Caluclate SH color
+		cVector3f vWorldNormal = mul(a_mtxInvView, cVector4f(vNormal,0.0)).xyz;
+		vWorldView = normalize(vWorldView);
+		cVector3f vReflected = reflect(vWorldView, vWorldNormal);
+
+		float fSpecularMul = vLightColor.a * pow(0.5 + dot(vReflected, vWorldView) * 0.5, 1.0 + vSpecVal.a * 3.0) * (7.0 / ((2.6 - vSpecVal.a * 0.9) * 3.141592));
+
+		vWorldNormal = normalize(vWorldNormal +vBox * 0.25); //slightly skew the normal toward the edge of the box for more detail
+
+		cVector3f vSH = GetSH(vWorldNormal, px_vBands);
+		cVector3f vSHSpec;
+		
+		if(fSpecularMul <= 0.0) vSHSpec = cVector3f(0);
+		else					vSHSpec = GetReflectedSH(vReflected, vSpecVal.a, px_vBands) * fSpecularMul;
+	
+		out_vColor.xyz = (max(cVector3f(0.0), vSH) * vColorVal.xyz + 
+						  max(cVector3f(0.0), vSHSpec) * vSpecVal.xyz) * vLightColor.xyz * 8.0;
+	@else
+		out_vColor.xyz = vColorVal.xyz * vLightColor.xyz * 8.0;
+
+		@ifdef UseUnderwaterFog
+			out_vColor.xyz *= avFogColor.xyz;
+		@endif
+	@endif
+
+	@ifdef Blend_Replace
+		out_vColor.xyz *= fFalloff * fFalloff;
+		out_vColor.w = fFalloff;
+	@elseif Blend_Add
+		out_vColor.xyz *= fFalloff;
+		out_vColor.w = 0;
+	@elseif Blend_Blend
+		out_vColor.xyz *= fFalloff * fWeight;
+		out_vColor.w = fWeight * px_fWeight;
+	@endif
+	
+
+	@ifdef DebugComplexity
+		@ifdef UseIrradiance
+			out_vColor.xyz = out_vColor.xyz * 1e-5f + cVector3f(px_fComplexity);
+			out_vColor.w = 1.0;
+		@else
+			out_vColor.xyz = out_vColor.xyz * 1e-5f + cVector3f(px_fComplexity);
+			out_vColor.w = 1.0;
+		@endif
+	@endif
+}
+
+@else
+
+
+
+// BACKWARD COMBATABLITY FOR NOW
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+@ifdef UseLinearColorSpaceCorrection
+	@include helper_gamma_correction.hpsl
+@endif
+
+////////////////////
+//Textures
+uniform cTexture2D  aDiffuseMap : 0;
+uniform cTexture2D  aNormalMap : 1;
+uniform cTexture2D  aSpecularMap : 2;
+
+////////////////////
+//Uniform varaibles
+uniform cVector3f avAmbientColorSky;
+uniform cVector3f avAmbientColorGround;
+
+uniform cVector4f avScreenToFarPlane;
+uniform float afNegFarPlane;
+uniform cVector2f avInvScreenSize;
+
+uniform cVector3f avBoxCenter;
+uniform cVector3f avBoxExtent;
+uniform float afFalloff;
+uniform float afBevel;
+uniform float afWeight;
+
+uniform cVector3f avViewSpaceUp;
+
+uniform cMatrixf a_mtxInvView;
+uniform cVector3f avBand[9];
+
+@ifdef UseUnderwaterFog
+	uniform cVector4f avFogColor;
+@endif
+
+@ifdef UseIrradiance
+	cVector3f GetSH(cVector3f avDir)
+	{
+		cVector3f vCoeff0 = avDir;
+		cVector3f vCoeff1 = avDir * avDir.yzx;
+		cVector3f vCoeff2 = avDir * avDir;
+
+		cVector3f vSH = avBand[0];
+
+		vSH += avBand[1] * vCoeff0.y;
+		vSH += avBand[2] * vCoeff0.z;
+		vSH += avBand[3] * vCoeff0.x;
+
+		vSH += avBand[4] * vCoeff1.x;
+		vSH += avBand[5] * vCoeff1.y;
+		vSH += avBand[6] * (3.0 * vCoeff2.z - 1.0);
+		vSH += avBand[7] * vCoeff1.z;
+		vSH += avBand[8] * (vCoeff2.x - vCoeff2.y);
+
+		return vSH;
+	}
+	
+	cVector3f GetReflectedSH(cVector3f avDir, float afSpecularPow)
+	{
+		cVector3f vRoughness = clamp((cVector3f(0.5, 0.75, 1.0) - cVector3f(afSpecularPow)) * 4.0, cVector3f(0.0), cVector3f(1.0));
+
+		cVector3f vCoeff0 = avDir * vRoughness.y;
+		cVector3f vCoeff1 = avDir * avDir.yzx * vRoughness.z;
+		cVector3f vCoeff2 = avDir * avDir * vRoughness.z;
+
+		cVector3f vSH = avBand[0] * vRoughness.x;
+
+		vSH += avBand[1] * vCoeff0.y;
+		vSH += avBand[2] * vCoeff0.z;
+		vSH += avBand[3] * vCoeff0.x;
+
+		vSH += avBand[4] * vCoeff1.x;
+		vSH += avBand[5] * vCoeff1.y;
+		vSH += avBand[6] * (3.0 * vCoeff2.z - 1.0);
+		vSH += avBand[7] * vCoeff1.z;
+		vSH += avBand[8] * (vCoeff2.x - vCoeff2.y);
+		
+		return vSH;
+	}
+@endif
+
+void main(in cVector4f px_vPosition,
+		  in cVector4f px_vTexCoord0,
+		  out cVector4f out_vColor : 0)
+{
+	cVector2l vMapCoords = cVector2l(px_vPosition.xy);
+	cVector4f vColorVal =  sample(aDiffuseMap, px_vPosition.xy * avInvScreenSize);
+	cVector4f vNormalVal = load(aNormalMap, vMapCoords, 0);
+	@ifdef UseIrradiance
+		cVector4f vSpecVal = sample(aSpecularMap, px_vPosition.xy * avInvScreenSize);
+	@endif
+	
+	float fDepth = vNormalVal.w;
+	cVector3f vPos = cVector3f(px_vPosition.xy * avScreenToFarPlane.xy + avScreenToFarPlane.zw, afNegFarPlane) * fDepth;
+	cVector3f vWorldView = mul(a_mtxInvView, cVector4f(vPos, 0.0)).xyz;
+	cVector3f vBox = (avBoxCenter - vWorldView) / avBoxExtent;
+
+	//Convert color to linear space	if needed
+	@ifdef UseLinearColorSpaceCorrection
+		vColorVal.rgb = GammaToLinearCorrection(vColorVal.rgb);
+	@endif
+
+	/////////////////////////////////
+	//Unpack normal and normalize (if needed)
+	cVector3f vNormal = vNormalVal.xyz;
+		
+	///////////////////////////////
+	// Calculate color, multiply with 8.0 to increase precision
+	float fUpAmount = dot( avViewSpaceUp, vNormal.xyz)*0.5 + 0.5;
+	cVector3f vLightColor = mix(avAmbientColorGround, avAmbientColorSky, fUpAmount);
+
+	@ifdef UseIrradiance
+		////////////////
+		// Caluclate SH color
+		cVector3f vWorldNormal = mul(a_mtxInvView, cVector4f(vNormal,0.0)).xyz;
+		vWorldView = normalize(vWorldView);
+		cVector3f vReflected = reflect(vWorldView, vWorldNormal);
+
+		float fSpecularMul = pow(0.5 + dot(vReflected, vWorldView) * 0.5, 1.0 + vSpecVal.a * 3.0) * (3.0 / (2.6 - vSpecVal.a * 0.9));
+
+		vWorldNormal = normalize(vWorldNormal +vBox * 0.25); //slightly skew the normal toward the edge of the box for more detail
+
+		cVector3f vSH = GetSH(vWorldNormal);
+		cVector3f vSHSpec = GetReflectedSH(vReflected, vSpecVal.a) * fSpecularMul;
+	
+		out_vColor.xyz = (max(cVector3f(0.0), vSH) * vColorVal.xyz + 
+						  max(cVector3f(0.0), vSHSpec) * vSpecVal.xyz) * vLightColor * 8.0;
+	@else
+		out_vColor.xyz = vColorVal.xyz * vLightColor * 8.0;
+
+		@ifdef UseUnderwaterFog
+			out_vColor.xyz *= avFogColor.xyz;
+		@endif
+	@endif
+
+	@ifdef Blend_Replace || Blend_Add || Blend_Blend
+		////////////////
+		// Falloff
+		vBox = abs(vBox);
+
+		//////////////
+		// Get the spherical and box falloff
+		float fSphereFalloff = length(vBox);
+
+		vBox = max(cVector3f(0.0), cVector3f(1.0) - vBox);
+		cVector3f vBoxFalloff = cVector3f(1.0) / vBox;
+		float fBoxFalloff = sqrt(1.0 / (vBoxFalloff.x + vBoxFalloff.y + vBoxFalloff.y));
+		float fCutoff = min(min(vBox.x, vBox.y), vBox.z);
+
+		//////////
+		// Perform smoothstep and add spherical and box togehter
+		float fBevel = sqrt(mix(3.0, 1.0, afBevel));
+		cVector3f vFalloff = smoothstep(cVector3f(0.0, 0.0, fBevel), 
+										cVector3f(1.0, 0.125, 0.0), cVector3f(fBoxFalloff, fCutoff, fSphereFalloff));
+		vFalloff.xz *= vFalloff.xz;
+
+		float fWeight = vFalloff.x * vFalloff.y * vFalloff.z;
+		float fFalloff = pow(fWeight, afFalloff+1e-5f) * afWeight;
+
+		@ifdef Blend_Replace
+			out_vColor.xyz *= fFalloff * fFalloff;
+			out_vColor.w = fFalloff;
+		@elseif Blend_Add
+			out_vColor.xyz *= fFalloff;
+			out_vColor.w = 0;
+		@elseif Blend_Blend
+			out_vColor.xyz *= fFalloff * fWeight;
+			out_vColor.w = fWeight * afWeight;
+		@endif
+
+	@endif
+
+}
+
+@endif

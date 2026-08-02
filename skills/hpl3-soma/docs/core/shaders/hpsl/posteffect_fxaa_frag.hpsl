@@ -1,0 +1,192 @@
+/////////////////////
+// Fast approximate anti-aliasing, stolen from Nvidia
+////////////////////
+
+uniform cTexture2D tex : 0;
+
+uniform cVector2f avInvScreenSize;
+
+cVector4f Color(cVector2f avUV) 
+{
+	// sample color and apply gamma correction
+    cVector4f vColor = sample(tex, avUV.xy);
+	@ifdef UseLinearColorSpaceCorrection
+		return vColor * vColor;
+	@else
+		return vColor;
+	@endif
+}
+
+cVector4f ColorOffset(cVector2f avUV, cVector2f avOffset) 
+{
+	// sample a color at offset and apply gamma correction
+	cVector4f vColor = sample(tex, avUV +  avOffset * avInvScreenSize);
+	@ifdef UseLinearColorSpaceCorrection
+		return vColor * vColor;
+	@else
+		return vColor;
+	@endif
+}
+
+void main(in cVector4f px_vPosition,
+		  in cVector4f px_vTexCoord0,
+		  out cVector4f out_vColor0 : 0) 
+{
+	const cVector4f kLuma = cVector4f(0.299, 0.587, 0.114,0.0) * 3.0;
+
+	cVector2f vUV = px_vTexCoord0.xy;
+
+	////////////////
+	// sample mid and neighbur pixels
+    cVector4f vColorM = ColorOffset(vUV, cVector2f( 0, 0));
+
+    cVector4f vColorN = ColorOffset(vUV, cVector2f( 0,-1));
+    cVector4f vColorW = ColorOffset(vUV, cVector2f(-1, 0));
+    cVector4f vColorE = ColorOffset(vUV, cVector2f( 1, 0));
+    cVector4f vColorS = ColorOffset(vUV, cVector2f( 0, 1));
+
+	//////////////
+	// Get brightness of pixels
+    float fLumaN = dot(kLuma, vColorN);
+    float fLumaW = dot(kLuma, vColorW);
+    float fLumaM = dot(kLuma, vColorM);
+    float fLumaE = dot(kLuma, vColorE);
+    float fLumaS = dot(kLuma, vColorS);
+
+	///////////
+	// Calculate how much aliasing there is
+    float fRangeMin = min(fLumaM, min(min(fLumaN, fLumaW), min(fLumaS, fLumaE)));
+    float fRangeMax = max(fLumaM, max(max(fLumaN, fLumaW), max(fLumaS, fLumaE)));
+    float fRange = fRangeMax - fRangeMin;
+    
+    if(fRange < max((1.0/24.0), fRangeMax * (1.0/8.0))) 
+	{
+		/////////////
+		// No aliasing, finish early
+        out_vColor0 = vColorM;
+	}
+	else
+	{
+		///////////////
+		// Calulate luminance of the neighburs and calculate how much of the initial sum to use
+        float fLumaL = (fLumaN + fLumaW + fLumaE + fLumaS) * 0.25;
+        float fRangeL = abs(fLumaL - fLumaM);
+        float fBlendL = max(0.0, (fRangeL / fRange) - (1.0/4.0)) * (1.0/(1.0 - (1.0/4.0))); 
+        fBlendL = min((3.0/4.0), fBlendL);
+
+		//////////////
+		// sample the rest of the neighburs and sum all the colors
+		cVector4f vColorNW = ColorOffset(vUV, cVector2f(-1,-1));
+		cVector4f vColorNE = ColorOffset(vUV, cVector2f( 1,-1));
+		cVector4f vColorSW = ColorOffset(vUV, cVector2f(-1, 1));
+		cVector4f vColorSE = ColorOffset(vUV, cVector2f( 1, 1));
+		
+        cVector4f vColorL = (vColorN + vColorW + vColorM + vColorE + vColorS + vColorNW + vColorNE + vColorSW + vColorSE) * (1.0 / 9.0);
+
+		//////////////
+		// Get luminance for the rest
+		float fLumaNW = dot(kLuma, vColorNW);
+		float fLumaNE = dot(kLuma, vColorNE);
+		float fLumaSW = dot(kLuma, vColorSW);
+		float fLumaSE = dot(kLuma, vColorSE);
+
+		///////////////////
+		// Get direction of the aliasing
+		float fEdgeVert = abs((0.25 * fLumaNW) + (-0.5 * fLumaN) + (0.25 * fLumaNE)) +
+						  abs((0.50 * fLumaW ) + (-1.0 * fLumaM) + (0.50 * fLumaE )) +
+						  abs((0.25 * fLumaSW) + (-0.5 * fLumaS) + (0.25 * fLumaSE));
+		float fEdgeHorz = abs((0.25 * fLumaNW) + (-0.5 * fLumaW) + (0.25 * fLumaSW)) +
+						  abs((0.50 * fLumaN ) + (-1.0 * fLumaM) + (0.50 * fLumaS )) +
+						  abs((0.25 * fLumaNE) + (-0.5 * fLumaE) + (0.25 * fLumaSE));
+
+		bool bHorzSpan = fEdgeHorz >= fEdgeVert;
+
+		///////////////
+		// Calculate direction and how far to move
+		float fLengthSign = bHorzSpan ? -avInvScreenSize.y : -avInvScreenSize.x;
+		if(!bHorzSpan) fLumaN = fLumaW;
+		if(!bHorzSpan) fLumaS = fLumaE;
+		float fGradientN = abs(fLumaN - fLumaM);
+		float fGradientS = abs(fLumaS - fLumaM);
+		fLumaN = (fLumaN + fLumaM) * 0.5;
+		fLumaS = (fLumaS + fLumaM) * 0.5;
+    
+		bool bPairN = fGradientN >= fGradientS;
+
+		if(!bPairN) fLumaN = fLumaS;
+		if(!bPairN) fGradientN = fGradientS;
+		if(!bPairN) fLengthSign *= -1.0;
+
+		cVector2f vUvN;
+		vUvN.x = vUV.x + (bHorzSpan ? 0.0 : fLengthSign * 0.5);
+		vUvN.y = vUV.y + (bHorzSpan ? fLengthSign * 0.5 : 0.0);
+    
+		fGradientN *= (1.0/4.0);
+    
+		cVector2f vUvP = vUvN;
+		cVector2f vOffsetNP = (bHorzSpan ? cVector2f(1.0, 0.0) : cVector2f(0.0f, 1.0)) * avInvScreenSize; 
+		float fLumaEndN = fLumaN;
+		float fLumaEndP = fLumaN;
+		
+		@ifdef AccelerateSearch
+			// Use fewer steps
+			const int lNumSteps = 4;
+
+			vUvN += vOffsetNP * cVector2f(0.5);
+			vUvP -= vOffsetNP * cVector2f(0.5);
+
+			vOffsetNP *= cVector2f(2.0);
+		@else
+			const int lNumSteps = 16;
+		@endif
+
+		///////////////
+		// Traverse until aliasing no longer occurs
+		bool bDoneN = false, bDoneP = false;
+		for(int i = 0; i < lNumSteps; i++) 
+		{
+			if(bDoneN == false)
+			{
+				vUvN -= vOffsetNP;
+				fLumaEndN = dot(kLuma, Color(vUvN.xy));
+			}
+		
+			if(bDoneP == false)
+			{
+				vUvP += vOffsetNP;
+				fLumaEndP = dot(kLuma, Color(vUvP.xy));
+			}
+			
+			bDoneN = bDoneN || (abs(fLumaEndN - fLumaN) >= fGradientN);
+			bDoneP = bDoneP || (abs(fLumaEndP - fLumaN) >= fGradientN);
+
+			if(bDoneN && bDoneP) break;
+		}
+
+
+		float fDistN = bHorzSpan ? vUV.x - vUvN.x : vUV.y - vUvN.y;
+		float fDistP = bHorzSpan ? vUvP.x - vUV.x : vUvP.y - vUV.y;
+		bool bDirectionN = fDistN < fDistP;
+
+		fLumaEndN = bDirectionN ? fLumaEndN : fLumaEndP;
+    
+		if(((fLumaM - fLumaN) < 0.0) == ((fLumaEndN - fLumaN) < 0.0)) 
+			fLengthSign = 0.0;
+ 
+		float fSpanLength = (fDistP + fDistN);
+		fDistN = bDirectionN ? fDistN : fDistP;
+		float fSubPixelOffset = (0.5 + (fDistN * (-1.0/fSpanLength))) * fLengthSign;
+		
+		///////////////////
+		// sample with subpixel offset
+		cVector4f vColorF = Color(vUV + cVector2f((bHorzSpan ? 0.0 : fSubPixelOffset), (bHorzSpan ? fSubPixelOffset : 0.0)));
+    
+		////////////////
+		// Return blended color
+        out_vColor0 =  mix(vColorF, vColorL, fBlendL);
+	}
+
+	@ifdef UseLinearColorSpaceCorrection
+		out_vColor0 = sqrt(out_vColor0);
+	@endif
+}

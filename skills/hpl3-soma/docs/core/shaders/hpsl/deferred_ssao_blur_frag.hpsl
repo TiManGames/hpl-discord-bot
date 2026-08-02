@@ -1,0 +1,89 @@
+////////////////////////////////////////////////////////
+// Deferred Depth unpack - Fragment Shader
+//
+// Unpacks the depth map of the gbuffer into the red channel.
+////////////////////////////////////////////////////////
+
+//---------------------------------------------------------
+
+uniform float afFarPlane;
+uniform float afDepthDifference;
+uniform cVector2f avDirection;
+
+uniform cTexture2D ssaoTexture : 0;
+
+void main(in cVector4f px_vPosition,
+		  in cVector4f px_vTexCoord0,
+		  out cVector4f out_vColor : 0)
+{
+	//////////////////
+	// Get core depth and AO
+	cVector2f vScreenPos = px_vTexCoord0.xy;
+	cVector4f vCoresample = sample(ssaoTexture, vScreenPos);
+
+	float fCoreDepth = vCoresample.x * afFarPlane;
+	float fDifference = (1.0 + fCoreDepth * 2.0 / 200.0) * afDepthDifference;
+	float fDiffMul = 1.0 / fDifference;
+
+	float fResult = vCoresample.y;
+	float fWeight = 1;
+
+	if(fCoreDepth < 64.0)
+	{
+		cVector3f vSampleDepth;
+		cVector3f vSampleAO;
+		cVector3f vWeight;
+		cVector4f vSample;
+	
+		///////////
+		// Gather 4 samples in one direction
+		vSample = sample(ssaoTexture, vScreenPos + avDirection * 1);
+		vSampleDepth.x = vSample.x;
+		vSampleAO.x = vSample.y;
+		vSample = sample(ssaoTexture, vScreenPos + avDirection * 2);
+		vSampleDepth.y = vSample.x;
+		vSampleAO.y = vSample.y;
+		vSample = sample(ssaoTexture, vScreenPos + avDirection * 3);
+		vSampleDepth.z = vSample.x;
+		vSampleAO.z = vSample.y;
+
+		vSampleDepth = vSampleDepth * afFarPlane;
+
+		////////////
+		// Combine them
+		vWeight = cVector3f(0.93, 0.77, 0.56) * clamp(cVector3f(2.0) - abs(cVector3f(fCoreDepth) - vSampleDepth) * fDiffMul, cVector3f(0.0), cVector3f(1.0));
+		fResult += dot(vWeight, vSampleAO);
+		fWeight += dot(vWeight, cVector3f(1.0));
+
+		///////////////////
+		// Gather 4 samples in the opposite
+		vSample = sample(ssaoTexture, vScreenPos - avDirection * 1);
+		vSampleDepth.x = vSample.x;
+		vSampleAO.x = vSample.y;
+		vSample = sample(ssaoTexture, vScreenPos - avDirection * 2);
+		vSampleDepth.y = vSample.x;
+		vSampleAO.y = vSample.y;
+		vSample = sample(ssaoTexture, vScreenPos - avDirection * 3);
+		vSampleDepth.z = vSample.x;
+		vSampleAO.z = vSample.y;
+
+		vSampleDepth = vSampleDepth * afFarPlane;
+
+		////////////
+		// Combine them and normalize
+		vWeight = cVector3f(0.93, 0.77, 0.56) * clamp(cVector3f(2.0) - abs(cVector3f(fCoreDepth) - vSampleDepth) * fDiffMul, cVector3f(0.0), cVector3f(1.0));
+		fResult += dot(vWeight, vSampleAO);
+		fWeight += dot(vWeight, cVector3f(1.0));
+
+		fResult /= fWeight;
+	}
+
+	//////////
+	// Store depth and AO
+	cVector4f vResult = cVector4f(vCoresample.x, fResult, 0, 0);
+
+	//////////////////
+	// Get new screen color
+	out_vColor.xyzw = vResult;
+
+}

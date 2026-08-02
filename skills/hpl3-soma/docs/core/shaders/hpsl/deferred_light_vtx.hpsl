@@ -1,0 +1,243 @@
+////////////////////////////////////////////////////////
+// Deferred Light - Vertex Shader
+//
+//
+////////////////////////////////////////////////////////
+
+//---------------------------------------------
+
+//////////////////
+// Arguments
+
+cBuffer cLightArguments : 0
+{
+	cMatrixf a_mtxViewProjection;
+	cMatrixf a_mtxProjection;
+	cMatrixf a_mtxView;
+	cMatrixf a_mtxInvViewProjection;
+	cMatrixf a_mtxInvProjection;
+	cMatrixf a_mtxInvView;
+		
+	float afFarPlane;
+	float afNearPlane;
+	float afNearByFarPlane;
+	float afInvFarPlane;
+
+	cVector4f avScreenToFarPlane;
+	cVector2f avInvScreenSize;
+
+	cVector2f avFogStartAndLength;
+	cVector4f avFogColor;
+
+	cVector3f avViewSpaceUp;
+	float afFogFalloffExp;
+	
+	int alInstanceOffset;
+	int alInstanceStride;
+	cVector2f avPadding;
+
+	@ifdef LightType_Directional
+		// Dir light specific
+		cMatrixf a_mtxDirectionLightGobo;
+		cMatrixf a_mtxLightViewProj0;
+		cMatrixf a_mtxLightViewProj1;
+		cMatrixf a_mtxLightViewProj2;
+		cMatrixf a_mtxLightViewProj3;
+		
+		cVector4f avSplitsNear;
+		cVector4f avSplitsFar;
+		cVector4f avSplitOffsetMul;
+	
+		cVector3f avLightDirection;
+		cVector3f avAmbientColorSky;
+		cVector3f avAmbientColorGround;
+	@endif
+};
+
+
+///////////////////////
+// Instancing
+uniform cTextureBuffer aInstanceBuffer : 15;
+
+//---------------------------------------------
+
+///////////////////////////////
+// Main program
+void main(in cVector4f vtx_vPosition,
+@ifdef LightType_Spot || LightType_Point || LightType_Directional
+@ifdef LightType_Directional
+@else
+		  out cVector4f px_vLightPosScale,
+		  out float px_fFalloff,
+@endif
+		  out cVector4f px_vLightColor,
+		  out float px_fTranslucenyMul,
+@ifdef UseSpecular && UseGobo && GoboType_Specular
+		  out float px_fLightSourceRadius,
+@endif
+@elseif LightType_Box
+		  out cVector3f px_vBoxCenter,
+		  out cVector3f px_vBoxExtent,
+		  out cVector4f px_vSkyColor,
+		  out cVector4f px_vGroundColor,
+		  out float px_fFalloff,
+		  out float px_fBevel,
+		  out float px_fWeight,
+@endif
+@ifdef UseShadowMap
+		  out cVector2f px_vShadowOffsetMul,
+	@ifdef UseShadowFade
+		  out float px_fShadowFadeRange,
+	@endif
+@endif
+@ifdef LightType_Spot
+		  out cMatrixf px_mtxLightViewProj,
+	@ifdef UseSpecular && UseGobo && GoboType_Specular
+		  out cVector3f px_vLightForward,
+		  out cVector3f px_vLightUp,
+		  out cVector3f px_vLightRight,
+	@elseif UseGobo
+	@else
+		  out float px_fSpotFalloffPow,
+	@endif
+@endif
+@ifdef UseIrradiance
+		  out cVector4f px_vBands[9],
+@endif
+@ifdef BoxMask
+		  out cVector3f px_vMaskCenter,
+		  out cVector3f px_vMaskExtent,
+@endif
+@ifdef DebugComplexity
+		  out float px_fComplexity,
+@endif
+		  out cVector4f px_vPosition)
+{	
+	/////////////
+	// load instance data
+	cVector4f vSample;
+	int lBaseOffset = int(alInstanceOffset + vtx_lInstanceID * alInstanceStride);
+
+	@ifdef LightType_Directional
+		cMatrixf mtxModel = cMatrixf(1, 0, 0, 0,
+									 0, 1, 0, 0,
+									 0, 0, 1, 0,
+									 0, 0, 0, 1);
+	@else
+		cMatrixf mtxModel = cMatrixf(load(aInstanceBuffer, lBaseOffset),
+									 load(aInstanceBuffer, lBaseOffset + 1),
+									 load(aInstanceBuffer, lBaseOffset + 2),
+									 load(aInstanceBuffer, lBaseOffset + 3));
+	@endif
+		
+	@ifdef LightType_Spot || LightType_Point || LightType_Directional
+		@ifdef LightType_Directional
+		@else
+			px_vLightPosScale = load(aInstanceBuffer, lBaseOffset + 4);
+		@endif
+		px_vLightColor = load(aInstanceBuffer, lBaseOffset + 5);
+
+		vSample = load(aInstanceBuffer, lBaseOffset + 6);
+
+		@ifdef LightType_Directional
+		@else
+			px_fFalloff = vSample.x;
+		@endif
+		px_fTranslucenyMul = vSample.y; 
+
+		@ifdef UseSpecular && UseGobo && GoboType_Specular
+			px_fLightSourceRadius = vSample.z;
+		@endif
+
+		lBaseOffset += 7;
+		
+		@ifdef LightType_Directional
+		@else
+			px_vLightPosScale.xyz = mul(a_mtxView, cVector4f(px_vLightPosScale.xyz, 1)).xyz;
+		@endif
+	@elseif LightType_Box
+		px_vBoxCenter = load(aInstanceBuffer, lBaseOffset + 4).xyz;
+		px_vBoxExtent = load(aInstanceBuffer, lBaseOffset + 5).xyz;
+		px_vSkyColor = load(aInstanceBuffer, lBaseOffset + 6);
+		px_vGroundColor = load(aInstanceBuffer, lBaseOffset + 7);
+
+		vSample = load(aInstanceBuffer, lBaseOffset + 8);
+		px_fFalloff = vSample.x;
+		px_fBevel = vSample.y; 
+		px_fWeight = vSample.z;
+
+		lBaseOffset += 9;
+	@endif
+
+	@ifdef LightType_Spot
+		//todo: load this directly in pixel shader?
+		px_mtxLightViewProj = cMatrixf(load(aInstanceBuffer, lBaseOffset),
+									   load(aInstanceBuffer, lBaseOffset + 1),
+									   load(aInstanceBuffer, lBaseOffset + 2),
+									   load(aInstanceBuffer, lBaseOffset + 3));
+		px_mtxLightViewProj = mul(px_mtxLightViewProj, a_mtxInvView);
+
+		@ifdef UseSpecular && UseGobo && GoboType_Specular
+			  px_vLightUp =  mul(a_mtxView, load(aInstanceBuffer, lBaseOffset + 4)).xyz;
+			  px_vLightRight =  mul(a_mtxView, load(aInstanceBuffer, lBaseOffset + 5)).xyz;
+			  lBaseOffset += 6;
+		@elseif UseGobo
+			  lBaseOffset += 4;
+		@else
+			  vSample = load(aInstanceBuffer, lBaseOffset + 4);
+			  px_fSpotFalloffPow = vSample.x;
+			  lBaseOffset += 5;
+		@endif
+
+		@ifdef UseShadowMap
+			vSample = load(aInstanceBuffer, lBaseOffset);
+			px_vShadowOffsetMul = vSample.xy;
+			@ifdef UseShadowFade
+				px_fShadowFadeRange = vSample.z;
+			@endif
+			lBaseOffset += 1;
+		@endif
+		
+		@ifdef UseSpecular && UseGobo && GoboType_Specular
+			@ifdef BoxMask
+				px_vLightForward = mul(a_mtxView, load(aInstanceBuffer, lBaseOffset)).xyz;
+				lBaseOffset+=1;
+			@else
+				px_vLightForward = normalize(mul(a_mtxView, mul(mtxModel, cVector4f(0, 0, 1, 0))).xyz);
+			@endif
+		@endif
+	@endif
+
+	@ifdef LightType_Directional
+		@ifdef UseShadowMap
+			vSample = load(aInstanceBuffer, lBaseOffset);
+			px_vShadowOffsetMul = vSample.xy;
+			lBaseOffset += 1;
+		@endif
+	@endif
+
+	@ifdef UseIrradiance
+		//todo: load this in pixel shader?
+		for(int i = 0; i < 9; ++i) px_vBands[i] = load(aInstanceBuffer, lBaseOffset+i);
+		lBaseOffset += 9;
+	@endif
+
+	@ifdef BoxMask
+		px_vMaskCenter = load(aInstanceBuffer, lBaseOffset).xyz;
+		px_vMaskExtent = load(aInstanceBuffer, lBaseOffset+1).xyz;
+		lBaseOffset += 2;
+	@endif
+
+	@ifdef DebugComplexity
+		px_fComplexity = load(aInstanceBuffer, lBaseOffset).x;
+	@endif
+
+	@ifdef LightType_Directional
+		px_vPosition = cVector4f(vtx_vPosition.xyz, 1.0);
+	@else
+		///////////
+		// Apply model matrix for instance
+		cVector4f vLocalVertexPos = mul(mtxModel, cVector4f(vtx_vPosition.xyz, 1.0));
+		px_vPosition = mul(a_mtxViewProjection,vLocalVertexPos);
+	@endif
+}

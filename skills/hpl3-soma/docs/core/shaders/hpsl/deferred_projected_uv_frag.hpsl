@@ -1,0 +1,392 @@
+////////////////////////////////////////////////////////
+// Projected UV - Fragment Shader
+//
+//
+////////////////////////////////////////////////////////
+
+@include helper_normal_packing.hpsl
+
+@ifdef UseTextureBuffer
+
+	// This contains all constant buffers and chooses the correct one based on MaterialType
+	@include helper_type_arguments.hpsl
+	
+	uniform cTextureBuffer aInstanceBuffer : 15;
+@else
+
+	/////////////////
+	// Uniform values
+	cBuffer cProjectedFragArguments
+	{
+		float afBlendHardness;
+		float afNormalMapBlendImpact;
+		float afDetailAlpha;
+		float afDetailTextureScale;
+
+		cVector3f avTextureScale;
+
+		cMatrixf a_mtxNormalFrag;
+	};
+
+@endif
+////////////////////
+// Material Textures
+uniform cTexture2D aDiffuseMapSide : 0;
+uniform cTexture2D aDiffuseMapTop : 1;
+@ifdef UseBottomTexture
+	uniform cTexture2D aDiffuseMapBot : 2;
+@endif
+
+@ifdef UseNormalMapping
+	uniform cTexture2D aNormalMapSide : 3;
+	uniform cTexture2D aNormalMapTop : 4;
+	@ifdef UseBottomTexture
+		uniform cTexture2D aNormalMapBot : 5;
+	@endif
+@endif
+
+@ifdef UseSpecular
+	uniform cTexture2D aSpecularMapSide : 6;
+	uniform cTexture2D aSpecularMapTop : 7;
+	@ifdef UseBottomTexture
+		uniform cTexture2D aSpecularMapBot : 8;
+	@endif
+@endif
+
+@ifdef UseBlend
+	uniform cTexture2D aBlendMap : 9;
+
+	@ifdef UseBlendDiffuse
+		uniform cTexture2D aBlendDiffuseMap : 10;
+	@endif
+	@ifdef UseBlendSpecular
+		uniform cTexture2D aBlendSpecularMap : 11;
+	@endif
+	@ifdef UseBlendNormal
+		uniform cTexture2D aBlendNormalMap : 12;
+	@endif
+@endif
+
+@ifdef UseDissolve
+@ifdef UseTextureBuffer
+@else
+	uniform float afDissolveAmount;
+@endif
+	uniform cTexture3D aDissolveMap : 14;
+@endif
+
+//-----------------------------------------------------------------------
+
+@ifdef UseDetail || UseBlend
+	#define kLuminance cVector4f(0.2126, 0.7152, 0.0722, 0.0)
+
+	cVector4f BlendDetail(in cVector4f avBase, in cVector4f avDetail, float afAlpha)
+	{
+		@ifdef DetailBlend_Alpha
+			return mix(avBase, avDetail, afAlpha);
+		@elseif DetailBlend_Darken
+			///////////
+			// Choose the darkest of the two colors
+			float fSide = step(dot((avBase + cVector4f(0.01)) * afAlpha, kLuminance), dot((avDetail + cVector4f(0.01)) * (1.0 - afAlpha), kLuminance));
+			return mix(avDetail, avBase, cVector4f(fSide));
+		@elseif DetailBlend_Lighten
+			/////////
+			// Choose the brighest of the two colors
+			float fSide = step(dot((avBase + cVector4f(0.01)) * (1.0 - afAlpha), kLuminance), dot((avDetail + cVector4f(0.01)) * afAlpha, kLuminance));
+			return mix(avBase, avDetail, cVector4f(fSide));
+		@else
+			return avBase;
+		@endif
+	}
+@endif
+	
+//-----------------------------------------------------------------------	
+
+cVector4f PlanarProjection(in cVector3f avUVW, in cVector3f avBlendWeight, in bool abBottom, cTexture2D aSide, cTexture2D aTop, cTexture2D aBottom)
+{
+	cVector4f vSide = sample(aSide, avUVW.xy * avTextureScale.x) * avBlendWeight.z +
+				 sample(aSide, avUVW.zy * avTextureScale.x) * avBlendWeight.x;
+
+	cVector4f vY;
+	if(abBottom)
+	{
+		/////////
+		// sample the bottom texture
+		vY = sample(aBottom, avUVW.xz * avTextureScale.z);
+	}
+	else
+	{
+		/////////
+		// sample the top texture
+		vY = sample(aTop, avUVW.xz * avTextureScale.y);
+	}
+
+	return vY * avBlendWeight.y + vSide;
+}
+
+//-----------------------------------------------------------------------
+
+cVector4f PlanarProjection(in cVector3f avUVW, in cVector3f avBlendWeight, cTexture2D aSide, cTexture2D aTop)
+{
+	return sample(aSide, avUVW.xy) * avBlendWeight.z +
+		   sample(aTop,  avUVW.xz) * avBlendWeight.y +
+		   sample(aSide, avUVW.zy) * avBlendWeight.x;
+}
+
+//-----------------------------------------------------------------------
+
+@ifdef UseNormalMapping
+cVector3f PlanarProjectionNMap(in cVector3f avUVW, in cVector3f avBlendWeight, in bool abBottom, cTexture2D aSide, cTexture2D aTop, cTexture2D aBottom)
+{
+	cVector3f vSide = UnpackNormalmapYW(sample(aSide, avUVW.xy * avTextureScale.x)) * avBlendWeight.z +
+				 UnpackNormalmapYW(sample(aSide, avUVW.zy * avTextureScale.x)) * avBlendWeight.x;
+
+	cVector4f vY;
+	if(abBottom)
+	{
+		/////////
+		// sample the bottom texture
+		vY = sample(aBottom, avUVW.xz * avTextureScale.z);
+	}
+	else
+	{
+		/////////
+		// sample the top texture
+		vY = sample(aTop, avUVW.xz * avTextureScale.y);
+	}
+
+	return UnpackNormalmapYW(vY) * avBlendWeight.y + vSide;
+}
+
+//-----------------------------------------------------------------------
+
+cVector3f PlanarProjectionNMap(in cVector3f avUVW, in cVector3f avBlendWeight, cTexture2D aSide, cTexture2D aTop)
+{
+	return UnpackNormalmapYW(sample(aSide, avUVW.xy * avTextureScale.x)) * avBlendWeight.z +
+		   UnpackNormalmapYW(sample(aTop,  avUVW.xz * avTextureScale.y)) * avBlendWeight.y +
+		   UnpackNormalmapYW(sample(aSide, avUVW.zy * avTextureScale.x)) * avBlendWeight.x;
+}
+@endif
+
+//------------------------------------------------
+
+///////////////////////////////
+// Main program
+void main(in cVector4f px_vPosition,
+@ifdef UseUv
+		  in cVector4f px_vTexCoord0,
+@endif
+@ifdef UseLinearDepth
+		  in float px_fLinearDepth,
+@endif
+@ifdef UseColor
+		  in cVector4f px_vColor,
+@endif
+@ifdef UseTextureBuffer
+	@ifdef UseDissolve
+		  in float afDissolveAmount,
+	@endif
+@endif
+@ifdef UseNormals
+		  in cVector3f px_vNormal,
+	@ifdef UseSkeleton || UseMeshInstancing
+		  in cVector4f px_qBoneRotation,
+	@elseif UseStaticMeshInstancing || UseTextureBuffer
+		  in cMatrix3f px_mtxRotation,
+	@endif
+@endif
+@ifdef UseNormalMapping
+		  in cVector3f px_vTangent,
+		  in cVector3f px_vBinormal,
+@endif
+@ifdef UseBlend
+		  in cVector2f px_vBlendUV,
+	@ifdef UseBlendNormal
+		  in cVector3f px_vBlendNormal,
+		  in cVector3f px_vBlendTangent,
+		  in cVector3f px_vBlendBinormal,
+	@endif
+@endif
+	      out cVector4f out_vDiffuse : 0,			//diffuse rgb, translucency a
+	      out cVector4f out_vNormal : 1,			//normal xyz, depth w
+	      out cVector4f out_vSpecular : 2)		//spec color rgb, spec power a
+{
+	cVector3f vNormal = normalize(px_vNormal);
+	cVector3f vUVW = px_vTexCoord0.xyz;
+
+	@ifdef UseDetail
+		cVector3f vDetailUVW = vUVW * afDetailTextureScale;
+	@endif
+
+	@ifdef UseDissolve
+		cVector2f vDissolveCoords = px_vPosition.xy * (1.0/128.0);//128 = size of dissolve texture.
+		float fDissolve = sample(aDissolveMap, cVector3f(vDissolveCoords, 0)).w * 0.5 + 0.5;
+		fDissolve = fDissolve - (1.0-afDissolveAmount)*0.5;
+		if(fDissolve < 0.5) discard;
+	@endif
+	
+	cVector3f vBlendWeight = abs(vNormal);
+	vBlendWeight = max(cVector3f(0.0), vBlendWeight - max(vBlendWeight.x, max(vBlendWeight.y, vBlendWeight.z)) * afBlendHardness);
+	vBlendWeight /= dot(cVector3f(1.0), vBlendWeight);
+
+	@ifdef UseBottomTexture
+		bool bBottom = vNormal.y < 0.0;
+	@endif
+
+	//////////////////////////////////
+	//Normal
+	@ifdef UseNormalMapping
+		@ifdef UseBottomTexture
+			cVector3f vNormalMap = PlanarProjectionNMap(vUVW, vBlendWeight, bBottom, aNormalMapSide, aNormalMapTop, aNormalMapBot);
+		@else
+			cVector3f vNormalMap = PlanarProjectionNMap(vUVW, vBlendWeight, aNormalMapSide, aNormalMapTop);
+		@endif
+
+		@ifdef UseDetail
+			//////////////
+			// Blend with detail texture
+			@ifdef UseBottomTexture
+				cVector3f vDetailNormalMap = PlanarProjectionNMap(vDetailUVW, vBlendWeight, bBottom, aNormalMapSide, aNormalMapTop, aNormalMapBot);
+			@else
+				cVector3f vDetailNormalMap = PlanarProjectionNMap(vDetailUVW, vBlendWeight, aNormalMapSide, aNormalMapTop);
+			@endif
+
+			//////////
+			// Use overlay to blend the layers together
+			vNormalMap = vNormalMap * (1.0 - afDetailAlpha) + vDetailNormalMap * afDetailAlpha + 2.0 * sign(vDetailNormalMap) * vNormalMap * vDetailNormalMap * afDetailAlpha * (1.0 - afDetailAlpha);
+		@endif
+
+		vNormal = normalize(vNormalMap.x * px_vTangent + vNormalMap.y * px_vBinormal + vNormalMap.z * px_vNormal);
+
+		@ifdef UseNormalMapBlendWeight
+			//////////////
+			// Calculate new blend weight from the normal mapped normal
+			vBlendWeight = mix(abs(px_vNormal), abs(vNormal), afNormalMapBlendImpact);
+			vBlendWeight = max(cVector3f(0.0), vBlendWeight - max(vBlendWeight.x, max(vBlendWeight.y, vBlendWeight.z)) * afBlendHardness);
+			vBlendWeight /= dot(cVector3f(1.0), vBlendWeight);
+
+			@ifdef UseBottomTexture
+				bBottom = vNormal.y < 0.0;
+			@endif
+		@endif
+	@endif
+	
+	//////////////////////////////////
+	//Diffuse color
+	@ifdef UseDiffuseMap
+		@ifdef UseBottomTexture
+			cVector4f vDiffuseColor = PlanarProjection(vUVW, vBlendWeight, bBottom, aDiffuseMapSide, aDiffuseMapTop, aDiffuseMapBot);
+		@else
+			cVector4f vDiffuseColor = PlanarProjection(vUVW, vBlendWeight, aDiffuseMapSide, aDiffuseMapTop);
+		@endif
+
+		@ifdef UseDetail
+			//////////////
+			// Blend with detail texture
+			@ifdef UseBottomTexture
+				cVector4f vDetailColor = PlanarProjection(vDetailUVW, vBlendWeight, bBottom, aDiffuseMapSide, aDiffuseMapTop, aDiffuseMapBot);
+			@else
+				cVector4f vDetailColor = PlanarProjection(vDetailUVW, vBlendWeight, aDiffuseMapSide, aDiffuseMapTop);
+			@endif
+
+			vDiffuseColor = BlendDetail(vDiffuseColor, vDetailColor, afDetailAlpha);
+		@endif
+	@else
+		cVector4f vDiffuseColor = cVector4f(1.0);
+	@endif
+
+	//////////////////////////////////
+	//Specular color
+	@ifdef UseSpecular
+		@ifdef UseBottomTexture
+			cVector4f vSpec = PlanarProjection(vUVW, vBlendWeight, bBottom, aSpecularMapSide, aSpecularMapTop, aSpecularMapBot);
+		@else
+			cVector4f vSpec = PlanarProjection(vUVW, vBlendWeight, aSpecularMapSide, aSpecularMapTop);
+		@endif
+
+		@ifdef UseDetail
+			//////////////
+			// Blend with detail texture
+			@ifdef UseBottomTexture
+				cVector4f vDetailSpec = PlanarProjection(vDetailUVW, vBlendWeight, bBottom, aSpecularMapSide, aSpecularMapTop, aSpecularMapBot);
+			@else
+				cVector4f vDetailSpec = PlanarProjection(vDetailUVW, vBlendWeight, aSpecularMapSide, aSpecularMapTop);
+			@endif
+
+			vSpec = BlendDetail(vSpec, vDetailSpec, afDetailAlpha);
+		@endif
+	@else
+		cVector4f vSpec = cVector4f(0.0, 0.0, 0.0, 0.3);
+	@endif
+
+	//////////////////////////////////
+	//Skeleton
+	@ifdef UseSkeleton || UseMeshInstancing
+		//////////////
+		// Apply the skeleton rotation to the normal
+		vNormal = vNormal + 2.0 * cross(px_qBoneRotation.xyz, cross(px_qBoneRotation.xyz, vNormal) + px_qBoneRotation.w * vNormal);
+	@elseif UseStaticMeshInstancing
+		vNormal = mul(px_mtxRotation, vNormal);
+	@endif
+
+
+	@ifdef UseTextureBuffer
+		@ifdef UseMeshInstancing
+			vNormal = normalize(mul(cMatrix3f(a_mtxView), vNormal));
+		@else
+			vNormal = normalize(mul(px_mtxRotation, vNormal));
+		@endif
+	@else
+		///////////
+		// Transform normal to eye space
+		vNormal = normalize(mul(cMatrix3f(a_mtxNormalFrag), vNormal));
+	@endif
+
+	//////////////////////////////////
+	// Blending with original uv
+	@ifdef UseBlend
+		////////////////
+		// sample the blend amount from the texture
+		float fBlendAlpha = sample(aBlendMap, px_vBlendUV).r;
+
+		///////////////////
+		// Blend diffuse color
+		@ifdef UseBlendDiffuse
+			cVector4f vBlendDiffuse = sample(aBlendDiffuseMap, px_vBlendUV);
+			vDiffuseColor = BlendDetail(vDiffuseColor, vBlendDiffuse, fBlendAlpha);
+		@endif
+
+		///////////////////
+		// Blend specular color
+		@ifdef UseBlendSpecular
+			cVector4f vBlendSpecular = sample(aBlendSpecularMap, px_vBlendUV);
+			vSpec = BlendDetail(vSpec, vBlendSpecular, fBlendAlpha);
+		@endif
+
+		/////////////////
+		// Blend normal
+		@ifdef UseBlendNormal
+			cVector3f vBlendNormal = UnpackNormalmapYW(sample(aBlendNormalMap, px_vBlendUV));
+			cVector3f vScreenNormal = normalize(vBlendNormal.x * px_vBlendTangent + vBlendNormal.y * px_vBlendBinormal + vBlendNormal.z * px_vBlendNormal);
+
+			/////////////
+			// Overlay the two normals
+			vNormal = vNormal * (1.0 - fBlendAlpha) + vScreenNormal * fBlendAlpha + 2.0 * sign(vScreenNormal) * vNormal * vScreenNormal * fBlendAlpha * (1.0 - fBlendAlpha);
+			vNormal = normalize(vNormal);
+		@endif
+	@endif
+
+	//////////////////////////////////
+	//Diffuse color
+	out_vDiffuse.xyz = vDiffuseColor.xyz * px_vColor.xyz;
+	out_vDiffuse.w = 0;
+
+	//////////////////////////////////
+	//Depth
+	out_vNormal.xyz = vNormal;
+	out_vNormal.w = px_fLinearDepth;
+	
+	/////////////////////////////////
+	//Specular
+	out_vSpecular = vSpec;
+}		

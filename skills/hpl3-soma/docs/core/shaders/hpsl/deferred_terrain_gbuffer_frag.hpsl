@@ -1,0 +1,302 @@
+////////////////////////////////////////////////////////
+// Deferred Terrain GBuffer - Fragment Shader
+//
+//
+////////////////////////////////////////////////////////
+
+@include helper_normal_packing.hpsl
+
+@ifdef UseTextureBuffer
+
+	@include helper_type_arguments.hpsl
+
+@else
+	////////////////////
+	//Uniform
+	uniform float afSpecularPower;
+
+	@ifdef TerrainDetailMaps
+		uniform cVector3f avDetailMapScale;
+		uniform cVector2f avDetailFade;
+	@endif
+
+	uniform cMatrixf a_mtxNormal;
+	uniform cVector3f avHeightMapProperties0; //x = max hegiht, y = sample offset, z = 2.0f / (height/texel) ratio
+
+	uniform cVector3f avWallTextureParams; //x = texture scale, y = angle mul, z = nmap influence
+
+@endif
+
+////////////////////
+//Textures
+uniform cTexture2D aHeightMap : 0;
+
+@ifdef UseTextureArray
+	uniform cTexture2DArray aMaterialMap : 1;
+	
+	@ifdef UseTextureBuffer
+	@else
+		uniform cVector4f avDiffuseSizeAndOffset;
+		uniform cVector4f avNormalSizeAndOffset;
+		uniform cVector4f avSpecularSizeAndOffset;
+		uniform cVector4f avDetailSizeAndOffset;
+		uniform cVector4f avArraySlice;
+	@endif
+@elseif UseCheapMaterial
+	uniform cTexture2D aDiffuseMap : 1;
+@else
+	uniform cTexture2D aDiffuseMap : 1;
+	uniform cTexture2D aNormalMap : 2;
+	uniform cTexture2D aSpecularMap : 3;
+	uniform cTexture2D aDetailAmountMap : 4;
+@endif 
+
+@ifdef TerrainDetailMaps
+	uniform cTexture2D aDetailMap0 : 5;
+	uniform cTexture2D aDetailMap1 : 6;
+	uniform cTexture2D aDetailMap2 : 7;
+@endif	
+
+@ifdef UseWallMapping
+	uniform cTexture2D aWallMapDiffuse : 8;
+	uniform cTexture2D aWallMapNormal : 9;
+@endif
+
+//------------------------------------------------
+
+cVector4f UnpackYCoCg(cVector4f avYCoCg)
+{
+	const float kfOffset = 128.0 / 255.0;
+
+	float fScale = 1.0 / ((255.0 / 8.0) * avYCoCg.b + 1);
+	avYCoCg.rg = (avYCoCg.rg - kfOffset) * fScale;
+
+	cVector3f vRGB;
+	vRGB.r = dot(avYCoCg, cVector4f(1, -1, 0, 1));
+	vRGB.g = dot(avYCoCg, cVector4f(0,  1, 0, 1));
+	vRGB.b = dot(avYCoCg, cVector4f(-1,-1, 0, 1));
+	
+	return vRGB.rgbb;
+}
+
+cVector3f UnpackNormal(cVector4f avX)
+{
+	float fScale = 2.0 / ((255.0 / 8.0) * avX.b + 1);
+	cVector3f vNormal = avX.wyx * cVector3f(2, fScale, 2) - 1;
+	vNormal.z = sqrt(1 - min(dot(vNormal.xy,vNormal.xy),1) );
+	return vNormal;	
+}
+
+///////////////////////////////
+// Main program
+void main(in cVector4f px_vPosition,
+@ifdef UseUv
+		  in cVector4f px_vTexCoord0,
+@endif
+@ifdef UseVertexNormalMapping
+		  in cVector3f px_vNormal,
+		  in cVector3f px_vTangent,
+		  in cVector3f px_vBinormal,
+@else
+		  in cVector2f px_vHeightCoord,
+@endif
+@ifdef UseLinearDepth
+		  in float px_fLinearDepth,
+@endif
+@ifdef TerrainDetailMaps
+		  in cVector4f px_vWorldPos,
+@endif
+
+@ifdef TerrainDebug	
+		  in cVector4f px_vColor,
+@endif
+@ifdef UseTextureArray && UseTextureBuffer
+		  in cVector4f px_vDiffuseSizeAndOffset,
+		  in cVector4f px_vNormalSizeAndOffset,
+		  in cVector4f px_vSpecularSizeAndOffset,
+		  in cVector4f px_vDetailSizeAndOffset,
+		  in cVector4f px_vArraySlice,
+@endif
+		  out cVector4f out_vDiffuse : 0,
+		  out cVector4f out_vNormal : 1,
+		  out cVector4f out_vSpecular : 2)
+{
+	//////////////////////////////////
+	// Get UV coords
+	cVector2f vTexCoord = px_vTexCoord0.xy;
+
+	//////////////////////////////////
+	//Normal
+	@ifdef UseTextureArray
+		@ifdef UseTextureBuffer
+			cVector3f vNormal = UnpackNormal(sample(aMaterialMap, cVector3f(vTexCoord * px_vNormalSizeAndOffset.xy + px_vNormalSizeAndOffset.zw,
+																			px_vArraySlice.y))).xyz;
+		@else
+			cVector3f vNormal = UnpackNormal(sample(aMaterialMap, cVector3f(vTexCoord * avNormalSizeAndOffset.xy + avNormalSizeAndOffset.zw,
+																			avArraySlice.y))).xyz;
+		@endif
+	@elseif UseCheapMaterial
+		cVector3f vNormal = cVector3f(0, 0, 1);
+	@else
+		cVector3f vNormal = UnpackNormal(sample(aNormalMap,vTexCoord)).xyz;
+	@endif
+
+	@ifdef UseVertexNormalMapping
+		//////////
+		// Per vertex normal mapping
+		cVector3f vScreenNormal = normalize(vNormal.x * px_vTangent + vNormal.y * px_vBinormal + vNormal.z * px_vNormal);
+		cVector3f vBaseNormal = px_vNormal;
+	@else
+		/////////
+		// Calculate per pixel normal
+		float fHeightX0 = sample(aHeightMap, cVector2f(px_vHeightCoord.x + avHeightMapProperties0.y * 0.015625, px_vHeightCoord.y)).x;
+		float fHeightX1 = sample(aHeightMap, cVector2f(px_vHeightCoord.x - avHeightMapProperties0.y * 0.015625, px_vHeightCoord.y)).x;
+		
+		float fHeightZ0 = sample(aHeightMap, cVector2f(px_vHeightCoord.x, px_vHeightCoord.y + avHeightMapProperties0.y * 0.015625)).x;
+		float fHeightZ1 = sample(aHeightMap, cVector2f(px_vHeightCoord.x, px_vHeightCoord.y - avHeightMapProperties0.y * 0.015625)).x;
+		
+		float fHeight = sample(aHeightMap, cVector2f(px_vHeightCoord.x, px_vHeightCoord.y)).x;
+		
+		float fDeltaX0 = fHeight - fHeightX0;
+		float fDeltaX1 = fHeightX1 - fHeight;
+
+		float fDeltaZ0 = fHeight - fHeightZ0;
+		float fDeltaZ1 = fHeightZ1 - fHeight;
+		
+		float fDeltaX = (fDeltaX0 * fDeltaX0) < (fDeltaX1 * fDeltaX1) ? fDeltaX0 : fDeltaX1;
+		float fDeltaZ = (fDeltaZ0 * fDeltaZ0) < (fDeltaZ1 * fDeltaZ1) ? fDeltaZ0 : fDeltaZ1;
+
+		cVector3f vWorldNormal = cVector3f(fDeltaX, avHeightMapProperties0.z * 0.015625, fDeltaZ);
+		cVector3f vBinormal = vWorldNormal.xzy * cVector3f(0, 1, -1); //same as cross(vWorldNormal, cVector3f(1,0,0));
+		cVector3f vTangent = cross(vBinormal,vWorldNormal);
+
+		//////////
+		// Fast normalization of the tangent space
+		cVector3f vLength = cVector3f(dot(vTangent, vTangent),
+						    dot(vBinormal, vBinormal),
+							dot(vWorldNormal, vWorldNormal));
+		vNormal *= inversesqrt(vLength); 
+
+		cVector3f vScreenNormal = (vNormal.x * vTangent + vNormal.y * vBinormal + vNormal.z * vWorldNormal);
+		cVector3f vBaseNormal = vWorldNormal;
+	@endif
+	
+	//////////////////////////////////
+	// Diffuse
+	@ifdef UseTextureArray
+		@ifdef UseTextureBuffer
+			cVector4f vDiffuseColor = UnpackYCoCg(sample(aMaterialMap, cVector3f(vTexCoord * px_vDiffuseSizeAndOffset.xy + px_vDiffuseSizeAndOffset.zw,
+																				 px_vArraySlice.x)));
+		@else
+			cVector4f vDiffuseColor = UnpackYCoCg(sample(aMaterialMap, cVector3f(vTexCoord * avDiffuseSizeAndOffset.xy + avDiffuseSizeAndOffset.zw,
+																				 avArraySlice.x)));
+		@endif
+		vDiffuseColor = vDiffuseColor * vDiffuseColor;
+	@elseif UseCheapMaterial
+		cVector4f vDiffuseColor = sample(aDiffuseMap, vTexCoord) * afSpecularPower;
+	@else
+		cVector4f vDiffuseColor = UnpackYCoCg(sample(aDiffuseMap, vTexCoord));
+	@endif
+
+	//////////////////////////////////
+	// Detail
+	@ifdef TerrainDetailMaps
+		float fDetailMul = 1.0 - clamp( (px_fLinearDepth-avDetailFade.x) / avDetailFade.y, 0.0, 1.0);
+	
+		@ifdef UseTextureArray
+			@ifdef UseTextureBuffer
+				cVector3f vDetailAmount = UnpackYCoCg(sample(aMaterialMap, cVector3f(vTexCoord * px_vDetailSizeAndOffset.xy + px_vDetailSizeAndOffset.zw,
+																					 px_vArraySlice.w))).xyz;
+			@else
+				cVector3f vDetailAmount = UnpackYCoCg(sample(aMaterialMap, cVector3f(vTexCoord * avDetailSizeAndOffset.xy + avDetailSizeAndOffset.zw,
+																					 avArraySlice.w))).xyz;
+			@endif
+		@elseif UseCheapMaterial
+			cVector3f vDetailAmount = cVector3f(0.6667f, 0.0, 0.0);
+		@else
+			cVector3f vDetailAmount = UnpackYCoCg(sample(aDetailAmountMap, vTexCoord)).xyz;
+		@endif
+
+		float fAmountLength = length(vDetailAmount);
+		cVector3f vNormalizedAmount = vDetailAmount / (fAmountLength + 0.0001);
+
+		/////////////////
+		// sample the detail textures
+		cVector4f vDetail0 = sample(aDetailMap0, px_vWorldPos.xz * avDetailMapScale.x);
+		cVector4f vDetail1 = sample(aDetailMap1, px_vWorldPos.xz * avDetailMapScale.y);
+		cVector4f vDetail2 = sample(aDetailMap2, px_vWorldPos.xz * avDetailMapScale.z);
+
+		cVector4f vDetailColor = sqrt(vDetail0 * vNormalizedAmount.x +
+									  vDetail1 * vNormalizedAmount.y +
+									  vDetail2 * vNormalizedAmount.z);
+		
+		vDiffuseColor.rgb = sqrt(vDiffuseColor.rgb) * mix(cVector3f(1.0), vDetailColor.xyz*2, fDetailMul*fAmountLength);
+		vDiffuseColor.rgb *= vDiffuseColor.rgb;
+	@endif	
+	  	
+
+	@ifdef UseWallMapping
+		////////////////
+		// Calculate blend weight
+		cVector3f vBlendWeight = abs(vBaseNormal * cVector3f(1, avWallTextureParams.y, 1));
+		vBlendWeight = max(cVector3f(0.0), vBlendWeight - max(vBlendWeight.x, max(vBlendWeight.y, vBlendWeight.z)) * 0.75);
+		vBlendWeight /= dot(cVector3f(1.0), vBlendWeight);
+		cVector3f vWallUV = (px_vWorldPos * avWallTextureParams.x).xyz;
+
+		///////////////////
+		// sample diffuse wall texture and blend it with the terrain diffuse
+		vDiffuseColor = sample(aWallMapDiffuse, vWallUV.xy) * vBlendWeight.z +
+						sample(aWallMapDiffuse, vWallUV.zy) * vBlendWeight.x +
+						vDiffuseColor * vBlendWeight.y;
+
+		@ifdef UseCheapMaterial
+		@else
+			///////////////
+			// Get normal and transform to view space and blend with the terrain normal
+			cVector3f vNormalXY = UnpackNormalmapYW(sample(aWallMapNormal, vWallUV.xy));
+			cVector3f vNormalZY = UnpackNormalmapYW(sample(aWallMapNormal, vWallUV.zy));
+
+			cVector3f vWallNormal = (vNormalXY.z * vBaseNormal - cVector3f(vNormalXY.x, 0, 0) - cVector3f(0, vNormalXY.y, 0)) * vBlendWeight.z + 
+							   (vNormalZY.z * vBaseNormal - cVector3f(0, 0, vNormalZY.x) - cVector3f(0, vNormalZY.y, 0)) * vBlendWeight.x;
+
+			//////////////
+			// Blend using overlay
+			vBlendWeight.y = 1 - (1 - vBlendWeight.y) * avWallTextureParams.z;
+			vScreenNormal = mix(vWallNormal, vScreenNormal, vBlendWeight.y) + 2.0 * sign(vScreenNormal) * vScreenNormal * vWallNormal * vBlendWeight.y * (1.0 - vBlendWeight.y);
+			vScreenNormal = normalize(vScreenNormal);
+		@endif
+	@endif
+	
+	//////////////////////////////////
+	//Debug
+	@ifdef TerrainDebug	
+		vDiffuseColor *= px_vColor;
+	@endif
+	
+	out_vDiffuse.xyz = vDiffuseColor.xyz;
+	out_vDiffuse.w = 0; //translucency always 0 for terrain!
+	
+	out_vNormal.xyz = mul(cMatrix3f(a_mtxNormal), vScreenNormal);
+	
+	//////////////////////////////////
+	//Depth
+	out_vNormal.w = px_fLinearDepth;
+		
+	//////////////////////////////////
+	//Specular
+	@ifdef UseTextureArray
+		@ifdef UseTextureBuffer
+			out_vSpecular.xyz = UnpackYCoCg(sample(aMaterialMap, cVector3f(vTexCoord * px_vSpecularSizeAndOffset.xy + px_vSpecularSizeAndOffset.zw,
+																		   px_vArraySlice.z))).xyz;
+		@else
+			out_vSpecular.xyz = UnpackYCoCg(sample(aMaterialMap, cVector3f(vTexCoord * avSpecularSizeAndOffset.xy + avSpecularSizeAndOffset.zw,
+																		   avArraySlice.z))).xyz;
+		@endif
+	@elseif UseCheapMaterial
+		out_vSpecular.xyz = cVector3f(0);
+	@else
+		out_vSpecular.xyz = UnpackYCoCg(sample(aSpecularMap, vTexCoord)).xyz;
+	@endif
+
+	out_vSpecular.w = afSpecularPower;
+}		

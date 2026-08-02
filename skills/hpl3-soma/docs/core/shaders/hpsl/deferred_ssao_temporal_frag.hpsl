@@ -1,0 +1,85 @@
+////////////////////////////////////////////////////////
+// SSAO Temporal - Fragment Shader
+//
+// Blend cureent and previous frame together
+////////////////////////////////////////////////////////
+
+//---------------------------------------------------------
+
+uniform float afFarPlane;
+uniform float afSizeDiv;
+uniform float afPower;
+
+uniform cVector2f avScreenSize;
+uniform cMatrixf a_mtxTemporalProjection;
+uniform cVector3f avUVToView0;
+uniform cVector3f avUVToView1;
+uniform cMatrixf a_mtxTemporalView;
+
+uniform float afTemporalBlurAmount;
+
+
+uniform cTexture2D ssaoTexture : 0;
+uniform cTexture2D temporalTexture : 1;
+
+void main(in cVector4f px_vPosition,
+		  in cVector4f px_vTexCoord0,
+		  out cVector4f out_vColor : 0)
+{
+	//////////////////
+	// Get core depth and AO
+	cVector2f vScreenPos = px_vTexCoord0.xy;
+	cVector4f vResult = sample(ssaoTexture, vScreenPos.xy);
+	float fCoreDepth = vResult.x;
+	
+	if(fCoreDepth * afFarPlane < 64.0)
+	{
+		/////////////////////////
+		// Convert the current view position to the view position it would represent the last frame and get the screen coords
+		cVector3f vPos = vScreenPos.xyy * avUVToView0 + avUVToView1;
+		vPos = vPos * fCoreDepth;
+		vPos = mul(a_mtxTemporalView, cVector4f(vPos, 1.0)).xyz;
+
+		cVector4f vTemporalCoords = mul(a_mtxTemporalProjection, cVector4f(vPos, 1.0));
+		vTemporalCoords /= vTemporalCoords.w;
+		vTemporalCoords.xy = (vTemporalCoords.xy * cVector2f(0.5, 0.5) + cVector2f(0.5, 0.5));
+		
+		//////////////
+		// Get the AO from the last frame
+		cVector4f vLastFrameAO = sample(temporalTexture, vTemporalCoords.xy);
+		cVector4f vLinearFrameAO = sample(temporalTexture, vScreenPos.xy);
+
+		cVector3f vTemporalPos = vTemporalCoords.xyy * avUVToView0 + avUVToView1;
+		vTemporalPos = vTemporalPos * vLastFrameAO.x;
+	
+		if(isnan(vLastFrameAO.y)) vLastFrameAO.y = vResult.y;
+		if(isnan(vLinearFrameAO.y)) vLinearFrameAO.y = vResult.y;
+		
+		///////////
+		// Check for linear projected AO, that is AO from an object that has been moving along with the camera
+		float fLinearWeight = abs(fCoreDepth - vLinearFrameAO.x) * afFarPlane;
+		vLastFrameAO.y = mix(vLinearFrameAO.y, vLastFrameAO.y, min(1.0, (fLinearWeight + 2.0 / 60.0) + max(0, (fCoreDepth * afFarPlane-0.4)*2)));
+
+		///////
+		// Get weight based on distance to last frame position
+		float fWeight = distance(vTemporalPos, vPos) * 9;
+		fWeight += abs(vLastFrameAO.y - vResult.y) * 3.5;
+		/*
+		/////////////
+		// Fade slower closer to the edge of the screen
+		cVector2f vDist = 1.0 / (1.0 - abs(0.9 - vScreenPos * 1.8));
+		float fScreenFalloff = min(1.0, (1.0 / (vDist.x + vDist.y)));
+		fWeight *= fScreenFalloff;
+		*/
+		////////////////
+		// Clamp to make sure atleast 1 / 60th of a frame is blended
+		fWeight = clamp(fWeight, afTemporalBlurAmount, 1.0);
+		
+		vResult.y = mix(vLastFrameAO.y, vResult.y, fWeight);
+	}
+	
+	//////////////////
+	// Get new screen color
+	out_vColor.xyzw = cVector4f(vResult.xy, 0, 0);
+
+}

@@ -1,0 +1,139 @@
+////////////////////
+// samplers
+uniform cTexture2D finalMap : 0;
+
+uniform cTexture3D gradingMap : 1;
+
+@ifdef UseBlendGrading
+uniform cTexture3D targetGradingMap : 2;
+@endif
+
+@ifdef UseFilmGrain
+	uniform cTexture2D noiseMap : 3;
+
+	uniform float afT;
+	uniform float afIntensity;
+
+	uniform cVector4f avTransform0;
+	uniform cVector4f avTransform1;
+@endif
+
+@ifdef UseBloom
+	uniform cTexture2D blurMap0 : 4;
+	uniform cTexture2D blurMap1 : 5;
+	uniform cTexture2D blurMap2 : 6;
+
+	uniform cVector4f avBloomTint;
+	uniform cVector3f avSizeWeight;
+	uniform float afBloomFalloff = 0.5f;
+@endif
+
+uniform float afKey;
+uniform float afExposure;
+uniform float afInvGammaCorrection;
+uniform float afWhiteCut;
+uniform float afGradingBlendWeight;
+uniform cVector2f avInvScreenSize;
+
+////////////////////
+// MAIN
+void main(in cVector4f px_vPosition,
+		  in cVector4f px_vTexCoord0,
+		  out cVector4f out_vColor0 : 0)
+{
+	cVector4f vSourceColor = sample(finalMap, px_vTexCoord0.xy);
+
+	@ifdef UseFilmGrain
+		////////////
+		// sample noise from texture
+		cVector2f vNoiseCoord0 = avTransform0.zw * px_vTexCoord0.xy + avTransform0.xy;
+		cVector2f vNoiseCoord1 = avTransform1.zw * px_vTexCoord0.xy + avTransform1.xy;
+
+		cVector4f vNoise = mix(sample(noiseMap, vNoiseCoord0),
+							   sample(noiseMap, vNoiseCoord1), afT);
+
+		cVector2f vBloomNoise = (vNoise.zw - cVector2f(0.5)) * 0.7 *avInvScreenSize;
+		vNoise.z = 0.125+dot(vNoise.zw, cVector2f(0.3, 0.3));
+
+		////////////
+		// Scale the noise down and apply intesnity
+		vNoise = mix(cVector4f(0.5), vNoise, 0.125);
+		vNoise = mix(cVector4f(0.5), vNoise, afIntensity);
+	@else
+		cVector2f vBloomNoise = cVector2f(0);
+	@endif
+
+	@ifdef UseBloom
+		////////////
+		// sample blur textures with noise offset
+		cVector4f vBlurColor0 = 	sample(blurMap0, 	  px_vTexCoord0.xy + vBloomNoise);
+		cVector4f vBlurColor1 = 	sample(blurMap1, 	  px_vTexCoord0.xy + vBloomNoise * cVector2f(-2.0, 2.0));
+		cVector4f vBlurColor2 = 	sample(blurMap2, 	  px_vTexCoord0.xy + vBloomNoise.yx * cVector2f(-4.0,-4.0));
+
+		////////////
+		// Add blur togehter
+		cVector4f vBlurColor = sqrt((vBlurColor0 * avSizeWeight.x + vBlurColor1 * avSizeWeight.y + vBlurColor2 * avSizeWeight.z) / dot(avSizeWeight, cVector3f(1.0)));
+
+		///////////
+		// Perform the brightness check in normalized space since value can be more than 1.0
+		cVector2f vMax = max(vBlurColor.xy, cVector2f(vBlurColor.z, 0.001));
+		vBlurColor *= dot(vBlurColor.xyz / max(vMax.x, vMax.y), cVector3f(0.3, 0.58, 0.12));
+
+		//////////
+		// Apply bloom
+		vSourceColor = vSourceColor + vBlurColor * avBloomTint;
+	@endif
+
+	////////////
+	// Apply the exposure and key and store the white cut in alpha
+	vSourceColor = vSourceColor * afKey * afExposure;
+	vSourceColor.w = afWhiteCut * afKey;
+
+	////////////
+	// Apply the uncharted tone mapping
+	vSourceColor = vSourceColor * cVector4f(1.5 / 8.0, 1.5 / 8.0, 1.5 / 8.0, 2.0); // Rescale the color because of x 8.0 in helper_gamma_correction
+	vSourceColor = ((vSourceColor*(0.15*vSourceColor+cVector4f(0.1*0.5))+cVector4f(0.2*0.02))/(vSourceColor*(0.15*vSourceColor+cVector4f(0.5))+cVector4f(0.2*0.3)))-cVector4f(0.02/0.3);
+
+	/////////////
+	// Cut all the light above the White Cut, making it 1.0
+	vSourceColor *= 2.0 / vSourceColor.w;
+
+	@ifdef UseFilmGrain
+		///////////////
+		// Overlay the noise
+		cVector4f vSide = cVector4f(step(pow(abs(vNoise), cVector4f(2.2)), cVector4f(0.5)));
+		vSourceColor = mix(1.0 - 2.0 * (1.0 - vSourceColor) * (1.0 - vNoise), 2.0 * vSourceColor * vNoise, vSide);
+		vSourceColor = max(cVector4f(0), vSourceColor);
+	@endif
+
+	//////////
+	// Perform the gamma correction
+	@ifdef UseSRGB
+		// Correct gamma code (too late to change now)
+		cVector4f vLower = vSourceColor * 12.92;
+		cVector4f vUpper = cVector4f(1.0 + 0.055) * pow(vSourceColor, cVector4f(1.0 / 2.4)) - cVector4f(0.055);
+		vSourceColor = mix(vLower, vUpper, step(cVector4f(0.0031308), vSourceColor));
+	@else
+		vSourceColor = pow(vSourceColor, cVector4f(afInvGammaCorrection));
+	@endif
+
+	@ifdef UseColorGrading
+		/////////////////
+		// Map the color value to another color
+		cVector3f vGradingCoords = clamp((vSourceColor.rgb + cVector3f(0.5 / 16.0)) / cVector3f(1.0 + 0.5 / 16.0), cVector3f(0.0), cVector3f(1.0));
+
+		@ifdef UseBlendGrading
+			////////////////
+			// Blend between two grading maps
+			vSourceColor = mix(sample(gradingMap, vGradingCoords),
+							   sample(targetGradingMap, vGradingCoords),
+							   cVector4f(afGradingBlendWeight));
+		@else
+			vSourceColor = sample(gradingMap, vGradingCoords);
+		@endif
+	@endif
+
+	out_vColor0 = vSourceColor;
+
+
+}

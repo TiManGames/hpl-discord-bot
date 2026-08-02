@@ -15,7 +15,7 @@ Core SOMA api can be found in:
 It is important to read the AgnelScript Fundementals Guide and Scripting Guide under wiki/hpl3/scripting
 
 
-## Project script locations
+## Game script locations
 
 - Game Framework: Everything inside `script/**/*.hps`. Relevant for Player, Agents, Props, Effects, Utilities, Custom Agents/Props, interfaces, critters, base, areas, modules, etc.
 - Primary map scripts: `maps/**/*.hps`
@@ -36,4 +36,4 @@ Select-String -Path "path/to/map.hpm" -Pattern 'Name="ExactEntityOrAreaName"' -C
 
 - Read the closest existing script files in the same map or system area first.
 - Reuse the local callback and helper style unless the user requests a different pattern.
-- For existing/copy-derived maps, search exact object names in both `.map` and `.hps` files and follow the full behavior sequence before replacing it with a smaller script.
+- For existing/copy-derived maps, search exact object names in both `.hpm` and `.hps` files and follow the full behavior sequence before replacing it with a smaller script.

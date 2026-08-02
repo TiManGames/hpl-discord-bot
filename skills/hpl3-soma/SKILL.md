@@ -33,8 +33,14 @@ Follow this workflow every time.
 - Read [local-scripting-sources.md](local-scripting-sources.md).
 - Read the AngelScript Fundamentals Guide and Scripting Guide under `wiki/HPL3/Scripting/`.
 - For scripting changes, read [scripting-behavior-checklist.md](scripting-behavior-checklist.md) before editing.
-- Read relevant `.hps` files (mostly under `/maps`) before writing script code.
+- Read relevant `.hps` files (mostly under `/maps`) before writing script code and important scripts from the ``/script` folder
 - Do not start coding before this source pass is complete.
+
+
+## KNOWELDGE-BASE PRIORITY:
+1. The game's `hps_api.hps`, the `/script` folder and the `/maps` folder
+2. Wiki articles
+3. User's own provided code/Question
 
 ## 3) Scripting task rules
 

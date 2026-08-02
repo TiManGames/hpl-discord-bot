@@ -1,0 +1,232 @@
+////////////////////////////////////////////////////////
+// Deferred Fog - Fragment Shader
+//
+// Fragment shader for all things fog!
+////////////////////////////////////////////////////////
+
+@include helper_float_packing.hpsl
+
+@ifdef UseLinearColorSpaceCorrection
+	@include helper_gamma_correction.hpsl
+@endif
+
+//--------------------------------------------------------------
+
+//////////////
+// Arguments
+cBuffer cFogFragArguments : 1
+{
+	cMatrixf a_mtxNoise;
+
+	cVector4f avScreenToFarPlane;
+
+	cVector2f avFogStartAndLength;
+	cVector4f avFogColor;
+	
+	cVector3f avRayCastStart;
+	float afFalloffExp;
+
+	cVector3f avNegPlaneDistNeg;
+	float afNegFarPlane;
+
+	cVector3f avNegPlaneDistPos;
+
+	float afInvNoiseScale;
+	float afNoiseStrength;
+
+	cVector4f avSkyboxColor;
+	
+	cVector4f avSecondFogColor;
+	cVector2f avSecondFogStartAndLength;
+	float afSecondFalloffExp;
+
+	cVector2f avInvScreenSize;
+};
+
+//--------------------------------------------------------------
+
+uniform cTexture2D  aDepthMap : 0;
+uniform cTexture3D  aNoiseMap : 1;
+uniform cTextureCube aSkyboxMap : 2;
+
+//--------------------------------------------------------------
+
+@ifdef OutsideBox
+	@ifdef UseBackside 	
+		void GetPlaneIntersection(cVector3f avPlaneNormal, cVector3f avLocalBoxRay, float afNegPlaneDist, inout float afFinalT)
+		{
+			//Get T (amount of ray) to intersection
+			float fMul  = dot(avLocalBoxRay, avPlaneNormal);
+			float fT = afNegPlaneDist / fMul;
+			
+			//Get the intersection and see if inside box
+			cVector3f vIntersection = abs(avLocalBoxRay*fT + avRayCastStart);
+			if( all( cVector3b(step(vIntersection, cVector3f(0.5001))) ) )
+			{
+				afFinalT = max(afFinalT, fT);	
+			}
+		}
+	@endif
+
+@endif
+
+
+//--------------------------------------------------------------
+
+void main(in cVector4f px_vPosition,
+@ifdef OutsideBox || UseBackside
+		  in cVector3f px_vVertexPos,
+@endif
+@ifdef OutsideBox && UseBackside
+		  in cVector3f px_vLocalBoxRay,
+@endif
+		  out cVector4f px_vColor : 0)
+{
+	////////////////////////////////////
+	// Get depth distnace
+	cVector4f vDepthVal =  load(aDepthMap, cVector2l(px_vPosition.xy), 0);
+	
+	//Get the depth as distance from camera origin
+	cVector3f vPos = cVector3f(px_vPosition.xy * avScreenToFarPlane.xy + avScreenToFarPlane.zw, afNegFarPlane) * vDepthVal.x;
+	float fDepth = length(vPos);
+		
+	////////////////////////////////////
+	// Outside box
+	@ifdef OutsideBox
+		//Depth starts at box!
+		float fStartDist =length(px_vVertexPos);
+		fDepth = fDepth - fStartDist;
+	
+		///////////////////////////////////
+		// Ray cast to find back of square
+		@ifdef UseBackside
+			float fFinalT = 0.0;
+			GetPlaneIntersection(cVector3f(-1.0, 0.0, 0.0), px_vLocalBoxRay,	avNegPlaneDistNeg.x,	fFinalT);//Left
+			GetPlaneIntersection(cVector3f(1.0, 0.0, 0.0), px_vLocalBoxRay, 	avNegPlaneDistPos.x,	fFinalT);//Right
+			GetPlaneIntersection(cVector3f(0.0, -1.0, 0.0), px_vLocalBoxRay,	avNegPlaneDistNeg.y, 	fFinalT);//Bottom
+			GetPlaneIntersection(cVector3f(0.0, 1.0, 0.0 ), px_vLocalBoxRay,	avNegPlaneDistPos.y, 	fFinalT);//Top
+			GetPlaneIntersection(cVector3f(0.0, 0.0, -1.0), px_vLocalBoxRay,	avNegPlaneDistNeg.z, 	fFinalT);//Back
+			GetPlaneIntersection(cVector3f(0.0, 0.0, 1.0), px_vLocalBoxRay, 	avNegPlaneDistPos.z,	fFinalT);//Front
+			
+			float fLocalBackDist = length(fFinalT*px_vVertexPos) - fStartDist;
+			fDepth = min(fLocalBackDist, fDepth);
+		@endif
+	
+	////////////////////////////////////
+	// Inside box
+	@else
+		@ifdef UseBackside
+			fDepth = min( length(px_vVertexPos), fDepth);
+		@endif	
+	@endif
+	
+	@ifdef UseNoise
+		//////////
+		// Get the world direction and offset
+		cVector3f vNoiseDir = normalize(mul(a_mtxNoise, cVector4f(vPos, 0.0)).xyz);
+		cVector3f vNoiseOffset = a_mtxNoise[3].xyz * afInvNoiseScale;
+				
+		////////////
+		// Prescale all values
+		cVector4f vFogStart = cVector4f(avFogStartAndLength.x) * afInvNoiseScale;
+		cVector4f vFogEnd = cVector4f(avFogStartAndLength.x + min(8, avFogStartAndLength.y)) * afInvNoiseScale;
+		cVector4f vDepth = cVector4f(fDepth + 0.5) * afInvNoiseScale;
+
+		/////////////
+		// sample from the end to the front
+		cVector4f vDist = mix(vFogStart, vFogEnd, cVector4f(1.0, 0.7, 0.4, 0.1));
+		cVector4f vSample;
+
+		vSample.x = dot(sample(aNoiseMap, vNoiseOffset + vNoiseDir * vDist.x).rgb, cVector3f(0.333));
+		vSample.y = dot(sample(aNoiseMap, vNoiseOffset + vNoiseDir * vDist.y).rgb, cVector3f(0.333));
+		vSample.z = dot(sample(aNoiseMap, vNoiseOffset + vNoiseDir * vDist.z).rgb, cVector3f(0.333));
+		vSample.w = dot(sample(aNoiseMap, vNoiseOffset + vNoiseDir * vDist.w).rgb, cVector3f(0.333));
+
+		////////////
+		// Fade out samples that are behind the point
+		cVector4f vWeight = clamp(vDepth - vDist, cVector4f(0), cVector4f(afInvNoiseScale)) * vSample * afNoiseStrength / afInvNoiseScale * cVector4f(1, 1, 0.8, 0.4);
+
+		float fNoise = 0.0f;
+		fNoise = mix(fNoise, vSample.x, vWeight.x);
+		fNoise = mix(fNoise, vSample.y, vWeight.y);
+		fNoise = mix(fNoise, vSample.z, vWeight.z);
+		fNoise = mix(fNoise, vSample.w, vWeight.w);
+	@endif
+
+	//////////////
+	// Caluclate fog amount
+	float fDist = min(fDepth - avFogStartAndLength.x, avFogStartAndLength.y);
+	float fAmount = max(fDist / avFogStartAndLength.y,0.0);
+
+	@ifdef UseNoise
+		fAmount = min(1.0, fAmount + fNoise);
+	@endif
+
+	if(fAmount < 0.5) fAmount = mix(fAmount*fAmount*fAmount*(fAmount*(fAmount*6 - 15) + 10), fAmount, fAmount * 2.0);
+	fAmount = pow(fAmount, afFalloffExp);
+
+	@ifdef UseSecondaryFog
+		fDist = min(fDepth - avSecondFogStartAndLength.x, avSecondFogStartAndLength.y);
+		float fSecondAmount = max(fDist / avSecondFogStartAndLength.y,0.0);
+			
+		@ifdef UseNoise
+			fSecondAmount = min(1.0, fSecondAmount + fNoise);
+		@endif
+		
+		if(fSecondAmount < 0.5) fSecondAmount = mix(fSecondAmount*fSecondAmount*fSecondAmount*(fSecondAmount*(fSecondAmount*6 - 15) + 10), fSecondAmount, fSecondAmount * 2.0);
+		fSecondAmount = pow(fSecondAmount, afSecondFalloffExp);
+	@endif
+
+	@ifdef UseSkybox
+		/////////////
+		// Fade to the color of the skybox
+		@ifdef UseNoise
+			cVector3f vSkyboxCoord = vNoiseDir;
+		@else
+			cVector3f vSkyboxCoord = normalize(mul(a_mtxNoise, cVector4f(vPos, 0.0)).xyz);
+		@endif
+
+		@ifdef FogArea
+			vSkyboxCoord.x *= -1.0f;
+		@endif
+
+		cVector4f vSkyboxColor = sample(aSkyboxMap, vSkyboxCoord);
+
+		@ifdef UseLinearColorSpaceCorrection
+			vSkyboxColor = GammaToLinearCorrection(vSkyboxColor);
+		@elseif GammaCorrectCubeMaps
+			vSkyboxColor.rgb = pow(vSkyboxColor.rgb, cVector3f(2.2));
+		@endif
+
+		vSkyboxColor *= avSkyboxColor;
+		cVector4f vFogColor = mix(avFogColor, vSkyboxColor, fAmount);
+
+		@ifdef UseSecondaryFog
+			cVector4f vSecondFogColor = mix(avSecondFogColor, vSkyboxColor, fAmount);
+		@endif
+	@else
+		cVector4f vFogColor = avFogColor;
+
+		@ifdef UseSecondaryFog
+			cVector4f vSecondFogColor = avSecondFogColor;
+		@endif
+	@endif
+
+	@ifdef UseUnderwaterFog
+		px_vColor.xyz = pow(avFogColor.xyz, cVector3f(fAmount * 1.2));
+		px_vColor.w = 1.0;
+	@else
+		@ifdef UseSecondaryFog
+			// Blend the second fog color with the primary
+			px_vColor.xyz = vSecondFogColor.xyz;
+			px_vColor.w = fSecondAmount * avSecondFogColor.w;
+			vFogColor.a = avFogColor.w * fAmount;
+
+			px_vColor = mix(px_vColor, vFogColor, vFogColor.a);
+			px_vColor.xyz *= 8.0;
+		@else
+			px_vColor.xyz = vFogColor.xyz * 8;
+			px_vColor.w = fAmount * avFogColor.w;
+		@endif
+	@endif
+}

@@ -1,0 +1,333 @@
+////////////////////////////////////////////////////////
+// Water Surface - Fragment Shader
+//
+// Shades the surface of a water
+////////////////////////////////////////////////////////
+
+@include helper_reflection.hpsl
+@include helper_normal_packing.hpsl
+
+@ifdef UseTextureBuffer
+	cBuffer cWaterTypeArguments : 0
+	{
+		cMatrixf a_mtxViewProjection;
+		cMatrixf a_mtxProjection;
+		cMatrixf a_mtxView;
+		cMatrixf a_mtxInvViewProjection;
+		cMatrixf a_mtxInvProjection;
+		cMatrixf a_mtxInvView;
+		
+		float afFarPlane;
+		float afNearPlane;
+		float afNearByFarPlane;
+		float afInvFarPlane;
+
+		float afT;
+		float afSecondFalloffExp;
+		cVector2f avSecondFogStartAndLength;
+		cVector4f avSecondFogColor;
+		cVector2f avInvScreenSize;
+	};
+	
+	cBuffer cWaterMaterialArguments : 1
+	{
+		float afWaveAmplitude;
+		float afWaveFreq;	
+		float afWaveT;
+		float afRefractionScale;
+		
+		cVector2f avFrenselBiasPow;
+		cVector2f avReflectionSizeMul;
+		cVector2f avReflectionFadeStartAndLength;
+		cVector2f avFadeWhenShallowProps; //x= 1/Mul, y=pow
+
+		cVector4f avDepthOfFieldParams;
+		float afVtxT;
+		float afVtxWaveAmplitude;
+		float afVtxWaveFreq;	
+	};
+
+	cBuffer cInstanceArguments : 2
+	{
+		int alInstanceOffset;
+		int alInstanceStride;
+	};
+@else
+	////////////////////////////////
+	// Arguments
+	cBuffer cWaterFragArguments
+	{
+		float afT;
+		float afWaveAmplitude;
+		float afWaveFreq;
+		float afRefractionScale;
+
+		float afFarPlane;
+		float afNearPlane;
+
+		cVector2f avFogStartAndLength;
+		cVector4f avFogColor;
+
+		cVector2f avFrenselBiasPow;
+		float afFalloffExp;
+
+		cMatrixf a_mtxInvView;
+
+		cVector2f avReflectionSizeMul;
+		cVector2f avReflectionFadeStartAndLength;
+		cVector2f avFadeWhenShallowProps; //x= 1/Mul, y=pow
+
+		cVector4f avDepthOfFieldParams;
+
+		cVector4f avSecondFogColor;
+		cVector2f avSecondFogStartAndLength;
+		float afSecondFalloffExp;
+		float afReflectionAlpha;
+		cVector2f avInvScreenSize;
+	};
+@endif
+
+////////////////////////////////
+// samplers
+uniform cTexture2D aDiffuseMap : 0;
+uniform cTexture2D aNormalMap : 1;
+
+@ifdef UseRefraction
+	uniform cTexture2D aRefractionMap : 2;
+@endif
+
+@ifdef UseReflection
+	@ifdef UseCubeMapReflection
+		uniform cTextureCube aEnvMap : 3;
+	@else
+		uniform cTexture2D aReflectionMap : 3;
+	@endif
+@endif
+
+@ifdef UseFadeWhenShallow || UseRefraction
+	uniform cTexture2D aDepthMap : 7;
+@endif
+
+@ifdef UseTextureBuffer
+	uniform cTextureBuffer aInstanceBuffer : 15;
+@endif
+
+////////////////////////////////
+// Main
+void main(in cVector4f px_vPosition,
+@ifdef UseUv
+		  in cVector4f px_vTexCoord0,
+@endif
+@ifdef UseReflection
+		  in cVector3f px_vNormal,
+		  in cVector3f px_vTangent,
+		  in cVector3f px_vBinormal,
+@endif
+@ifdef UseVertexPosition	
+		  in cVector3f px_vVertexPos,
+@endif
+@ifdef UseTextureBuffer
+		  in int px_lInstanceOffset,
+@endif
+
+		  out cVector4f out_vColor : 0)
+{
+	@ifdef UseTextureBuffer
+		float fWaveT = afWaveT;
+		cVector4f vData = load(aInstanceBuffer, px_lInstanceOffset);
+		float afReflectionAlpha = vData.x;
+
+		@ifdef UseFog
+			cVector2f avFogStartAndLength = vData.zw;
+			cVector4f avFogColor = load(aInstanceBuffer, px_lInstanceOffset + 1);
+			float afFalloffExp = vData.y;
+		@endif
+	@else
+		float fWaveT = afT;
+	@endif
+
+
+	///////////////////////////////
+	//Get the two uv coords
+	float fT1 = fWaveT*0.8;
+	cVector2f vUv1 = px_vTexCoord0.xy+fWaveT*0.01f;
+	vUv1.x += sin(fT1 + vUv1.y * afWaveFreq)* afWaveAmplitude;
+	vUv1.y += sin(fT1 + vUv1.x * afWaveFreq)* afWaveAmplitude;
+	
+	float fT2 = fWaveT*-2.6;
+	cVector2f vUv2 = px_vTexCoord0.xy+fWaveT*-0.012f;
+	vUv2.x += sin(fT2 + vUv2.y * afWaveFreq*1.2) * afWaveAmplitude*0.75;
+	vUv2.y += sin(fT2 + vUv2.x * afWaveFreq*1.2) * afWaveAmplitude*0.75;
+
+	///////////////////////////////
+	//Get the normals and combine into final normal
+	// (No need for full unpack since there is a normalize later)
+	cVector3f vNormal1 = UnpackNormalmapYW(sample(aNormalMap, vUv1));
+	cVector3f vNormal2 = UnpackNormalmapYW(sample(aNormalMap, vUv2));
+	
+	cVector3f vFinalNormal = normalize(vNormal1*0.7 + vNormal2*0.3);
+	
+	///////////////////////////////
+	//Transperacy
+	float fTransperacy = 1;
+	
+	//Shallow water
+	@ifdef UseFadeWhenShallow
+		float fDepth = load(aDepthMap, cVector2l(px_vPosition.xy), 0).x*-afFarPlane;
+		fTransperacy = pow( clamp((px_vVertexPos.z-fDepth)*avFadeWhenShallowProps.x, 0, 1), avFadeWhenShallowProps.y);
+	@endif
+	
+	//Near the near plane
+	fTransperacy *= clamp(-(px_vVertexPos.z + afNearPlane)/ afNearPlane*2, 0, 1);
+			
+	///////////////////////////////
+	//Get the diffuse color
+	cVector4f vSurfaceColor = sample(aDiffuseMap, vUv1);
+	
+	@ifdef UseLinearColorSpaceCorrection
+			vSurfaceColor.rgb = GammaToLinearCorrection(vSurfaceColor.rgb);
+	@endif
+	
+	vSurfaceColor.rgb = mix(cVector3f(1), vSurfaceColor.rgb, fTransperacy); 
+	
+	///////////////////////////////
+	//Get the fog amount
+	@ifdef UseFog
+		float fFogDepth = length(px_vVertexPos);
+		float fFogAmount = (fFogDepth - avFogStartAndLength.x)/ avFogStartAndLength.y;
+		fFogAmount = clamp(fFogAmount, 0.0, 1.0);
+		fFogAmount = pow(fFogAmount, afFalloffExp);
+		cVector4f vFogColor = avFogColor;
+		vFogColor.w *= fFogAmount;
+		
+		@ifdef UseSecondaryFog
+			/////////////
+			// Double colored fog, blend correctly
+			float fSecondAmount = (fFogDepth - avSecondFogStartAndLength.x)/ avSecondFogStartAndLength.y;
+			fSecondAmount = clamp(fSecondAmount, 0.0, 1.0);
+			fSecondAmount = pow(fSecondAmount, afSecondFalloffExp);
+			cVector4f vSecondFogColor = avSecondFogColor;
+			vSecondFogColor.w *= fSecondAmount;
+
+			// Z-sort the fog to get correct blending
+			if((avSecondFogStartAndLength.x+ avSecondFogStartAndLength.y) < (avFogStartAndLength.x + avFogStartAndLength.y))
+			{
+				vFogColor = mix(vSecondFogColor, vFogColor, vFogColor.w);
+			}
+			else
+			{
+				vFogColor = mix(vFogColor, vSecondFogColor, vSecondFogColor.w);
+			}
+		@endif
+	@endif
+
+	/////////////////
+	//DoF
+	@ifdef UseDepthOfField
+		float fDoFAlpha = clamp((avDepthOfFieldParams.x + px_vVertexPos.z) * avDepthOfFieldParams.y, 0.0, 1.0);
+		fDoFAlpha = sqrt(avDepthOfFieldParams.z + avDepthOfFieldParams.w * fDoFAlpha);
+	@endif
+	
+	///////////////////////////////
+	//Get the refraction color
+	float fInvDist = min(1.0/px_vVertexPos.z, 10.0);
+	cVector2f vDistortedScreenPos = px_vPosition.xy + vFinalNormal.xy * -afRefractionScale * fInvDist * fTransperacy; //Negative, else it will get too much below the refraction map
+		
+	@ifdef UseRefraction
+		cVector2f vRefractionPos = vDistortedScreenPos;
+
+		float fRefractDepth = sample(aDepthMap, vRefractionPos * avInvScreenSize).x*-afFarPlane;
+
+		if(fRefractDepth > px_vVertexPos.z) 
+			vRefractionPos = px_vPosition.xy;
+		
+		cVector4f vRefractionColor = sample(aRefractionMap, vRefractionPos * avInvScreenSize);
+		
+		vRefractionColor /= cVector4f(8.0, 8.0, 8.0, 1.0);//This removes some precision, but only refraction image so should not be that much problem!
+	@else
+		cVector4f vRefractionColor = cVector4f(1);
+	@endif
+	
+	///////////////////////////////
+	//Get the reflection color
+	@ifdef UseReflection
+		//////////////////
+		//Reflection fading
+		@ifdef UseReflectionFading
+			float fReflFade = 1.0 - clamp( (px_vVertexPos.z - avReflectionFadeStartAndLength.x) / avReflectionFadeStartAndLength.y, 0.0, 1.0);
+		@endif	
+				
+		//////////////////
+		//Fresnel
+		cVector3f vScreenNormal = normalize(vFinalNormal.x * px_vTangent + vFinalNormal.y * px_vBinormal + vFinalNormal.z * px_vNormal);
+		cVector3f vEyeVec = normalize(px_vVertexPos);
+		
+		float afEDotN = max(dot(-vEyeVec, vScreenNormal),0.0);
+		float fFresnel = Fresnel(afEDotN, avFrenselBiasPow.x, avFrenselBiasPow.y);
+		
+		@ifdef UseReflectionFading
+			fFresnel *= fReflFade;
+		@endif
+					
+		fTransperacy *= afReflectionAlpha;
+
+		//////////////////
+		//Cubemap
+		@ifdef UseCubeMapReflection
+			cVector3f vEnvUv = reflect(vEyeVec, vScreenNormal);
+			vEnvUv = mul(a_mtxInvView, cVector4f(vEnvUv,0)).xyz;
+					
+			cVector4f vReflectionColor = sample(aEnvMap,vEnvUv);
+			
+			@ifdef UseLinearColorSpaceCorrection
+				vReflectionColor.rgb = GammaToLinearCorrection(vReflectionColor.rgb);
+			@elseif GammaCorrectCubeMaps
+				vReflectionColor.rgb = pow(vReflectionColor.rgb, cVector3f(2.2));
+			@endif
+			
+			vReflectionColor *= fTransperacy;
+		//////////////////
+		//World reflection
+		@else
+			cVector4f vReflectionColor = sample(aReflectionMap, vDistortedScreenPos * avInvScreenSize) * fTransperacy;
+			
+			vReflectionColor /= cVector4f(8.0, 8.0, 8.0, 1.0);//This removes some precision, but only refraction image so should not be that much problem!
+		@endif
+	@endif
+	
+	
+	///////////////////////////////
+	//Caclulate the final color
+	@ifdef UseFog
+		@ifdef UseRefraction
+			@ifdef UseReflection
+				out_vColor.xyz = (vRefractionColor.xyz*vSurfaceColor.xyz + vReflectionColor.xyz*fFresnel) * (1.0-vFogColor.a) + vFogColor.xyz*vFogColor.a;
+			@else
+				out_vColor.xyz = (vSurfaceColor.xyz * vRefractionColor.xyz) * (1.0-vFogColor.a) + vFogColor.xyz*vFogColor.a;
+			@endif
+		@else
+			out_vColor.xyz = (vSurfaceColor.xyz * vRefractionColor.xyz) * (1.0-vFogColor.a) + cVector3f(vFogColor.a);
+		@endif
+	@else
+		@ifdef UseReflection
+			out_vColor.xyz = vRefractionColor.xyz*vSurfaceColor.xyz + vReflectionColor.xyz*fFresnel;
+		@else
+			out_vColor.xyz = vSurfaceColor.xyz * vRefractionColor.xyz;
+		@endif
+	@endif
+			
+	out_vColor.w = 1.0 + afReflectionAlpha * 1e-5f;
+
+	
+	//If using refraction, 
+	@ifdef UseRefraction
+		out_vColor.xyz *= cVector3f(8);
+
+		@ifdef UseDepthOfField
+			////////////
+			// Fade to base color
+			cVector4f vSceneBaseColor = sample(aRefractionMap, px_vPosition.xy * avInvScreenSize);
+			out_vColor.xyz = mix(vSceneBaseColor.xyz, out_vColor.xyz, fDoFAlpha);
+		@endif
+	@endif
+}

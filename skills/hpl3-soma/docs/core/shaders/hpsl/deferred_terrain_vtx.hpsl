@@ -1,0 +1,230 @@
+////////////////////////////////////////////////////////
+// Deferred Base - Vertex Shader
+//
+//
+////////////////////////////////////////////////////////
+
+@ifdef UseTextureBuffer
+
+	@include helper_type_arguments.hpsl
+
+	uniform cTexture2D aHeightMap : 0;
+	uniform cTextureBuffer aInstanceBuffer : 15;
+
+@else
+	cBuffer cTerrainVertexArguments : 0
+	{
+		cMatrixf a_mtxModelViewProjection;
+		cMatrixf a_mtxModelView;
+		cMatrixf a_mtxModel;
+		cMatrixf a_mtxView;
+
+		cVector4f avHeightMapOffsetAndScale;//xy = offset, zw = scale
+		cVector3f avHeightMapProperties; //x = max hegiht, y = sample offset, z = 2.0f / (height/texel) ratio
+		float afInvFarPlane;
+
+		cVector4f avTextureOffsetAndSize; //xy=offset, zw=size
+
+		cVector4f avDebugColor;
+
+		cVector4f avLodProperties; // xyz = position of lod eye, w lod scale
+
+		cVector4f avPatchPositionScale;
+	};
+
+	@ifdef UseInstancing
+		uniform int alInstanceOffset;
+		uniform cTexture2D aInstanceBuffer : 15;
+	@endif
+
+	uniform cTexture2D aHeightMap : 0;
+@endif
+	
+//---------------------------------------------
+
+///////////////////////////////
+// Main program
+void main(in cVector4f vtx_vPosition,
+		  in cVector4f vtx_vTexCoord0,
+		  in cVector3f vtx_vNormal,
+@ifdef UseUv
+		  out cVector4f px_vTexCoord0,
+@endif
+@ifdef UseVertexNormalMapping
+	      out cVector3f px_vNormal,
+	      out cVector3f px_vTangent,
+	      out cVector3f px_vBinormal,
+@else
+@ifdef UseUv
+		  out cVector2f px_vHeightCoord,
+@endif
+@endif
+@ifdef UseLinearDepth
+		  out float px_fLinearDepth,
+@endif
+@ifdef TerrainDetailMaps || UseTesselation
+		  out cVector4f px_vWorldPos,
+@endif
+@ifdef TerrainDebug	
+		  out cVector4f px_vColor,
+@endif
+@ifdef UseTextureArray
+		  out cVector4f px_vDiffuseSizeAndOffset,
+		  out cVector4f px_vNormalSizeAndOffset,
+		  out cVector4f px_vSpecularSizeAndOffset,
+		  out cVector4f px_vDetailSizeAndOffset,
+		  out cVector4f px_vArraySlice,
+@endif
+@ifdef  UseTesselation
+	      out cVector4f px_vBumpSizeAndOffset,
+	      out float px_fBumpSlice,
+@endif
+		  out cVector4f px_vPosition)
+{	
+	@ifdef UseTextureBuffer
+		//////////////////////
+		// Height map coord
+		int lBaseOffset = int(alInstanceOffset + vtx_lInstanceID * alInstanceStride);
+		cVector4f vHeightMapOffsetAndScale = load(aInstanceBuffer, lBaseOffset);
+		cVector2f vHeightMapCoord = vtx_vTexCoord0.xy*vHeightMapOffsetAndScale.zw + vHeightMapOffsetAndScale.xy;
+
+		/////////////////////
+		// Position
+		cVector4f vPatchPositionScale = load(aInstanceBuffer, lBaseOffset+1);
+		cVector4f vVtxPos =  cVector4f(vtx_vPosition.xyz * vPatchPositionScale.w + vPatchPositionScale.xyz, 1.0);
+	
+		lBaseOffset += 2;
+		@ifdef UseTextureArray
+			px_vArraySlice = load(aInstanceBuffer, lBaseOffset);
+			px_vDiffuseSizeAndOffset = load(aInstanceBuffer, lBaseOffset+1);
+			px_vNormalSizeAndOffset = load(aInstanceBuffer, lBaseOffset+2);
+			px_vSpecularSizeAndOffset = load(aInstanceBuffer, lBaseOffset+3);
+			px_vDetailSizeAndOffset = load(aInstanceBuffer, lBaseOffset+4);
+
+			lBaseOffset += 5;
+		@endif
+
+		@ifdef UseTesselation
+			px_vBumpSizeAndOffset = load(aInstanceBuffer, lBaseOffset);
+			px_fBumpSlice = load(aInstanceBuffer, lBaseOffset + 1).x;
+		@endif
+	@else
+		//////////////////////
+		// Height map coord
+		@ifdef UseInstancing
+			cVector4f vHeightMapOffsetAndScale = load(aInstanceBuffer, cVector2l((vtx_lInstanceID + alInstanceOffset) * 2, 0), 0);
+			cVector2f vHeightMapCoord = vtx_vTexCoord0.xy*vHeightMapOffsetAndScale.zw + vHeightMapOffsetAndScale.xy;
+
+			/////////////////////
+			// Position
+			cVector4f vPatchPositionScale = load(aInstanceBuffer, cVector2l((vtx_lInstanceID + alInstanceOffset) * 2 + 1, 0), 0);
+			cVector4f vVtxPos =  cVector4f(vtx_vPosition.xyz * vPatchPositionScale.w + vPatchPositionScale.xyz, 1.0);
+		@elseif UsePositionScale
+			cVector2f vHeightMapCoord = vtx_vTexCoord0.xy*avHeightMapOffsetAndScale.zw + avHeightMapOffsetAndScale.xy;
+		
+			/////////////////////
+			// Position
+			cVector4f vVtxPos =  cVector4f(vtx_vPosition.xyz * avPatchPositionScale.w + avPatchPositionScale.xyz, 1.0);
+		@else
+			cVector2f vHeightMapCoord = vtx_vTexCoord0.xy*avHeightMapOffsetAndScale.zw + avHeightMapOffsetAndScale.xy;
+		
+			/////////////////////
+			// Position
+			cVector4f vVtxPos =  cVector4f(vtx_vPosition.xyz, 1.0);
+		@endif
+	@endif
+
+	@ifdef UseMipMap
+		/////////////
+		// Get the lod level
+		cVector4f vLodPosition = vVtxPos;
+		vLodPosition.y = 0;
+
+		cVector3f vViewPos = round(vLodPosition.xyz * 0.25) * 4.0 - avLodProperties.xyz; //round to avoid small round errors
+		float fLod = max(0, log2(1 + length(vViewPos) * avLodProperties.w) - 1);
+	@else
+		float fLod = 0;
+	@endif
+
+	float fHeight = sampleLod(aHeightMap,vHeightMapCoord, fLod).x;
+	vVtxPos.y += fHeight * avHeightMapProperties.x;	
+	
+	@ifdef UseTextureBuffer
+		px_vPosition = mul(a_mtxViewProjection, vVtxPos);
+	@else
+		px_vPosition = mul(a_mtxModelViewProjection, vVtxPos);
+	@endif
+
+	@ifdef TerrainDetailMaps || UseTesselation
+		px_vWorldPos = vVtxPos;
+	@endif
+
+	
+	@ifdef UseUv
+		/////////////////////
+		// UV
+		@ifdef UseTextureBuffer
+			@ifdef UseTesselation
+				//move this stage
+				px_vTexCoord0.xy = vtx_vTexCoord0.xy;
+			@elseif UseCheapMaterial
+				px_vTexCoord0.xy = vVtxPos.xz * afTerrainTextureBorderDiv;
+			@else
+				cVector2f vTexOffset = cVector2f(-0.5 * afTerrainTextureBorderDiv + 0.5,
+											  0.5 + 0.5 * afTerrainTextureBorderDiv);
+				cVector2f vTexSize = cVector2f(1.0 * afTerrainTextureBorderDiv, -1.0 * afTerrainTextureBorderDiv);
+
+				px_vTexCoord0.xy = vtx_vTexCoord0.xy*vTexSize + vTexOffset;
+			@endif
+		@else
+			px_vTexCoord0.xy = vtx_vTexCoord0.xy*avTextureOffsetAndSize.zw + avTextureOffsetAndSize.xy;
+		@endif
+	@endif
+
+	/////////////////////
+	// Debug
+	@ifdef TerrainDebug	
+		px_vColor = avDebugColor;
+	@endif
+	
+	
+	//////////////////////
+	// Normals
+	@ifdef UseVertexNormalMapping
+		float fHeightX0 = sampleLod(aHeightMap, cVector2f(vHeightMapCoord.x + avHeightMapProperties.y, vHeightMapCoord.y), fLod).x;
+		float fHeightX1 = sampleLod(aHeightMap, cVector2f(vHeightMapCoord.x - avHeightMapProperties.y, vHeightMapCoord.y), fLod).x;
+		
+		float fHeightZ0 = sampleLod(aHeightMap, cVector2f(vHeightMapCoord.x, vHeightMapCoord.y + avHeightMapProperties.y), fLod).x;
+		float fHeightZ1 = sampleLod(aHeightMap, cVector2f(vHeightMapCoord.x, vHeightMapCoord.y - avHeightMapProperties.y), fLod).x;
+
+		float fDeltaX0 = fHeight - fHeightX0;
+		float fDeltaX1 = fHeightX1 - fHeight;
+
+		float fDeltaZ0 = fHeight - fHeightZ0;
+		float fDeltaZ1 = fHeightZ1 - fHeight;
+		
+		float fDeltaX = (fDeltaX0 * fDeltaX0) < (fDeltaX1 * fDeltaX1) ? fDeltaX0 : fDeltaX1;
+		float fDeltaZ = (fDeltaZ0 * fDeltaZ0) < (fDeltaZ1 * fDeltaZ1) ? fDeltaZ0 : fDeltaZ1;
+		
+		cVector3f vWorldNormal = normalize( cVector3f(fDeltaX, avHeightMapProperties.z, fDeltaZ));
+		
+		px_vBinormal = normalize(cross(vWorldNormal, cVector3f(1,0,0) ));
+		px_vTangent  = normalize(cross(px_vBinormal,vWorldNormal));
+		px_vBinormal = px_vBinormal;
+		px_vNormal   = vWorldNormal;
+	@elseif UseUv
+		/////////
+		// Send height coords to pixel shader for per pixel normal
+		px_vHeightCoord = vHeightMapCoord;
+	@endif
+	
+	//////////////////////
+	// Linear depth
+	@ifdef UseLinearDepth
+		@ifdef UseTextureBuffer
+			px_fLinearDepth = -mul(a_mtxView, vVtxPos).z * afInvFarPlane; //Do not use near plane! Doing like this will make the calcs simpler in the light shader.
+		@else
+			px_fLinearDepth = -mul(a_mtxModelView, vVtxPos).z * afInvFarPlane; //Do not use near plane! Doing like this will make the calcs simpler in the light shader.
+		@endif
+	@endif
+}

@@ -1,0 +1,142 @@
+////////////////////////////////////////////////////////
+// Deferred Base - Control Shader
+//
+//
+////////////////////////////////////////////////////////
+	
+//---------------------------------------------
+
+@include helper_type_arguments.hpsl
+
+
+uniform cTexture2DArray aMaterialMap : 1;
+
+float Interpolate(float a0, float a1, float a2, in cVector3f avUVW) { return a0 * avUVW.x + a1 * avUVW.y + a2 * avUVW.z; }
+cVector2f Interpolate(cVector2f a0, cVector2f a1, cVector2f a2, in cVector3f avUVW) { return a0 * avUVW.x + a1 * avUVW.y + a2 * avUVW.z; }
+cVector3f Interpolate(cVector3f a0, cVector3f a1, cVector3f a2, in cVector3f avUVW) { return a0 * avUVW.x + a1 * avUVW.y + a2 * avUVW.z; }
+cVector4f Interpolate(cVector4f a0, cVector4f a1, cVector4f a2, in cVector3f avUVW) { return a0 * avUVW.x + a1 * avUVW.y + a2 * avUVW.z; }
+
+cVector4f UnpackYCoCg(cVector4f avYCoCg)
+{
+	const float kfOffset = 128.0 / 255.0;
+
+	float fScale = 1.0 / ((255.0 / 8.0) * avYCoCg.b + 1);
+	avYCoCg.rg = (avYCoCg.rg - kfOffset) * fScale;
+
+	cVector3f vRGB;
+	vRGB.r = dot(avYCoCg, cVector4f(1, -1, 0, 1));
+	vRGB.g = dot(avYCoCg, cVector4f(0,  1, 0, 1));
+	vRGB.b = dot(avYCoCg, cVector4f(-1,-1, 0, 1));
+	
+	return vRGB.rgbb;
+}
+
+///////////////////////////////
+// Main program
+[domain = triangle]
+[spacing = fractional_even]
+[ordering = ccw]
+void main(out cVector4f px_vTexCoord0,
+		  in cVector4f es_vTexCoord0[],
+@ifdef UseVertexNormalMapping
+	      out cVector3f px_vNormal,
+	      out cVector3f px_vTangent,
+	      out cVector3f px_vBinormal,
+	      in cVector3f es_vNormal[],
+	      in cVector3f es_vTangent[],
+	      in cVector3f es_vBinormal[],
+@else
+		  out cVector2f px_vHeightCoord,
+		  in cVector2f es_vHeightCoord[],
+@endif
+@ifdef UseLinearDepth
+		  out float px_fLinearDepth,
+		  in float es_fLinearDepth[],
+@endif
+@ifdef TerrainDetailMaps
+		  out cVector4f px_vWorldPos,
+@endif
+@ifdef TerrainDebug	
+		  out cVector4f px_vColor,
+		  in cVector4f es_vColor[],
+@endif
+@ifdef UseTextureArray
+		  out cVector4f px_vDiffuseSizeAndOffset,
+		  out cVector4f px_vNormalSizeAndOffset,
+		  out cVector4f px_vSpecularSizeAndOffset,
+		  out cVector4f px_vDetailSizeAndOffset,
+		  out cVector4f px_vArraySlice,
+		  in cVector4f es_vDiffuseSizeAndOffset[],
+		  in cVector4f es_vNormalSizeAndOffset[],
+		  in cVector4f es_vSpecularSizeAndOffset[],
+		  in cVector4f es_vDetailSizeAndOffset[],
+		  in cVector4f es_vArraySlice[],
+@endif
+@ifdef  UseTesselation
+	      in cVector4f es_vBumpSizeAndOffset[],
+	      in float es_fBumpSlice[],
+@endif
+	      in cVector4f es_vDebug[],
+		  out cVector4f px_vPosition
+		  in cVector4f es_vWorldPos[])
+{	
+	//////////////
+	// Transfer data
+	@ifdef UseVertexNormalMapping
+		px_vNormal = Interpolate(es_vNormal[0], es_vNormal[1], es_vNormal[2], es_vTesslationCoords);
+		px_vTangent = Interpolate(es_vTangent[0], es_vTangent[1], es_vTangent[2], es_vTesslationCoords);
+		px_vBinormal = Interpolate(es_vBinormal[0], es_vBinormal[1], es_vBinormal[2], es_vTesslationCoords);
+	@else
+		px_vHeightCoord = Interpolate(es_vHeightCoord[0], es_vHeightCoord[1], es_vHeightCoord[2], es_vTesslationCoords);
+	@endif
+	@ifdef UseLinearDepth
+		px_fLinearDepth = Interpolate(es_fLinearDepth[0], es_fLinearDepth[1], es_fLinearDepth[2], es_vTesslationCoords);
+	@endif
+	@ifdef TerrainDebug	
+		px_vColor = Interpolate(es_vColor[0], es_vColor[1], es_vColor[2], es_vTesslationCoords);
+	@endif
+	@ifdef UseTextureArray
+		px_vDiffuseSizeAndOffset = es_vDiffuseSizeAndOffset[0];
+		px_vNormalSizeAndOffset = es_vNormalSizeAndOffset[0];
+		px_vSpecularSizeAndOffset = es_vSpecularSizeAndOffset[0];
+		px_vDetailSizeAndOffset = es_vDetailSizeAndOffset[0];
+		px_vArraySlice = es_vArraySlice[0];
+	@endif
+	
+	px_vPosition = Interpolate(es_vWorldPos[0], es_vWorldPos[1], es_vWorldPos[2], es_vTesslationCoords);
+	
+
+	//////////
+	// Apply heightmap
+	px_vTexCoord0 = Interpolate(es_vTexCoord0[0], es_vTexCoord0[1], es_vTexCoord0[2], es_vTesslationCoords);
+
+	//////////////
+	// Apply border
+	bool bIsBorder = (px_vTexCoord0.x * px_vTexCoord0.y * (1.0 - px_vTexCoord0.x) * (1.0 - px_vTexCoord0.y)) == 0.0;
+
+	cVector2f vTexOffset = cVector2f(-0.5 * afTerrainTextureBorderDiv + 0.5,
+									 0.5 + 0.5 * afTerrainTextureBorderDiv);
+	cVector2f vTexSize = cVector2f(1.0 * afTerrainTextureBorderDiv, -1.0 * afTerrainTextureBorderDiv);
+
+	px_vTexCoord0.xy = px_vTexCoord0.xy*vTexSize + vTexOffset;
+
+	float fBump = UnpackYCoCg(sampleLod(aMaterialMap, cVector3f(px_vTexCoord0.xy * es_vBumpSizeAndOffset[0].xy + es_vBumpSizeAndOffset[0].zw,
+																	es_fBumpSlice[0].x), 0)).x;
+    
+	if(bIsBorder)
+	{
+		///////////
+		// Apply some rounding fight precision errors near borders
+		//fBump = round(fBump * 48.0) / 48.0;
+	}
+
+	px_vPosition.y += fBump * afTesselationScale; 
+
+	@ifdef TerrainDetailMaps
+		px_vWorldPos = px_vPosition;
+	@endif;
+
+	/////////////
+	// Apply projection matrix
+	px_vPosition = mul(a_mtxViewProjection, cVector4f(px_vPosition.xyz, 1.0));
+}

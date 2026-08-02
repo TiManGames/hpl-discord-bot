@@ -1,0 +1,85 @@
+////////////////////////////////////////////////////////
+// Deferred SSAO Upsample - Fragment Shader
+//
+// Applies SSAO to channel
+////////////////////////////////////////////////////////
+
+//---------------------------------------------------------
+
+uniform float afFarPlane;
+uniform float afSizeDiv;
+uniform float afPower;
+
+uniform cTexture2D ssaoTexture : 0;
+uniform cTexture2D depthTexture : 1;
+
+void main(in cVector4f px_vPosition,
+		  in cVector4f px_vTexCoord0,
+		  out cVector4f out_vColor : 0)
+{
+	//////////////////
+	// Get core depth and AO
+	cVector2f vScreenPos = px_vTexCoord0.xy;
+
+	@ifdef UseUpsample
+		cVector2f vAOPos = vScreenPos;
+
+		cVector4f vAO;
+		cVector4f vDepth;
+		cVector4f vSample;
+
+		////////
+		// sample 4 neightbur pixels
+		vSample = sample(ssaoTexture, vAOPos);
+		vAO.x = vSample.y;
+		vDepth.x = vSample.x;
+
+		vSample = sample(ssaoTexture, vAOPos, cVector2l(0, 1));
+		vAO.y = vSample.y;
+		vDepth.y = vSample.x;
+
+		vSample = sample(ssaoTexture, vAOPos, cVector2l(1, 0));
+		vAO.z = vSample.y; 
+		vDepth.z = vSample.x;
+
+		vSample = sample(ssaoTexture, vAOPos, cVector2l(1, 1));
+		vAO.w = vSample.y; 
+		vDepth.w = vSample.x;
+
+		float fCoreDepth = sample(depthTexture, vScreenPos).x;
+		
+		/////////
+		// Calculate upscale weight
+		cVector4f vWeight;
+
+		////////
+		// Weight from bilinear filter
+		cVector2f vBilinearWeight = fract((cVector2f(1.0) + px_vPosition.xy) * afSizeDiv);
+		vWeight.w = vBilinearWeight.x * vBilinearWeight.y;
+		vWeight.z = vBilinearWeight.x * (1.0 - vBilinearWeight.y);
+		vWeight.y = (1.0 - vBilinearWeight.x) * vBilinearWeight.y;
+		vWeight.x = (1.0 - vBilinearWeight.x) * (1.0 - vBilinearWeight.y);
+
+		//////////
+		// Weight from depth, pick the pixel with the closest depth to the fullsize depth
+		cVector4f vDepthWeight = max(cVector4f(0.05), 0.1 - abs((vDepth - cVector4f(fCoreDepth)) * afFarPlane)) * 5.0;
+		vWeight = vWeight * vDepthWeight;
+
+		/////////
+		// Calucalte AO based on weighted depth
+		float fCoreAO = dot(vWeight, vAO) / dot(cVector4f(1.0), vWeight);
+	@else
+		/////////
+		// Fullsize AO
+		float fCoreDepth = sample(depthTexture, vScreenPos).x;
+		float fCoreAO = sample(ssaoTexture, vScreenPos).x;
+	@endif
+
+	/////////
+	// Pack depth
+	cVector4f vResult = cVector4f(pow(fCoreAO, afPower / 2.2));
+
+	//////////////////
+	// Get new screen color
+	out_vColor.xyzw = vResult;
+}
