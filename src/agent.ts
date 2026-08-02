@@ -38,6 +38,12 @@ function log(msg: string): void {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+export interface AgentResult {
+  text: string;
+  inputTokens: number;
+  outputTokens: number;
+}
+
 /**
  * Run the Claude agent loop via the Vercel AI SDK + SAP AI Core.
  * Handles SAP's aggressive rate limiting by honouring the x-retry-after header
@@ -47,7 +53,7 @@ export async function runAgent(
   systemPrompt: string,
   docsRoot: string,
   messages: ModelMessage[],
-): Promise<string> {
+): Promise<AgentResult> {
   let rateLimitRetries = 0;
   let authRetries = 0;
 
@@ -84,7 +90,7 @@ async function generateOnce(
   systemPrompt: string,
   docsRoot: string,
   messages: ModelMessage[],
-): Promise<string> {
+): Promise<AgentResult> {
   let stepNum = 0;
   log(`Sending request to SAP AI Core (model=${MODEL_ID})…`);
   const startedAt = Date.now();
@@ -139,8 +145,17 @@ async function generateOnce(
       maxRetries: 0,
     });
     log(`Final answer produced — text=${finalResult.text.length}c`);
-    return finalResult.text;
+    // Total across both the research call and the forced final call.
+    return {
+      text: finalResult.text,
+      inputTokens: (result.totalUsage.inputTokens ?? 0) + (finalResult.totalUsage.inputTokens ?? 0),
+      outputTokens: (result.totalUsage.outputTokens ?? 0) + (finalResult.totalUsage.outputTokens ?? 0),
+    };
   }
 
-  return result.text;
+  return {
+    text: result.text,
+    inputTokens: result.totalUsage.inputTokens ?? 0,
+    outputTokens: result.totalUsage.outputTokens ?? 0,
+  };
 }
