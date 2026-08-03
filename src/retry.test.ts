@@ -3,6 +3,7 @@ import {
   retryAfterSeconds,
   isRateLimit,
   isTransientAuth,
+  isTransientNetwork,
   DEFAULT_RETRY_AFTER_S,
   MAX_RETRY_AFTER_S,
 } from './retry.js';
@@ -95,5 +96,34 @@ describe('isTransientAuth', () => {
 
   it('is false for unrelated errors', () => {
     expect(isTransientAuth(new Error('bad request'))).toBe(false);
+  });
+});
+
+describe('isTransientNetwork', () => {
+  it('recognizes the SAP/Axios ECONNRESET shape from orchestration', () => {
+    const err = Object.assign(new Error('SAP AI Core doGenerate failed: read ECONNRESET'), {
+      statusCode: 500,
+      cause: Object.assign(new Error('Request failed with status code undefined'), {
+        cause: Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }),
+      }),
+    });
+    expect(isTransientNetwork(err)).toBe(true);
+  });
+
+  it('recognizes a nested transport code even when the top-level message is generic', () => {
+    expect(isTransientNetwork({
+      message: 'provider failed',
+      cause: { code: 'ETIMEDOUT', message: 'socket timeout' },
+    })).toBe(true);
+  });
+
+  it('recognizes common connection-reset text without a code field', () => {
+    expect(isTransientNetwork(new Error('socket hang up'))).toBe(true);
+    expect(isTransientNetwork(new Error('fetch failed'))).toBe(true);
+  });
+
+  it('does not retry semantic API errors or rate limits as network failures', () => {
+    expect(isTransientNetwork(new Error('400 invalid tool message'))).toBe(false);
+    expect(isTransientNetwork(new Error('429 Too many requests'))).toBe(false);
   });
 });

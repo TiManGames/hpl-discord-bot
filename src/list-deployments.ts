@@ -1,12 +1,9 @@
 /**
- * One-time helper: list all RUNNING deployments in your SAP AI Core resource group.
+ * Diagnostic helper: list RUNNING deployments in your SAP AI Core resource group.
  *
  * Run with:  npm run list-deployments
- *
- * Find the Claude model whose scenarioId is "foundation-models" (NOT
- * "orchestration") and copy its deployment id into AICORE_DEPLOYMENT_ID in .env.
- * That lets the bot hit the model deployment directly and bypass the heavily
- * rate-limited orchestration endpoint.
+ * The production bot resolves AICORE_MODEL through SAP orchestration using the
+ * resource group; it does not consume a deployment id from this output.
  */
 import 'dotenv/config';
 
@@ -95,16 +92,14 @@ async function listDeployments(): Promise<void> {
     const model = d.details?.resources?.backend_details?.model;
     const modelStr = model ? `${model.name}:${model.version}` : '(unknown model)';
     const scenario = d.scenarioId ?? '(unknown scenario)';
-    const marker = scenario === 'foundation-models' ? '  ← use this for direct mode' : '';
+    const marker = scenario === 'foundation-models' ? '  ← foundation model' : '';
     console.log(`  id:       ${d.id}`);
     console.log(`  scenario: ${scenario}${marker}`);
     console.log(`  model:    ${modelStr}`);
     console.log('');
   }
 
-  console.log(
-    'Copy the "id" of the foundation-models Claude deployment into AICORE_DEPLOYMENT_ID in .env',
-  );
+  console.log('Deployment IDs are informational; the bot uses AICORE_MODEL + AICORE_RESOURCE_GROUP.');
 }
 
 listDeployments().catch((err) => {

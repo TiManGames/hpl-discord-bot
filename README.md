@@ -6,8 +6,8 @@ A Discord bot that answers **HPL2 / HPL3 engine modding** questions (Frictional 
 
 1. A user @-mentions the bot in a mapped channel (e.g. `hpl2`, `hpl3-soma`, `hpl3-rebirth`, `hpl3-bunker`).
 2. The bot reacts with 👀 and creates a **thread** under the message.
-3. The question is sent to Claude with a game-specific system prompt (from `skills/<game>/SKILL.md`) plus a manifest of every available doc file.
-4. Claude searches and reads the relevant text docs through sandboxed `search_files` and `read_file` tools, then posts the answer in the thread.
+3. A simple greeting is answered locally; a real question is sent to the configured model with a compact game-specific prompt from `skills/<game>/SKILL.md`.
+4. The model uses `lookup_symbol` for fuzzy HPS API/script identifiers or `research_topic` for cross-source wiki/game/config/editor evidence. Sandboxed `find_files`, `search_files`, and `read_file` remain available for one concrete gap.
 5. Any further replies **in that thread** continue the conversation — no @-mention needed.
 
 Conversation history is kept **in memory**, keyed by thread ID (it resets when the bot restarts).
@@ -54,13 +54,14 @@ CHANNEL_MAP={"hpl2":"hpl2","hpl3-soma":"hpl3-soma","hpl3-rebirth":"hpl3-rebirth"
 Optional env vars:
 - `AICORE_MODEL` — override the model (default `anthropic--claude-4.6-sonnet`).
 - `AICORE_MAX_STEPS` — safety ceiling for one agent run (default `20`; normal questions should finish well below it).
-- `AICORE_ADAPTIVE_THINKING` — set to `true` to request Claude 4.6 adaptive thinking for a controlled A/B test (default `false`).
+- `AICORE_ADAPTIVE_THINKING` — set to `true` to request Claude 4.6 adaptive thinking for a controlled A/B test (default `false`; ignored for non-Claude models).
 - `AICORE_THINKING_MAX_OUTPUT_TOKENS` — output-token ceiling while adaptive thinking is requested (default `8192`).
+- `HPL_INDEX_CACHE_SIZE` — maximum lazy game-corpus indexes retained in memory (default `2`; least-recently-used indexes are evicted).
 - `CHANNEL_MAP` — defaults are provided; override to match your channel names.
 
 ### 4. Add documentation
 
-Drop docs (markdown, txt, `.hps`, etc.) into `skills/<game>/docs/`. The bot builds a file manifest from these and lets Claude read them on demand. Each game also has a `skills/<game>/SKILL.md` system prompt you can edit.
+Drop docs (markdown, txt, `.hps`, config/editor definitions, etc.) into `skills/<game>/docs/`. The bot does not inject the whole tree into every prompt. It lazily builds an in-memory index when a game is first queried: HPS declarations/call relationships, heading-chunked wiki content, stock script/map excerpts, and registration blocks from config/editor files. A small LRU bounds how many game indexes remain resident. Each game also has a `skills/<game>/SKILL.md` system prompt you can edit.
 
 ### 5. Run
 
@@ -91,9 +92,12 @@ Mention the bot in a mapped channel to test.
 src/
   index.ts            # Entry: validates env, starts the bot
   bot.ts              # Discord client, event handlers, prompt assembly, message splitting
-  agent.ts            # Claude agent loop via Vercel AI SDK + SAP AI Core, with 429 retry
+  agent.ts            # Model/tool loop via Vercel AI SDK + SAP AI Core, with 429 retry
   cache.ts            # Rolling message-tail cache breakpoint; preserves the full research transcript
-  tools.ts            # Sandboxed text read/search tools + filtered docs manifest builder
+  grounding.ts        # Rejects undocumented engine-like identifiers before Discord delivery
+  research-index.ts   # Lazy HPS symbol/usage + MiniSearch cross-source index
+  research-tools.ts   # Evidence profiles, sufficiency contracts, lookup/research reports
+  tools.ts            # Indexed research tools plus sandboxed raw file escape hatches
   retry.ts            # Pure retry-decision helpers (429 / auth-timeout)
   channels.ts         # Channel -> game resolution
   history.ts          # In-memory per-thread conversation store
@@ -108,9 +112,20 @@ skills/
 
 The bot uses [`@jerome-benoit/sap-ai-provider`](https://www.npmjs.com/package/@jerome-benoit/sap-ai-provider) with the Vercel AI SDK, configured with only a **resource group** (`createSAPAIProvider({ resourceGroup })`). This routes requests through your provisioned resource group's quota. Do **not** pin a `deploymentId` — doing so makes the provider ignore the resource group and fall back to the shared, rate-limited `default` bucket.
 
-The agent loop honours SAP's `x-retry-after` header on 429s (the SDK's built-in backoff ignores it). It retains every search and file result for the whole run. After each tool batch it persists a compact research checkpoint that asks the same model to decide whether the gathered evidence is sufficient: answer now, or call only the minimum tools needed for one concrete gap. That checkpoint also places an Anthropic cache breakpoint after the complete tool transcript without annotating tool messages, whose content SAP requires to remain a string. The bot records step, tool-call, duplicate-call, forced-final, and surfaced reasoning metrics in the logs. The 20-step ceiling remains an emergency fallback, not a convergence mechanism.
+The agent loop honours SAP's `x-retry-after` header on 429s (the SDK's built-in backoff ignores it). It retains every search and file result for the whole run. Normal retrieval goes through two structured tools:
 
-`npm run thinking-probe` checks whether SAP forwards `thinking: { type: "adaptive" }`, exposes reasoning, and survives a dependent two-tool chain. Some SAP paths accept and forward the setting without returning reasoning usage; that result is inconclusive. In that case, `AICORE_ADAPTIVE_THINKING=true` enables an explicit production A/B test rather than claiming adaptive thinking is confirmed.
+- `lookup_symbol` normalizes CamelCase/underscores and HPL synonyms, ranks declarations from `hps_api.hps` plus `script/`/`scripts/`, and attaches representative call sites.
+- `research_topic` applies a question-specific evidence profile across wiki guides/API pages, engine declarations, stock scripts/maps, config registrations, and editor definitions. It returns required, covered, missing, and unavailable evidence categories plus detected feature facets.
+
+The HPS declaration extractor follows the production `indexScript` design from [`hpl3-language-tools`](https://github.com/TiManGames/hpl3-language-tools). That project uses Tree-sitter for live syntax/semantic analysis and a focused error-tolerant extractor for its workspace symbol index; the bot uses the latter for static corpus retrieval. [`MiniSearch`](https://github.com/lucaong/minisearch) supplies the in-process BM25/prefix/fuzzy document index.
+
+Adapted third-party code and its license are recorded in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+
+After each tool batch the agent persists an evidence-boundary checkpoint. Indexed results locate and quote relevant evidence, but do not authorize claims outside those excerpts. A narrow exact answer can stop immediately; behavior, inheritance, naming rules, setup, and additional examples require an exact source read or focused search. User disputes force a fresh tool verification. Before delivery, a grounding check rejects undocumented engine-like identifiers and sends the draft back through source verification instead of exposing invented code. Indexed not-found or unavailable categories remain settled gaps rather than triggers for synonym loops. The checkpoint also places an Anthropic cache breakpoint after the complete tool transcript without annotating tool messages, whose content SAP requires to remain a string. Raw ripgrep results are compacted when used. The bot logs cumulative input, uncached input, cache reads/writes, steps, tool calls, duplicates, forced-final state, and surfaced reasoning. The 20-step ceiling remains an emergency fallback, not a convergence mechanism.
+
+SAP's harmonized usage fields differ by model family, so `inputTokens` is normalized to include cached slices for both Claude and Gemini. `uncachedInputTokens` is the fresh input; per-step `providerInput` preserves SAP's raw prompt-token value for diagnosis.
+
+`npm run thinking-probe` checks whether SAP forwards `thinking: { type: "adaptive" }`, exposes reasoning, and survives a dependent two-tool chain. Some SAP paths accept and forward the setting without returning reasoning usage; that result is inconclusive. In that case, `AICORE_ADAPTIVE_THINKING=true` enables an explicit Claude production A/B test rather than claiming adaptive thinking is confirmed. Production ignores this flag when `AICORE_MODEL` is not an Anthropic Claude model.
 
 ## Notes
 

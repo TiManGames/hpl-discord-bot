@@ -32,9 +32,12 @@ import {
   handleChannelMention,
   handleMunshiEmoji,
   handleThreadMessage,
+  isSimpleGreeting,
+  loadSystemPrompt,
   normalizeSpacing,
   renderMunshiHappyEmoji,
   splitForDiscord,
+  SIMPLE_GREETING_RESPONSE,
   UNMAPPED_CHANNEL_RESPONSE,
   withUserMention,
 } from './bot.js';
@@ -76,9 +79,14 @@ describe('handleChannelMention', () => {
     vi.mocked(runAgent).mockResolvedValue({
       text: 'Use a callback for this.',
       inputTokens: 10,
+      uncachedInputTokens: 10,
       outputTokens: 5,
       cacheReadTokens: 0,
       cacheWriteTokens: 0,
+      stepCount: 2,
+      toolCallCount: 1,
+      duplicateToolCallCount: 0,
+      forcedFinal: false,
     });
     const send = vi.fn().mockResolvedValue(undefined);
     const thread = {
@@ -107,9 +115,14 @@ describe('handleChannelMention', () => {
     vi.mocked(runAgent).mockResolvedValue({
       text: 'That follow-up belongs to the second user.',
       inputTokens: 12,
+      uncachedInputTokens: 12,
       outputTokens: 7,
       cacheReadTokens: 0,
       cacheWriteTokens: 0,
+      stepCount: 2,
+      toolCallCount: 1,
+      duplicateToolCallCount: 0,
+      forcedFinal: false,
     });
     const send = vi.fn().mockResolvedValue(undefined);
     const threadId = 'thread-multi-user-test';
@@ -134,6 +147,31 @@ describe('handleChannelMention', () => {
     expect(send).toHaveBeenCalledWith(
       '<@second-user> That follow-up belongs to the second user.',
     );
+  });
+
+  it('answers a simple greeting locally without moderation or agent tokens', async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    const thread = {
+      id: 'thread-local-greeting',
+      name: 'hpl3-soma — greeter',
+      send,
+      sendTyping: vi.fn().mockResolvedValue(undefined),
+    };
+    const message = {
+      id: 'greeting-message',
+      content: '<@bot-id> hi',
+      channel: { name: 'soma-modding', id: 'soma-channel' },
+      channelId: 'soma-channel',
+      author: { id: 'greeter', username: 'greeter', tag: 'greeter' },
+      react: vi.fn().mockResolvedValue(undefined),
+      startThread: vi.fn().mockResolvedValue(thread),
+    } as unknown as Message;
+
+    await handleChannelMention(message, 'bot-id');
+
+    expect(classifyMessage).not.toHaveBeenCalled();
+    expect(runAgent).not.toHaveBeenCalled();
+    expect(send).toHaveBeenCalledWith(`<@greeter> ${SIMPLE_GREETING_RESPONSE}`);
   });
 });
 
@@ -230,7 +268,18 @@ describe('moderation gate', () => {
       rateLimited: true,
     });
     vi.mocked(resetPenalty).mockResolvedValue(cleanRecord('expired'));
-    vi.mocked(runAgent).mockResolvedValue({ text: 'Here you go.', inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 });
+    vi.mocked(runAgent).mockResolvedValue({
+      text: 'Here you go.',
+      inputTokens: 1,
+      uncachedInputTokens: 1,
+      outputTokens: 1,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      stepCount: 1,
+      toolCallCount: 0,
+      duplicateToolCallCount: 0,
+      forcedFinal: false,
+    });
     const send = vi.fn().mockResolvedValue(undefined);
     const thread = {
       id: 'thread-expired', name: 'hpl2 — expired', send,
@@ -307,6 +356,27 @@ describe('Munshi emoji easter egg', () => {
 describe('withUserMention', () => {
   it('prefixes a Discord user mention to a reply', () => {
     expect(withUserMention('123', 'Answer text')).toBe('<@123> Answer text');
+  });
+});
+
+describe('isSimpleGreeting', () => {
+  it('accepts only short standalone greetings', () => {
+    expect(isSimpleGreeting('Hi!')).toBe(true);
+    expect(isSimpleGreeting('hello there')).toBe(true);
+    expect(isSimpleGreeting('hi, how do lights work?')).toBe(false);
+  });
+});
+
+describe('loadSystemPrompt', () => {
+  it('uses on-demand discovery without injecting the documentation tree', () => {
+    const prompt = loadSystemPrompt('skills/hpl3-soma', 'skills/hpl3-soma/docs');
+
+    expect(prompt).toContain('no full directory listing is preloaded');
+    expect(prompt).not.toContain('<available_files>');
+    expect(prompt).not.toContain('maps/chapter01/01_02_upsilon_inside');
+    expect(prompt).toContain('selected game corpus defines the scripting dialect');
+    expect(prompt).not.toContain('AddEntityCollideCallback');
+    expect(prompt.length).toBeLessThan(20_000);
   });
 });
 

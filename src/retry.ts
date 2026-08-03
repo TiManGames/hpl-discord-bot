@@ -55,3 +55,54 @@ export function isTransientAuth(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
   return msg.includes('timed out') || msg.includes('LoadAPIKeyError');
 }
+
+/**
+ * True for transport failures where SAP returned no usable HTTP response.
+ * Provider errors commonly wrap the original Axios/Node error several levels
+ * deep, so inspect the cause chain as well as the top-level message.
+ */
+export function isTransientNetwork(err: unknown): boolean {
+  const retryableCodes = new Set([
+    'ECONNRESET',
+    'ECONNREFUSED',
+    'EPIPE',
+    'ETIMEDOUT',
+    'EAI_AGAIN',
+    'ENETDOWN',
+    'ENETUNREACH',
+    'EHOSTUNREACH',
+    'UND_ERR_CONNECT_TIMEOUT',
+    'UND_ERR_SOCKET',
+  ]);
+  const queue: unknown[] = [err];
+  const visited = new Set<unknown>();
+  const messages: string[] = [];
+
+  while (queue.length > 0 && visited.size < 12) {
+    const current = queue.shift();
+    if (current == null || visited.has(current)) continue;
+    visited.add(current);
+    if (typeof current === 'string') {
+      messages.push(current);
+      continue;
+    }
+    if (current instanceof Error) messages.push(current.message);
+    if (typeof current !== 'object') continue;
+    const value = current as {
+      code?: unknown;
+      message?: unknown;
+      cause?: unknown;
+      lastError?: unknown;
+      originalError?: unknown;
+    };
+    if (typeof value.code === 'string' && retryableCodes.has(value.code.toUpperCase())) {
+      return true;
+    }
+    if (typeof value.message === 'string') messages.push(value.message);
+    queue.push(value.cause, value.lastError, value.originalError);
+  }
+
+  return messages.some((message) =>
+    /\b(?:ECONNRESET|ECONNREFUSED|EPIPE|ETIMEDOUT|EAI_AGAIN|ENETDOWN|ENETUNREACH|EHOSTUNREACH|UND_ERR_CONNECT_TIMEOUT|UND_ERR_SOCKET)\b|socket hang up|connection reset by peer|network socket disconnected|request timed out|fetch failed/i.test(message),
+  );
+}
