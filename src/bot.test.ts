@@ -77,6 +77,8 @@ describe('handleChannelMention', () => {
       text: 'Use a callback for this.',
       inputTokens: 10,
       outputTokens: 5,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
     });
     const send = vi.fn().mockResolvedValue(undefined);
     const thread = {
@@ -106,6 +108,8 @@ describe('handleChannelMention', () => {
       text: 'That follow-up belongs to the second user.',
       inputTokens: 12,
       outputTokens: 7,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
     });
     const send = vi.fn().mockResolvedValue(undefined);
     const threadId = 'thread-multi-user-test';
@@ -226,7 +230,7 @@ describe('moderation gate', () => {
       rateLimited: true,
     });
     vi.mocked(resetPenalty).mockResolvedValue(cleanRecord('expired'));
-    vi.mocked(runAgent).mockResolvedValue({ text: 'Here you go.', inputTokens: 1, outputTokens: 1 });
+    vi.mocked(runAgent).mockResolvedValue({ text: 'Here you go.', inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0 });
     const send = vi.fn().mockResolvedValue(undefined);
     const thread = {
       id: 'thread-expired', name: 'hpl2 — expired', send,

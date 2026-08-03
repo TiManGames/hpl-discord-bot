@@ -7,7 +7,7 @@ Use these sources before changing or proposing script code.
 See wiki documentation for scripting API and scripting guides.
 
 Core SOMA api can be found in:
-`hps_api.hps` file in the base game folder
+`hps_api.hps` file in this base folder
 `Wiki/hpl3/SOMA/Scripting/**/`
 `Wiki/hpl3/SOMA/Scripting/**/Scripting Api`
 

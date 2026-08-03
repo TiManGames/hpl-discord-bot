@@ -6,8 +6,8 @@
  * Run with:  npm run cache-probe
  *
  * Interpreting the output:
- * - Second call shows cachedInputTokens > 0  → caching WORKS; pursue it.
- * - Second call shows cachedInputTokens = 0/undefined → caching is NOT applied
+ * - Second call shows cacheReadTokens > 0  → caching WORKS; pursue it.
+ * - Second call shows cacheReadTokens = 0/undefined → caching is NOT applied
  *   through this SAP path (the known Anthropic-orchestration limitation); focus
  *   on context-trimming instead.
  */
@@ -16,6 +16,7 @@ import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join, resolve } from 'path';
 import { generateText } from 'ai';
+import type { SystemModelMessage } from 'ai';
 import { createSAPAIProvider } from '@jerome-benoit/sap-ai-provider';
 import { buildFileManifest } from './tools.js';
 
@@ -47,21 +48,34 @@ function buildLargePrompt(): string {
 interface Usage {
   inputTokens?: number;
   outputTokens?: number;
-  cachedInputTokens?: number;
+  inputTokenDetails?: {
+    noCacheTokens?: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+  };
 }
 
 function reportUsage(label: string, usage: Usage): void {
+  const d = usage.inputTokenDetails;
   log(
     `${label}: inputTokens=${usage.inputTokens ?? '?'} ` +
       `outputTokens=${usage.outputTokens ?? '?'} ` +
-      `cachedInputTokens=${usage.cachedInputTokens ?? 'undefined'}`,
+      `cacheReadTokens=${d?.cacheReadTokens ?? 'undefined'} ` +
+      `cacheWriteTokens=${d?.cacheWriteTokens ?? 'undefined'}`,
   );
 }
 
 async function ask(systemPrompt: string): Promise<Usage> {
+  // Enable Anthropic prompt caching on the large stable system prefix. Caching is
+  // opt-in — without this cacheControl breakpoint, cached_tokens is always 0.
+  const systemMsg: SystemModelMessage = {
+    role: 'system',
+    content: systemPrompt,
+    providerOptions: { 'sap-ai': { cacheControl: { type: 'ephemeral' } } }, // 5m default TTL
+  };
   const result = await generateText({
     model,
-    system: systemPrompt,
+    system: systemMsg,
     // No tools — we only care about how the large system prefix is billed.
     messages: [{ role: 'user', content: 'In one sentence, what is an entity in HPL3?' }],
     maxRetries: 2,
@@ -85,7 +99,7 @@ async function main(): Promise<void> {
   const u2 = await ask(systemPrompt);
   reportUsage('Call 2', u2);
 
-  const cached = u2.cachedInputTokens ?? 0;
+  const cached = u2.inputTokenDetails?.cacheReadTokens ?? 0;
   console.log('');
   if (cached > 0) {
     log(`RESULT: caching WORKS — ${cached} input tokens served from cache on call 2. Pursue prompt caching.`);

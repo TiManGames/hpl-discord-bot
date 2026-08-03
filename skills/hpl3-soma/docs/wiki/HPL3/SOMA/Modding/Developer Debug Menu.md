@@ -203,8 +203,8 @@ void OnStart()
 </syntaxhighlight>
 |-
 |Load Map
-|Select a map file to load in the game. HPL3 Map File (<code>.hpm</code>) and HPL2 Map File (<code>.map</code>) are accepted.
-{{warning|Some things are almost guranteed to not load correctly when loading HPL2 map files, mostly related to issues with static-objects. This is due to the internal structure of the .map files and how it handles assets information.}}
+|Select a map file to load in the game. HPL3 Map File (<code>.hpm</code>) and HPL2 Map File (<code>.hpm</code>) are accepted.
+{{warning|Some things are almost guranteed to not load correctly when loading HPL2 map files, mostly related to issues with static-objects. This is due to the internal structure of the .hpm files and how it handles assets information.}}
 |-
 |Test Change Map Save
 |Unknown option. {{clarify}}

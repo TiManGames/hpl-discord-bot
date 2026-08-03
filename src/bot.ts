@@ -332,11 +332,11 @@ export async function handleChannelMention(message: Message, botId: string): Pro
 
   log('INFO', `Calling agent for thread ${thread.id}…`);
   try {
-    const { text: reply, inputTokens, outputTokens } = await runAgent(systemPrompt, game.docsRoot, initialMessages);
+    const { text: reply, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens } = await runAgent(systemPrompt, game.docsRoot, initialMessages);
     const renderedReply = renderMunshiHappyEmoji(message, reply);
     const taggedReply = withUserMention(message.author.id, renderedReply);
     appendAssistantMessage(thread.id, taggedReply);
-    log('INFO', `Agent replied (${reply.length} chars, inputTokens=${inputTokens}, completionTokens=${outputTokens}) to thread ${thread.id}`);
+    log('INFO', `Agent replied (${reply.length} chars, inputTokens=${inputTokens}, completionTokens=${outputTokens}, cacheReadTokens=${cacheReadTokens}, cacheWriteTokens=${cacheWriteTokens}) to thread ${thread.id}`);
     await sendLongMessage(thread, taggedReply);
   } catch (err) {
     log('ERROR', `Agent error for thread ${thread.id}`, err);
@@ -380,11 +380,11 @@ export async function handleThreadMessage(message: Message): Promise<void> {
 
   log('INFO', `Calling agent for thread ${threadId}…`);
   try {
-    const { text: reply, inputTokens, outputTokens } = await runAgent(systemPrompt, session.docsRoot, session.messages);
+    const { text: reply, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens } = await runAgent(systemPrompt, session.docsRoot, session.messages);
     const renderedReply = renderMunshiHappyEmoji(message, reply);
     const taggedReply = withUserMention(message.author.id, renderedReply);
     appendAssistantMessage(threadId, taggedReply);
-    log('INFO', `Agent replied (${reply.length} chars, inputTokens=${inputTokens}, completionTokens=${outputTokens}) to thread ${threadId}`);
+    log('INFO', `Agent replied (${reply.length} chars, inputTokens=${inputTokens}, completionTokens=${outputTokens}, cacheReadTokens=${cacheReadTokens}, cacheWriteTokens=${cacheWriteTokens}) to thread ${threadId}`);
     await sendLongMessage(message.channel as unknown as TextChannel, taggedReply);
   } catch (err) {
     log('ERROR', `Agent error for thread ${threadId}`, err);

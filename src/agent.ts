@@ -1,5 +1,5 @@
 import { generateText, stepCountIs } from 'ai';
-import type { ModelMessage } from 'ai';
+import type { ModelMessage, SystemModelMessage } from 'ai';
 import { createSAPAIProvider } from '@jerome-benoit/sap-ai-provider';
 import { fileTools } from './tools.js';
 import {
@@ -42,6 +42,8 @@ export interface AgentResult {
   text: string;
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
 }
 
 /**
@@ -95,10 +97,20 @@ async function generateOnce(
   log(`Sending request to SAP AI Core (model=${MODEL_ID})…`);
   const startedAt = Date.now();
 
+  // Cache the large, stable system prefix (BASE_INSTRUCTIONS + SKILL.md + docs
+  // manifest, ~10-14k tokens). It renders before the messages, so it stays cached
+  // across all agentic steps even as pruneOldToolResults mutates the message tail.
+  // Anthropic caching is opt-in: without this breakpoint, cached_tokens is 0.
+  const systemMsg: SystemModelMessage = {
+    role: 'system',
+    content: systemPrompt,
+    providerOptions: { 'sap-ai': { cacheControl: { type: 'ephemeral' } } }, // 5m default TTL
+  };
+
   const result = await generateText({
     model,
     tools: fileTools(docsRoot),
-    system: systemPrompt,
+    system: systemMsg,
     messages,
     stopWhen: stepCountIs(MAX_STEPS),
     // Disable the SDK's exponential backoff — it ignores SAP's x-retry-after
@@ -131,7 +143,7 @@ async function generateOnce(
     const finalResult = await generateText({
       model,
       // No tools: the model must answer from the context it already gathered.
-      system: systemPrompt,
+      system: systemMsg,
       messages: [
         ...messages,
         ...result.response.messages,
@@ -150,6 +162,12 @@ async function generateOnce(
       text: finalResult.text,
       inputTokens: (result.totalUsage.inputTokens ?? 0) + (finalResult.totalUsage.inputTokens ?? 0),
       outputTokens: (result.totalUsage.outputTokens ?? 0) + (finalResult.totalUsage.outputTokens ?? 0),
+      cacheReadTokens:
+        (result.totalUsage.inputTokenDetails?.cacheReadTokens ?? 0) +
+        (finalResult.totalUsage.inputTokenDetails?.cacheReadTokens ?? 0),
+      cacheWriteTokens:
+        (result.totalUsage.inputTokenDetails?.cacheWriteTokens ?? 0) +
+        (finalResult.totalUsage.inputTokenDetails?.cacheWriteTokens ?? 0),
     };
   }
 
@@ -157,5 +175,7 @@ async function generateOnce(
     text: result.text,
     inputTokens: result.totalUsage.inputTokens ?? 0,
     outputTokens: result.totalUsage.outputTokens ?? 0,
+    cacheReadTokens: result.totalUsage.inputTokenDetails?.cacheReadTokens ?? 0,
+    cacheWriteTokens: result.totalUsage.inputTokenDetails?.cacheWriteTokens ?? 0,
   };
 }
