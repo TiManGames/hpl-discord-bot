@@ -1,4 +1,4 @@
-import type { ModelMessage } from 'ai';
+import type { ModelMessage, UserContent } from 'ai';
 
 export interface Session {
   gameId: string;
@@ -20,7 +20,7 @@ export function setSession(threadId: string, session: Session): void {
   sessions.set(threadId, session);
 }
 
-export function appendUserMessage(threadId: string, content: string): void {
+export function appendUserMessage(threadId: string, content: string | UserContent): void {
   const session = sessions.get(threadId);
   if (!session) return;
   session.messages.push({ role: 'user', content });

@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { startBot } from './bot.js';
+import { initPenaltyStore } from './penalties.js';
 
 const token = process.env.DISCORD_TOKEN;
 if (!token) {
@@ -35,5 +36,9 @@ if (!process.env.AICORE_RESOURCE_GROUP) {
   );
   process.exit(1);
 }
+
+// Load the persistent penalty store before the client logs in, so the first
+// message can never race an uninitialised datastore.
+await initPenaltyStore();
 
 startBot(token);

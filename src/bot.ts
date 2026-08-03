@@ -6,6 +6,7 @@ import {
   type Message,
   type TextChannel,
 } from 'discord.js';
+import type { ImagePart, TextPart, UserContent } from 'ai';
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join, resolve } from 'path';
@@ -13,6 +14,141 @@ import { resolveGame } from './channels.js';
 import { getSession, setSession, hasSession, appendUserMessage, appendAssistantMessage } from './history.js';
 import { runAgent } from './agent.js';
 import { buildFileManifest } from './tools.js';
+import {
+  getPenalty,
+  addPenalty,
+  resetPenalty,
+  evaluateRateLimit,
+  PENALTY_LIMIT,
+  type PenaltyRecord,
+} from './penalties.js';
+import { containsHardWord, formatRemaining, classifyMessage } from './moderation.js';
+
+const IMAGE_MAX_BYTES = 4 * 1024 * 1024;  // 4 MB
+const TEXT_MAX_BYTES  = 128 * 1024;        // 128 KB
+const SUPPORTED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+
+interface AttachmentParts {
+  imageParts: ImagePart[];
+  textParts: TextPart[];
+}
+
+/** Extract supported image and text/hps attachments from a Discord message. */
+async function extractAttachments(message: Message): Promise<AttachmentParts> {
+  const imageParts: ImagePart[] = [];
+  const textParts: TextPart[] = [];
+
+  if (!message.attachments?.size) return { imageParts, textParts };
+
+  for (const att of message.attachments.values()) {
+    const name = att.name ?? 'unknown';
+    const ct = att.contentType ?? '';
+    const size = att.size ?? 0;
+    const isImage = SUPPORTED_IMAGE_TYPES.has(ct.split(';')[0].trim());
+    const isText = ct.startsWith('text/') || name.toLowerCase().endsWith('.hps');
+
+    if (isImage) {
+      if (size > IMAGE_MAX_BYTES) {
+        log('WARN', `Attachment skipped: ${name} (${ct}, ${Math.round(size / 1024)}KB) — exceeds 4MB image limit`);
+        continue;
+      }
+      try {
+        const buf = await fetch(att.url).then((r) => r.arrayBuffer());
+        imageParts.push({ type: 'image', image: buf, mediaType: ct.split(';')[0].trim() as ImagePart['mediaType'] });
+        log('INFO', `Attachment: ${name} (${ct}, ${Math.round(size / 1024)}KB) — included as image`);
+      } catch (err) {
+        log('WARN', `Attachment skipped: ${name} — fetch failed`, err);
+      }
+    } else if (isText) {
+      if (size > TEXT_MAX_BYTES) {
+        log('WARN', `Attachment skipped: ${name} (${ct}, ${Math.round(size / 1024)}KB) — exceeds 128KB text limit`);
+        continue;
+      }
+      try {
+        const text = await fetch(att.url).then((r) => r.text());
+        textParts.push({ type: 'text', text: `\`\`\`hps\n// ${name}\n${text}\n\`\`\`` });
+        log('INFO', `Attachment: ${name} (${ct}, ${Math.round(size / 1024)}KB) — included as text`);
+      } catch (err) {
+        log('WARN', `Attachment skipped: ${name} — fetch failed`, err);
+      }
+    } else {
+      log('WARN', `Attachment skipped: ${name} (${ct}) — unsupported type`);
+    }
+  }
+
+  return { imageParts, textParts };
+}
+
+/** Build a UserContent array from text + any extracted attachment parts. */
+function buildUserContent(text: string, { imageParts, textParts }: AttachmentParts): UserContent {
+  if (imageParts.length === 0 && textParts.length === 0) return text;
+  return [{ type: 'text', text }, ...imageParts, ...textParts];
+}
+
+export type ModerationOutcome = { action: 'allow' } | { action: 'block'; replyText: string };
+
+/** Append a short status about the user's standing after a penalty is issued. */
+function penaltySuffix(record: PenaltyRecord): string {
+  return record.rateLimited
+    ? ' You have reached the penalty limit and are now rate limited.'
+    : ` (penalty ${record.penaltyCount} of ${PENALTY_LIMIT})`;
+}
+
+/**
+ * The single moderation pipeline, shared by both handler paths. Performs all DB
+ * reads/writes but sends NO Discord messages — the caller decides where the
+ * block reply goes (in-channel vs in-thread).
+ *
+ * Order:
+ *   A. Rate-limit check — if at limit and inside the window, block. If the
+ *      window expired, reset to 0 and continue.
+ *   B. Hard-word regex guard — issue a bot penalty and block.
+ *   C. LLM moderation classifier — issue a penalty and block if it flags the
+ *      message; otherwise allow.
+ */
+export async function moderateAndMaybePenalize(
+  userId: string,
+  userText: string,
+  userContent: UserContent,
+): Promise<ModerationOutcome> {
+  const now = Date.now();
+  const record = await getPenalty(userId);
+
+  // Step A — rate-limit check first.
+  if (record.penaltyCount >= PENALTY_LIMIT) {
+    const { limited, remainingMs } = evaluateRateLimit(record, now);
+    if (limited) {
+      log('INFO', `User ${userId} is rate limited (${formatRemaining(remainingMs)} remaining)`);
+      return {
+        action: 'block',
+        replyText: `You are being rate limited. Please try again in ${formatRemaining(remainingMs)}.`,
+      };
+    }
+    // Window expired — reset and let the message through to normal evaluation.
+    await resetPenalty(userId);
+    log('INFO', `Rate-limit window expired for ${userId} — penalty count reset to 0`);
+  }
+
+  // Step B — deterministic hard-word guard.
+  if (containsHardWord(userText)) {
+    const updated = await addPenalty(userId, now);
+    log('INFO', `Hard-word penalty issued to ${userId} (count now ${updated.penaltyCount})`);
+    return { action: 'block', replyText: `Please refrain from bad language.${penaltySuffix(updated)}` };
+  }
+
+  // Step C — LLM moderation classifier (text + attachments).
+  const verdict = await classifyMessage(userContent);
+  if (verdict.penalty) {
+    const updated = await addPenalty(userId, now);
+    log('INFO', `Classifier penalty issued to ${userId} [${verdict.category}] (count now ${updated.penaltyCount})`);
+    return {
+      action: 'block',
+      replyText: `That message earned a penalty: ${verdict.reason}${penaltySuffix(updated)}`,
+    };
+  }
+
+  return { action: 'allow' };
+}
 
 export const UNMAPPED_CHANNEL_RESPONSE =
   'Please ask me a question in one of the appropriate modding channels: hpl2, hpl3-soma, hpl3-rebirth and hpl3-bunker.';
@@ -146,6 +282,26 @@ export async function handleChannelMention(message: Message, botId: string): Pro
 
   log('INFO', `User text after stripping mention: "${userText}"`);
 
+  // Extract attachments now so moderation can inspect them before we commit to a thread.
+  const attachmentParts = await extractAttachments(message);
+  const userContent = buildUserContent(userText, attachmentParts);
+  const hasContent =
+    userText.length > 0 || attachmentParts.imageParts.length > 0 || attachmentParts.textParts.length > 0;
+
+  // Moderate BEFORE creating a thread — rate-limited/penalized users get an
+  // in-channel reply and never spawn a throwaway thread or reach the LLM.
+  if (hasContent) {
+    const outcome = await moderateAndMaybePenalize(message.author.id, userText, userContent);
+    if (outcome.action === 'block') {
+      try {
+        await message.reply(withUserMention(message.author.id, outcome.replyText));
+      } catch (err) {
+        log('WARN', `Failed to send moderation reply to message ${message.id}`, err);
+      }
+      return;
+    }
+  }
+
   let thread;
   try {
     thread = await message.startThread({
@@ -168,7 +324,7 @@ export async function handleChannelMention(message: Message, botId: string): Pro
   log('INFO', `Loaded system prompt from ${game.skillDir}/SKILL.md (${systemPrompt.length} chars incl. manifest)`);
 
   // Initialise conversation history for this thread
-  const initialMessages = [{ role: 'user' as const, content: userText as string }];
+  const initialMessages = [{ role: 'user' as const, content: userContent }];
   setSession(thread.id, { gameId: game.gameId, docsRoot: game.docsRoot, messages: initialMessages });
 
   // Typing indicator while Claude thinks
@@ -199,7 +355,22 @@ export async function handleThreadMessage(message: Message): Promise<void> {
   log('INFO', `Thread reply from ${message.author.tag} in tracked thread ${threadId}`);
 
   const session = getSession(threadId)!;
-  appendUserMessage(threadId, message.content);
+  const attachmentParts = await extractAttachments(message);
+  const userContent = buildUserContent(message.content, attachmentParts);
+
+  // Moderate before touching history or the LLM. On block, the offending message
+  // is NOT appended to conversation history (so it can't poison later context).
+  const outcome = await moderateAndMaybePenalize(message.author.id, message.content, userContent);
+  if (outcome.action === 'block') {
+    try {
+      await message.reply(withUserMention(message.author.id, outcome.replyText));
+    } catch (err) {
+      log('WARN', `Failed to send moderation reply in thread ${threadId}`, err);
+    }
+    return;
+  }
+
+  appendUserMessage(threadId, userContent);
 
   const systemPrompt = loadSystemPrompt(skillDirFromGameId(session.gameId), session.docsRoot);
 
