@@ -7,13 +7,16 @@ Use these sources before changing or proposing script code.
 See wiki documentation for scripting API and scripting guides.
 
 Core SOMA api can be found in:
-`hps_api.hps` file in this base folder
-`Wiki/hpl3/SOMA/Scripting/**/`
-`Wiki/hpl3/SOMA/Scripting/**/Scripting Api`
+`hps_api.hps` file in this base folder - high priority
+`/script` folder in this base folder - high priority
+`/maps` folder in this base folder - medium priority
+
+Additional wiki guides can be found int:
+`Wiki/hpl3/SOMA/Scripting/**/` - medium priority
+`Wiki/hpl3/SOMA/Scripting/**/Scripting Api` - low priority
 
 ## important note
 It is important to read the AgnelScript Fundementals Guide and Scripting Guide under wiki/hpl3/scripting
-
 
 ## Game script locations
 
