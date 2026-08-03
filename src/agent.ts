@@ -14,11 +14,15 @@ import { pruneOldToolResults } from './prune.js';
 // plain orchestration model name, NOT a foundation-models "anthropic--" id).
 const MODEL_ID = process.env.AICORE_MODEL ?? 'anthropic--claude-4.6-sonnet';
 const RESOURCE_GROUP = process.env.AICORE_RESOURCE_GROUP ?? 'default';
-const MAX_STEPS = 40;
+const MAX_STEPS = 20;
 
-// Keep the N most recent read_file results at full text; stub older ones to save
-// input tokens (they are re-sent on every step otherwise). See src/prune.ts.
-const KEEP_RECENT_READS = Number(process.env.AICORE_KEEP_RECENT_READS ?? 4);
+// Keep the N most recent read_file/search_files results at full text; stub older
+// ones to save input tokens (they are re-sent on every step otherwise). Kept high
+// enough that the model retains findings across a multi-step research loop —
+// too low and it forgets what it already found and re-searches/re-reads in circles
+// (the model interleaves search + read, so this is consumed ~2 parts per step).
+// See src/prune.ts.
+const KEEP_RECENT_READS = Number(process.env.AICORE_KEEP_RECENT_READS ?? 20);
 
 // How many times to retry the whole call on a 429, honouring x-retry-after.
 const MAX_RATE_LIMIT_RETRIES = 5;
