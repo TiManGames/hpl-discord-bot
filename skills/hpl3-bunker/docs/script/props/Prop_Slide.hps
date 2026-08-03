@@ -1,0 +1,713 @@
+#include "interfaces/Prop_Interface.hps"
+#include "base/Player_Types.hps"
+#include "helpers/helper_components_custom.hps"
+#include "custom/components/ComponentInterfaces_Custom.hps"
+
+class cScrPropSlide : iScrProp, iScrProp_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		mlAutoMoving = 0;
+		
+		mForcePid.SetErrorNum(10);;
+		mForcePid.p = 6;
+		mForcePid.i = 0;
+		mForcePid.d = 0.1f;
+		
+		mbLocked = false;
+		mbJammed = false;
+		
+		mfMaxOpenAmount = 1000.f;
+		mfInteractSoundCount =0;
+		
+		mbInteractConnectionMovementActive = false;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{		
+		mfSlideMaxSpeed = apVars.GetVarFloat("SlideMaxSpeed", 10);
+		mfSlideSlowDownFactor = apVars.GetVarFloat("SlideSlowDownFactor", 1);
+		mfSlideSpeedFactor = apVars.GetVarFloat("SlideSpeedFactor", 1);
+		mfAutoOpenAmount = apVars.GetVarFloat("AutoOpenAmount", 1);
+		
+		mbAutoOpen = apInstanceVars.GetVarBool("AutoOpen", false); 
+		
+		msLockOnSound = apVars.GetVarString("LockOnSound", "");
+		msLockOffSound = apVars.GetVarString("LockOffSound", "");
+		msInteractLockedSound = apVars.GetVarString("InteractLockedSound", "");
+		msInteractJammedSound = apVars.GetVarString("InteractJammedSound", "");
+		msGrabStartSound = apVars.GetVarString("GrabStartSound", "");
+		msGrabEndSound = apVars.GetVarString("GrabEndSound", "");
+		mfSlidePadMultiplier = apVars.GetVarFloat("SlidePadMultiplier",1.0f);
+		mCustomInteractIcon = PlayerTypes_StringToCrossHairState( apVars.GetVarString("CustomInteractIcon", "None"));
+
+		@mpSliderJoint = cPhysics_ToJointSlider(mBaseObj.GetJoint(0));
+		@mpSliderBody = mpSliderJoint.GetChildBody();
+				
+		///////////////////////
+		// Setup joint sounds
+		tString sMoveSound = apVars.GetVarString("MoveSound", "");
+		if (sMoveSound != "")
+		{
+			mpSliderJoint.SetMoveSound(sMoveSound);
+			mpSliderJoint.SetMoveSpeedType(ePhysicsJointSpeed_Linear);
+		}
+		float fMinMoveSoundSpeed = apVars.GetVarFloat("MinMoveSoundSpeed", -1);
+		if (fMinMoveSoundSpeed >= 0)
+		{
+			mpSliderJoint.SetMinMoveSpeed(fMinMoveSoundSpeed);
+		}
+		msOpenSound = apVars.GetVarString("AtMaxSound", "");
+		mfOpenSoundMinSpeed = apVars.GetVarFloat("AtMaxSoundMinSpeed", 0);
+		if (msOpenSound != "")
+			mpSliderJoint.SetMaxLimitSound(msOpenSound, mfOpenSoundMinSpeed);
+		msCloseSound = apVars.GetVarString("AtMinSound", "");
+		mfCloseSoundMinSpeed = apVars.GetVarFloat("AtMinSoundMinSpeed", 0);
+		if (msCloseSound != "")
+			mpSliderJoint.SetMinLimitSound(msCloseSound, mfCloseSoundMinSpeed);
+		
+		///////////////////////
+		//Set up data		
+		mvInitialPosition = mpSliderBody.GetLocalPosition() - mpSliderJoint.GetPinDir() * mpSliderJoint.GetDistance();
+		SetLocked(apInstanceVars.GetVarBool("Locked",false),false);
+		
+		mfMinDistance = apInstanceVars.GetVarFloat("JointMinDistance",-1);
+		mfMaxDistance = apInstanceVars.GetVarFloat("JointMaxDistance",-1);
+		
+		if (mfMinDistance != -1)
+			mpSliderJoint.SetMinDistance(mfMinDistance);
+			
+		if (mfMaxDistance != -1)
+			mpSliderJoint.SetMaxDistance(mfMaxDistance);
+			
+		mfMinDistance = mpSliderJoint.GetMinDistance();
+		mfMaxDistance = mpSliderJoint.GetMaxDistance();
+		
+		float fOpenAmount = apInstanceVars.GetVarFloat("OpenAmount", -1);
+		if(fOpenAmount >= 0) SetOpenAmount(fOpenAmount);
+		
+		//mBaseObj.SetSaveDataIsUpdated(false);
+		
+		/////////////
+		// Wooden Breakable
+		@mpWoodenBreakableComponent = UserComponent_WoodenBreakableComponent_Create(mBaseObj);
+		mpWoodenBreakableComponent.SetMainBody(mBaseObj.GetMainBody());
+		mpWoodenBreakableComponent.SetupAfterLoad(apWorld, apVars, apInstanceVars);
+
+		msOnBreakDeactivateEnts = apInstanceVars.GetVarString("OnBreakDeactivateEnts", "");
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnUpdate(float afTimeStep)
+	{
+		if(mfInteractSoundCount>0)
+			mfInteractSoundCount-=afTimeStep;
+		
+		float fOpenAmount = GetOpenAmount();
+		
+		if(!mbLocked && !mbJammed && fOpenAmount > mfAutoOpenAmount && mpSliderBody.GetMass() > 0.0f && mbAutoOpen)
+		{
+			////////////
+			// Open the door fully
+			mpSliderBody.AddForce(mpSliderJoint.GetPinDir() * afTimeStep * mfSlideMaxSpeed * 512.0f);
+			if(fOpenAmount >= 1.0)
+			{
+				mpSliderBody.SetMass(0.0f);
+				mpSliderBody.SetLinearVelocity(cVector3f(0));
+				mpSliderBody.SetAngularVelocity(cVector3f(0));
+			} 
+		}
+		
+		if (mpSliderBody.GetMass()>0.0f)
+		{
+			if (mlAutoMoving==-1)
+			{
+				float fTargetSpeed = mfSlideMaxSpeed;
+				float fDiff = (fOpenAmount-mfAutoMoveTarget);
+				if (fDiff<0.1f)
+					fTargetSpeed = cMath_Max(mfSlideMaxSpeed*(fDiff/0.1f), 0.025f);
+				
+				if (fOpenAmount>mfAutoMoveTarget)
+				{
+					cVector3f vForce = mForcePid.Output((mpSliderJoint.GetPinDir() * -fTargetSpeed) - mpSliderBody.GetLinearVelocity(), afTimeStep);
+					mpSliderBody.AddForce(vForce);
+				}
+				else
+					mlAutoMoving=0;
+			}
+			else if (mlAutoMoving==1)
+			{
+				float fTargetSpeed = mfSlideMaxSpeed;
+				float fDiff = (mfAutoMoveTarget-fOpenAmount);
+				if (fDiff<0.1f)
+					fTargetSpeed = cMath_Max(mfSlideMaxSpeed*(fDiff/0.1f), 0.025f);
+				
+				if (fOpenAmount<mfAutoMoveTarget)
+				{
+					cVector3f vForce = mForcePid.Output((mpSliderJoint.GetPinDir() * fTargetSpeed) - mpSliderBody.GetLinearVelocity(), afTimeStep);
+					mpSliderBody.AddForce(vForce);
+				}
+				else
+					mlAutoMoving=0;
+			}
+		}
+		
+		float fAmount = GetOpenAmount();
+		if (fAmount<=0.01f)
+			ChangeState(-1, true);
+		else if (fAmount>=1.0f)
+			ChangeState(1, true);
+			
+		UpdateInteractConnection();
+	}
+	
+	//------------------------------------------------------------
+	
+	void ChangeState(int alState, bool abEffects, bool abChangeConnectionState = true)
+	{
+		if(mlCurrentState == alState) return;
+		
+		mBaseObj.SetSaveDataIsUpdated(true);
+
+		mlCurrentState = alState;
+		
+		/////////////////
+		//Max
+		if(mlCurrentState == 1)
+		{
+			if (abChangeConnectionState) mBaseObj.ChangeConnectionState(1);
+		}
+		/////////////////
+		//Min
+		else if(mlCurrentState == -1)
+		{
+			if (abChangeConnectionState) mBaseObj.ChangeConnectionState(-1);
+		}
+		/////////////////
+		//Middle
+		else if(mlCurrentState == 0)
+		{
+			if (abChangeConnectionState) mBaseObj.ChangeConnectionState(0);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateInteractConnection()
+	{
+		///////////////////////////
+		// Update leader
+		if (mbInteractConnectionMovementActive == false)
+			mBaseObj.UpdateInteractConnectionLeader();
+			
+		mbInteractConnectionMovementActive = false;		
+		
+		///////////////////////////
+		// Broadcast state
+		float fT = GetOpenAmount();
+		mBaseObj.ChangeInteractConnectionState(fT);
+	}
+	
+	//------------------------------------------------------------
+	
+	/*void OnPostUpdate(float afTimeStep)
+	{
+	}*/
+	//------------------------------------------------------------
+	
+	void ResetProperties()
+	{
+		mpWoodenBreakableComponent.ResetProperties();
+	}
+	
+	//------------------------------------------------------------
+	
+	void BeforeEntityDestruction()
+	{
+		mpWoodenBreakableComponent.BeforeEntityDestruction();
+	}
+		
+	//------------------------------------------------------------
+	
+	void OnStartMove()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnSetActive(bool abX)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void GiveDamage(iPhysicsBody@ apBodyHit, const cVector3f&in avOrigin, const cVector3f&in avHitPos, cLuxDamageProperties@ apDamageProps)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnHealthChange()
+	{
+		mpWoodenBreakableComponent.OnHealthChange();
+
+		///////////////////////
+		// Deactiavte entities
+		if (mBaseObj.GetHealth() <= 0.f && 
+			msOnBreakDeactivateEnts != "")
+		{
+			array<tString> vEntNames;
+			cString_GetStringVec(msOnBreakDeactivateEnts, vEntNames, ", ");
+			
+			for (int i=0; i<vEntNames.size(); i++)
+			{
+				Entity_SetActive(vEntNames[i], false);
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnConnectionStateChange(iLuxEntity@ apEntity,int alState)
+	{
+		AutoMoveTo(alState==1 ? 1 : 0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnInteractConnectionStateChange(cLuxProp@ apProp, float afT)
+	{
+		if (mBaseObj.IsInteractedWith())
+			return;
+			
+		mbInteractConnectionMovementActive = true;
+		
+		mpSliderBody.SetLinearVelocity(0.f);
+		mpSliderBody.SetAngularVelocity(0.f);
+		
+		SetOpenAmount(afT);
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnUpdateAutoSleep()
+	{
+		if (mlAutoMoving != 0)
+			return false;
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	//NOTE: This is only useable if SetScriptCollisionCallbackActive is true
+	void OnPhysicsCollision(iPhysicsBody @apBody, iPhysicsBody @apCollideBody, cPhysicsContactData&in apContactData)
+	{
+		mpWoodenBreakableComponent.OnPhysicsCollision(apBody, apCollideBody, apContactData);
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INTERACT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	bool CanInteract(int alType, iPhysicsBody@ apBody)
+	{
+		if(apBody.GetMass()==0) return false;
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+		
+	bool OnInteract(int alType, iPhysicsBody@ apBody, const cVector3f &in avFocusPos, const tString&in asData)
+	{
+		if (mfInteractSoundCount <= 0.f)
+		{
+			if (mbLocked)
+			{
+				mBaseObj.PlaySound("InteractLocked", msInteractLockedSound, true, true);
+				mfInteractSoundCount = 0.5f;
+			}
+			else if (mbJammed)	
+			{
+				mBaseObj.PlaySound("InteractJammed", msInteractJammedSound, true, true);
+				mfInteractSoundCount = 0.5f;
+			}
+		}
+		
+		///////////////////////////////
+		// First time you interact, enable all bodies that are inside the BV in case this is drawer.
+		if(mbFirstInteract)
+		{
+			mbFirstInteract = false;
+			cBoundingVolume @pBV = apBody.GetBoundingVolume();
+			array<iPhysicsBody@> vBodies;
+			
+			mBaseObj.GetMap().GetPhysicsWorld().GetBodiesInAABB(pBV.GetMin(), pBV.GetMax(), true, false,vBodies);
+			
+			for(int i=0; i<vBodies.size();++i)
+			{
+				iPhysicsBody @pBody = vBodies[i];
+				
+				if(pBody.GetFrozen() && pBody.GetMass()>0 && pBody.IsActive())
+				{
+					pBody.Enable();
+				}
+			}
+		}
+		
+		///////////////////////////////
+		//Set up the slide state
+		cScript_SetGlobalArgID(0, mBaseObj.GetID()); //Object ID
+		cScript_SetGlobalArgInt(1, apBody.GetUniqueID()); //Body Id
+		cScript_SetGlobalArgVector3f(2, avFocusPos);//The grab postion
+		
+		cScript_SetGlobalArgFloat(3, mfSlideMaxSpeed);
+		cScript_SetGlobalArgFloat(4, mfSlideSlowDownFactor);
+		cScript_SetGlobalArgFloat(5, mfSlideSpeedFactor);
+		cScript_SetGlobalArgBool(6, mbLocked);
+		cScript_SetGlobalArgString(7, msInteractLockedSound);
+		cScript_SetGlobalArgBool(8, mbJammed);
+		cScript_SetGlobalArgString(9, msInteractJammedSound);
+		cScript_SetGlobalArgString(10, msGrabStartSound);
+		cScript_SetGlobalArgString(11, msGrabEndSound);
+		cScript_SetGlobalArgFloat(12, mfSlidePadMultiplier);
+		
+		cScript_RunGlobalFunc("State_Interact_Slide", "", "SetupSlide");
+		
+		///////////////////////////////
+		//Change the player state
+		cLux_GetPlayer().ChangeState(ePlayerState_Slide);	
+		
+		///////////////////////////////
+		// Update interact connections
+		mbInteractConnectionMovementActive = false;
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	int GetInteractIconId(int alType, iPhysicsBody@ apBody)
+	{
+		if(mCustomInteractIcon != eCrossHairState_None)
+		{
+			return mCustomInteractIcon;
+		}
+		return eCrossHairState_PullOut;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// SLIDER ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void AutoMoveTo(float afAmount)
+	{
+		mBaseObj.SetSaveDataIsUpdated(true);
+		
+		float fOpenAmount = GetOpenAmount();
+		if (fOpenAmount>afAmount)
+			mlAutoMoving=-1;
+		else if (fOpenAmount<afAmount)
+			mlAutoMoving=1;
+		mfAutoMoveTarget = afAmount;
+		mBaseObj.WakeUp();
+		mForcePid.Reset();
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetAutoMove()
+	{
+		mlAutoMoving = 0;
+		mForcePid.Reset();
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetSlideAmount()
+	{
+		SetOpenAmount(cScript_GetGlobalArgFloat(0));
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_AutoMoveTo()
+	{
+		AutoMoveTo(cScript_GetGlobalArgFloat(0));
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetOpenAmount(float afX)
+	{	
+		if (afX > mfMaxOpenAmount) return;
+		
+		mBaseObj.SetSaveDataIsUpdated(true);
+		
+		cVector3f vPinDir = mpSliderJoint.GetPinDir();
+		cVector3f vMinPos = mvInitialPosition + vPinDir * mpSliderJoint.GetMinDistance();
+		cVector3f vMaxPos = mvInitialPosition + vPinDir * mpSliderJoint.GetMaxDistance();
+		
+		mpSliderBody.SetPosition(vMinPos *(1-afX) + vMaxPos*afX);
+		
+		mpSliderBody.AddForce(cVector3f_One*mpSliderBody.GetMass()); //Updates the joints
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetSlideAmount()
+	{
+		float fResult = GetOpenAmount();
+		cScript_SetGlobalReturnFloat(fResult);
+	}
+	
+	//------------------------------------------------------------
+	
+	float GetOpenAmount()
+	{
+		return (mpSliderJoint.GetDistance() - mfMinDistance) / (mfMaxDistance - mfMinDistance);
+	}	
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetSlideVel()
+	{
+		cVector3f vResult = GetSlideVel();
+		cScript_SetGlobalReturnVector3f(vResult);
+	}
+	
+	//------------------------------------------------------------
+	
+	cVector3f GetSlideVel()
+	{
+		cVector3f vel = mpSliderJoint.GetVelocity()*mpSliderJoint.GetPinDir();
+		return vel;
+	}
+
+	//------------------------------------------------------------
+	
+	void _Global_SetLocked()
+	{
+		SetLocked(cScript_GetGlobalArgBool(0), cScript_GetGlobalArgBool(1));
+	}
+
+	//------------------------------------------------------------
+
+	void SetLocked(bool abLocked, bool abEffects)
+	{
+		if(mbLocked == abLocked) return;
+		
+		mBaseObj.SetSaveDataIsUpdated(true);
+
+		mbLocked = abLocked;
+		
+		if(mbLocked)
+		{
+			// Remove Min/Max joint sounds until unlocked
+			if (msOpenSound != "") mpSliderJoint.SetMaxLimitSound("", 0);
+			if (msCloseSound != "") mpSliderJoint.SetMinLimitSound("", 0);
+			
+			mpSliderJoint.SetMaxDistance(0.0015f);
+
+			//Add force to body so that the door really closes.
+			mpSliderBody.AddForce(cVector3f_One);
+		}
+		else
+		{
+			if (msOpenSound != "") mpSliderJoint.SetMaxLimitSound(msOpenSound, mfOpenSoundMinSpeed);
+			if (msCloseSound != "") mpSliderJoint.SetMinLimitSound(msCloseSound, mfCloseSoundMinSpeed);
+			
+			mpSliderJoint.SetMaxDistance(mfMaxDistance);
+		}
+
+		if(abEffects)
+		{
+			if(mbLocked)mBaseObj.PlaySound("LockedOn",msLockOnSound,true, true);
+			else		mBaseObj.PlaySound("LockedOff",msLockOffSound,true, true);
+		}
+	}
+
+	//------------------------------------------------------------
+
+	void _Global_GetLocked()
+	{
+		cScript_SetGlobalReturnBool(mbLocked);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetJammed()
+	{
+		SetJammed(cScript_GetGlobalArgBool(0));
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetJammed(bool abJammed)
+	{
+		if (mbJammed == abJammed) return;
+		
+		mBaseObj.SetSaveDataIsUpdated(true);
+		mbJammed = abJammed;		
+		
+		if (mbJammed)
+		{
+			if (msOpenSound != "")	mpSliderJoint.SetMaxLimitSound("", 0);
+			if (msCloseSound != "") mpSliderJoint.SetMinLimitSound("", 0);
+			
+			float fOpenAmount = GetOpenAmount();
+			mpSliderJoint.SetMinDistance(mpSliderJoint.GetDistance() - 0.01f);
+			mpSliderJoint.SetMaxDistance(mpSliderJoint.GetDistance() + 0.01f);
+		}
+		else
+		{
+			if (msOpenSound != "")	mpSliderJoint.SetMaxLimitSound(msOpenSound, mfOpenSoundMinSpeed);
+			if (msCloseSound != "") mpSliderJoint.SetMinLimitSound(msCloseSound, mfCloseSoundMinSpeed);
+			
+			mpSliderJoint.SetMinDistance(mfMinDistance);
+			mpSliderJoint.SetMaxDistance(mfMaxDistance);
+		}
+		
+		if (mBaseObj.IsInteractedWith())
+		{
+			cScript_SetGlobalArgBool(0, mbJammed);
+			cScript_SetGlobalArgString(1, msInteractJammedSound);
+			cScript_RunGlobalFunc("State_Interact_Slide", "", "SetJammed");
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetJammed()
+	{
+		cScript_SetGlobalReturnBool(mbJammed);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetMaxOpenAmount()
+	{
+		mfMaxOpenAmount = cScript_GetGlobalArgFloat(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetSlideMaxSpeed()
+	{
+		mfSlideMaxSpeed = cScript_GetGlobalArgFloat(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// SLIDER SPECIFIC UPDATES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	[nosave] iPhysicsJointSlider@ mpSliderJoint;
+	[nosave] iPhysicsBody@ mpSliderBody;
+	[nosave] cPidControllerVec3 mForcePid;
+	
+	//------------------------------------------------------------
+	
+	[nosave] float mfMinDistance;
+    [nosave] float mfMaxDistance;
+	
+	float mfSlideMaxSpeed;
+	[nosave] float mfSlideSlowDownFactor;
+	[nosave] float mfSlideSpeedFactor;
+	[nosave] float mfAutoOpenAmount;
+	[nosave] bool mbAutoOpen;
+	[nosave] tString msLockOnSound;
+	[nosave] tString msLockOffSound;
+	[nosave] tString msInteractLockedSound;
+	[nosave] tString msInteractJammedSound;
+	[nosave] tString msOpenSound;
+	[nosave] float mfOpenSoundMinSpeed;
+	[nosave] tString msCloseSound;
+	[nosave] float mfCloseSoundMinSpeed;
+	[nosave] tString msGrabStartSound;
+	[nosave] tString msGrabEndSound;
+	[nosave] float mfSlidePadMultiplier;
+	[nosave] eCrossHairState mCustomInteractIcon;
+
+	cVector3f mvInitialPosition;
+
+	//------------------------------------------------------------
+	
+	int mlAutoMoving;
+	float mfAutoMoveTarget;
+	bool mbLocked;
+	bool mbJammed;
+	int mlCurrentState = 0;
+	
+	bool mbFirstInteract=true;
+	
+	float mfMaxOpenAmount;
+	float mfInteractSoundCount;
+	
+	bool mbInteractConnectionMovementActive;
+	
+	[volatile] iScrWoodenBreakableComponent_Interface@ mpWoodenBreakableComponent = null;
+	[nosave] tString msOnBreakDeactivateEnts;
+		
+	//------------------------------------------------------------		
+}	

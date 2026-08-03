@@ -1,0 +1,1329 @@
+#include "interfaces/PlayerState_Interface.hps"
+#include "base/InputHandler_Types.hps"
+#include "player/Player_Types.hps"
+
+
+#include "helpers/helper_player.hps"
+#include "helpers/helper_player_custom.hps"
+#include "helpers/helper_modules.hps"
+#include "custom/helpers/helper_items.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+
+/////////////////////////////////////////
+// SETTINGS
+/////////////////////////////////////////
+
+//------------------------------------------------------------
+
+float gfUpSpeedMul = 0.8f;
+float gfDownSpeedMul = 0.6f;
+float gfRotatationFadeFraction=0.5;
+float gfStartAttachAnimationFraction = 0.45;
+float gfLadderRungDistance=0.5;
+
+cVector2f gvMaxHeadLimits = cVector2f(cMath_ToRad(35),cMath_ToRad(79));
+cVector2f gvMinHeadLimits = cVector2f(cMath_ToRad(-35),cMath_ToRad(-5));
+
+//------------------------------------------------------------
+
+class cScrPlayerState_Ladder : iScrPlayerState, iScrPlayerState_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnAttachBodyToStickyArea()
+	{
+		//Do nothing!
+	}
+	
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		m_idArea = tID_Invalid;
+	
+		mlState =0;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// USER SETTINGS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void LoadUserConfig()
+	{
+	
+	}
+	void SaveUserConfig()
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ENTER MAP
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+	
+	}
+	void OnMapLeave(cLuxMap @apMap)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void CreateWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	void DestroyWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupLadder()
+	{
+		/////////////////////////////////////
+		// Load the data
+		m_idArea= cScript_GetGlobalArgID(0);
+		msLadder_Material = cScript_GetGlobalArgString(1);
+		
+		m_idExitBottomArea = cScript_GetGlobalArgID(2);
+		mbExitBottomCrouch = cScript_GetGlobalArgBool(3);
+		m_idExitTopArea = cScript_GetGlobalArgID(4);
+		mbExitTopCrouch = cScript_GetGlobalArgBool(5);
+		msExitCallback = cScript_GetGlobalArgString(6);
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnEnterState(int alPrevStateId)
+	{
+		/////////////////////////////////////
+		// Get data
+		iCharacterBody@ pCharBody = cLux_GetPlayer().GetCharacterBody();
+		
+		/////////////////////////////////////
+		// Set up player
+		cLux_GetPlayer().ChangeMoveState(eMoveState_Normal);
+		pCharBody.SetGravityActive(false);
+		pCharBody.SetTestCollision(false);
+		pCharBody.SetPhysicsBodyActive(false);
+		pCharBody.StopMovement();
+		pCharBody.ResetClimbing();
+		
+		Player_SetDisableCrawling(true);
+		
+		Player_SetCrouching(false);
+		Player_CancelJump();
+		
+		///////////////////////////////////////
+		// Set up variables
+		mlState =0;
+		mfInputMoveMul =0;
+		mfSkipSoundCount=0;
+		mlCurrentClimbAnim=2;
+		mlCurrentArmMoving =-1;
+		mbPlayedAttachAnim=false;
+		mbPlayingMoveAnim=false;
+		mfLastMovementMul=0;
+		mbBlockInputUntilRung=false;
+		mbExiting=false;
+		mfPlayPlaceSoundCount=0;
+		mfPlayLiftSoundCount=0;
+		mbExitingJump=false;
+		mbExitingTop=false;
+		mfIgnoreUpInputCount=0;
+		mbIsClimbing=false;
+		
+		int lPregStage = Pregnancy_GetStage();
+		switch (lPregStage)
+		{
+			case ePregStage_Stage2:				mfPregMul = 0.8f;	break;
+			case ePregStage_Stage3: 			mfPregMul = 0.5f;	break;
+			case ePregStage_Born: 				mfPregMul = 0.5f;	break;
+			case ePregStage_BornRecovered: 		mfPregMul = 0.8f;	break;
+			default:							mfPregMul = 1.f;	break;
+		}
+		
+		iPhysicsBody@ pBody = cLux_ID_Area(m_idArea).GetAreaBody();
+		float fMaxY = pBody.GetWorldPosition().y + pBody.GetShape().GetSize().y/2.0f;
+		float fMinY = pBody.GetWorldPosition().y - pBody.GetShape().GetSize().y/2.0f;
+		
+		cMatrixf mtxBodyInv = cMath_MatrixInverse(pBody.GetLocalMatrix());
+		cVector3f vForward = mtxBodyInv.GetForward();
+		
+		mfPlayerStartY = cLux_GetPlayer().GetCharacterBody().GetPosition().y;
+		cLuxArea@ area = cLux_ID_Area(m_idArea);
+		area.SetVarBool("TriggeredMediumClimbEvent",false);
+		area.SetVarBool("TriggeredLongClimbEvent",false);
+		
+		/////////////////////////////////////		
+		//Check if at top
+		
+		bool bAtTop = mfPlayerStartY > fMaxY;
+
+		/////////////////////////////////////
+		//Get the goal position and then add used to get there
+		mvFadePosStart = cLux_GetPlayer().GetCharacterBody().GetPosition();
+		mvFadePosEnd = GetStartPosition(vForward, fMinY, fMaxY);
+		
+		/////////////////////////////////////
+		//Check so goal position is OK!
+		int lCheckCount=0;
+		bool bFits=false;
+		cVector3f vCheckPushBack;
+		for(int i=0; i<3; ++i)
+		{
+			if(pCharBody.CheckCharacterFits(mvFadePosEnd, false, 2,vCheckPushBack))
+			{
+				bFits = true;
+				break;
+			}
+			if(bAtTop)
+				mvFadePosEnd.y -= gfLadderRungDistance;
+			else
+				mvFadePosEnd.y += gfLadderRungDistance;
+		}
+		if(bFits==false)
+		{
+			if(Player_GetUnderwater())
+				cLux_AddTodoMessage("Sound: Cannot climb ladder sound UW");
+			else
+				cLux_AddTodoMessage("Sound: Cannot climb ladder sound air");
+			cLux_GetPlayer().ChangeState(ePlayerState_Normal);
+			return;
+		}
+		
+		/////////////////////////////////////
+		//Variable setup
+		mfGoalYPosition = mvFadePosEnd.y;
+		mvCharPosition = cLux_GetPlayer().GetCharacterBody().GetPosition();
+		
+		float fHeight = GetCurrentHeight(mvFadePosEnd);
+		mlAnimStartHandMul = GetAnimationSide(fHeight);
+		
+		/////////////////////////////////////
+		//Set up the rotation
+		mvFadeRotStart = cVector3f(cLux_GetPlayer().GetCamera().GetPitch(), cLux_GetPlayer().GetCamera().GetYaw(),0);
+		mvFadeRotEnd = cVector3f(0,GetRotation(vForward).y,0);
+		
+		/////////////////////////////////////
+		//Get the goal rotation and the add to get there.
+		m_mtxInvStart = mtxBodyInv;
+		
+		/////////////////////////////////////
+		// Play attach sound
+		if(bAtTop)
+			PlaySound("attach_top");
+		else
+			PlaySound("attach_bottom");
+		
+		/////////////////////////////////////		
+		//Attach time
+		
+		float fTime = bAtTop ? 1.6f/mfPregMul : 1.25f/mfPregMul; //preg
+		
+		mfTimeCountAdd = 1.0f /fTime;
+		mfTimeCount =0;
+		
+		cLux_ID_Area(m_idArea).SetIsInteractedWith(true);
+		
+		iScrPlayerBodyHandler_Interface @pBodyHandler = cast<iScrPlayerBodyHandler_Interface>(cLux_GetUserModuleFromID(eModuleType_PlayerBodyHandler));
+		if (pBodyHandler.IsActive())
+		{
+			pBodyHandler.SetLadderClimb(true, mvFadeRotEnd.y);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnLeaveState(int alNextStateId)
+	{
+		cLux_GetPlayer().GetCharacterBody().SetTestCollision(true);
+		
+		//////////////////////////////
+		//Reset variables
+		// Need to so pointer exists! (as this might be on leave!)
+		if(cLux_GetPlayer().GetCharacterBody() !is null)
+		{
+			cLux_GetPlayer().GetCharacterBody().SetGravityActive(true);
+			cLux_GetPlayer().GetCharacterBody().SetTestCollision(true);
+			cLux_GetPlayer().GetCharacterBody().SetPhysicsBodyActive(true);
+		}
+
+		Player_ResetCameraLimits();
+		
+		cLux_GetPlayer().FadeCameraRollTo(ePlayerRoll_Climb, 0, 3, 5);
+		
+		if(mbExiting && mbExitingTop)
+		{
+			PlayerHands_SetActive(false);
+		}
+		
+		if(mbExiting==false)
+		{
+			PlayerHands_SetUseCustomPosition(false);
+			PlayerHands_SetUseCustomRotation(false);
+			
+			float fExitHeight = GetCurrentHeight(cLux_GetPlayer().GetCharacterBody().GetPosition());
+			if(fExitHeight<0) fExitHeight=0;
+			
+			int lAnim = GetAnimationSide(fExitHeight)*mlAnimStartHandMul*-1;
+			tString sAnim = lAnim<0 ? "climb_left_detach_bottom" : "climb_right_detach_bottom";
+			if (PlayerBody_IsActive())
+			{
+				PlayerBody_PlayAnimation(sAnim, ePlayerBodyAnimationLayer_FullBody, false, false, true, 0.2, 1.6f);
+			}	
+			else
+			{
+				PlayerHands_PlayAnimation(sAnim, false, true, 0.2f, "", true, 1.6f);
+			}
+		}
+		
+		cLux_ID_Area(m_idArea).SetIsInteractedWith(false);
+		
+		Player_SetDisableCrawling(false);
+		Player_SetCanUseLightSource(true);
+		
+		iScrPlayerBodyHandler_Interface @pBodyHandler = cast<iScrPlayerBodyHandler_Interface>(cLux_GetUserModuleFromID(eModuleType_PlayerBodyHandler));
+		if (pBodyHandler.IsActive())
+			pBodyHandler.SetLadderClimb(false, 0);
+			
+		tString sMethodName = "void " + msExitCallback + "(int alState)";
+		cLuxMap@ pMap = cLux_GetCurrentMap();
+		
+		if (pMap.ScriptMethodExists(sMethodName) && pMap.ScriptPrepare(sMethodName))
+		{
+			
+			tID idExitArea = mbExitingTop ? m_idExitTopArea : m_idExitBottomArea;
+			tString sExitNode;
+			
+			int lState = (idExitArea == m_idExitTopArea) ? 1 : -1;
+				
+            pMap.SetArgInt(0, lState);
+            pMap.ScriptExecute();
+		}
+	}
+		
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep)
+	{
+		iCharacterBody@ pCharBody = cLux_GetPlayer().GetCharacterBody();
+		cCamera@ pCam = cLux_GetPlayer().GetCamera();
+		iPhysicsBody@ pBody = cLux_ID_Area(m_idArea).GetAreaBody();
+		
+		//////////////////////////////////
+		// Set up variables
+		float fHeight = GetCurrentHeight(pCharBody.GetPosition());
+		const float fSoundSpacing = 0.5;
+		
+		float fMaxHeight = pBody.GetShape().GetSize().y - (pCharBody.GetSize().y - 0.01f);
+		
+		float fMoveRollAngle = cMath_Sin( (fHeight / fSoundSpacing)*cMath_Pi)*1.05f;
+				
+		//The difference from when it started
+		cMatrixf mtxAreaStartDiff = cMath_MatrixMul(m_mtxInvStart, pBody.GetLocalMatrix());
+		
+		mbIsClimbing = false;
+		
+		//////////////////////////////////
+		// Remove used liquid areas if above them (needed since coll on char body is disabled)
+		cLuxPlayer@ pPlayer = cLux_GetPlayer();
+		for (int i = 0; i < pPlayer.GetUsedLiquidAreaNum(); i++)
+		{
+			cLuxLiquidArea@ pLiquidArea = cLux_ID_LiquidArea(pPlayer.GetUsedLiquidAreaID(i));
+			float fFeetY = pBody.GetBoundingVolume().GetMin().y + fHeight;
+			float fLiquidY = pLiquidArea.GetAreaBody().GetBoundingVolume().GetMax().y;
+			
+			if (fFeetY > fLiquidY)
+				pPlayer.RemoveUsedLiquidArea(pLiquidArea);
+		}	
+		
+		//////////////////////////////////
+		// Attach To Ladder
+		if(mlState ==0)
+		{
+			mfTimeCount += afTimeStep*mfTimeCountAdd;
+			if(mfTimeCount>=1) mfTimeCount=1;
+			
+			////////////////////////////////////
+			// Set position
+			float fPosT =cMath_Easing(eEasing_CubicOut, mfTimeCount);
+			mvCharPosition = mvFadePosStart*(1-fPosT) + mvFadePosEnd*fPosT;
+			
+			cVector3f vFinalPos = cMath_MatrixMul(mtxAreaStartDiff, mvCharPosition);
+			pCharBody.SetPosition(vFinalPos, true);
+			
+			////////////////////////////////////
+			// Set roll
+			float fRollT = cMath_Easing(eEasing_QuadInOut, mfTimeCount);
+			float fAngle =	cMath_Sin(fRollT* (cMath_PiMul2) )*9*(1-fRollT) +
+							fMoveRollAngle*fRollT;
+			cLux_GetPlayer().SetCameraRoll(ePlayerRoll_Climb,  cMath_ToRad(fAngle));
+
+			////////////////////////////////////
+			// Set rotation
+			if(mfTimeCount<gfRotatationFadeFraction)
+			{
+				//////////////////////////
+				// Update values
+				float fRotT = cMath_Easing(eEasing_QuadInOut, mfTimeCount/gfRotatationFadeFraction);
+				
+				float fRotTotalX = cMath_GetAngleDistance(mvFadeRotStart.x, mvFadeRotEnd.x, cMath_PiMul2);
+				float fRotTotalY = cMath_GetAngleDistance(mvFadeRotStart.y, mvFadeRotEnd.y, cMath_PiMul2);
+				
+				cVector3f vRot;
+				vRot.x = mvFadeRotStart.x + fRotTotalX*fRotT;
+				vRot.y = mvFadeRotStart.y + fRotTotalY*fRotT;
+				vRot.z =0;
+				
+				cVector3f vFinalRot = cMath_MatrixMul(mtxAreaStartDiff, vRot);
+				
+				pCam.SetPitch(vFinalRot.x);
+				pCharBody.SetYaw(vFinalRot.y);
+				
+				//////////////////////////
+				// Rotation done
+				if(mfTimeCount + afTimeStep*mfTimeCountAdd >= gfRotatationFadeFraction)
+				{
+					SetupHeadTurnLimits();
+				}
+			}
+			
+			////////////////////////////////////
+			// Begin attach animation
+			if(mbPlayedAttachAnim==false)
+			{
+				Player_SetCrouching(false);
+				
+				Item_PutAway(eItemHandlerHand_Left);
+				Item_PutAway(eItemHandlerHand_Right);
+				Player_SetCanUseLightSource(false);
+				
+				float fDist2DToLadder = cMath_Vector2DistXZ(mvFadePosEnd, mvCharPosition);
+				float fHeightDist = mvFadePosEnd.y - mvCharPosition.y;
+				//cLux_AddDebugMessage("fHeightDist: "+fHeightDist + " fDist2DToLadder: "+fDist2DToLadder);
+				if(fHeightDist <0.15f && fDist2DToLadder <0.15f && mfTimeCount>gfStartAttachAnimationFraction)
+				{
+					mbPlayedAttachAnim = true;
+					
+					if (PlayerBody_IsActive())
+					{
+						PlayerBody_PlayAnimation("climb_attach", ePlayerBodyAnimationLayer_FullBody, false, false, false, 0.3, 1);
+					}
+					else
+					{
+						PlayerHands_SetActive(true);
+						PlayerHands_SetUseCustomRotation(true);
+						PlayerHands_SetCustomRotation(cVector3f(0,mvFadeRotEnd.y,0));
+						PlayerHands_SetUseCustomPosition(true);
+						PlayerHands_SetCustomPosition(mvFadePosEnd + cVector3f(0, pCharBody.GetSize().y/2,0)+ cLux_GetPlayer().GetBaseCameraPosAdd(), true);
+						PlayerHands_PlayAnimation("climb_attach", false, true, 0, "", false, 1, -1);
+					}
+				}
+			}
+			
+			////////////////////////////////////
+			// Check if done with this state
+			if(mfTimeCount>=1)
+			{
+				Player_SetCrouching(false);
+				
+				mvPreviousPos = pBody.GetLocalPosition();
+				mvPreviousForward = cMath_MatrixInverse(pBody.GetLocalMatrix()).GetForward();
+				
+				mfPrevHeight = GetCurrentHeight(pCharBody.GetPosition());
+								
+				mlState++;
+			}
+		}
+		//////////////////////////////////
+		// Move On Ladder
+		else if(mlState == 1)
+		{
+			mvCharPosition = pCharBody.GetPosition();
+						
+			//////////////////////////
+			//Get movement
+			if(mbBlockInputUntilRung || mbExiting || (mfIgnoreUpInputCount>0 && mfInputMoveMul>0))
+				mfInputMoveMul=0;
+				
+			float fUsedMoveMul=mfInputMoveMul;
+			bool bReachedRung=false;
+			
+			if(mfInputMoveMul!=0)
+				mfLastMovementMul = mfInputMoveMul;
+			
+			if(mfGoalYPosition != mvCharPosition.y)
+				fUsedMoveMul = mfLastMovementMul;
+				
+			if(mfIgnoreUpInputCount>0)
+				mfIgnoreUpInputCount-=afTimeStep;
+			if(mfInputMoveMul<0)
+				mfIgnoreUpInputCount=0;
+				
+				
+				
+			////////////////////////////////
+			// Update position
+			cVector3f vPosDiff = pBody.GetLocalPosition() - mvPreviousPos;
+			mvPreviousPos = pBody.GetLocalPosition();
+			
+			///////////////////////////////////
+			// Update rotation			
+			cVector3f vForward = cMath_MatrixInverse(pBody.GetLocalMatrix()).GetForward();
+			float fRotA = GetRotation(mvPreviousForward).y;
+			float fRotB = GetRotation(vForward).y;
+			float fYAdd = cMath_GetAngleDistance(fRotA, fRotB,cMath_PiMul2);
+			
+			pCharBody.AddYaw(fYAdd);
+			pCam.SetYaw(pCharBody.GetYaw());
+			
+			float fYmax = pCam.GetYawMaxLimit() + fYAdd;
+			float fYmin = pCam.GetYawMinLimit() + fYAdd;
+			
+			pCam.SetYawLimits(fYmin, fYmax);
+			
+			mvPreviousForward = vForward;
+			
+			/////////////////////////////////
+			//Move
+			if(fUsedMoveMul != 0)
+			{
+				float fSpeedMul = fUsedMoveMul>0 ? gfUpSpeedMul : gfDownSpeedMul;
+				fSpeedMul*=mfMoveMul;
+				
+				float fExertionMul = Player_GetExertionMul();
+				mvCharPosition.y += fUsedMoveMul*afTimeStep*fSpeedMul*mfPregMul*fExertionMul;
+			}
+			
+			/////////////////////////////////
+			//Check collision
+			cVector3f vPushBack=cVector3f(0);
+			if(pCharBody.CheckCharacterFits(mvCharPosition, false, 2, vPushBack)==false)
+			{
+				//cLux_AddDebugMessage("Collide!");
+				//cLux_AddDebugMessage("mfGoalYPosition "+mfGoalYPosition+ "mvCharPosition.y "+mvCharPosition.y);
+					
+				if(fUsedMoveMul>0 || vPushBack.y<0)
+				{
+					mfLastMovementMul= -1;
+					CalculateGoalPosition();
+					
+					mfInputMoveMul=0;
+				
+					mbBlockInputUntilRung=true;
+				}
+				else
+				{
+					ExitLadder(false, false);
+					m_idExitBottomArea = tID_Invalid;
+				}
+				
+				if(mbExiting==false)
+				return;
+			}
+			
+			////////////////////////
+			// Check if movement should stop
+			if(mfInputMoveMul==0)
+			{
+				if(	(fUsedMoveMul>0 && mfGoalYPosition <= mvCharPosition.y) ||
+					(fUsedMoveMul<0 && mfGoalYPosition >= mvCharPosition.y) ||
+					(mfGoalYPosition == mvCharPosition.y && mbExiting) ||
+					(mbExitingJump && mbExitingTop==false) ||
+					(mbExitingJump && mbExiting))
+				{
+					fUsedMoveMul=0;
+					mvCharPosition.y = mfGoalYPosition;
+					mbBlockInputUntilRung = false;
+					bReachedRung =true;
+					
+					////////////////////////
+					//Exit!
+					if(mbExiting)
+					{
+						tID idExitArea = mbExitingTop ? m_idExitTopArea : m_idExitBottomArea;
+						
+						PlayerHands_SetCustomPosition(pCharBody.GetPosition() + cVector3f(0, pCharBody.GetSize().y/2,0)+ cLux_GetPlayer().GetBaseCameraPosAdd(), true);
+						
+						float fExitHeight = fHeight;
+						if(fExitHeight<0) fExitHeight=0;
+						
+						int lAnim = GetAnimationSide(fExitHeight)*mlAnimStartHandMul*-1;
+							
+						if(mbExitingTop)
+						{
+							PlaySound("detach_top");
+							tString sAnim = lAnim<0 ? "climb_left_detach_top" : "climb_right_detach_top";
+							msDetachAnimation = sAnim;
+							if (PlayerBody_IsActive())
+							{
+								PlayerBody_PlayAnimation(sAnim, ePlayerBodyAnimationLayer_FullBody, false, false, false, 0.2, 1*mfPregMul);
+							}
+							else
+							{
+								PlayerHands_PlayAnimation(sAnim, false, true, 0.2f, "", true, 1*mfPregMul);
+							}
+							
+							/////// Trigger event
+							{
+								float yDist = mvCharPosition.y-mfPlayerStartY;
+								cLuxArea@ area = cLux_ID_Area(m_idArea);
+								if (yDist>7.0f)
+								{
+									ModEvent_Trigger(eModEvent_Climb_Long_Done);
+								} 
+								else if (yDist>2.5f)
+								{
+									ModEvent_Trigger(eModEvent_Climb_Medium_Done);		
+								}
+							}
+						}
+						else if(mbExitingJump || idExitArea == tID_Invalid)
+						{
+							PlaySound("detach_jump");
+							
+							PlayerHands_SetUseCustomPosition(false);
+							PlayerHands_SetUseCustomRotation(false);
+							
+							tString sAnim = lAnim<0 ? "climb_left_detach_bottom" : "climb_right_detach_bottom";
+							if (PlayerBody_IsActive())
+							{
+								PlayerBody_PlayAnimation(sAnim, ePlayerBodyAnimationLayer_FullBody, false, false, false, 0.2, 1*mfPregMul);
+							}
+							else
+							{
+								PlayerHands_PlayAnimation(sAnim, false, true, 0.2f, "", true, 1*mfPregMul);
+							}
+						}
+						else
+						{
+							PlaySound("detach_bottom");
+							
+							tString sAnim = lAnim<0 ? "climb_left_detach_bottom" : "climb_right_detach_bottom";
+							if (PlayerBody_IsActive())
+							{
+								PlayerBody_PlayAnimation(sAnim, ePlayerBodyAnimationLayer_FullBody, false, false, false, 0.2, 1*mfPregMul);
+							}
+							else
+							{
+								PlayerHands_PlayAnimation(sAnim, false, true, 0.2f, "", true, 1*mfPregMul);
+							}
+						}
+									
+						if(idExitArea != tID_Invalid && mbExitingJump==false)
+						{
+							if (PlayerBody_IsActive() && mbExitingTop==true)
+							{
+								mlState = 2;
+							}
+							else
+							{
+								mlState = 3;
+								mfTimeCountAdd = 1.0f / (mbExitingTop ? 1.5f : 0.8f);
+							}
+							
+							mvFadePosStart = cLux_GetPlayer().GetCharacterBody().GetFeetPosition();
+							mvFadePosEnd = cLux_ID_Area(idExitArea).GetPosition()+cVector3f(0, 0.01, 0);
+							mfTimeCount=0;
+						
+							mfLeaveAtTopCount = 2;
+						}
+						else
+						{
+							cLux_GetPlayer().ChangeState(ePlayerState_Normal);
+							if(mbExitingJump) Player_Jump();
+						}
+						
+						Player_SetCanUseLightSource(true);
+						
+						return;
+					}
+				}
+			}
+			////////////////////////
+			// Check goal should be changed.
+			else
+			{
+				CalculateGoalPosition();
+			}
+			
+						
+			/////////////////////////////////
+			//Roll movement
+			cLux_GetPlayer().SetCameraRoll(ePlayerRoll_Climb,  cMath_ToRad(fMoveRollAngle*1.3f));
+			
+			/////////////////////////////////
+			//Update position
+			pCharBody.SetPosition(mvCharPosition, true);
+			fHeight = GetCurrentHeight(pCharBody.GetPosition());
+			
+			PlayerHands_SetCustomPosition(pCharBody.GetPosition() + cVector3f(0, pCharBody.GetSize().y/2,0)+ cLux_GetPlayer().GetBaseCameraPosAdd(), true);
+				
+			
+			////////////////////////
+			// Play Move Animation and Sound
+			if(fUsedMoveMul!=0 || bReachedRung)
+			{
+				mbIsClimbing = true;
+				
+				float fAnimHeight = fHeight;
+				if(fAnimHeight<0) fAnimHeight=0;				
+				
+				int lAnim = GetAnimationSide(fAnimHeight);
+				lAnim *= mlAnimStartHandMul;
+				//cLux_AddDebugMessage("Side: "+lAnim);
+				
+				float fAnimTime = cMath_Modulus(fAnimHeight+0.0001f, gfLadderRungDistance) / gfLadderRungDistance;
+				fAnimTime = cMath_Clamp(fAnimTime, 0, 0.9999f);
+				if(mlCurrentClimbAnim != lAnim)
+				{
+					
+					/////////////////////////////
+					// Animation
+					tString sAnim = lAnim>0 ? "climb_ladder_right" : "climb_ladder_left";
+					if (PlayerBody_IsActive())
+					{
+						PlayerBody_PlayAnimation(sAnim, ePlayerBodyAnimationLayer_FullBody, false, false, false, 0, 0, fAnimTime);
+					}
+					else
+					{
+						PlayerHands_PlayAnimation(sAnim, false, true, 0,"", false, 0,fAnimTime);
+					}
+						
+					/////////////////////////////
+					// Sound
+					if(mlCurrentClimbAnim==0 || mfInputMoveMul!=0)
+					{
+						if(mfPlayLiftSoundCount==0)
+						{
+							PlaySound("hand_lift");
+							mfPlayLiftSoundCount=0.3f;
+						}
+					}
+					
+					if(mlCurrentClimbAnim!=0)
+					{
+						if(mfPlayPlaceSoundCount==0)
+						{
+							PlaySound("hand_place");
+							mfPlayPlaceSoundCount=0.3f;
+						}
+					}
+					
+					/////////////////////////////
+					// Variables
+					mlCurrentClimbAnim = lAnim;
+				}
+				else
+				{
+					if (PlayerBody_IsActive())
+					{
+						cAnimationState@ pAnim = PlayerBody_GetAnimationState("climb_ladder_left");
+						if (pAnim==null || pAnim.IsActive()==false) 
+							@pAnim = PlayerBody_GetAnimationState("climb_ladder_right");
+						
+						if (pAnim !is null)
+							pAnim.SetRelativeTimePosition(fAnimTime);
+					}
+					else
+					{
+						cAnimationState@ pAnim = PlayerHands_GetCurrentAnimationState();
+						
+						if (pAnim !is null)
+							pAnim.SetRelativeTimePosition(fAnimTime);
+					}
+				}
+			}
+			////////////////////////
+			// Play Idle animation
+			else
+			{
+				if(mlCurrentClimbAnim != 0)
+				{
+					int lAnim = GetAnimationSide(fHeight) * mlAnimStartHandMul * -1;
+					
+					/////////////////////////////
+					// Animation
+					tString sAnim = lAnim<0 ? "climb_idle_left" : "climb_idle_right";
+					if (PlayerBody_IsActive())
+					{
+						PlayerBody_PlayAnimation(sAnim, ePlayerBodyAnimationLayer_FullBody, true, false, false, 0.2, 1, 0.03f);
+					}
+					else
+					{
+						PlayerHands_PlayAnimation(sAnim, true, true, 0.2f,"", false, 1,0.03f);
+					}
+					
+					/////////////////////////////
+					// Sound
+					if(mlCurrentClimbAnim!=2 && mfPlayPlaceSoundCount==0)
+					{
+						PlaySound("hand_place");
+						mfPlayPlaceSoundCount=0.3f;
+					}
+	
+					/////////////////////////////
+					// Variables
+					mlCurrentClimbAnim=0;
+				}
+			}
+			
+			//////////////////////////////
+			// Sound count
+			mfPlayLiftSoundCount = cMath_IncreaseTo(mfPlayLiftSoundCount, afTimeStep, 0);
+			mfPlayPlaceSoundCount = cMath_IncreaseTo(mfPlayPlaceSoundCount, afTimeStep, 0);
+			
+			//////////////////////////////
+			// Trigger events?
+			float yDist = mvCharPosition.y-mfPlayerStartY;
+			cLuxArea@ area = cLux_ID_Area(m_idArea);
+			if (yDist>7.0f)
+			{
+				if (area.GetVarBool("TriggeredLongClimbEvent")==false)
+				{
+					ModEvent_Trigger(eModEvent_Climb_Long);
+					area.SetVarBool("TriggeredLongClimbEvent",true);
+				}
+			} 
+			else if (yDist>2.5f)
+			{
+				if (area.GetVarBool("TriggeredMediumClimbEvent")==false)
+				{
+					ModEvent_Trigger(eModEvent_Climb_Medium);
+					area.SetVarBool("TriggeredMediumClimbEvent",true);
+				}			
+			}
+
+			//////////////////////////////
+			// Check Exit
+			if(mbExiting==false)
+			{
+				///////////////////////////
+				//Check if at top
+				cVector3f vPushBack=cVector3f(0);
+				if(	fUsedMoveMul > 0 && fHeight > fMaxHeight)
+				{
+					if(pCharBody.CheckCharacterFits(mvCharPosition+cVector3f(0,0.1f,0), false, 2, vPushBack))
+					{
+						ExitLadder(true, mbExitTopCrouch);				
+					}
+					else
+					{
+						mfIgnoreUpInputCount=1.0f;
+					}
+				}
+				///////////////////////////
+				//At bottom
+				if(fUsedMoveMul <0 && fHeight<=0)
+				{
+					ExitLadder(false, mbExitBottomCrouch);
+				}
+					
+			}
+
+			mfInputMoveMul =0;
+		}
+		/////////////////////////////////////////////////////////////////////////
+		// On the top of the ladder with PlayerBody animation playing
+		else if(mlState == 2)
+		{
+			UpdateDetachPitchLimit(afTimeStep);
+			if (PlayerBody_GetAnimationState(msDetachAnimation).IsOver())
+			{
+				float fFadeTime = 1.0f;
+				mfTimeCountAdd = 1.0f / fFadeTime;
+				
+				PlayerBody_StopAnimation(msDetachAnimation, fFadeTime);
+				PlayerBody_PlayLayerIdleAnimation(ePlayerBodyAnimationLayer_FullBody, fFadeTime);
+				mlState = 3;
+			}
+		}
+		//////////////////////////////////
+		// On the top/bottom of the ladder
+		else if(mlState == 3)
+		{			
+			mfTimeCount += afTimeStep*mfTimeCountAdd*mfPregMul;
+			if(mfTimeCount>=1) mfTimeCount=1;
+			
+			
+						
+			////////////////////////////////////
+			// Set position
+			float fT = cMath_Easing(eEasing_QuadIn, mfTimeCount);
+			cVector3f vPos = mvFadePosStart*(1-fT) + mvFadePosEnd*fT;
+						
+			cVector3f vFinalPos = cMath_MatrixMul(mtxAreaStartDiff, vPos);
+			
+			pCharBody.SetFeetPosition(vFinalPos, true);
+			
+			//mvCharPosition = pCharBody.GetPosition(); //Should not be needed!
+			
+			float fRollT = cMath_Easing(eEasing_QuadInOut, mfTimeCount);
+			float fRollAmount = cMath_Sin(fRollT* (cMath_Pi)) *14;
+			fRollAmount += fMoveRollAngle*(1-mfTimeCount);
+			
+			cLux_GetPlayer().SetCameraRoll(ePlayerRoll_Climb,cMath_ToRad(fRollAmount));
+			
+			if (PlayerBody_IsActive())
+				UpdateDetachPitchLimit(afTimeStep);
+			
+			float fCrouchLimit = mbExitingTop ? 0.6 : 0.95f;
+			if(mbExitCrouch && Player_GetCrouching()==false && mfTimeCount>fCrouchLimit)
+			{
+				Player_SetCrouching(true);
+			}
+			
+			
+			if(mfTimeCount>=1)
+			{
+				cLux_GetPlayer().ChangeState(ePlayerState_Normal);
+			}		
+		}
+		
+		//////////////////////////////
+		// Set variables
+		mfPrevHeight = fHeight;
+	}
+	
+	//------------------------------------------------------------
+	
+	// Make sure player can't see lower body when detaching from ladders as it will look weird.
+	void UpdateDetachPitchLimit(float afTimeStep)
+	{
+		cCamera@ pCamera = cLux_GetPlayer().GetCamera();
+		float fCurrLimit = pCamera.GetPitchMinLimit();
+		float fNewLimit = cMath_InterpolateLinear(fCurrLimit, 0, afTimeStep*4.f);
+		pCamera.SetPitchLimits(fNewLimit, pCamera.GetPitchMaxLimit());
+		if (pCamera.GetPitch()<fNewLimit)
+			pCamera.SetPitch(fNewLimit);
+	}
+	
+	//------------------------------------------------------------
+		
+	void ExitLadder(bool abTop, bool abCrouch)
+	{
+		mbExitCrouch = abCrouch;
+		mbExiting = true;
+		mbExitingTop = abTop;
+		mbExitingJump = false;
+		
+		if(mfLastMovementMul>0)
+		{
+			if(mfGoalYPosition - mvCharPosition.y > gfLadderRungDistance/2) 
+			{
+				mfLastMovementMul = -1;
+				mfGoalYPosition -= gfLadderRungDistance;
+			}
+		}
+		else if(mfLastMovementMul<0)
+		{
+			if(mvCharPosition.y - mfGoalYPosition > gfLadderRungDistance/2) 
+			{
+				mfLastMovementMul = 1;
+				mfGoalYPosition += gfLadderRungDistance;
+			}
+		}	
+
+	
+		CalculateGoalPosition();
+	}
+	
+	//------------------------------------------------------------
+	
+	void CalculateGoalPosition()
+	{
+		if(mfLastMovementMul>0 && mfGoalYPosition <= mvCharPosition.y)
+		{
+			mfGoalYPosition += gfLadderRungDistance;
+		}
+		if(mfLastMovementMul<0 && mfGoalYPosition >= mvCharPosition.y)
+		{
+			mfGoalYPosition -= gfLadderRungDistance;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void PostUpdate(float afTimeStep)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool OnAction(int alAction, bool abPressed)
+	{
+		if(abPressed==false) return true;
+		
+		///////////////////////////////////
+		// Jump or Interaction
+		if(alAction==eAction_Jump)
+		{
+			ExitLadder(false, false);
+			mbExitingJump=true;
+			return false;
+		}
+		else if(alAction == eAction_Crouch)
+		{
+			return false;			
+		}
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnAnalogInput(int alAnalogId, const cVector3f &in avAmount)
+	{
+		////////////////////////////////////
+		// Look
+		if(alAnalogId == eAnalogType_Look)
+		{
+			//Do not move camera when attaching!
+			if(mlState==0 && mfTimeCount<gfRotatationFadeFraction) 	return false;
+		}
+
+		////////////////////////////////////
+		// Move
+		if(alAnalogId == eAnalogType_Move)
+		{
+			////////////////////////////////////
+			//If in final states, do not move.
+			if(mlState==0 || mlState==2 || mlState==3) return false;
+			
+			/////////////////////////////////////////
+			// Don't move if holding left/right only
+			if (avAmount.y==0) return false;
+			
+			mfInputMoveMul += avAmount.y>0 ? 1:-1;
+			
+			return false;	
+		}
+		////////////////////////////////////
+		// Gamepad Move
+		else if(alAnalogId == eAnalogType_GamepadMove)
+		{
+			////////////////////////////////////
+			//If in final states, do not move.
+			if(mlState==0 || mlState==2 || mlState==3) return false;
+			
+			if(avAmount.y>0.1f) mfInputMoveMul += 1;
+			if(avAmount.y<-0.1f) mfInputMoveMul -= 1;
+			
+			return false;
+		}
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnExitPressed()
+	{
+		return true;
+	}
+	
+	//-----------------------------------------------------------------------
+	
+	//////////////////////////////////////////////////////////////////////////
+	// HELPER FUNCTIONS
+	//////////////////////////////////////////////////////////////////////////
+
+	//-----------------------------------------------------------------------
+
+	cVector3f GetRotation(const cVector3f&in avForward)
+	{
+		return cMath_GetAngleFromPoints3D(cVector3f(0,0,0), avForward*-1);
+	}
+
+	//-----------------------------------------------------------------------
+
+	cVector3f GetStartPosition(const cVector3f&in avForward, float afMinY, float afMaxY)
+	{
+		iCharacterBody@ pCharBody = cLux_GetPlayer().GetCharacterBody();
+
+		///////////////////////////////
+		// Set up player variables
+		cVector3f vCharSize = pCharBody.GetShape(0).GetSize();
+		cVector3f vPos = pCharBody.GetPosition();
+		cVector3f vCamOffset = cLux_GetPlayer().GetBaseCameraPosAdd();
+		
+		///////////////////////////////
+		// Set up area variables
+		cLuxArea @pArea = cLux_ID_Area(m_idArea);
+		cVector3f vLadderPos =	pArea.GetPosition() + avForward*(vCharSize.x+0.21);
+		vLadderPos.y = vPos.y;
+			
+		if(vLadderPos.y > afMaxY - vCharSize.y*0.3f) vLadderPos.y = afMaxY - vCharSize.y*0.3f;
+		if(vLadderPos.y - vCharSize.y/2 < afMinY) vLadderPos.y = afMinY + vCharSize.y/2+0.1f;
+		
+		////////////////////////////////
+		// Align to rungs
+		vLadderPos.y -= afMinY; //To Local space.
+		float fMod = cMath_Modulus(vLadderPos.y, gfLadderRungDistance);
+		
+		float fMinHeight = int((vCharSize.y/2+0.1f)/gfLadderRungDistance) * gfLadderRungDistance;
+		
+		if(vLadderPos.y<fMinHeight)
+			vLadderPos.y += fMinHeight;
+		else if(fMod>gfLadderRungDistance)
+			vLadderPos.y += gfLadderRungDistance - fMod;
+		else
+			vLadderPos.y -= fMod;
+			
+		vLadderPos.y += afMinY;
+		
+		////////////////////////////////
+		// Adjust for animation
+		vLadderPos.y += 0.05f;
+
+		return vLadderPos;
+	}
+	
+	//------------------------------------------------------------
+	
+	float GetCurrentHeight(const cVector3f& in avCharBodyPosition)
+	{
+		iPhysicsBody@ pBody = cLux_ID_Area(m_idArea).GetAreaBody();
+		iCharacterBody@ pCharBody = cLux_GetPlayer().GetCharacterBody();
+		
+		float fMinY = pBody.GetWorldPosition().y - pBody.GetShape().GetSize().y/2.0f;
+		
+		float fHeight = avCharBodyPosition.y - fMinY - pCharBody.GetSize().y/2 - 0.05f;//
+		return fHeight;
+	}
+	
+//-----------------------------------------------------------------------
+	
+	int GetAnimationSide(float afHeight)
+	{
+		afHeight += 0.0001f; //To avoid float precisions issues
+		float fMod =cMath_Modulus(afHeight+1, gfLadderRungDistance); //+1 to avoid 0 issues!
+		return int((afHeight+1 - fMod)/0.5 +0.01f) % 2==0 ? 1 : -1;	
+	}
+	
+	//-----------------------------------------------------------------------
+
+	void PlaySound(const tString &in asType)
+	{
+		tString sSuffix ="";
+		if(cLux_GetUnderwaterEffectsActive()) sSuffix = "_underwater";
+		
+		tString sSound = "player/ladder/"+msLadder_Material+sSuffix+"/"+asType;
+		cLux_PlayGuiSoundData(sSound, eSoundEntryType_WorldClean,1, true);
+	}
+
+	//-----------------------------------------------------------------------
+
+	void SetupHeadTurnLimits()
+	{
+		cCamera@ pCam = cLux_GetPlayer().GetCamera();
+
+		float fXmax = pCam.GetYaw() + gvMaxHeadLimits.x;
+		float fYmax = pCam.GetPitch() + gvMaxHeadLimits.y;
+
+		float fXmin = pCam.GetYaw() + gvMinHeadLimits.x;
+		float fYmin = pCam.GetPitch() + gvMinHeadLimits.y;
+		
+		pCam.SetYawLimits(fXmin, fXmax);
+		
+		if (PlayerBody_IsActive()==false) 
+			pCam.SetPitchLimits(fYmin, fYmax);
+	}
+	
+	
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// BODY CALLBACKS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool AllowBuoyancy(iPhysicsBody @apBody)
+	{
+		return true;
+	}
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// CHARACTER CALLBACK
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void CharBody_GravityCollide(iCharacterBody@ apCharBody, iPhysicsBody@ apBody, cCollideData @apCollideData)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void CharBody_HitGround(iCharacterBody@ apCharBody,const cVector3f &in avVel)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetMoveMul()
+	{
+		mfMoveMul = cScript_GetGlobalArgFloat(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_IsMoving()
+	{
+		cScript_SetGlobalReturnBool(mbIsClimbing);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		afStartY = cLux_DrawDebugText("GetCurrentHeight: "+cLux_GetPlayer().GetCharacterBody().GetPosition().y,afStartY);
+		afStartY = cLux_DrawDebugText("mfGoalYPosition: "+mfGoalYPosition,afStartY);
+		afStartY = cLux_DrawDebugText("mfLastMovementMul: "+mfLastMovementMul,afStartY);
+		
+		//apSet.DrawFont(tWString("Focus Body:"+sBodyName), apFont, cVector3f(5,afStartY,0), cVector2f(14), cColor(1,1) );
+		//afStartY += 14;
+						
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	int mlState;
+	tString msLadder_Material;
+	tID m_idArea;
+	
+	tID m_idExitBottomArea;
+	bool mbExitBottomCrouch;
+	tID m_idExitTopArea;
+	bool mbExitTopCrouch;
+	tString msExitCallback;
+	
+	float mfPlayPlaceSoundCount=0;
+	float mfPlayLiftSoundCount=0;
+	
+	float mfTimeCount;
+	float mfTimeCountAdd;
+	
+	cMatrixf m_mtxInvStart;
+
+	cVector3f mvCharPosition;
+	
+	cVector3f mvPreviousPos;
+	cVector3f mvPreviousForward;
+
+	cVector3f mvFadePosStart;
+	cVector3f mvFadePosEnd;
+	
+	cVector3f mvFadeRotStart;
+	cVector3f mvFadeRotEnd;
+	
+	bool mbPlayedAttachAnim;
+	bool mbPlayingMoveAnim;
+	
+	int mlAnimStartHandMul=1;
+	
+	float mfPregMul;
+	
+	float mfInputMoveMul;
+	float mfLastMovementMul;
+	float mfGoalYPosition;
+	bool mbBlockInputUntilRung;
+	int mlCurrentClimbAnim;
+	
+	float mfPrevHeight;
+
+	float mfSkipSoundCount=0;
+	
+	float mfIgnoreUpInputCount;
+	
+	float mfLeaveAtTopCount;
+	
+	cVector3f mvExitFeetPos;
+	bool mbExitCrouch;
+	bool mbExiting;
+	bool mbExitingTop;
+	bool mbExitingJump;
+	
+	int mlCurrentArmMoving = 0; //-1 = left, 1 = right;
+	float mfMoveMul = 1.0f;
+	float mfPlayerStartY = 0.0f;
+	
+	bool mbIsClimbing = false;
+	
+	tString msDetachAnimation = "";
+	
+	//------------------------------------------------------------
+		
+}

@@ -1,0 +1,1156 @@
+#include "base/Base_Types.hps"
+#include "interfaces/UserModule_Interface.hps"
+#include "custom/modules/ModuleInterfaces_Custom.hps"
+#include "custom/Player/PlayerTypes_Custom.hps"
+#include "custom/helpers/helper_props_custom.hps"
+
+//----------------------------------------------------------------------------------------
+
+const float gfBulletHandler_BulletSpeed = 100.0f;
+const float gfBulletHandler_BulletForce_Revolver = 500.f;
+const float gfBulletHandler_BulletForce_Shotgun = 40.f;
+const float gfBulletHandler_BulletDamage_Revolver = 1.f;
+const float gfBulletHandler_BulletDamage_Shotgun = 0.36f;
+const float gfBulletHandler_BulletMaxImpulse = 7.f;
+const float gfBulletHandler_BulletMaxBreakPropSize = 0.9f;
+const float gfBulletHandler_BulletMaxDistance = 100.f;
+const float gfBulletHandler_ShotgunBulletMaxDistance = 20.f;
+
+const float gfBulletHandler_ShotgunFalloffStart = 8.0f;
+const float gfBulletHandler_ShotgunFalloffEnd = 12.0f;
+const float gfBulletHandler_ShotgunFalloffMinDamageMul = 0.1f;
+
+const int glBulletHandler_MaxRaycastsPerFrame = 3;
+const int glBulletHandler_BulletStrength = 1;
+
+const array<tString> gvBulletHandler_UnbreakablePropClasses = { "cScrPropChainLock" };
+const array<tString> gvBulletHandler_NonSolidAgentClasses = { "cScrAgentFogSilhouette" };
+
+const tString gsBulletHandler_DecalEntity = "bullet_hole.ent";
+const tString gsBulletHandler_PlayerHitTimer = "Timer_PlayerHit";
+
+//----------------------------------------------------------------------------------------
+
+class cBullet_CustomImpactEffect
+{
+	tString msSound = "";
+	tString msPS = "";
+	tID m_idEntity = tID_Invalid;
+}
+
+//----------------------------------------------------------------------------------------
+
+class cBullet
+{
+	int mlId = -1;
+	float mfTotalDist = 0.f;
+	float mfMinPlayerHealth = 0.f;
+	cVector3f mvDir = cVector3f(0.f);
+	cVector3f mvPos = cVector3f(0.f);
+	cVector3f mvPrevPos = cVector3f(0.f);
+	cVector3f mvOrigin = cVector3f(0.f);
+	float mfMoveDist = 0;
+	tString msHitCallback = "";
+	eBulletType mType = eBulletType_Revolver;
+	tID m_idSource = tID_Invalid;
+	array<tID> mvIgnoredAgentIds;
+	array<tID> mvIgnoredEntityIds;
+}
+
+//----------------------------------------------------------------------------------------
+
+class cScrBulletHandler : iScrUserModule, iScrUserModule_Interface, iScrBulletHandler_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		Reset();
+		
+		mvCustomImpactEffects.resize(0);
+		mvGlobalIgnoredEntityIds.resize(0);
+		mvGlobalIgnoredAgentIds.resize(0);
+	}
+		
+	//------------------------------------------------------------
+	
+	void LoadUserConfig() {}
+	void SaveUserConfig() {}
+	
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// MAP LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap@ apMap)
+	{
+		Reset();
+	}
+
+	//------------------------------------------------------------
+
+	void OnMapLeave(cLuxMap@ apMap)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void PreloadData(cLuxMap @apMap) 
+	{
+		/////////
+		// Preload
+		ParticleSystem_Preload("bullet_impact_blood.ps");
+		ParticleSystem_Preload("bullet_impact_wood.ps");
+		ParticleSystem_Preload("bullet_impact_metal.ps");
+		ParticleSystem_Preload("bullet_impact_rock.ps");
+		ParticleSystem_Preload("bullet_impact_dirt.ps");
+		ParticleSystem_Preload("bullet_impact_water.ps");
+
+		ParticleSystem_Preload("bullet_impact_blood_bright.ps");
+		ParticleSystem_Preload("bullet_impact_wood_bright.ps");
+		ParticleSystem_Preload("bullet_impact_metal_bright.ps");
+		ParticleSystem_Preload("bullet_impact_rock_bright.ps");
+		ParticleSystem_Preload("bullet_impact_dirt_bright.ps");
+		ParticleSystem_Preload("bullet_impact_water_bright.ps");
+
+		Entity_Preload(gsBulletHandler_DecalEntity);
+	}
+
+	void CreateWorldEntities(cLuxMap @apMap) {}
+	void DestroyWorldEntities(cLuxMap @apMap) {}
+	void OnEnterContainer(const tString&in asOldContainer) {}
+	void OnLeaveContainer(const tString&in asNewContainer) {}
+	
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+		msImpactParticleSuffix = "";
+		mlBulletCount = 0;
+		mvBullets.resize(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////	
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep) 
+	{
+		////////////////
+		// Count
+		mfTimeSinceLastBullet += afTimeStep;
+		
+		////////////////
+		// Update bullets
+		if (mvBullets.size() > 0)
+		{		
+			////////////////
+			// Setup vars
+			cLuxMap@ pMap = cLux_GetCurrentMap();
+			iPhysicsBody@ pPlayerBody = cLux_GetPlayer().GetCharacterBody().GetCurrentBody();
+			iLuxEntity@ pPlayerEntity = pMap !is null ? pMap.GetPlayerEntity() : null;
+			
+			if (pMap is null) return;
+			if (pPlayerBody is null) return;
+				
+			array<iLuxEntity@> vAgents;
+			array<iLuxEntity@> vTraps;
+			array<iLuxEntity@> vFuelSpills;
+			array<iLuxEntity@> vLiquidAreas;
+			array<iLuxEntity@> vAnimationHitboxes;
+			
+			pMap.GetEntityArray("*", eLuxEntityType_Agent, "", vAgents);
+			pMap.GetEntityArray("*", eLuxEntityType_Prop, "cScrPropTrap", vTraps);
+			pMap.GetEntityArray("*", eLuxEntityType_Prop, "cScrPropFuelSpill", vFuelSpills);
+			pMap.GetEntityArray("*", eLuxEntityType_LiquidArea, "", vLiquidAreas);
+			pMap.GetEntityArray("*", eLuxEntityType_Prop, "cScrPropAnimationHitbox", vAnimationHitboxes);
+			
+			////////////////
+			// Prepare hitboxes
+			SetHitboxesActive(true, vAgents, vTraps, vFuelSpills, vLiquidAreas, vAnimationHitboxes);
+			
+			////////////////
+			// Iterate bullets
+			if (mvBullets.size() > 0) mlBulletIndex = mlBulletIndex % mvBullets.size();
+			for (int lCount = 0; lCount < mvBullets.size(); lCount++, mlBulletIndex = (mlBulletIndex >= mvBullets.size()-1) ? 0 : mlBulletIndex + 1)
+			{
+				cBullet@ pBullet = mvBullets[mlBulletIndex];
+				
+				if (pBullet is null)
+				{
+					mvBullets.removeAt(mlBulletIndex);
+					--mlBulletIndex;
+					continue;
+				}				
+				
+				iLuxEntity@ pSourceEnt = pBullet !is null ? cLux_ID_Entity(pBullet.m_idSource) : null;	
+				bool bCheckPlayerCollision = pSourceEnt is null || pSourceEnt.GetID() != pPlayerEntity.GetID();				
+				
+				////////////////
+				// Pre collision setup
+				array<iPhysicsBody@> vIgnoredBodies;
+				
+				IgnoreCollisionOnEntities(pBullet.mvIgnoredEntityIds, vIgnoredBodies);
+				IgnoreCollisionOnEntities(mvGlobalIgnoredEntityIds, vIgnoredBodies);
+
+				if (bCheckPlayerCollision)
+				{
+					// Hack to be able to get player char body with cLux_GetClosestBody()!
+					pPlayerBody.SetIsCharacter(false);
+				}					
+				
+				////////////////
+				// Move
+				pBullet.mfMoveDist += gfBulletHandler_BulletSpeed * afTimeStep;			
+				
+				if (lCount >= glBulletHandler_MaxRaycastsPerFrame)
+					continue;
+					
+				pBullet.mvPrevPos = pBullet.mvPos;
+				pBullet.mvPos += pBullet.mvDir * pBullet.mfMoveDist;
+				
+				pBullet.mfTotalDist += pBullet.mfMoveDist;
+				
+				////////////////
+				// Check collision
+				bool bCollision = false;
+
+				tString sMat = "";
+				tID idHitEnt = tID_Invalid;
+				tID idHitBody = tID_Invalid;
+				
+				float fDist = 0.f;
+				cVector3f vNrm = cVector3f(0.f);
+				
+				iPhysicsBody@ pHitBody = cLux_GetClosestBody(pBullet.mvPrevPos, pBullet.mvDir, pBullet.mfMoveDist, fDist, vNrm);
+				if (pHitBody !is null)
+				{					
+					iLuxEntity@ pHitEnt = null;
+					if (pHitBody is pPlayerBody)	@pHitEnt = pPlayerEntity;
+					else							@pHitEnt = GetEntityFromBody(pHitBody, vAgents);
+					
+					bCollision = true;
+					
+					idHitBody = pHitBody.GetID();
+					idHitEnt = pHitEnt !is null ? pHitEnt.GetID() : tID_Invalid;
+					pBullet.mvPos = pBullet.mvPrevPos + pBullet.mvDir * fDist;
+					sMat = pHitBody.GetMaterial().GetName();
+				}
+				
+				pBullet.mfMoveDist = 0;
+				
+				//mvStarts.push_back(pBullet.mvPrevPos);
+				//mvEnds.push_back(pBullet.mvPos);
+							
+				////////////////
+				// Post collision setup				
+				ResetIgnoredCollisionOnBodies(vIgnoredBodies);
+				
+				if (bCheckPlayerCollision)
+				{
+					// Reset player body hack
+					pPlayerBody.SetIsCharacter(true); 
+				}
+				
+				////////////////
+				// Handle impact
+				if (bCollision && HandleImpact(pBullet, idHitEnt, idHitBody, vNrm, sMat, vAgents, vFuelSpills))
+				{
+					mvBullets.removeAt(mlBulletIndex);
+					--mlBulletIndex;
+					continue;
+				}
+				
+				////////////////
+				// Bullet reached max dist?
+				float fMaxDist = pBullet.mType == eBulletType_Revolver ? gfBulletHandler_BulletMaxDistance : gfBulletHandler_ShotgunBulletMaxDistance;
+				if (pBullet.mfTotalDist >= fMaxDist)
+				{
+					mvBullets.removeAt(mlBulletIndex);
+					--mlBulletIndex;
+					continue;
+				}
+			}
+			
+			mlBulletIndex += glBulletHandler_MaxRaycastsPerFrame;
+			
+			////////////////
+			// Reset hitboxes
+			SetHitboxesActive(false, vAgents, vTraps, vFuelSpills, vLiquidAreas, vAnimationHitboxes);
+		}
+	}	
+	
+	//------------------------------------------------------------
+	
+/*	void OnRenderSolid(cRendererCallbackFunctions@ apFunctions)
+	{
+		for (int i = 0; i < mvStarts.length(); i++)
+		{
+			apFunctions.GetLowLevelGfx().DrawLine(mvStarts[i], mvEnds[i], cColor_Green * 2.f);
+			apFunctions.GetLowLevelGfx().DrawSphere(mvEnds[i], 0.01, cColor_Green*4.0f);
+		}
+	}*/
+	
+	//------------------------------------------------------------
+	
+	void VariableUpdate(float afDeltaTime) {}	
+	void PostUpdate(float afTimeStep) {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnAction(int alAction, bool abPressed) {}
+	void OnAnalogInput(int alAnalogId, const cVector3f &in avAmount) {}	
+	void OnExitPressed() {}
+	
+	//------------------------------------------------------------
+	
+	void AppGotInputFocus() {}
+	void AppLostInputFocus() {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPERS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void IgnoreCollisionOnEntities(const array<tID> &in avEntities, array<iPhysicsBody@> &inout avIgnoredBodies)
+	{
+		for (int j = 0; j < avEntities.size(); ++j)
+		{
+			iLuxEntity@ pEnt = cLux_ID_Entity(avEntities[j]);
+			if (pEnt is null) continue;
+					
+			for (int i = 0; i < pEnt.GetBodyNum(); ++i)
+			{
+				iPhysicsBody@ pBody = pEnt.GetBody(i);
+						
+				if (pBody is null) 				continue;
+				if (pBody.GetCollide() == false) continue;
+						
+				pBody.SetCollide(false);
+				avIgnoredBodies.push_back(pBody);
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetIgnoredCollisionOnBodies(const array<iPhysicsBody@> &in avBodies)
+	{
+		for (int i = 0; i < avBodies.size(); ++i)
+		{
+			iPhysicsBody@ pBody = avBodies[i];
+			if (pBody is null) continue;
+					
+			pBody.SetCollide(true);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	bool HandleImpact(cBullet &inout aBullet, tID a_idEntity, tID a_idBody, const cVector3f &in avNormal, 
+					  const tString &in asMaterial, const array<iLuxEntity@> avAgents, const array<iLuxEntity@> avFuelSpills)
+	{		
+		///////////////////
+		// Setup vars
+		cLuxMap@ pMap = cLux_GetCurrentMap();
+		iLuxEntity@ pEnt = cLux_ID_Entity(a_idEntity);
+		iPhysicsBody@ pBody = cLux_ID_Body(a_idBody);		
+
+		if (pMap is null) return false;
+		
+		bool bDoImpact = true;
+		bool bHitAgent = false;
+		bool bGiveDamage = false;
+		bool bHitPlayer = false;
+		bool bPlayerRecentlyHit = mBaseObj.Timer_Exists(gsBulletHandler_PlayerHitTimer);
+		bool bAddForce = false;
+		bool bHitLiquid = false;
+		
+		tID idEnt = pEnt !is null ? pEnt.GetID() : tID_Invalid;
+		tString sEntName = pEnt !is null ? pEnt.GetName() : "";
+		tString sBodyName = pBody !is null ? pBody.GetName() : "";	
+		
+		float fForce = aBullet.mType == eBulletType_Revolver ? gfBulletHandler_BulletForce_Revolver : gfBulletHandler_BulletForce_Shotgun;
+	
+		///////////////////
+		// Hit an entity?
+		if (pEnt !is null)
+		{
+			///////////////////
+			// Prop?
+			cLuxProp@ pProp = cLux_ToProp(pEnt);
+			if (pProp !is null)
+			{
+				bAddForce = true;
+				tString sPropClass = pProp.GetClassName();
+							
+				////////////////////
+				// Give damage?
+				bool bBreakable = pProp.GetBreakActive() && 
+								  gvBulletHandler_UnbreakablePropClasses.find(sPropClass) == -1;
+				if (bBreakable)
+				{
+					///////////////////
+					// Shotgun bullet
+					if (aBullet.mType == eBulletType_Shotgun)
+					{
+						bGiveDamage = true;
+					}
+					
+					///////////////////
+					// Revolver bullet
+					else if (aBullet.mType == eBulletType_Revolver)
+					{
+						float fTotalSize = 0.f;
+						
+						for (int i = 0; i < pProp.GetBodyNum(); ++i)
+						{
+							cVector3f vPropSize = pProp.GetBody(i).GetShape().GetBoundingVolume().GetSize();
+							for (int j = 0; j < 3; ++j)
+								fTotalSize += vPropSize.GetElement(j);									
+						}						
+						
+						if (fTotalSize < 2.f)
+						{
+							bGiveDamage = true;
+						}
+					}
+				}
+				
+				///////////////////
+				// Explosive barrel
+				if (sPropClass == "cScrPropExplosiveBarrel")
+				{
+					bGiveDamage = true;
+				}
+				
+				////////////////////////////
+				// Gas canister
+				if (sPropClass == "cScrPropGasCanister")
+				{
+					bGiveDamage = true;
+				}
+							
+				////////////////////////////
+				// Trap
+				if (sPropClass == "cScrPropTrap")
+				{
+					bGiveDamage = true;
+				}
+							
+				////////////////////////////
+				// Fuel spill
+				if (sPropClass == "cScrPropFuelSpill")
+				{
+					bGiveDamage = true;
+				}
+			}
+						
+			///////////////////
+			// Agent?
+			else if (cLux_ToAgent(pEnt) !is null)
+			{
+				bHitAgent = true;
+				bGiveDamage = true;
+				
+				///////////////////
+				// No impact if agent is non-solid
+				if (gvBulletHandler_NonSolidAgentClasses.find(pEnt.GetClassName()) != -1)
+				{
+					bDoImpact = false;
+					
+					int lId = aBullet.mvIgnoredAgentIds.find(idEnt);
+					if (lId == -1)
+					{
+						aBullet.mvIgnoredAgentIds.push_back(idEnt);
+					}
+				}
+				
+				///////////////////
+				// Ignore completely?
+				if (mvGlobalIgnoredAgentIds.find(idEnt) != -1)
+				{
+					bGiveDamage = false;
+					bDoImpact = false;
+					
+					int lId = aBullet.mvIgnoredAgentIds.find(idEnt);
+					if (lId == -1)
+					{
+						aBullet.mvIgnoredAgentIds.push_back(idEnt);
+					}
+				}
+			}
+						
+			///////////////////
+			// Player?
+			else if (pEnt is pMap.GetPlayerEntity())
+			{
+				bHitPlayer = true;
+				bGiveDamage = true;
+			}
+			
+			///////////////////
+			// Liquid
+			else if (pEnt.GetEntityType() == eLuxEntityType_LiquidArea)
+			{
+				bHitLiquid = true;
+			}
+			
+			///////////////////
+			// Give damage
+			if (bGiveDamage)
+			{
+				mLastDamageBulletType = aBullet.mType;
+				
+				int lDamageInstance = pMap.GetNewAttackInstanceID();
+				if (bHitPlayer == false)
+				{
+					float fDamage = gfBulletHandler_BulletDamage_Revolver;
+					if (aBullet.mType == eBulletType_Shotgun)
+					{
+						float fDist = (aBullet.mvOrigin - aBullet.mvPos).Length();
+						float fDistT = 1.0f - cMath_Clamp((fDist - gfBulletHandler_ShotgunFalloffStart) / (gfBulletHandler_ShotgunFalloffEnd - gfBulletHandler_ShotgunFalloffStart), 0.0f, 1.0f);
+						float fDamageMul = cMath_Easing(eEasing_Linear, fDistT, gfBulletHandler_ShotgunFalloffMinDamageMul, 1.0f);
+						
+						fDamage = gfBulletHandler_BulletDamage_Shotgun*fDamageMul;
+					}
+					
+					pEnt.GiveDamage(pBody, aBullet.mvOrigin, aBullet.mvPos, eDamageType_Gun, fDamage, 
+									glBulletHandler_BulletStrength, fForce, gfBulletHandler_BulletMaxImpulse, 
+									aBullet.m_idSource, lDamageInstance);
+				}
+				else
+				{
+					if (bPlayerRecentlyHit == false)
+					{						
+						float fDamage;
+						
+						if (aBullet.mType == eBulletType_Shotgun)
+						{
+							switch (GameDifficulty_GetSettingValueByID_Int(eGameDifficultySetting_ShotgunnerLethality))
+							{
+								case eDifficultySettingValue_ShotgunnerLethality_VeryLow:	fDamage = 0.25f; 	break;
+								case eDifficultySettingValue_ShotgunnerLethality_Low:		fDamage = 0.35f; 	break;
+								case eDifficultySettingValue_ShotgunnerLethality_Default:	fDamage = 0.6f; 	break;
+								case eDifficultySettingValue_ShotgunnerLethality_High:		fDamage = 0.8f; 	break;
+								case eDifficultySettingValue_ShotgunnerLethality_VeryHigh:	fDamage = 1.f; 		break;
+							}
+						}
+						else
+						{
+							fDamage = 0.6f;
+						}
+						
+						cLux_GetPlayer().GiveDamage(fDamage, glBulletHandler_BulletStrength, eDamageType_Gun, 
+												    aBullet.mfMinPlayerHealth, aBullet.m_idSource, lDamageInstance);
+					}
+					else
+					{
+						bDoImpact = false;
+					}
+					
+					mBaseObj.Timer_Add(gsBulletHandler_PlayerHitTimer, 0.5f);
+				}
+			}
+		}
+					
+		///////////////////
+		// Hit a ragdoll?
+		else if (pBody !is null && pBody.IsRagDoll())
+		{
+			bHitAgent = true;
+			bAddForce = true;
+		}
+					
+		///////////////////
+		// Add force
+		if (bAddForce && pBody !is null)
+		{
+			cVector3f vForce = aBullet.mvDir * fForce;
+			pBody.AddForceAtPosition(vForce, aBullet.mvPos);
+		}
+		
+		///////////////////
+		// Extra check if impact was close to a fuel spill, then ignite it
+		for (int i = 0; i < avFuelSpills.size(); ++i)
+		{
+			iLuxEntity@ pFuelSpill = avFuelSpills[i];
+			iPhysicsBody@ pFuelSpillBody = pFuelSpill !is null ? pFuelSpill.GetMainBody() : null;
+			cBoundingVolume@ pFuelSpillBV = pFuelSpillBody !is null ? pFuelSpillBody.GetBoundingVolume() : null;
+			
+			if (pFuelSpill is null) continue;
+			if (pFuelSpillBody is null) continue;
+			if (pFuelSpillBV is null) continue;
+			if (pFuelSpill.IsActive() == false) continue;
+			if (pFuelSpill.GetID() == a_idEntity) continue;
+			
+			if (cMath_CheckAABBSphereCollision(pFuelSpillBV.GetMin(), pFuelSpillBV.GetMax(), aBullet.mvPos, 0.5f))
+			{
+				pFuelSpill.GiveDamage(pFuelSpillBody, aBullet.mvOrigin, aBullet.mvPos, eDamageType_Gun, 1.f, 
+									  glBulletHandler_BulletStrength, fForce, gfBulletHandler_BulletMaxImpulse, 
+									  aBullet.m_idSource, pMap.GetNewAttackInstanceID());
+			}
+		}
+		
+		///////////////////
+		// Special entity that should use agent impact effects?
+		if (pEnt !is null && pEnt.GetVarBool("DoAgentBulletImpact"))
+		{
+			bHitAgent = true;
+		}		
+				
+		///////////////////
+		// Impact effects
+		if (bDoImpact)
+		{
+			tString sPS = "";
+			tString sSound = "weapons/revolver/impact/";
+			tString sImpactMaterial = pBody !is null ? pBody.GetMaterial().GetName() : "";
+			
+			if (bHitAgent || bHitPlayer)
+			{
+				sSound += "impact_flesh";
+				sPS = "bullet_impact_blood";
+			}
+			else if (cString_GetFirstStringPos(sImpactMaterial, "wood") >= 0)
+			{
+				sSound += "impact_wood";
+				sPS = "bullet_impact_wood";
+			}
+			else if (cString_GetFirstStringPos(sImpactMaterial, "metal") >= 0) 
+			{
+				sSound += "impact_metal";
+				sPS = "bullet_impact_metal";
+			}
+			else if (cString_GetFirstStringPos(sImpactMaterial, "stone") >= 0) 
+			{
+				sSound += "impact_stone";
+				sPS = "bullet_impact_rock";
+			}
+			else if (cString_GetFirstStringPos(sImpactMaterial, "dirt") >= 0) 
+			{
+				sSound += "impact_dirt";
+				sPS = "bullet_impact_dirt";
+			}
+			else if (bHitLiquid)
+			{
+				sSound = "physics/water/water_impact";
+				sPS = "bullet_impact_water";
+			}
+			else
+			{
+				sSound += "impact_stone";
+				sPS = "bullet_impact_rock";
+			}
+			
+			sPS += msImpactParticleSuffix + ".ps";
+			
+			//////////////////
+			// Get custom impact data
+			cBullet_CustomImpactEffect@ pData = GetCustomImpactEffectFromEntity(idEnt);		
+			if (pData !is null)
+			{
+				if (pData.msPS != "") 		sPS = pData.msPS;
+				if (pData.msSound != "")	sSound = pData.msSound;
+			}
+
+			//////////////////
+			// Create sound
+			cSoundEntity@ pSound = pMap.GetWorld().CreateSoundEntity("Sound_BulletImpact", sSound, true);
+			if (pSound !is null)
+			{
+				pSound.SetWorldPosition(aBullet.mvPos);
+				pSound.SetUseCustomProperties(true);
+				pSound.SetCustomMinDistance(1.f);
+				pSound.SetCustomMaxDistance(50.f);
+			}
+			
+			///////////////////
+			// Create particles	
+			cParticleSystem@ pPS = pMap.GetWorld().CreateParticleSystem("PS_GunImpact", sPS, cVector3f(1.f), true, false);
+			if (pPS !is null)
+			{
+				cMatrixf mtxNew = cMath_MatrixTranslate(aBullet.mvPos);
+				
+				if (bHitLiquid == false)
+				{	
+					cVector3f vNrm = avNormal.SqrLength() <= 0.f ? aBullet.mvDir * -1.f : avNormal;	
+					cVector3f vFwd = cMath_Vector3Normalize(vNrm);
+					cVector3f vRight = cMath_Vector3Normalize(cMath_Vector3Cross(vFwd, cVector3f_Down));
+					cVector3f vRight1 = cMath_Vector3Normalize(cMath_Vector3Cross(vFwd, cVector3f_Left));
+				
+					if(vRight1.SqrLength() > vRight.SqrLength())
+						vRight = vRight1;
+
+					cVector3f vUp = cMath_Vector3Normalize(cMath_Vector3Cross(vFwd, vRight));		
+					mtxNew = cMath_MatrixUnitVectors(vRight, vUp, vFwd, aBullet.mvPos);
+				}
+				
+				pPS.SetWorldMatrix(mtxNew);
+			}
+
+			///////////////////
+			// Create decal
+			if (bHitLiquid == false && bHitAgent == false)
+			{
+				cMatrixf mtxNew = cMath_MatrixTranslate(aBullet.mvPos);
+				cVector3f vNrm = avNormal;
+				cVector3f vFwd = cMath_Vector3Normalize(vNrm);
+
+				cVector3f vRight = cMath_Vector3Normalize(cMath_Vector3Cross(vFwd, cVector3f_Down));
+				cVector3f vRight1 = cMath_Vector3Normalize(cMath_Vector3Cross(vFwd, cVector3f_Left));
+				
+				if(vRight1.SqrLength() > vRight.SqrLength())
+					vRight = vRight1;
+				
+				cVector3f vUp = cMath_Vector3Normalize(cMath_Vector3Cross(vFwd, vRight));
+				mtxNew = cMath_MatrixUnitVectors(vRight, vUp, vFwd, aBullet.mvPos);
+				mtxNew = cMath_MatrixMul(mtxNew, cMath_MatrixRotateZ(cMath_RandRectf(-cMath_Pi, cMath_Pi)));
+				
+				pMap.CreateEntity("Decal_GunImpact", gsBulletHandler_DecalEntity,  mtxNew, cVector3f(1.0f));
+				
+				iLuxEntity@ pDecalEnt = pMap.GetLatestEntity();
+
+				if(pDecalEnt !is null && pDecalEnt.GetMeshEntity() !is null)
+				{
+					cMeshEntity@ pMeshEnt = pDecalEnt.GetMeshEntity();
+
+					// Will be rendered above other "world" decals
+					pMeshEnt.SetRenderLayer(2);
+
+					// Set sub div index
+					if(pMeshEnt.GetSubMeshEntity(0) !is null)
+					{
+						cMaterial@ pMat = pMeshEnt.GetSubMeshEntity(0).GetMaterial();
+						pMeshEnt.GetSubMeshEntity(0).SetCurrentSubDiv(cMath_RandRectl(0, pMat.GetUvSubDivNum() - 1));
+					}
+				}
+
+				// Attach to entity if it's dynamic
+				if(pEnt !is null)
+				{
+					cMeshEntity@ pMeshEntity = pEnt.GetMeshEntity();
+					
+					if(pMeshEntity !is null && pMeshEntity.IsStatic() == false)
+					{
+						pDecalEnt.AttachToEntity(pEnt, pBody, true, false, false);
+					}
+				}
+			}
+			
+			///////////////////
+			// Broadcast message
+			for (int i = 0; i < avAgents.size(); ++i)
+			{
+				cLuxAgent@ pAgent = cLux_ToAgent(avAgents[i]);
+				if (pAgent is null) continue;
+				
+				pAgent.BroadcastMessage(eCustomEntityMessage_BulletImpact, null, aBullet.mvPos, 0);
+			}
+		}
+		
+		///////////////////
+		// Callback
+		if (aBullet.msHitCallback != "")
+		{
+			iLuxEntity@ pSourceEnt = cLux_ID_Entity(aBullet.m_idSource);
+			tString sSourceEnt = pSourceEnt !is null ? pSourceEnt.GetName() : "";
+			
+			if (sSourceEnt != "" && sSourceEnt != "Player")
+			{
+				cScript_SetGlobalArgID(0, a_idEntity);
+				cScript_SetGlobalArgID(1, a_idBody);
+				cScript_RunGlobalFunc(sSourceEnt, "", aBullet.msHitCallback);
+			}
+			else
+			{
+				tString sMapCallback = "void " + aBullet.msHitCallback + " (const tString &in asEntity, const tString &in asBody)";
+				if (pMap.ScriptMethodExists(sMapCallback) && pMap.ScriptPrepare(sMapCallback))
+				{
+					pMap.SetArgString(0, sEntName);
+					pMap.SetArgString(1, sBodyName);
+					pMap.ScriptExecute();
+				}
+				
+				tString sMapCallbackAlt = "void " + aBullet.msHitCallback + " (const tString &in asEntity, const cVector3f &in avHitPos)";
+				if (pMap.ScriptMethodExists(sMapCallbackAlt) && pMap.ScriptPrepare(sMapCallbackAlt))
+				{
+					pMap.SetArgString(0, sEntName);
+					pMap.SetArgVector3f(1, aBullet.mvPos);
+					pMap.ScriptExecute();
+				}
+			}
+		}
+		
+		return bDoImpact;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetHitboxesActive(bool abX, const array<iLuxEntity@> &in avAgents,  const array<iLuxEntity@> &in avTraps, 
+						   const array<iLuxEntity@> &in avFuelSpills, const array<iLuxEntity@> &in avLiquidAreas,
+						   const array<iLuxEntity@> &in avAnimaitonHitboxes)
+	{		
+		///////////////////////
+		// Agents
+		for (int i = 0; i < avAgents.size(); ++i)
+		{
+			cLuxAgent@ pAgent = cLux_ToAgent(avAgents[i]);
+			bool bActive = abX;
+			
+			if (pAgent is null) 				continue;
+			if (pAgent.IsActive() == false)		continue;
+			if (pAgent.GetRagdollActive()) 		continue;
+			
+			if (GetIsIgnoredAgent(pAgent.GetID()))
+				bActive = abX == false;
+						
+			pAgent.GetCharBody().SetPhysicsBodyActive(bActive == false);
+			pAgent.UpdateHitboxBodyTransforms();
+				
+			for (int j = 0; j < pAgent.GetHitboxBodyNum(); ++j)
+			{
+				pAgent.GetHitboxBody(j).SetCollide(bActive);
+			}
+		}
+		
+		///////////////////////
+		// Traps
+		for (int i = 0; i < avTraps.size(); ++i)
+		{
+			cLuxProp@ pTrap = cLux_ToProp(avTraps[i]);
+			
+			if (pTrap is null) 									continue;
+			if (pTrap.IsActive() == false) 						continue;
+			if (Trap_GetIsTriggered(pTrap.GetName()) && abX) 	continue;
+			
+			Trap_SetHitboxActive(pTrap.GetName(), abX);
+		}
+		
+		///////////////////////
+		// Fuel spills
+		for (int i = 0; i < avFuelSpills.size(); ++i)
+		{
+			cLuxProp@ pFuelSpill = cLux_ToProp(avFuelSpills[i]);
+			
+			if (pFuelSpill is null) 				continue;
+			if (pFuelSpill.IsActive() == false) 	continue;
+			
+			pFuelSpill.GetMainBody().SetCollide(abX);
+		}
+		
+		///////////////////////
+		// Liquid areas
+		for (int i = 0; i < avLiquidAreas.size(); ++i)
+		{
+			iLuxEntity@ pLiquidArea = avLiquidAreas[i];
+			iPhysicsBody@ pLiquidBody = pLiquidArea !is null ? pLiquidArea.GetMainBody() : null;
+			
+			if (pLiquidArea is null) continue;
+			if (pLiquidBody is null) continue;
+			
+			pLiquidBody.SetCollide(abX);
+		}
+		
+		///////////////////////
+		// Animation hitboxes
+		for (int i = 0; i < avAnimaitonHitboxes.size(); ++i)
+		{
+			iLuxEntity@ pHitbox = avAnimaitonHitboxes[i];
+			iPhysicsBody@ pHitboxBody = pHitbox !is null ? pHitbox.GetMainBody() : null;
+			
+			if (pHitbox is null) continue;
+			if (pHitboxBody is null) continue;
+			
+			pHitboxBody.SetCollide(abX == false);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	iLuxEntity@ GetEntityFromBody(iPhysicsBody@ apBody, const array<iLuxEntity@> &in avAgents)
+	{
+		/////////////////
+		// Belongs to an entity?
+		iLuxEntity@ pEnt = cLux_GetBodyEntity(apBody);
+		if (pEnt !is null) return pEnt;
+		
+		/////////////////
+		// Belongs to an agent?
+		for (int i = 0; i < avAgents.size(); ++i)
+		{
+			cLuxAgent@ pAgent = cLux_ToAgent(avAgents[i]);
+			
+			if (pAgent is null) 					continue;
+			if (GetIsIgnoredAgent(pAgent.GetID()))	continue;
+			
+			/////////////////
+			// Is it a hitbox?
+			for (int j = 0; j < pAgent.GetHitboxBodyNum(); ++j)
+			{
+				if (apBody is pAgent.GetHitboxBody(j))
+					return avAgents[i];
+			}
+		}
+		
+		return null;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetIsIgnoredAgent(tID a_idAgent)
+	{
+		for (int i = 0; i < mvBullets.size(); ++i)
+		{
+			cBullet@ pBullet = mvBullets[i];
+			if (pBullet is null) continue;
+			if (pBullet.mvIgnoredAgentIds.find(a_idAgent) != -1) 	
+				return true;
+		}
+		
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	cBullet@ GetBullet(int alId)
+	{		
+		for (int i = 0; i < mvBullets.size(); ++i)
+		{
+			cBullet@ pBullet = mvBullets[i];
+			
+			if (pBullet is null) continue;
+			if (pBullet.mlId == alId)
+				return pBullet;
+		}
+		
+		return null;
+	}
+	
+	//------------------------------------------------------------
+	
+	cBullet_CustomImpactEffect@ GetCustomImpactEffectFromEntity(tID a_idEntity)
+	{		
+		for (int i = 0; i < mvCustomImpactEffects.size(); ++i)
+		{
+			cBullet_CustomImpactEffect@ pData = mvCustomImpactEffects[i];
+			
+			if (pData is null) continue;
+			if (pData.m_idEntity == a_idEntity)
+				return pData;
+		}
+				
+		return null;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INTERFACE
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	int AddBullet(const cVector3f &in avStart, const cVector3f &in avDir, eBulletType aType, 
+				  tID a_idSource, const tString &in asHitCallback)
+	{
+		cBullet bullet;
+		bullet.mlId = mlBulletCount++;
+		bullet.mfTotalDist = 0.f;
+		bullet.mfMinPlayerHealth = 0.f;
+		bullet.mvPos = avStart;
+		bullet.mvOrigin = avStart;
+		bullet.mvPrevPos = avStart;
+		bullet.mvDir = cMath_Vector3Normalize(avDir);
+		bullet.mType = aType;
+		bullet.msHitCallback = asHitCallback;
+		bullet.m_idSource = a_idSource;
+		bullet.mvIgnoredAgentIds.resize(0);
+		bullet.mvIgnoredEntityIds.resize(0);
+		mvBullets.push_back(bullet);
+		
+		mfTimeSinceLastBullet = 0.f;
+		
+		return bullet.mlId;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetMinPlayerHealth(int alBulletId, float afMinHealth)
+	{
+		cBullet@ pBullet = GetBullet(alBulletId);
+		if (pBullet is null) return;
+		
+		pBullet.mfMinPlayerHealth = afMinHealth;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetCustomImpactEffectsForEntity(tID a_idEntity, const tString &in asPS, const tString &in asSound)
+	{
+		cBullet_CustomImpactEffect@ pData = GetCustomImpactEffectFromEntity(a_idEntity);
+		
+		if (pData is null)
+		{
+			cBullet_CustomImpactEffect data;
+			data.m_idEntity = a_idEntity;
+			data.msPS = asPS;
+			data.msSound = asSound;
+			
+			mvCustomImpactEffects.push_back(data);
+		}
+		else
+		{
+			pData.msPS = asPS;
+			pData.msSound = asSound;
+		}		
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetImpactParticleSuffix(const tString &in asSuffix)
+	{
+		msImpactParticleSuffix = asSuffix;
+	}
+		
+	//------------------------------------------------------------
+	
+	float GetTimeSinceLastBullet()
+	{
+		return mfTimeSinceLastBullet;
+	}
+	
+	//------------------------------------------------------------
+	
+	void AddIgnoredEntity(int alBulletId, tID a_idEntity)
+	{
+		cBullet@ pBullet = GetBullet(alBulletId);
+		if (pBullet is null) return;
+		
+		///////////////////
+		// Agent?
+		cLuxAgent@ pAgent = cLux_ID_Agent(a_idEntity);
+		if (pAgent !is null)
+		{
+			int lId = pBullet.mvIgnoredAgentIds.find(a_idEntity);
+			if (lId == -1)
+				pBullet.mvIgnoredAgentIds.push_back(a_idEntity);
+		}
+		
+		///////////////////
+		// Other entity?
+		else
+		{
+			int lId = pBullet.mvIgnoredEntityIds.find(a_idEntity);
+			if (lId == -1)
+				pBullet.mvIgnoredEntityIds.push_back(a_idEntity);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void AddGlobalIgnoredEntity(tID a_idEntity)
+	{
+		int lId = mvGlobalIgnoredEntityIds.find(a_idEntity);
+		if (lId == -1)
+			mvGlobalIgnoredEntityIds.push_back(a_idEntity);
+	}
+	
+	//------------------------------------------------------------
+	
+	void AddGlobalIgnoredAgent(tID a_idAgent)
+	{
+		int lId = mvGlobalIgnoredAgentIds.find(a_idAgent);
+		if (lId == -1)
+			mvGlobalIgnoredAgentIds.push_back(a_idAgent);
+	}
+	
+	//------------------------------------------------------------
+	
+	void RemoveGlobalIgnoredAgent(tID a_idAgent)
+	{
+		int lId = mvGlobalIgnoredAgentIds.find(a_idAgent);
+		if (lId != -1)
+			mvGlobalIgnoredAgentIds.removeAt(lId);
+	}
+	
+	//------------------------------------------------------------
+	
+	eBulletType GetLastDamageBulletType()
+	{
+		return mLastDamageBulletType;
+	}
+	
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// GUI
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+
+	void OnGui(float afTimeStep) {}	
+	void OnDraw(float afFrameTime) {}
+	void OnPostRender(float afFrameTime) {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	float DrawDebugOutput(cGuiSet@ apSet, iFontData@ apFont,float afY)
+	{
+		afY = cLux_DrawDebugText("------------ Bullet Handler ------------", afY);
+		afY = cLux_DrawDebugText("Bullets: " + mvBullets.size(), afY);
+		afY = cLux_DrawDebugText("Custom impact data: " + mvCustomImpactEffects.size(), afY);
+		return afY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// VARIABLES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	int mlBulletCount = 0;
+	int mlBulletIndex = 0;
+	float mfTimeSinceLastBullet = 0.f;
+	tString msImpactParticleSuffix = "";
+	eBulletType mLastDamageBulletType = eBulletType_Revolver;
+	array<cBullet> mvBullets;
+	array<cBullet_CustomImpactEffect> mvCustomImpactEffects;
+	array<tID> mvGlobalIgnoredEntityIds;
+	array<tID> mvGlobalIgnoredAgentIds;
+	
+	//array<cVector3f> mvStarts;
+	//array<cVector3f> mvEnds;
+	
+	//------------------------------------------------------------
+}

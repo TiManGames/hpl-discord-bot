@@ -1,0 +1,692 @@
+#include "interfaces/PlayerState_Interface.hps"
+#include "base/InputHandler_Types.hps"
+#include "player/Player_Types.hps"
+#include "custom/modules/ModuleInterfaces_Custom.hps"
+#include "helpers/helper_modules.hps"
+#include "custom/player/PlayerTypes_Custom.hps"
+#include "helpers/helper_player.hps"
+#include "helpers/helper_agent.hps"
+#include "helpers/helper_ai.hps"
+#include "helpers/helper_components.hps"
+#include "helpers/helper_modules_custom.hps"
+#include "custom/agents/agent_types_custom.hps"
+
+//------------------------------------------------------------
+
+/////////////////////////////////////////
+// SETTINGS
+/////////////////////////////////////////
+
+//------------------------------------------------------------
+
+const float gfThrown_ThrownDistance = 2.f;
+const float gfThrown_PlayerHeadOffset = 1.4f;
+const float gfThrown_StalkerPositionOffset = 1.5f;
+const float gfThrown_AdjustPositionMinTime = 0.3f;
+const float gfThrown_AdjustPositionMaxTime = 0.7f;
+const float gfThrown_AdjustHeadPositionStartMinTime = 0.2f;
+const float gfThrown_AdjustHeadPositionStartMaxTime = 0.6f;
+const float gfThrown_AdjustHeadPositionEndMinTime = 1.5f;
+const float gfThrown_AdjustHeadPositionEndMaxTime = 3.f;
+const float gfThrown_AdjustHeadPositionEndBackToMonsterMinTime = 2.5f;
+const float gfThrown_AdjustHeadPositionEndBackToMonsterMaxTime = 3.1f;
+
+const tString gsThrown_ThrownAnim = "player_throw_stand";
+const tString gsThrown_ThrownAnim_Crouch = "player_throw_crouch";
+const tString gsThrown_ThrownAnim_BackToMonster = "player_throw_back_to_monster_stand";
+const tString gsThrown_ThrownAnim_BackToMonster_Crouch = "player_throw_back_to_monster_crouch";
+
+//------------------------------------------------------------
+
+enum eThrownPlayerPositioningMode
+{
+	eThrownPlayerPositioningMode_Body,
+	eThrownPlayerPositioningMode_Head
+}
+
+//------------------------------------------------------------
+
+class cScrPlayerState_Thrown : iScrPlayerState, iScrPlayerState_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+
+	void _Global_Setup()
+	{
+		mThrowType = eStalkerThrowPlayerType(cScript_GetGlobalArgInt(0));
+		mvPlayerStartPos = cScript_GetGlobalArgVector3f(1);
+		mfAngle = cScript_GetGlobalArgFloat(2);
+		mvStalkerStartPos = cScript_GetGlobalArgVector3f(3);
+		mbPlayStalkerAnim = cScript_GetGlobalArgBool(4);
+		mfPlayerAnimFadeTime = cScript_GetGlobalArgFloat(5);
+		
+		mBaseObj.mpPlayer.ChangeState(ePlayerState_Custom_Thrown);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetDoMapCallback()
+	{
+		mbDoMapCallback = cScript_GetGlobalArgBool(0);
+	}
+	
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// USER SETTINGS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void LoadUserConfig() {}
+	void SaveUserConfig() {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ENTER MAP
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap) {}
+	void OnMapLeave(cLuxMap @apMap) {}
+	
+	//------------------------------------------------------------
+	
+	void CreateWorldEntities(cLuxMap @apMap) {}	
+	void DestroyWorldEntities(cLuxMap @apMap) {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//-----------------------------------------------------------
+	
+	void OnEnterState(int alPrevStateId)
+	{
+		////////////////
+		// Setup
+		FootPlacement_FadeOut(PlayerBody_GetEntityName(), 0.3f);
+		
+		cLuxMap@ pMap = cLux_GetCurrentMap();
+		
+		if (pMap !is null)
+		{
+			array<iLuxEntity@> vEnts;
+			pMap.GetEntityArray("*", eLuxEntityType_Agent, "cScrAgentStalker", vEnts);
+			
+			iLuxEntity@ pStalker = vEnts.size() > 0 ? vEnts[0] : null;
+			iLuxEntity@ pPlayerBody = pMap.GetEntityByName(PlayerBody_GetEntityName(), eLuxEntityType_Prop);
+			
+			m_idStalker = pStalker !is null ? pStalker.GetID() : tID_Invalid;
+			m_idPlayerBody = pPlayerBody !is null ? pPlayerBody.GetID() : tID_Invalid;
+		}				
+		
+		msItemRight = Item_GetHeldType(eItemHandlerHand_Right);
+		msItemLeft = Item_GetHeldType(eItemHandlerHand_Left);
+		
+		mfPrevTime = 0.f;
+		
+		////////////////
+		// Get on enter ground pos
+		mvPlayerHeadGroundPos = cVector3f(0.f);
+		mvPlayerOnEnterPos = cLux_GetPlayer().GetCharacterBody().GetFeetPosition();
+		
+		float fOnEnterPosDist;
+		cVector3f vOnEnterStart = mvPlayerOnEnterPos + cVector3f(0.f, 0.2f, 0.f);
+		if (DoRaycast(vOnEnterStart, cVector3f_Down, 4.f, fOnEnterPosDist))
+		{
+			mvPlayerOnEnterPos = vOnEnterStart + cVector3f_Down * fOnEnterPosDist;
+		}
+		
+		////////////////
+		// Make sure start pos is at ground
+		float fStartPosDist;
+		cVector3f vStart = mvPlayerStartPos + cVector3f(0.f, 0.2f, 0.f);
+		if (DoRaycast(vStart, cVector3f_Down, 4.f, fStartPosDist))
+		{
+			mvPlayerStartPos = vStart + cVector3f_Down * fStartPosDist;
+		}
+		
+		////////////////
+		// Calculate end position		
+		if (mbDoMapCallback)
+		{
+			DoMapCallback("void OnStartPlayerThrown()");
+		}
+		
+		CalculatePlayerEndPosition();
+		
+		if (mbDoMapCallback)
+		{
+			DoMapCallback("void OnEndPlayerThrown()");
+		}
+		
+		////////////////
+		// Play anim
+		bool bCrouch = Player_GetCrouching();
+		
+		if (mThrowType == eStalkerThrowPlayerType_BehindPlayer)
+		{
+			msPlayerAnim = bCrouch ? gsThrown_ThrownAnim_BackToMonster_Crouch : gsThrown_ThrownAnim_BackToMonster;
+		}
+		else
+		{
+			msPlayerAnim = bCrouch ? gsThrown_ThrownAnim_Crouch : gsThrown_ThrownAnim;
+		}		
+		
+		PlayerBody_StartCustomAnimation(msPlayerAnim, false, mfPlayerAnimFadeTime, true, mvPlayerStartPos, mfAngle, false);
+		PlayerBody_SetCutsceneMaxPitch(0.f);
+		PlayerBody_SetCutsceneMaxYaw(0.f);
+	}
+	
+	//------------------------------------------------------------
+
+	void OnLeaveState(int alNextStateId)
+	{
+		////////////////
+		// Reset player
+		PlayerBody_StopCustomAnimation(msPlayerAnim);
+		FootPlacement_FadeIn(PlayerBody_GetEntityName(), 0.3f);
+		
+		////////////////
+		// Items
+		if (msItemRight != "")
+			Item_Equip(ItemType_GetFirstInInventory(msItemRight));
+		if (msItemLeft != "")
+			Item_Equip(ItemType_GetFirstInInventory(msItemLeft));
+	}
+		
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+	}
+	
+	//------------------------------------------------------------
+
+	void Update(float afTimeStep)
+	{
+		//////////////////
+		// Setup vars
+		cLuxAgent@ pStalker = cLux_ID_Agent(m_idStalker);
+		iLuxEntity@ pPlayerBody = cLux_ID_Entity(m_idPlayerBody);
+		cAnimationState@ pAnim = PlayerBody_GetAnimationState(msPlayerAnim);
+		cBoneState@ pBone = pPlayerBody !is null ? pPlayerBody.GetMeshEntity().GetBoneStateFromName("j_Char_root") : null;
+		
+		if (pAnim is null) 		 return;
+		if (pBone is null) 		 return;
+		if (pStalker is null)	 return;
+		if (pPlayerBody is null) return;
+		
+		float fTime = pAnim.GetTimePosition();
+		cVector3f vPlayerPos = cVector3f(0.f);		
+		
+		//////////////////
+		// Position stalker
+		float fStalkerT = GetPositioningT(fTime, gfThrown_AdjustPositionMinTime, gfThrown_AdjustPositionMaxTime);			
+		cVector3f vStalkerPos = mvStalkerEndPos * fStalkerT + mvStalkerStartPos * (1.f - fStalkerT);
+			
+		//////////////////
+		// Position player
+		{
+			float fMinPlayerTime;
+			float fMaxPlayerTime;
+			
+			if (mPlayerPositioningMode == eThrownPlayerPositioningMode_Body)
+			{
+				SetupPlayerPositioning(fTime, mvPlayerHeadGroundPos, fMinPlayerTime, fMaxPlayerTime);
+			}
+			else if (mPlayerPositioningMode == eThrownPlayerPositioningMode_Head)
+			{
+				SetupPlayerPositioning(fTime, mvPlayerOnEnterPos, fMinPlayerTime, fMaxPlayerTime);
+			}
+			
+			float fPlayerT = GetPositioningT(fTime, fMinPlayerTime, fMaxPlayerTime);
+			vPlayerPos = mvPlayerEndPos * fPlayerT + mvPlayerStartPos * (1.f - fPlayerT);	
+		}
+		
+		//////////////////
+		// Apply positions
+		if (vStalkerPos.SqrLength() > 0.f && mbPlayStalkerAnim)
+		{
+			Agent_SetCutscenePosition(pStalker.GetName(), vStalkerPos);
+		}
+		
+		if (vPlayerPos.SqrLength() > 0.f)
+		{
+			PlayerBody_SetCameraAnimationPositionAndYaw(true, vPlayerPos, mfAngle, 0.f);
+		}
+		
+		//////////////////
+		// Update prev
+		mfPrevTime = fTime;
+		
+		//////////////////
+		// Exit?
+		if (pAnim.IsOver())
+		{
+			mBaseObj.mpPlayer.ChangeState(ePlayerState_Normal);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void PostUpdate(float afTimeStep) {}
+	void OnGui(float afTimeStep) {}
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool OnAction(int alAction, bool abPressed)
+	{
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnAnalogInput(int alAnalogId, const cVector3f &in avAmount)
+	{
+		////////////////////
+		// Move
+		if (alAnalogId == eAnalogType_GamepadMove)
+		{
+			return false;
+		}
+		else if (alAnalogId == eAnalogType_Move)
+		{
+			return false;
+		}
+		
+		////////////////////
+		// Look
+		else if (alAnalogId == eAnalogType_Look)
+		{
+			float fLookSpeedMul = Player_GetLookSpeedMul();
+			
+			iScrPlayerBodyHandler_Interface@ pBody = cast<iScrPlayerBodyHandler_Interface>(cLux_GetUserModuleFromID(eModuleType_PlayerBodyHandler));
+			pBody.Cutscene_AddPitch(avAmount.y * fLookSpeedMul);
+			pBody.Cutscene_AddYaw(avAmount.x * fLookSpeedMul);
+			return false;
+		}
+		
+		///////////////////////////////////
+		// Lean
+		else if (alAnalogId == eAnalogType_Lean)
+		{
+			return false;
+		}
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnExitPressed()
+	{
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// BODY CALLBACKS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool AllowBuoyancy(iPhysicsBody @apBody)
+	{
+		return true;
+	}
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// CHARACTER CALLBACK
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void CharBody_GravityCollide(iCharacterBody@ apCharBody, iPhysicsBody@ apBody, cCollideData @apCollideData) {}
+	void CharBody_HitGround(iCharacterBody@ apCharBody,const cVector3f &in avVel) {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPERS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------	
+	
+	void CalculatePlayerEndPosition()
+	{
+		/////////////////////
+		// Setup vars
+		iCharacterBody@ pCharBody = mBaseObj.mpPlayer.GetCharacterBody();
+		iPhysicsWorld@ pPhysicsWorld = cLux_GetCurrentMap().GetPhysicsWorld();
+		
+		if (pCharBody is null) 		return;
+		if (pPhysicsWorld is null) 	return;
+		
+		bool bFoundEndPos = false;	
+		
+		float fAngle = mfAngle;
+		if (mThrowType == eStalkerThrowPlayerType_BehindPlayer)
+			fAngle += cMath_Pi;
+				
+		cVector3f vDir = cMath_MatrixMul(cMath_MatrixRotateY(fAngle), cVector3f_Forward);	
+			
+		cVector3f[] vEndPositions = { mvPlayerStartPos + vDir * gfThrown_ThrownDistance * 1.25f,
+									  mvPlayerStartPos + vDir * gfThrown_ThrownDistance * 1.f,
+									  mvPlayerStartPos + vDir * gfThrown_ThrownDistance * 0.75f,
+								      mvPlayerStartPos + vDir * gfThrown_ThrownDistance * 0.5f };
+		
+		iCollideShape@ pShape = pPhysicsWorld.CreateSphereShape(0.3f, cMatrixf_Identity);
+		
+		/////////////////////
+		// Find end pos!
+		for (int i = 0; i < vEndPositions.length(); ++i)
+		{
+			/////////////////////
+			// End pos valid?
+			mvPlayerEndPos = GetEndPos(vEndPositions[i], mvPlayerStartPos, vDir, pCharBody, true);
+			if (mvPlayerEndPos.SqrLength() <= 0.f)
+			{
+				continue;
+			}
+			
+			/////////////////////
+			// Player head won't end up inside geo?
+			cVector3f vShapePush;
+			cVector3f vShapeOffset = cVector3f_Up * 0.5f + vDir * gfThrown_PlayerHeadOffset;
+			cMatrixf mtxShape = cMath_MatrixTranslate(mvPlayerEndPos + vShapeOffset);
+						
+			if (pPhysicsWorld.CheckShapeWorldCollision(vShapePush, pShape, mtxShape, null, false, false))
+			{
+				continue;
+			}
+			
+			/////////////////////
+			// Get ground pos at head
+			float fDist;
+			cVector3f vHeadPos = mtxShape.GetTranslation();
+			DoRaycast(vHeadPos, cVector3f_Down, 5.f, fDist);
+			
+			/////////////////////
+			// Found a pos?
+			if (fDist < 5.f)
+			{
+				bFoundEndPos = true; 
+				mvPlayerHeadGroundPos = vHeadPos + cVector3f_Down * fDist;
+				break;
+			}				
+		}
+		
+		/////////////////////
+		// Destroy shape
+		if (pShape !is null)
+		{
+			pPhysicsWorld.DestroyShape(pShape);
+		}
+		
+		/////////////////////
+		// End pos found!
+		if (bFoundEndPos)
+		{
+			mPlayerPositioningMode = eThrownPlayerPositioningMode_Body;
+			mvStalkerEndPos = mvStalkerStartPos;
+		}
+		
+		/////////////////////
+		// No end pos found!
+		else
+		{
+			mPlayerPositioningMode = eThrownPlayerPositioningMode_Head;
+			mvPlayerEndPos = mvPlayerStartPos + vDir * -1.f * gfThrown_PlayerHeadOffset;
+			
+			/////////////////////
+			// Adjust stalker position instead
+			if (mbPlayStalkerAnim)
+			{
+				CalculateStalkerEndPosition();
+			}
+		}	
+	}
+	
+	//------------------------------------------------------------
+	
+	void CalculateStalkerEndPosition()
+	{
+		/////////////////////
+		// Setup vars
+		iPhysicsWorld@ pPhysicsWorld = cLux_GetCurrentMap().GetPhysicsWorld();
+		cLuxAgent@ pStalker = cLux_ID_Agent(m_idStalker);
+		iCharacterBody@ pCharBody = pStalker !is null ? pStalker.GetCharBody() : null;
+		
+		if (pPhysicsWorld is null) 	return;
+		if (pStalker is null) 		return;
+		if (pCharBody is null) 		return;
+		
+		bool bFoundEndPos = false;	
+		
+		float fAngle = mfAngle;
+		if (mThrowType != eStalkerThrowPlayerType_BehindPlayer)
+			fAngle += cMath_Pi;
+		
+		cVector3f vCurrentPos = pCharBody.GetPosition();		
+		cVector3f vDir = cMath_MatrixMul(cMath_MatrixRotateY(fAngle), cVector3f_Forward);	
+			
+		cVector3f[] vEndPositions = { vCurrentPos + vDir * gfThrown_StalkerPositionOffset * 1.25f,
+									  vCurrentPos + vDir * gfThrown_StalkerPositionOffset * 1.f,
+								      vCurrentPos + vDir * gfThrown_StalkerPositionOffset * 0.5f };
+		
+		/////////////////////
+		// Find end pos!
+		for (int i = 0; i < vEndPositions.length(); ++i)
+		{
+			mvStalkerEndPos = GetEndPos(vEndPositions[i], vCurrentPos, vDir, pCharBody, false);
+			if (mvStalkerEndPos.SqrLength() > 0.f)
+			{
+				bFoundEndPos = true;
+				break;
+			}
+		}
+		
+		/////////////////////
+		// Found end pos?
+		if (bFoundEndPos == false)
+		{
+			mvStalkerEndPos = pCharBody.GetFeetPosition();
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	cVector3f GetEndPos(const cVector3f &in avEndPos, const cVector3f &in avCurrentPos, 
+						const cVector3f &in avDir, iCharacterBody@ apCharBody, bool abCurrentPosIsFootPos)
+	{				
+		/////////////////////
+		// End pos has ground beneath it?
+		cVector3f vEndPosOffset = cVector3f(0.f, 0.05f, 0.f);
+		cVector3f vEndPos = avEndPos + vEndPosOffset;
+		float fDistToGround;
+		
+		if (DoRaycast(vEndPos, cVector3f_Down, 4.f, fDistToGround) == false)
+		{
+			return cVector3f(0.f);
+		}
+			
+		vEndPos = vEndPos + cVector3f_Down * fDistToGround;
+			
+		/////////////////////
+		// In LoS?
+		float fDistToEndPos;
+		cVector3f vStartPosLos = avCurrentPos + cVector3f_Up;
+		cVector3f vEndPosLoS = vEndPos + cVector3f_Up + avDir * gfThrown_PlayerHeadOffset;
+		cVector3f vToEndPosLoS = vEndPosLoS - vStartPosLos;
+			
+		if (DoRaycast(vStartPosLos, cMath_Vector3Normalize(vToEndPosLoS), vToEndPosLoS.Length(), fDistToEndPos))
+		{
+			return cVector3f(0.f);
+		}
+			
+		/////////////////////
+		// Char body fits?
+		bool bFits = false;		
+		cVector3f[] vPosTestAdds = { cVector3f(0.f, 0.001f, 0.f), 
+									 cVector3f(0.05f, 0.001f, 0.f), cVector3f(-0.05f, 0.001f, 0.f),
+									 cVector3f(0.f, 0.001f, 0.05f), cVector3f(0.f, 0.001f, -0.05f) };
+										
+		for (int i = 0; i < vPosTestAdds.length(); ++i)
+		{
+			cVector3f vBodyPush;
+			cVector3f vPosTestAdd = vPosTestAdds[i];
+				
+			if (apCharBody.CheckCharacterFits(vEndPos + vPosTestAdd, abCurrentPosIsFootPos, 0, vBodyPush))
+			{
+				bFits = true;
+				break;
+			}
+		}
+		
+		if (bFits == false)
+		{
+			return cVector3f(0.f);
+		}
+			
+		/////////////////////
+		// Valid pos!
+		return vEndPos;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool DoRaycast(const cVector3f &in avStart, const cVector3f &in avDir, float afLength, float &out afDist)
+	{
+		afDist = 0.f;
+		cVector3f vNrm;
+		return cLux_GetClosestBody(avStart, avDir, afLength, afDist, vNrm) !is null;
+	}
+	
+	//------------------------------------------------------------
+	
+	float GetPositioningT(float afTime, float afMinTime, float afMaxTime)
+	{
+		float fT = (afTime - afMinTime) / (afMaxTime - afMinTime);
+		return cMath_Clamp(fT, 0.f, 1.f);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupPlayerPositioning(float afCurrentTime, const cVector3f &in avFinalPos, float &out afMinTime, float &out afMaxTime)
+	{
+		afMinTime = gfThrown_AdjustHeadPositionStartMinTime;
+		afMaxTime = gfThrown_AdjustHeadPositionStartMaxTime;
+			
+		if (afCurrentTime >= gfThrown_AdjustHeadPositionEndMinTime)
+		{
+			if (mThrowType == eStalkerThrowPlayerType_BehindPlayer)
+			{
+				afMinTime = gfThrown_AdjustHeadPositionEndBackToMonsterMinTime;
+				afMaxTime = gfThrown_AdjustHeadPositionEndBackToMonsterMaxTime;
+			}
+			else
+			{
+				afMinTime = gfThrown_AdjustHeadPositionEndMinTime;
+				afMaxTime = gfThrown_AdjustHeadPositionEndMaxTime;
+			}				
+			
+			if (mfPrevTime < gfThrown_AdjustHeadPositionEndMinTime)
+			{
+				mvPlayerStartPos = mvPlayerEndPos;
+				mvPlayerEndPos = avFinalPos;
+			}
+		}	
+	}
+	
+	//------------------------------------------------------------
+	
+	void DoMapCallback(const tString &in asCallback)
+	{
+		cLuxMap@ pMap = cLux_GetCurrentMap();
+		if (pMap !is null &&
+			pMap.ScriptMethodExists(asCallback) &&
+			pMap.ScriptPrepare(asCallback))
+		{	
+			pMap.ScriptExecute();
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+
+	float mfPrevTime = 0.f;
+	float mfAngle = 0.f;
+	float mfPlayerAnimFadeTime = 0.3f;
+	
+	bool mbPlayStalkerAnim = false;
+	bool mbDoMapCallback = false;
+	
+	tString msPlayerAnim = "";
+	tString msItemLeft = "";
+	tString msItemRight = "";
+	
+	cVector3f mvPlayerStartPos = cVector3f(0.f);
+	cVector3f mvPlayerEndPos = cVector3f(0.f);
+	cVector3f mvPlayerOnEnterPos = cVector3f(0.f);
+	cVector3f mvPlayerHeadGroundPos = cVector3f(0.f);
+	cVector3f mvStalkerStartPos = cVector3f(0.f);
+	cVector3f mvStalkerEndPos = cVector3f(0.f);
+	
+	tID m_idPlayerBody = tID_Invalid;
+	tID m_idStalker = tID_Invalid;
+	
+	eStalkerThrowPlayerType mThrowType = eStalkerThrowPlayerType_Forward;
+	eThrownPlayerPositioningMode mPlayerPositioningMode = eThrownPlayerPositioningMode_Body;
+	
+	//------------------------------------------------------------
+}

@@ -1,0 +1,908 @@
+#include "interfaces/PlayerState_Interface.hps"
+#include "base/InputHandler_Types.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_effects_custom.hps"
+#include "helpers/helper_player.hps"
+#include "helpers/helper_player_custom.hps"
+#include "helpers/helper_audio.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_modules_custom.hps"
+
+//------------------------------------------------------------
+
+enum eBirthState
+{
+	eBirthState_Rest,
+	eBirthState_Fade,
+	eBirthState_PrePush,
+	eBirthState_Push,
+	eBirthState_None
+}
+
+//------------------------------------------------------------
+
+/////////////////////////////////////////
+// SETTINGS
+/////////////////////////////////////////
+
+//------------------------------------------------------------
+
+const float gfMaxYawLookAngle_Push = 45.f;
+const float gfMaxYawLookAngle = 120.f;
+const float gfFocusDistThreshold_Push = 0.25f;
+const float gfFocusDistThreshold_Fade = 0.35f;
+const float gfUnfocusedPushTimeAdd = 2.0f; // How much extra time it should take if pushing without focusing
+
+float gfBirthMaxPitch = 1.0f;
+float gfBirthMinPitch = -0.11f;
+
+//------------------------------------------------------------
+
+class cScrPlayerState_Birth : iScrPlayerState, iScrPlayerState_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetupBirthState()
+	{
+		
+		msPositionEntity = cScript_GetGlobalArgString(0);
+		msFocusEntity = cScript_GetGlobalArgString(1);
+		msFocusBone = cScript_GetGlobalArgString(2);
+		
+		msSuccessCallback = cScript_GetGlobalArgString(3);
+		msFailCallback = cScript_GetGlobalArgString(4);
+		msFadeStruggleEndCallback = cScript_GetGlobalArgString(5);
+		
+		mlCurrBirthState = eBirthState_Rest;
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_ActivatePushState()
+	{
+		mfBirthPushDuration = cScript_GetGlobalArgFloat(0);
+		mlCurrBirthState = eBirthState_Push;
+		
+		//////////////////
+		// Update Progress
+		//TODO: check whether we should randomize these voice lines
+		mlBirthStage+=1;
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_ActivateFadeOutState()
+	{
+		mfBirthFadeDuration = cScript_GetGlobalArgFloat(0);
+		mlCurrBirthState = eBirthState_Fade;
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_PlayAnimation()
+	{
+		tString sAnim = cScript_GetGlobalArgString(0);
+		float afFadeTime = cScript_GetGlobalArgFloat(1);
+		tString sCallback = cScript_GetGlobalArgString(2);
+		
+		PlayerBody_PlayBirthAnimation(msPositionEntity, sAnim, afFadeTime, sCallback);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetGhoulMode()
+	{
+		mbGhoulMode = cScript_GetGlobalArgBool(0);
+	}
+
+	//------------------------------------------------------------
+
+	void OnAttachBodyToStickyArea(){}
+
+	//------------------------------------------------------------
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init(){}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// USER SETTINGS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void LoadUserConfig() {}	
+	void SaveUserConfig() {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ENTER MAP
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+		mfBaseExposure = apMap.GetWorld().GetToneMappingExposure();
+	}
+	
+	void OnMapLeave(cLuxMap @apMap) {}
+	void CreateWorldEntities(cLuxMap @apMap) {}
+	void DestroyWorldEntities(cLuxMap @apMap) {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnEnterState(int alPrevStateId)
+	{
+		//Player_FadeLookAccelerationTo(0.75, 0);
+		FearHandler_SetActive(false);
+		Effect_FearTentacles_Start();
+		
+		PlayerBody_SetBirthIdleActive(msPositionEntity, 0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnLeaveState(int alNextStateId)
+	{
+		//Player_FadeLookAccelerationTo(0, 2);
+		FearHandler_SetActive(true);
+		Effect_FearTentacles_Stop();
+		Effect_ToneMapping_FadeExposure(mfBaseExposure, 1.f);
+		
+		Effect_FOV_Shake_FadeOut(-1, 0.3);
+		
+		if (mlFadeBlurID>-1)
+		{
+			Effect_DoF_FadeOut(mlFadeBlurID, 0.3f);
+			mlFadeBlurID = -1;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void Reset(){}
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep)
+	{
+		iCharacterBody @pBody = cLux_GetPlayer().GetCharacterBody();
+		cCamera @pCam = cLux_GetPlayer().GetCamera();
+		iScrPlayerBodyHandler_Interface@ pPlayerBody = cast<iScrPlayerBodyHandler_Interface>(cLux_GetUserModuleFromID(eModuleType_PlayerBodyHandler));
+		iLuxEntity @pPushFocusEnt = cLux_GetCurrentMap().GetEntityByName(msFocusEntity);
+		
+		cVector3f vFocusPos = pPushFocusEnt.GetPosition();
+		if (msFocusBone != "")
+		{
+			cBoneState@ pBone = pPushFocusEnt.GetMeshEntity().GetBoneStateFromName(msFocusBone);
+			if (pBone is null) return;
+			vFocusPos = pBone.GetWorldPosition();
+			Debug_DrawSphere(vFocusPos, 0.1, cColor_White);
+		}
+		
+		if (pCam==null || pBody==null || pPushFocusEnt==null) return;
+		
+		cVector3f vLookAtFwd = cMath_Vector3Normalize(vFocusPos - pCam.GetPosition());
+		cVector3f vLookAtRight = cMath_Vector3Cross(vLookAtFwd, cVector3f_Up);
+		cVector3f vLookAtUp = cMath_Vector3Cross(vLookAtRight, vLookAtFwd);
+		cMatrixf mtxLookAt = cMath_MatrixUnitVectors(vLookAtRight, vLookAtUp, vLookAtFwd*-1.0f, pCam.GetPosition());
+		
+		// Create new camera rotation from forward vector to stop the z rotation of the camera from affecting calculations
+		vLookAtFwd = cMath_Vector3Normalize(pCam.GetForward());
+		vLookAtRight = cMath_Vector3Cross(vLookAtFwd, cVector3f_Up);
+		vLookAtUp = cMath_Vector3Cross(vLookAtRight, vLookAtFwd);
+		cMatrixf mtxCamRot = cMath_MatrixUnitVectors(vLookAtRight, vLookAtUp, vLookAtFwd*-1.0f, pCam.GetPosition());
+		
+		cVector3f vAngleToMainFocusTarget = cMath_MatrixEulerAngleDistance(mtxCamRot, mtxLookAt);
+		vAngleToMainFocusTarget.x *= 2.0f; //Just a magic multiplication to make the angle distance feel more correct
+		float fDistToFadeTargetLength = vAngleToMainFocusTarget.Length();
+		
+		cVector3f vDirToTarget = cMath_Vector3Normalize(vFocusPos-pCam.GetPosition());
+		float fRight = cMath_Vector3Dot(vDirToTarget, pCam.GetRight());
+		
+		float fCurrYaw = pPlayerBody.Cutscene_GetYaw();
+		float fCurrPitch = pPlayerBody.Cutscene_GetPitch();
+		float fLookSpeedMul = Player_GetLookSpeedMul();
+		
+		float fTentaclesFxAlphaMin = 0.5f;
+		
+		///////////////////////////////
+		// PUSH STRUGGLE
+
+		// Check if still pushing
+		for (int i = 0; i < mvPushActions.length(); i++)
+		{
+			if (cInput_IsTriggered(mvPushActions[i]))
+				continue;
+			
+			mvPushActions.removeAt(i);
+			i--;
+		}
+		bool bPushing = mvPushActions.length() > 0 || mfPushStickAmount > 0.75f;
+		mfPushStickAmount = 0;
+			
+		bool bFocused = true; 
+		
+		if (mlCurrBirthState == eBirthState_Push)
+		{
+			if ((mbPushing == true && bPushing==false) || 
+			    (mbPushing == false && bPushing))
+			{
+				mbPushing = bPushing;
+				Push(mbPushing);
+				
+				// Reset shake effect
+				if (mbPushing && mlStrongShakeID>-1)
+				{
+					Effect_FOV_Shake_FadeOut(mlStrongShakeID, 0.1f);
+					mlStrongShakeID=-1;
+				}
+			}
+			
+			cVector3f vPullTargetOffset = cVector3f(0,2.f,0);
+			if (mbPushing == false)
+				vPullTargetOffset.y = 0.4f;
+				
+			cVector3f vPullTargetPosition = vFocusPos + vPullTargetOffset;
+		
+			cVector3f vPullFwd = cMath_Vector3Normalize(vPullTargetPosition - pCam.GetPosition());
+			cVector3f vPullRight = cMath_Vector3Cross(vPullFwd, cVector3f_Up);
+			cVector3f vPullUp = cMath_Vector3Cross(vPullRight, vPullFwd);
+			cMatrixf mtxPull = cMath_MatrixUnitVectors(vPullRight, vPullUp, vPullFwd*-1.0f, pCam.GetPosition());
+			
+			cVector3f vAngleToPullTarget = cMath_MatrixEulerAngleDistance(mtxCamRot, mtxPull);
+			
+			cVector3f vControlAdd = mvLookControlAmount * (mbPushing ? 1.0f : 0.25f);
+			
+			// Tweak sensitivity when using gamepad
+			if (cLux_GetInputHandler().GetGamepadWasLastDeviceUsed())
+			{
+				float fGamePadMul = 0.75f;
+				vControlAdd*=fGamePadMul;
+			}
+			
+			mvCameraVelocity += vControlAdd*afTimeStep;
+			
+			cVector3f vFocusDir = cVector3f(-vAngleToPullTarget.y, -vAngleToPullTarget.x, 0);
+			cVector3f vFocusPull = vFocusDir*0.4f*afTimeStep;
+				
+			mvCameraVelocity += vFocusPull;
+				
+			mvCameraVelocity *= 1.0f-4.0f*afTimeStep; //Decay
+			
+			cVector3f vAdd = mvCameraVelocity;
+			AddYaw(vAdd.x);
+			AddPitch(vAdd.y);
+			
+			bFocused = fDistToFadeTargetLength < gfFocusDistThreshold_Push;
+			
+			// Increase timer slightly more slowly if not struggling
+			float fTimeToAdd = afTimeStep;
+			if (bFocused && mbPushing)
+				fTimeToAdd *= 1.0f/mfBirthPushDuration;
+			else
+				fTimeToAdd *= 1.0f/(mfBirthPushDuration+gfUnfocusedPushTimeAdd);
+
+			mfPushStruggleTimer += fTimeToAdd;
+			
+			if (mfPushStruggleTimer >= 1.0f)
+			{
+				PushStruggleEnd();
+			}
+			
+			///////////////////
+			// Look sensitivity
+			mfYawLookMul = 0.25f;
+			mfPitchLookMul = 0.1f;
+			
+			if (bFocused && mbPushing)
+			{
+				mfTimeFocusedOnPush += afTimeStep;
+				//cLux_AddDebugMessage("mfTimeFocusedOnPush " + mfTimeFocusedOnPush + " / " + mfBirthPushDuration / 2.f);
+			}
+		}
+			
+		////////////////////////
+		// Handle push screen effects
+		if (bFocused && bPushing)
+		{
+			float fRadialBlurStrength = (mlCurrBirthState == eBirthState_Push) ? 0.2 : 0.1;
+			if (mlRadialBlur==-1)
+			{
+				mlRadialBlur = Effect_RadialBlur_Start(fRadialBlurStrength, 10, 0.4, mfBirthPushDuration*0.8f);
+			}
+			else
+			{
+				Effect_RadialBlur_FadeSize(mlRadialBlur, fRadialBlurStrength, 1.f);
+			}
+			
+			if (mlStrongShakeID==-1)
+			{
+				mlStrongShakeID = Effect_FOV_Shake_Start((mlCurrBirthState == eBirthState_Push) ? 0.025f : 0.01, -1, 1.f, 1.f);
+				
+				if(mlCurrBirthState == eBirthState_Push)
+				{
+					Effect_Rumble_Start(0.7, mfBirthPushDuration*0.8f, 0.5f, 2.0f);
+					cLux_AddDebugMessage("BIRTH RUMBLE!");
+				}
+			}
+		}
+		else
+		{
+			if (mlRadialBlur>-1)
+				Effect_RadialBlur_FadeSize(mlRadialBlur, 0.05f, 1.f);
+			
+			if (mlStrongShakeID>-1)
+			{
+				Effect_FOV_Shake_FadeOut(mlStrongShakeID, 0.1f);
+				mlStrongShakeID=-1;
+			}
+		}
+		
+		///////////////////////////////
+		// FADE OUT STRUGGLE && REST
+		if (mlCurrBirthState == eBirthState_Fade || mlCurrBirthState == eBirthState_Rest || mlCurrBirthState == eBirthState_PrePush)
+		{
+			if (mlCurrBirthState == eBirthState_Rest)
+				mvLookControlAmount *= 0.5f;
+			
+			if (mlCurrBirthState == eBirthState_PrePush)
+			{
+				mfPitchLookMul = 0.1 / fLookSpeedMul;
+			}
+			else
+				mfPitchLookMul = 0.5f;
+				
+			///////////////////////////
+			// Pull Pitch
+			//float fPitchRotToAdd = fPitchDistToFadeTarget * fLookSpeedMul * afTimeStep;
+			//pCam.AddPitch(fPitchRotToAdd);
+			
+			/////////////////////
+			// Pull Yaw
+			bool bFocused = fDistToFadeTargetLength <= gfFocusDistThreshold_Fade;
+			
+			/////////////////
+			// Player resists
+			float fYawLookAmount = mvLookControlAmount.x * -1;
+			float fStartPullAccelMul = cMath_InterpolateLinear(mfYawPullAccelMul, 1.f, afTimeStep * 0.5f);
+			float fStopPullAccelMul = cMath_InterpolateLinear(mfYawPullAccelMul, 0.f, afTimeStep * 5.f);
+			
+			////////////////////////
+			// Focus logic & effects
+			if (mlCurrBirthState == eBirthState_Fade)
+			{
+				float fFadeOutEffectDepth = cMath_Clamp(cMath_Abs(fDistToFadeTargetLength), 0.f, 0.8f);
+				float fExposure = cMath_InterpolateLinear(mfBaseExposure, -1, fFadeOutEffectDepth);
+				Effect_ToneMapping_FadeExposure(fExposure, 0.2f);
+				Effect_FearTentacles_FadeCoverage(fTentaclesFxAlphaMin + ((1.f - fTentaclesFxAlphaMin) * fFadeOutEffectDepth), 0.2f);
+				Effect_FearTentacles_FadeAlpha(fTentaclesFxAlphaMin + ((1.f - fTentaclesFxAlphaMin) * fFadeOutEffectDepth + 0.2), 0.2f);
+			}
+			else
+			{
+				Effect_ToneMapping_FadeExposure(-1.5f, 4.f);
+				Effect_FearTentacles_FadeCoverage(1.f, 1.f);
+				Effect_FearTentacles_FadeAlpha(1.f, 0.5f);
+			}
+			
+			if (mfFadeFocusDelay > 0 && mlCurrBirthState == eBirthState_Fade)
+				mfFadeFocusDelay -= afTimeStep;
+				
+			if (bFocused && mlCurrBirthState == eBirthState_Fade)
+			{
+				mfYawLookMul = 0.2f;
+					
+				mfTimeFocusedOnFade += afTimeStep;
+				
+				// Shake on
+				if (mlFadeFocusShakeID==-1)
+					mlFadeFocusShakeID = Effect_FOV_Shake_Start(0.025f, -1, 1.f, 1.f, 4.f);
+					
+				if (mlFadeBlurID>-1)
+				{
+					float fFocalDist = (pCam.GetPosition()-vFocusPos).Length();
+					Effect_DoF_FadeFocus(mlFadeBlurID, fFocalDist,fFocalDist+0.5,0.5f);
+				}
+			}
+			else
+			{
+				// Shake off
+				if (mlFadeFocusShakeID>-1)
+				{
+					Effect_FOV_Shake_FadeOut(mlFadeFocusShakeID, 0.1f);
+					mlFadeFocusShakeID=-1;
+				}
+				
+				// DOF On
+				if (mlFadeBlurID==-1)
+					mlFadeBlurID = Effect_DoF_Start(0.f, 0.1f, 0.2f, 2.f);
+				else
+					Effect_DoF_FadeFocus(mlFadeBlurID, 0,0.1f,0.5f);
+				
+				////////////////////////
+				// Slowly regain control
+				mfYawLookMul = 0.2f;
+				
+				mfTimeFocusedOnFade -= afTimeStep*2.0f;
+				if (mfTimeFocusedOnFade < 0)
+					mfTimeFocusedOnFade=0;
+			}
+						
+			cVector3f vControlAdd = mvLookControlAmount;
+			
+			// Tweak sensitivity when using gamepad
+			if (cLux_GetInputHandler().GetGamepadWasLastDeviceUsed())
+			{
+				float fGamePadMul = 2.0f;
+				
+				if (mlCurrBirthState != eBirthState_PrePush)
+				{
+					float fMinDist = 0.25f;
+					float fMaxDist = 1.5f;
+					float fFract = cMath_Clamp((fDistToFadeTargetLength-fMinDist)/(fMaxDist-fMinDist), 0, 1.0f);
+					fGamePadMul = 1.0f+(1.0f*fFract);
+				}
+				
+				vControlAdd*=fGamePadMul;
+			}
+			
+			mvCameraVelocity += vControlAdd*afTimeStep*0.5f;
+			
+			mvCameraVelocity = cMath_Vector3MaxLength(mvCameraVelocity, 0.015f);
+			
+			if (mlCurrBirthState != eBirthState_PrePush)
+			{
+				// Apply rotation to the velocity to make it harder to control
+				// Increase rotation closer to target
+				float fDistanceMul = cMath_Easing(eEasing_QuadIn, 1.0f - cMath_Min(fDistToFadeTargetLength/2.0f, 1.0f), 0, 1);
+				float fMaxRot = cMath_Pi*0.7*fDistanceMul;
+				float fMaxRotAdd = fMaxRot*35.0f*fDistanceMul;
+				mfFadeRotation += cMath_RandRectf(-fMaxRotAdd, fMaxRotAdd)*afTimeStep;
+				mfFadeRotation = cMath_Clamp(mfFadeRotation, -fMaxRot, fMaxRot);
+				//cLux_AddDebugMessage("mfFadeRotation "+mfFadeRotation);
+				mvCameraVelocity = cMath_MatrixMul(cMath_MatrixRotateZ(mfFadeRotation*afTimeStep), mvCameraVelocity);
+				
+				mvCameraVelocity *= 1.0f-0.8f*afTimeStep; //Decay
+				
+				// Apply gravity
+				float fTargetPitch = gfBirthMaxPitch-(gfBirthMaxPitch+gfBirthMinPitch)*0.5f*cMath_Abs(fCurrYaw);
+				float fPitchDiff = fTargetPitch-fCurrPitch;
+				
+				// increase gravity strength right after push
+				mfPushCameraCooldown = cMath_Max(mfPushCameraCooldown - 0.25f*afTimeStep, 0.f);
+				float fGravityMul = 1.0f + 10.0f*cMath_Easing(eEasing_CubicIn, mfPushCameraCooldown);
+				
+				cVector3f vGravityDir = (cVector3f_Up*0.75f*cMath_Sign(-fPitchDiff)) + (cVector3f_Left*cMath_Sign(fRight)*1.5f);
+				cVector3f vGravity = cMath_Vector3Normalize(vGravityDir)*0.005f*fGravityMul*afTimeStep;
+				
+				mvCameraVelocity += vGravity;
+			}
+			else
+			{
+				cVector3f vFocusDir = cVector3f(-vAngleToMainFocusTarget.y, -vAngleToMainFocusTarget.x, 0);
+				cVector3f vFocusPull = vFocusDir*0.16f*afTimeStep;
+				
+				mvCameraVelocity += vFocusPull;
+				
+				mvCameraVelocity *= 1.0f-4.0f*afTimeStep; //Decay
+			}
+			
+			cVector3f vAdd = mvCameraVelocity;
+			AddYaw(vAdd.x);
+			AddPitch(vAdd.y);
+			
+			/////////////////
+			// Win/Lose logic
+			// Stay forcused for at least "mfBirthFadeDuration" to win.
+			if (mlCurrBirthState == eBirthState_Fade && mfTimeFocusedOnFade >= mfBirthFadeDuration)
+				FadeStruggleEnd();
+		}
+
+		/////////////////////////////////
+		// CLEAN UP BEFORE THE NEXT ROUND
+		if (mlCurrBirthState != eBirthState_Fade)
+		{
+			if (mlFadeFocusShakeID>-1)
+			{
+				Effect_FOV_Shake_FadeOut(mlFadeFocusShakeID, 0.1f);
+				mlFadeFocusShakeID=-1;
+			}
+		}
+			
+		if (mlCurrBirthState != eBirthState_Fade && mlCurrBirthState != eBirthState_Rest)
+		{
+			if (mlFadeBlurID>-1)
+			{
+				Effect_DoF_FadeOut(mlFadeBlurID, 2.f);
+				mlFadeBlurID=-1;
+			}
+			
+			Effect_ToneMapping_FadeExposure(mfBaseExposure, 0.5f);
+			Effect_FearTentacles_FadeCoverage(fTentaclesFxAlphaMin, 2.f);
+			Effect_FearTentacles_FadeAlpha(fTentaclesFxAlphaMin, 2.f);
+		}
+		
+		if (mlPreviousBirthState != mlCurrBirthState)
+		{
+			mlPreviousBirthState = mlCurrBirthState;
+			cLux_AddDebugMessage("mlCurrBirthState "+mlCurrBirthState);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void PostUpdate(float afTimeStep)
+	{
+		mvLookControlAmount = 0.f;
+	}
+	
+	//------------------------------------------------------------
+	
+	void PushStruggleEnd()
+	{
+		///////////////
+		// Reset values
+		mbPushing = false;
+		mfTimeFocusedOnPush = 0.f;
+		mfPushStruggleTimer = 0.f;
+		Push(false);
+		
+		/////////////////////
+		// Tasi resting voice
+		int lLine = mlBirthStage; // TEMP
+		if (mlBirthStage == 2) lLine = 4; // TEMP
+		if (mlBirthStage == 3) lLine = 5; // TEMP
+		Voice_Stop("BirthScreams");
+		tString sBirthRest = mbGhoulMode ? "Dialogue_TasiBirthRestGhoul" : "Dialogue_TasiBirthRest";
+		Voice_Play(sBirthRest, lLine);
+		
+		///////////
+		// Callback
+		tString sCallbackName = msSuccessCallback;
+		tString sMethodName = "void " + sCallbackName + "()";
+		cLuxMap@ pMap = cLux_GetCurrentMap();
+		if (pMap.ScriptMethodExists(sMethodName) && pMap.ScriptPrepare(sMethodName))
+			pMap.ScriptExecute();
+			
+		mlCurrBirthState = eBirthState_Rest;
+		mfPushCameraCooldown = 1.0f;
+		
+		PlayerBody_SetBirthRestActive(msPositionEntity);
+	}
+
+	//------------------------------------------------------------
+	
+	void FadeStruggleEnd()
+	{
+		////////
+		// Debug
+		//cLux_AddDebugMessage("FADE STRUGGLE ENDED!");
+		
+		///////////////
+		// Reset values
+		mfTimeFocusedOnFade=0;
+		
+		///////////
+		// Callback
+		cLuxMap@ pMap = cLux_GetCurrentMap();
+		if (pMap.ScriptMethodExists("void " + msFadeStruggleEndCallback + "()") && pMap.ScriptPrepare("void " + msFadeStruggleEndCallback + "()"))
+			pMap.ScriptExecute();
+		
+		mlCurrBirthState = eBirthState_PrePush;
+	}
+	
+	//------------------------------------------------------------
+
+	void OnUseCompleted(){}
+
+	//------------------------------------------------------------
+
+	void OnGui(float afTimeStep){}
+	
+	//------------------------------------------------------------
+	
+	void Push(const bool abActive)
+	{
+		// TEMP
+		int lLine = mlBirthStage;
+		if (mlBirthStage == 2) lLine = 4;
+		//if (mlBirthStage == 3) lLine = 5;
+		
+		if (abActive)
+		{
+			if (mfBirthPushDuration <=0) return;
+			
+			/////////////////////
+			// Tasi pushing voice
+			// TODO: Ideally the call to these voices should be in the map script since they're not global voices.
+			tString sPushScream = mbGhoulMode ? "Dialogue_TasiBirthScreamGhoul" : "Dialogue_TasiBirthScreamNormal";
+			
+			if (mlBirthStage>=3)
+			{
+				sPushScream = "Dialogue_TasiBirthEndNormal";
+				lLine = -1;
+			}
+			
+			if (Voice_SubjectIsPlaying(sPushScream)==false)
+			{
+				Voice_Stop("BirthScreams");
+				Voice_Play(sPushScream, lLine);
+			}
+			
+			//////////
+			// Effects
+			Player_FadeFOVMulTo(0.65f, 1 / cMath_Max(mfBirthPushDuration-0.5f, 1.f));
+			if (mlLiteShakeID==-1)
+			{
+				mlLiteShakeID = Effect_FOV_Shake_Start(0.0125f, -1, 1.f, 1.f);
+				cLux_AddDebugMessage("Lite Shake");
+			}
+			
+			////////
+			// Sound
+			if (Sound_Exists("Sound_ContractionStingerLoop")==false)
+				Sound_CreateAtEntity("Sound_ContractionStingerLoop", "04_02_sandstorm/contractions/birth_contraction_loop", "player");
+		}
+		else
+		{
+			////////////////////
+			// Stop push effects
+			if (mlRadialBlur>-1)
+			{
+				Effect_RadialBlur_FadeOut(mlRadialBlur, 0.25f);
+				mlRadialBlur=-1;
+			}
+			
+			if (mlLiteShakeID>-1)
+			{
+				Effect_FOV_Shake_FadeOut(mlLiteShakeID, 0.1f);
+				mlLiteShakeID=-1;
+			}
+			
+			if (mlStrongShakeID>-1)
+			{
+				Effect_FOV_Shake_FadeOut(mlStrongShakeID, 0.1f);
+				mlStrongShakeID=-1;
+			}
+			
+			Player_FadeFOVMulTo(1.f, 4.f);
+			
+			////////
+			// Sound
+			Sound_Stop("Sound_ContractionStingerLoop", 2.0f);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool OnAction(int alAction, bool abPressed)
+	{
+		if (abPressed == false) return false;
+		
+		// Check if valid push action
+		bool bPushAction = false;
+		switch (alAction)
+		{
+			case eAction_AnalogLean:
+			case eAction_Throw:
+			case eAction_Interact:
+			case eAction_Run:
+			case eAction_Jump:
+			case eAction_Flashlight:
+			case eAction_Match:
+			case eAction_CheckBaby:
+			case eAction_Amulet:
+			case eAction_Crouch:
+			case eAction_OpenIdeas:
+			case eAction_OpenAlys:
+			case eAction_OpenMemories:
+			case eAction_OpenNotes:
+			case eAction_LeanLeft:
+			case eAction_LeanRight:
+			case eAction_Forward:
+			case eAction_Backward:
+			case eAction_Left:
+			case eAction_Right:
+			mvPushActions.push_back(eAction(alAction));
+		}
+		
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnAnalogInput(int alAnalogId, const cVector3f &in avAmount)
+	{
+		if (alAnalogId == eAnalogType_GamepadMove)
+		{
+			mfPushStickAmount += cMath_Abs(avAmount.x) + cMath_Abs(avAmount.y);
+		}
+		if (alAnalogId == eAnalogType_Look)
+		{
+			mvLookControlAmount = avAmount;
+		}
+		
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnExitPressed()
+	{
+		return true;
+	}
+	
+	/////////////////////////////////////////
+	// BODY CALLBACKS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool AllowBuoyancy(iPhysicsBody @apBody)
+	{
+		return true;
+	}
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// CHARACTER CALLBACK
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void CharBody_GravityCollide(iCharacterBody@ apCharBody, iPhysicsBody@ apBody, cCollideData @apCollideData){}
+	void CharBody_HitGround(iCharacterBody@ apCharBody,const cVector3f &in avVel){}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPERS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void AddPitch(float afAmount)
+	{
+		//TODO: Add some way of customizing min and max pitch directly in the player body
+		
+		iScrPlayerBodyHandler_Interface@ pPlayerBody = cast<iScrPlayerBodyHandler_Interface>(cLux_GetUserModuleFromID(eModuleType_PlayerBodyHandler));
+		
+		
+		float fCurrPitch = pPlayerBody.Cutscene_GetPitch();
+		
+		float fSlowDownDist = 0.2;
+		
+		float fToAdd = afAmount;
+		float fNewPitch = (fCurrPitch-fToAdd);
+		float fMul = 1.0f;
+		if (fNewPitch> gfBirthMaxPitch-fSlowDownDist && fNewPitch > fCurrPitch)
+		{
+			fMul = 1.0f-((fNewPitch-(gfBirthMaxPitch-fSlowDownDist))/fSlowDownDist);
+		}
+		else if (fNewPitch < gfBirthMinPitch+fSlowDownDist && fNewPitch < fCurrPitch)
+		{
+			fMul = (fNewPitch-gfBirthMinPitch)/fSlowDownDist;
+		}
+		fMul = cMath_Clamp(fMul, 0.f, 1.f);
+		fToAdd *= fMul;
+		
+		pPlayerBody.Cutscene_AddPitch(fToAdd, false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void AddYaw(float afAmount)
+	{
+		iScrPlayerBodyHandler_Interface@ pPlayerBody = cast<iScrPlayerBodyHandler_Interface>(cLux_GetUserModuleFromID(eModuleType_PlayerBodyHandler));
+		
+		float fCurrYaw = pPlayerBody.Cutscene_GetYaw();
+		float fMaxYaw = pPlayerBody.Cutscene_GetMaxYaw();
+		float fSlowDownDist = 0.5;
+		
+		float fToAdd = afAmount;
+		float fNewYaw = (fCurrYaw-fToAdd);
+		float fMul = 1.0f;
+		if (fNewYaw > fMaxYaw-fSlowDownDist && fNewYaw > fCurrYaw)
+		{
+			fMul = 1.0f-((fNewYaw-(fMaxYaw-fSlowDownDist))/fSlowDownDist);
+		}
+		else if (fNewYaw < -fMaxYaw+fSlowDownDist && fNewYaw < fCurrYaw)
+		{
+			fMul = (fNewYaw+fMaxYaw)/fSlowDownDist;
+		}
+		fMul = cMath_Clamp(fMul, 0.f, 1.f);
+		fToAdd *= fMul;
+		
+		pPlayerBody.Cutscene_AddYaw(fToAdd, false);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	float mfBaseExposure = 1.f;
+	
+	int mlLiteShakeID = -1;
+	int mlStrongShakeID = -1;
+	int mlFadeFocusShakeID = -1;
+	int mlRadialBlur = -1;
+	int mlFadeBlurID = -1;
+	
+	int mlCurrBirthState = eBirthState_Rest;
+	int mlPreviousBirthState = eBirthState_Rest;
+	bool mbPushing = false;
+	array<eAction> mvPushActions;
+	float mfPushStickAmount;
+	
+	float mfPitchPullAccelMul = 0.f;
+	float mfBirthPushDuration = 4.f;
+	float mfPushStruggleTimer = 0.f;
+	float mfTimeFocusedOnPush = 0.f;
+	float mfPushCameraCooldown = 0.f;
+	
+	float mfFadeFocusDelay = 4.f;
+	float mfBirthFadeDuration = 8.f;
+	float mfTimeFocusedOnFade = 0.f;
+	float mfYawPullAccelMul = 0.f;
+	float mfYawLookMul = 0.f;
+	float mfPitchLookMul = 0.f;
+	
+	cVector3f mvCameraVelocity = cVector3f_Zero;
+	float mfFadeRotation = 0;
+	
+	cVector3f mvLookControlAmount;
+	
+	int mlBirthStage = 0;
+	bool mbGhoulMode = false;
+	
+	tString msPositionEntity;
+	tString msFocusEntity;
+	tString msFocusBone;
+	
+	tString msSuccessCallback;
+	tString msFailCallback;
+	tString msFadeStruggleEndCallback;
+}

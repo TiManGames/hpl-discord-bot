@@ -1,0 +1,394 @@
+#include "interfaces/PlayerState_Interface.hps"
+#include "custom/player/PlayerState_UsingItem_Base.hps"
+#include "base/InputHandler_Types.hps"
+#include "player/Player_Types.hps"
+#include "custom/helpers/helper_items.hps"
+#include "custom/helpers/helper_props_custom.hps"
+#include "helpers/helper_effects.hps"
+
+#include "custom/helpers/helper_particle_settings.hps"
+
+//------------------------------------------------------------
+
+const float gfUseThrowable_DefaultThrowImpulse = 15.0f;
+
+//------------------------------------------------------------
+
+class cScrPlayerState_UsingThrowable : iScrPlayerState_UsingItem_Base, iScrPlayerState_Interface
+{
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		iScrPlayerState_UsingItem_Base::Init();
+		msItemPrompt = "ThrowItem";
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ENTER MAP
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap) 
+	{
+		/////////////
+		// Preload
+		Entity_Preload(msThrowEnt);
+	}
+
+	void OnMapLeave(cLuxMap @apMap) {}
+	
+	//------------------------------------------------------------
+	
+	void CreateWorldEntities(cLuxMap @apMap) {}	
+	void DestroyWorldEntities(cLuxMap @apMap) {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnEnterState(int alPrevStateId)
+	{		
+		////////////////
+		// Enter base
+		iScrPlayerState_UsingItem_Base::OnEnterState(alPrevStateId);
+		
+		////////////////
+		// Setup vars		
+		if (mbUsesLighter) 
+			EquipLighterInLeftHand();
+		
+		mfThrowDelay = mfMaxThrowDelay;
+		
+		////////////////
+		// Setup body
+		SetupPitchFade(mfThrowableMinPitch, mfThrowableMaxPitch, mfThrowablePitchFadeTime, false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnLeaveState(int alNextStateId)
+	{				
+		////////////////
+		// Leave base
+		iScrPlayerState_UsingItem_Base::OnLeaveState(alNextStateId);
+	}
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep)
+	{			
+		////////////////
+		// Update base
+		iScrPlayerState_UsingItem_Base::Update(afTimeStep);
+		
+		//////////////////
+		// Throw delay
+		if (mfThrowDelay < mfMaxThrowDelay)
+		{
+			mfThrowDelay += afTimeStep;
+			if (mfThrowDelay >= mfMaxThrowDelay)
+				ThrowProp(msThrowEnt);
+		}
+	}
+	
+	void UpdateAnimationStates(float afTimeStep) override
+	{
+		////////////////
+		// Throw
+		if (mlAnimState == eUsingItemAnimState_Use)
+		{
+			///////////////
+			// Update state
+			int lState = UpdateStateAnims(msThrowAnim_R, msThrowAnim_L, msThrowAnim_Item, false, true, 0.1f);
+			
+			////////////////
+			// Entered state, throw!
+			if (lState == 1)
+			{
+				//if (msThrowAnim_Head != "")
+				//	PlayerBody_PlayAdditiveCameraAnimation(msThrowAnim_Head, false, 0.1f, 1.f);
+				
+				if (mbUsesLighter)
+				{
+					if (msThrowAnim_Lighter != "")
+					{
+						tString sLighter = Item_GetTempRTUItemEntity();
+						Entity_PlayAnimation(sLighter, msThrowAnim_Lighter);
+					}
+					Item_RemoveTempRTUItem(msThrowAnim_L);
+				}
+				
+				if (mfMaxThrowDelay > 0)
+					mfThrowDelay = 0.f;
+				else
+					ThrowProp(msThrowEnt);
+			}
+			
+			////////////////
+			// State over?
+			if (lState == -1)
+			{
+				mBaseObj.mpPlayer.ChangeState(ePlayerState_Normal);
+			}
+		}
+		
+		else
+		{
+			iScrPlayerState_UsingItem_Base::UpdateAnimationStates(afTimeStep);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	bool CheckCanUse() 
+	{
+		return mlAnimState == eUsingItemAnimState_Intro || iScrPlayerState_UsingItem_Base::CheckCanUse();
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnUse() 
+	{
+		///////////////////////////
+		// Skip throwing if near generator or fuel tap
+		if (msItemType == "FuelBottle" && 
+			Generator_GetPlayerNearFuelHatch())
+		{			
+			return;
+		}
+		
+		if ((msItemType == "EmptyBottle" ||
+			 msItemType == "EmptyMolotovCocktail") &&
+			Generator_GetPlayerNearFuelTap())
+		{
+			return;
+		}
+		
+		///////////////////////////
+		// Use item
+		ChangeAnimState(eUsingItemAnimState_Use);
+		
+		////////////////
+		// Ignite lighter?
+		if (mbUsesLighter)
+		{
+			cScript_RunGlobalFunc(Item_GetTempRTUItemEntity(), "cScrPropLighter", "_Global_IgniteInstantly");	
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool OnAnalogInput(int alAnalogId, const cVector3f &in avAmount)
+	{
+		return iScrPlayerState_UsingItem_Base::OnAnalogInput(alAnalogId, avAmount);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPERS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void ThrowProp(const tString &in asThrowEnt)
+	{
+		//////////////////
+		// Auto equip next item!
+		mbAutoEquipNextItem = true;
+		
+		//////////////////
+		// Get prop
+		cLuxProp@ pProp = cLux_ID_Prop(m_idItemEntity);
+		if (pProp is null) return;
+			
+		tString sProp = pProp.GetName();
+		tString sItem = Item_GetHeld(eItemHandlerHand_Right);
+		cMatrixf mtxTransform = pProp.GetMatrix();
+				
+		//////////////////
+		// Remove item
+		Item_SetPlayUnequipAnim(sItem, false);
+		Item_Unequip(sItem, true);
+		Item_RemoveFromInventory(sItem);
+				
+		//////////////////
+		// Create throw prop
+
+		cLuxProp@ pThrownProp = null;
+		cLuxMap@ pMap = cLux_GetCurrentMap();
+
+		if (pMap !is null)
+		{
+			if(mbUseQualitySetting)
+			{
+				@pThrownProp = cLux_ToProp(ParticleSetting_CreateEntityFromSetting(pMap, sProp + "_thrown", asThrowEnt, mtxTransform, cVector3f(1.f)));
+			}
+			else
+			{
+				pMap.CreateEntity(sProp + "_thrown", asThrowEnt, mtxTransform, cVector3f(1.f));
+				@pThrownProp = cLux_ToProp(pMap.GetLatestEntity());
+			}
+		}
+		
+		//////////////////
+		// Throw it!
+		if (pThrownProp !is null)
+		{	
+			/////////////////////
+			// Check if should disable collision for a short while to avoid bouncing back
+			// (Only if not standing in front of a wall)
+			bool bDeactivateCollision = false;
+			float fRayLength = 2.f;
+			
+			cCamera@ pCam = mBaseObj.mpPlayer.GetCamera();
+			cVector3f vDirection = pCam.GetForward();		
+			cVector3f vCamPos = pCam.GetPosition();
+			cVector3f vLosEnd = vCamPos + (vDirection * fRayLength);
+				
+			bool bClear = cLux_CheckLineOfSight(vCamPos,  vLosEnd,  false,  false, null);
+			if (bClear)
+			{
+				bDeactivateCollision = true;
+				pMap.AddTimer(pThrownProp.GetName(), 0.1f, "$_Throwable_ActivateThrownCollision");
+			}
+			
+			//////////////////////
+			// Get point looked at		
+			float fThrowRayLength = 20;
+			float fHitDist;
+			cVector3f vHitNrm;
+			iPhysicsBody@ pTargetBody = cLux_GetClosestBody(vCamPos, vDirection, fThrowRayLength, fHitDist, vHitNrm);
+			if (pTargetBody is null) fHitDist = fThrowRayLength;
+			cVector3f vTargetPos = vCamPos + vDirection * fHitDist;
+			
+			float fUpForce = (fHitDist/fThrowRayLength) * 6;
+			float fFwdForce = cMath_Easing(eEasing_ExpoOut, (fHitDist/fThrowRayLength)) * mfThrowImpulse;
+			fFwdForce = cMath_Max(fFwdForce, 5.0f);
+			
+			/////////////////////
+			// Add impulse and setup prop/bodies			
+			for (int i=0; i<pThrownProp.GetBodyNum(); ++i)
+			{
+				iPhysicsBody@ pBody = pThrownProp.GetBody(i);	
+				
+				cVector3f vThrowDir = cMath_Vector3Normalize(vTargetPos - pBody.GetWorldPosition());
+			
+				cVector3f vThrowImpulse = vThrowDir * fFwdForce + cVector3f_Up * fUpForce;
+				cVector3f vTorque = cMath_Vector3ClampLength(cMath_RandomSphereSurfacePoint(1.f), 0.5f, 1.f);
+				
+				pBody.SetThrownByPlayer(true);
+				pBody.AddImpulse(vThrowImpulse);
+				pBody.AddTorque(vTorque);
+				
+				if (bDeactivateCollision) 
+				{
+					pBody.SetCollide(false);
+					pBody.SetCollideCharacter(false);
+				}
+			}
+			
+			pThrownProp.EnableBodyCollisionCallback();
+			pThrownProp.SetStaticPhysics(false);
+			pThrownProp.SetAllowBreakCloseToCreation(true);
+			
+			//////////////////////
+			// Special flags
+			if (mBaseObj.GetId() == ePlayerState_Custom_UsingMolotovCocktail)
+			{
+				pThrownProp.SetVarBool("IsMolotovCocktail", true);
+			}
+			
+			if (mBaseObj.GetId() == ePlayerState_Custom_UsingGasGrenade)
+			{
+				pThrownProp.SetVarBool("IsGasGrenade", true);
+			}
+			
+			if (mBaseObj.GetId() == ePlayerState_Custom_UsingGrenade)
+			{
+				Player_AddAimAssistTarget(pThrownProp.GetID());
+			}
+			
+			//////////////////////
+			// Callback
+			tString sCallback = "void OnThrowItem(const tString &in asEntity)";
+			if (pMap.ScriptMethodExists(sCallback) && 
+				pMap.ScriptPrepare(sCallback))
+			{
+				tString sProp = pThrownProp.GetName();
+				pMap.SetArgString(0, sProp);
+				pMap.ScriptExecute();
+			}
+			
+			//////////////
+			// rumble
+			Effect_Rumble_Start(0.2, 0.2);
+			
+			//////////////////////
+			// Leave state
+			mbLeaveState = true;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet@ apSet, iFontData@ apFont, float afStartY)
+	{			
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	float mfThrowDelay;
+	
+	float mfThrowableMinPitch;
+	float mfThrowableMaxPitch;
+	float mfThrowablePitchFadeTime;
+	float mfMaxThrowDelay = 0;
+	float mfThrowImpulse = gfUseThrowable_DefaultThrowImpulse;
+
+	tString msThrowAnim_L;
+	tString msThrowAnim_R;
+	tString msThrowAnim_Item;
+	tString msThrowAnim_Lighter;
+	tString msThrowAnim_Head;
+	
+	tString msThrowEnt;
+	bool mbUseQualitySetting = false;
+	
+	bool mbUsesLighter = false;
+		
+	//------------------------------------------------------------
+}

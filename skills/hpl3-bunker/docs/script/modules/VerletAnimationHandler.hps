@@ -1,0 +1,821 @@
+//----------------------------------------------------------------------------------------
+
+#include "interfaces/UserModule_Interface.hps"
+#include "custom/modules/ModuleInterfaces_Custom.hps"
+#include "base/Player_Types.hps"
+#include "base/InputHandler_Types.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_map.hps"
+
+//----------------------------------------------------------------------------------------
+
+class cVerletNode
+{
+	int mlId;
+	int mlBoneId;
+	array<int> mvChildren;
+	tID m_idEntity;
+	tID m_idCylinder;
+	
+	cMatrixf m_mtxStartLocal;
+	
+	cVector3f mvPosition=0;
+	cVector3f mvPrevPosition=0;
+	cVector3f mvForce =0;
+	float mfInvMass = 1;
+	
+	float mfDistToParent;
+	
+	cVector3f mvBaseOffset;
+	
+	cVector3f mvBaseUp;
+	cVector3f mvBaseRight;
+	cVector3f mvBaseForward;
+	
+	cVector3f mvCurrentUp;
+	cVector3f mvCurrentRight;
+	cVector3f mvCurrentForward;
+	
+	cMatrixf m_mtxCurrentRotation;
+	cMatrixf m_mtxCurrentWorldRotation;
+}
+
+//----------------------------------------------------------------------------------------
+
+cVector3f gvVerletGravity = cVector3f(0, 0, 0);
+float gfVerletDampingMul = 1;
+float gfVerletStiffness = 1;
+
+float gfVerletMaxSpeed = 2.1f;
+float gfVerletMoveToPositionMul = 3.0f;
+
+//----------------------------------------------------------------------------------------
+
+class cScrVerletAnimationHandler : iScrUserModule, iScrUserModule_Interface, iScrVerletAnimationHandler_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		
+	}
+		
+	//------------------------------------------------------------
+	
+	void LoadUserConfig()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void SaveUserConfig()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INTERFACE
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	bool mbMovingX = false;
+	void Test(int x)
+	{
+		if (x == 4)
+		{
+			mbMovingX = !mbMovingX;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupVerletTree(const tString &in asEntity, const tString &in asRootBone)
+	{
+		iLuxEntity@ pEntity = cLux_GetCurrentMap().GetEntityByName(asEntity);
+		if (pEntity is null) return;
+		
+		cBoneState@ pBoneState = pEntity.GetMeshEntity().GetBoneStateFromName(asRootBone);
+		if (pBoneState is null) return;
+		
+		int alRootBoneId = pEntity.GetMeshEntity().GetBoneStateIndex(asRootBone);
+		
+		SetupVerletTree_AddNode(pEntity, -1, alRootBoneId);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupVerletTree_AddNode(iLuxEntity@ apEntity, int alParentNodeId, int alBoneId)
+	{		
+		if (apEntity is null) return;
+		
+		cBoneState@ pBone = apEntity.GetMeshEntity().GetBoneState(alBoneId);
+		if (pBone is null) return;
+				
+		//////////////////////////////////////
+		// Add node
+		cVerletNode node;
+		mvVerletNodes.push_back(node);
+		int lNodeId = mvVerletNodes.size()-1;
+		cVerletNode@ pNode = mvVerletNodes[lNodeId];
+		
+		//////////////////////////////////////
+		// Setup node
+		pNode.mlId = lNodeId;
+		pNode.mlBoneId = alBoneId;
+		pNode.m_idEntity = apEntity.GetID();
+		pNode.m_mtxStartLocal = pBone.GetLocalMatrix();
+		pNode.mvPosition = pBone.GetWorldPosition();
+		pNode.mvPrevPosition = pBone.GetWorldPosition();
+//		pNode.m_idCylinder = GetFreeCylinder();
+//		cLux_ID_Entity(pNode.m_idCylinder).SetActive(true);
+		
+		if(alParentNodeId < 0) 
+		{
+			pNode.mfInvMass = 0;
+			
+			pNode.mvBaseRight = TransformDirection(pBone.GetLocalMatrix(), cVector3f(1,0,0));
+			pNode.mvBaseUp = TransformDirection(pBone.GetLocalMatrix(), cVector3f(0,1,0));
+			pNode.mvBaseForward = TransformDirection(pBone.GetLocalMatrix(), cVector3f(0,0,-1));
+			
+			pNode.mvBaseOffset = 0;
+			
+			// add node as tree
+			mvVerletTrees.push_back(lNodeId);
+		}
+		else
+		{
+			cVerletNode@ pParentNode = mvVerletNodes[alParentNodeId];
+			cBoneState@ pParentBone = apEntity.GetMeshEntity().GetBoneState(pParentNode.mlBoneId);
+			cVector3f vParentPos = pParentBone.GetWorldPosition();
+			cVector3f vPos = pNode.mvPosition;
+			
+			pNode.mfDistToParent = cMath_Vector3Dist(vParentPos, vPos); 
+			
+			CalculateNormals(vParentPos - vPos, 
+								pParentNode.mvBaseRight,pParentNode.mvBaseForward,
+								pNode.mvBaseRight, pNode.mvBaseUp, pNode.mvBaseForward);
+							
+			pNode.mvBaseOffset = pNode.mvPosition - pParentNode.mvPosition;
+		}
+		
+		pNode.mvCurrentRight = pNode.mvBaseRight;
+		pNode.mvCurrentUp = pNode.mvBaseUp;
+		pNode.mvCurrentForward = pNode.mvBaseForward;
+				
+		//////////////////////////////////////
+		// Add to parent
+		if(alParentNodeId >= 0)
+			mvVerletNodes[alParentNodeId].mvChildren.push_back(lNodeId);
+		
+		//////////////////////////////////////
+		// Iterate and add children
+		cNode3DIterator@ pChildren = pBone.GetChildIterator();
+		while (pChildren.HasNext())
+		{
+			cBoneState@ pChildBone = cast<cBoneState>(pChildren.Next());
+			if (pChildBone is null) continue;
+			
+			SetupVerletTree_AddNode(apEntity, lNodeId, apEntity.GetMeshEntity().GetBoneStateIndex(pChildBone.GetName()));
+		}
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void CalculateNormals(const cVector3f&in avChildToParent, 
+							const cVector3f&in avBaseRight, const cVector3f&in avBaseForward,
+							cVector3f&out avOutRight, cVector3f&out avOutUp, cVector3f&out avOutForward)
+	{
+		avOutUp = cMath_Vector3Normalize(avChildToParent);
+		
+		avOutRight = avBaseRight - avOutUp*cMath_Vector3Dot(avOutUp, avBaseRight);
+		avOutRight.Normalize();
+		
+		avOutForward = cMath_Vector3Cross(avOutUp, avOutRight);
+		avOutForward.Normalize();
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// MAP LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+
+	}
+
+	//------------------------------------------------------------
+
+	void OnMapLeave(cLuxMap @apMap)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void PreloadData(cLuxMap @apMap)
+	{
+
+	}
+	
+	//------------------------------------------------------------
+
+	void CreateWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void DestroyWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnEnterContainer(const tString&in asOldContainer)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnLeaveContainer(const tString&in asNewContainer)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep)
+	{
+		if (mbMovingX)
+		{
+			for(int i=0; i<mvVerletTrees.size(); ++i)
+			{
+				cVerletNode@ pTree = mvVerletNodes[mvVerletTrees[i]];
+				pTree.mvPrevPosition = pTree.mvPosition;
+				pTree.mvPosition += cVector3f(0, 1, 0) * afTimeStep;
+			}
+		}
+		
+		VerletUpdate(afTimeStep);
+		UpdateRender();
+	}
+	
+	//------------------------------------------------------------
+	
+	void VerletUpdate(float afTimeStep)
+	{
+		for(int i = 0; i < mvVerletTrees.size(); ++i)
+		{
+			cVerletNode@ pTree = mvVerletNodes[mvVerletTrees[i]];
+			VerletUpdate_Tree(pTree, afTimeStep);
+			cLux_ID_Entity(pTree.m_idEntity).GetMeshEntity().ResetGraphicsUpdated();
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void VerletUpdate_Tree(cVerletNode@ apNode, float afTimeStep)
+	{
+		VerletUpdate_Positions_Node_Rec(apNode);
+		VerletUpdate_Physics_Node_Rec(apNode, null, afTimeStep);
+		VerletUpdate_Transform_Node_Rec(apNode, null);
+	}
+	
+	//------------------------------------------------------------
+	
+	void VerletUpdate_Positions_Node_Rec(cVerletNode@ apNode)
+	{
+		iLuxEntity@ pEnt = cLux_ID_Entity(apNode.m_idEntity);
+		if (pEnt is null) return;
+		
+		cBoneState@ pBone = pEnt.GetMeshEntity().GetBoneState(apNode.mlBoneId);
+		if (pBone is null) return;
+		
+		if(apNode.mfInvMass == 0)
+			apNode.mvPosition = pBone.GetWorldPosition();
+		
+		for (int i = 0; i < apNode.mvChildren.size(); ++i)
+		{
+			int lChildIndex = apNode.mvChildren[i];
+			VerletUpdate_Positions_Node_Rec(mvVerletNodes[lChildIndex]);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void VerletUpdate_Node_AxesAndRotation(cVerletNode@ apNode, cVerletNode@ apParent)
+	{
+		iLuxEntity@ pEnt = cLux_ID_Entity(apNode.m_idEntity);
+		if (pEnt is null) return;
+		
+		cBoneState@ pBone = pEnt.GetMeshEntity().GetBoneState(apNode.mlBoneId);
+		if (pBone is null) return;
+		
+		cVector3f vLocalChildToParent = 0;
+						
+		///////////////////////////////////
+		// Calculate new axes
+		if(apNode.mfInvMass == 0 || apParent is null)
+		{
+			//NOTE: The want the base here, as getting current local axes will have animations on them!
+			//		Keeping this code just in case.
+			apNode.mvCurrentRight = TransformDirection(pBone.GetWorldMatrix(), cVector3f(1,0,0));
+			apNode.mvCurrentUp = TransformDirection(pBone.GetWorldMatrix(), cVector3f(0,1,0));
+			apNode.mvCurrentForward = TransformDirection(pBone.GetWorldMatrix(), cVector3f(0,0,-1));
+
+//			apNode.mvBaseRight = TransformDirection(pBone.GetWorldMatrix(), cVector3f(1,0,0));
+//			apNode.mvBaseUp = TransformDirection(pBone.GetWorldMatrix(), cVector3f(0,1,0));
+//			apNode.mvBaseForward = TransformDirection(pBone.GetWorldMatrix(), cVector3f(0,0,-1));
+			
+			apNode.m_mtxCurrentWorldRotation = cMath_MatrixUnitVectors(apNode.mvCurrentRight, apNode.mvCurrentUp, apNode.mvCurrentForward, 0);
+			apNode.m_mtxCurrentRotation = apNode.m_mtxCurrentWorldRotation;
+		}
+		else
+		{
+			cVector3f vChildToParent = apParent.mvPosition - apNode.mvPosition;
+			cMatrixf mtxInvParentRot = cMath_MatrixInverse(apParent.m_mtxCurrentWorldRotation);
+			vLocalChildToParent = cMath_MatrixMul(mtxInvParentRot, vChildToParent);
+			
+			CalculateNormals(vLocalChildToParent,
+								apNode.mvBaseRight, apNode.mvBaseForward,
+								apNode.mvCurrentRight, apNode.mvCurrentUp, apNode.mvCurrentForward);
+			
+			cMatrixf mtxStart = cMath_MatrixUnitVectors(apNode.mvBaseRight, apNode.mvBaseUp, apNode.mvBaseForward, 0);
+			
+			cMatrixf mtxInvStart = cMath_MatrixInverse(mtxStart);
+			
+			cMatrixf mtxCurrent = cMath_MatrixUnitVectors(apNode.mvCurrentRight, apNode.mvCurrentUp, apNode.mvCurrentForward, 0);
+			
+			apNode.m_mtxCurrentRotation = cMath_MatrixMul(mtxCurrent, mtxInvStart);
+			
+			if(apParent !is null)
+			{
+				apNode.m_mtxCurrentWorldRotation = cMath_MatrixMul(apParent.m_mtxCurrentWorldRotation, apNode.m_mtxCurrentRotation);
+			}
+		}
+		
+		///////////////////////////////////
+		// Calculate new rotation
+//		{
+//			cMatrixf mtxStart = cMath_MatrixUnitVectors(apNode.mvBaseRight, apNode.mvBaseUp, apNode.mvBaseForward, 0);
+//			
+//			cMatrixf mtxInvStart = cMath_MatrixInverse(mtxStart);
+//			
+//			cMatrixf mtxCurrent = cMath_MatrixUnitVectors(apNode.mvCurrentRight, apNode.mvCurrentUp, apNode.mvCurrentForward, 0);
+//			
+//			apNode.m_mtxCurrentRotation = cMath_MatrixMul(mtxCurrent, mtxInvStart);
+//			
+//			if(apParent !is null)
+//			{
+//				apNode.m_mtxCurrentWorldRotation = cMath_MatrixMul(apParent.m_mtxCurrentWorldRotation, apNode.m_mtxCurrentRotation);
+//			}
+//			else
+//			{
+//				apNode.m_mtxCurrentWorldRotation = apNode.m_mtxCurrentRotation;
+//			}
+//		}
+	}
+	
+	//------------------------------------------------------------
+	
+	cVector3f TransformDirection(const cMatrixf&in a_mtxRot, const cVector3f&in avDirection)
+	{
+//		cMatrixf mtxInv = MatrixNormal(a_mtxRot.GetRotation(), true);
+		cMatrixf mtxInv = cMath_MatrixNormal(a_mtxRot.GetRotation(), true);
+		return cMath_Vector3Normalize(cMath_MatrixMul3x3(mtxInv, avDirection));
+	}
+	
+	//------------------------------------------------------------
+	
+	cVector3f Vertlet_GetWantedPosition(cVerletNode@ apNode, cVerletNode@ apParent)
+	{
+		return apParent.mvPosition + cMath_MatrixMul(apParent.m_mtxCurrentWorldRotation, apNode.mvBaseOffset);
+	}
+	
+	//------------------------------------------------------------
+	
+	cVector3f Verlet_LimitSpeed(const cVector3f&in avVel, float afTimeStep)
+	{
+		float fLength = avVel.Length();
+		float fMax = gfVerletMaxSpeed * afTimeStep;
+		if(fMax > 0 && fLength > fMax)
+			return (avVel / fLength) * fMax;
+		else
+			return avVel;
+	}
+	
+	//------------------------------------------------------------
+	
+	void VerletUpdate_Physics_Node_Rec(cVerletNode@ apNode, cVerletNode@ apParent, float afTimeStep)
+	{
+		/////////////////////////////////////
+		// Compute axes and rotation
+		VerletUpdate_Node_AxesAndRotation(apNode, apParent);
+				
+		///////////////////////////////////
+		// Update physics
+		if(apNode.mfInvMass > 0)
+		{
+			///////////////////////////////////
+			// Update force
+			cVector3f vAcc = gvVerletGravity + apNode.mvForce * apNode.mfInvMass;
+
+			cVector3f vTempPos = apNode.mvPosition;
+			
+			float fMul = 0.5f;
+			cVector3f vForceAdd = (apNode.mvPosition - apNode.mvPrevPosition) * gfVerletDampingMul * fMul + vAcc * afTimeStep * afTimeStep;
+			apNode.mvPosition += Verlet_LimitSpeed(vForceAdd, afTimeStep);
+
+			apNode.mvPrevPosition = vTempPos;
+			apNode.mvForce = 0;
+			
+			///////////////////////////////////
+			// Update constraints
+			if(apParent !is null && mbPaused == false)
+			{
+				//////////////////////////
+				// Position 
+				{
+					cVector3f vWantedPosition = Vertlet_GetWantedPosition(apNode, apParent);
+											
+					float fMul = 0.02f * 60.0f * gfVerletMoveToPositionMul;
+					cVector3f vAdd = (vWantedPosition - apNode.mvPosition) * fMul * afTimeStep;
+					
+					apNode.mvPosition += Verlet_LimitSpeed(vAdd, afTimeStep);
+				}	
+				
+				////////////////////////
+				//Distance
+				{
+					//cVector3f vDelta =  pNode.mvPosition - apParent.mvPosition;
+					//float fDist = vDelta.Length();
+					
+					//float fDiff =0;
+					//if(pNode.mfDistToParent>0 && fDist>0)
+					//	fDiff = (fDist- pNode.mfDistToParent)/(fDist*(apParent.mfInvMass + pNode.mfInvMass)) * gfVerletStiffness;
+
+					//apParent.mvPosition += vDelta * fDiff * apParent.mfInvMass;
+					//pNode.mvPosition -= vDelta * fDiff * pNode.mfInvMass;
+					
+					//NOTE: This makes sure the distance is tight (as it always move towards parent)
+					//		But keeping code above just in case.
+					cVector3f vDelta =  apParent.mvPosition - apNode.mvPosition;
+					float fDist = vDelta.Length();
+					float fAmount = (fDist - apNode.mfDistToParent) / apNode.mfDistToParent;
+					
+					apNode.mvPosition += vDelta * fAmount; // * fDiff * pNode.mfInvMass;
+				}
+			}
+		}
+		
+		/////////////////////////////////////
+		// Compute axes and rotation
+		VerletUpdate_Node_AxesAndRotation(apNode, apParent);
+		
+		///////////////////////////////////
+		// Iterate children
+		for(int i = 0; i < apNode.mvChildren.size(); ++i)
+		{
+			cVerletNode@ pChildNode = mvVerletNodes[apNode.mvChildren[i]];
+			VerletUpdate_Physics_Node_Rec(pChildNode, apNode, afTimeStep);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void VerletUpdate_Transform_Node_Rec(cVerletNode@ apNode, cVerletNode@ apParent)
+	{
+		iLuxEntity@ pEnt = cLux_ID_Entity(apNode.m_idEntity);
+		if (pEnt is null) return;
+		
+		cBoneState@ pBone = pEnt.GetMeshEntity().GetBoneState(apNode.mlBoneId);
+		if (pBone is null) return;
+		
+		/////////////////////
+		// Set world transform
+		if (apParent !is null)
+		{
+			pBone.SetUsePreTransform(true);
+			cMatrixf mtx = apNode.m_mtxCurrentRotation;
+//			mtx.SetForward(mtx.GetForward() * -1);
+			pBone.SetPreTransform(apNode.m_mtxCurrentRotation);
+//			pBone.SetWorldPosition(apNode.mvPosition);
+		}
+		
+//		cMatrixf mtxWorld = apNode.m_mtxCurrentWorldRotation;
+//		mtxWorld.SetTranslation(apNode.mvPosition);
+//		
+//		iLuxEntity@ pCylinder = cLux_ID_Entity(apNode.m_idCylinder);
+//		pCylinder.SetMatrix(mtxWorld);
+				
+		///////////////////////////////////
+		// Iterate children
+		for(int i = 0; i < apNode.mvChildren.size(); ++i)
+		{
+			cVerletNode@ pChildNode = mvVerletNodes[apNode.mvChildren[i]];
+			VerletUpdate_Transform_Node_Rec(pChildNode, apNode);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateRender()
+	{
+		for(int i=0; i<mvVerletTrees.size(); ++i)
+		{
+			cVerletNode@ pTree = mvVerletNodes[mvVerletTrees[i]];
+			RenderVerlet_Node_Rec(pTree, null);
+//			RenderAnimation_Node_Rec(pTree, null);
+			RenderVerlet_Matrix_Node_Rec(pTree, null, cMatrixf_Identity);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void RenderVerlet_Node_Rec(cVerletNode@ apNode, cVerletNode@ apParent)
+	{
+		float fColorMul = 2;
+		cVector3f vPos = apNode.mvPosition;
+		
+		// node
+		Debug_DrawSphere(vPos, mfVerletNodeRadius * 1.1, cColor(1, 0.2, 0.2,1)*fColorMul);
+		
+		// directions vectors
+		{
+			cVector3f vStartRight = apNode.mvBaseRight;
+			cVector3f vStartUp = apNode.mvBaseUp;
+			cVector3f vStartForward = apNode.mvBaseForward;
+			
+			cVector3f vRight = apNode.mvCurrentRight;
+			cVector3f vUp = apNode.mvCurrentUp;
+			cVector3f vForward = apNode.mvCurrentForward;
+			
+			if(apParent !is null)
+			{
+				vStartRight = cMath_MatrixMul(apParent.m_mtxCurrentWorldRotation, vStartRight);
+				vStartUp = cMath_MatrixMul(apParent.m_mtxCurrentWorldRotation, vStartUp);
+				vStartForward = cMath_MatrixMul(apParent.m_mtxCurrentWorldRotation, vStartForward);
+				
+				vRight = cMath_MatrixMul(apParent.m_mtxCurrentWorldRotation, vRight);
+				vUp = cMath_MatrixMul(apParent.m_mtxCurrentWorldRotation, vUp);
+				vForward = cMath_MatrixMul(apParent.m_mtxCurrentWorldRotation, vForward);
+			}
+	
+//			Debug_DrawLine(vPos, vPos + vStartRight*0.11, cColor(0.5f,0.2,0.2,1)*fColorMul);
+//			Debug_DrawLine(vPos, vPos + vStartUp*0.11, cColor(0.2,0.5f,0.2,1)*fColorMul);
+//			Debug_DrawLine(vPos, vPos + vStartForward*0.11, cColor(0.2,0.2,0.5f,1)*fColorMul);
+//			
+			Debug_DrawLine(vPos, vPos + vRight*0.1, cColor(1,0,0,1)*fColorMul);
+			Debug_DrawLine(vPos, vPos + vUp*0.1, cColor(0,1,0,1)*fColorMul);
+			Debug_DrawLine(vPos, vPos + vForward*0.1, cColor(0,0,1,1)*fColorMul);
+		}
+		
+		// lines
+//		if(apParent !is null)
+//		{
+//			cVector3f vParentPos = apParent.mvPosition;
+//			Debug_DrawLine(vParentPos, vPos, cColor(0.5f,1)*fColorMul);
+//		}
+		
+		// wanted rotation
+//		if(apParent !is null)
+//		{
+//			cVector3f vWantedPosition = Vertlet_GetWantedPosition(apNode, apParent);
+//			Debug_DrawSphere(vWantedPosition, 0.1, cColor(0.6, 0, 0.6,1) * fColorMul);
+//		}
+		
+		for(int i = 0; i < apNode.mvChildren.size(); ++i)
+		{
+			int lChildIndex = apNode.mvChildren[i];
+			RenderVerlet_Node_Rec(mvVerletNodes[lChildIndex], apNode);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void RenderAnimation_Node_Rec(cVerletNode@ apNode, cVerletNode@ apParent)
+	{
+		float fColorMul = 2;
+		
+		iLuxEntity@ pEnt = cLux_ID_Entity(apNode.m_idEntity);
+		cBoneState@ pBone = pEnt.GetMeshEntity().GetBoneState(apNode.mlBoneId);
+		
+		///////////////////////////////////
+		// Render Point
+		cVector3f vPos = pBone.GetWorldPosition();
+		Debug_DrawSphere(vPos, mfVerletNodeRadius * 1.2, cColor(0.2, 0.2, 1,1) * fColorMul);
+		
+		Debug_DrawLine(vPos, vPos + pBone.GetWorldMatrix().GetTranspose().GetRight()*0.1, cColor(1,0,0,1)*fColorMul);
+		Debug_DrawLine(vPos, vPos + pBone.GetWorldMatrix().GetTranspose().GetUp()*0.1, cColor(0,1,0,1)*fColorMul);
+		Debug_DrawLine(vPos, vPos + pBone.GetWorldMatrix().GetTranspose().GetForward()*0.1, cColor(0,0,1,1)*fColorMul);
+				
+		///////////////////////////////////
+		// Render Line
+//		if(apParent !is null)
+//		{
+//			cBoneState@ pParentBone = pEnt.GetMeshEntity().GetBoneState(apParent.mlBoneId);
+//			Debug_DrawLine(pParentBone.GetWorldPosition(),  pBone.GetWorldPosition(), cColor(0.5f, 0, 0.5f,1) * fColorMul);
+//		}
+		
+		///////////////////////////////////
+		// Iterate children
+		for(int i = 0; i < apNode.mvChildren.size(); ++i)
+		{
+			int lChildIndex = apNode.mvChildren[i];
+			RenderAnimation_Node_Rec(mvVerletNodes[lChildIndex], apNode);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void RenderVerlet_Matrix_Node_Rec(cVerletNode@ apNode, cVerletNode@ apParent, const cMatrixf&in a_mtxParent)
+	{
+		float fColorMul = 2;
+		
+		cMatrixf mtxNode;
+
+		if(apParent is null)
+		{
+//			mtxNode = cMath_MatrixMul(apNode.m_mtxCurrentRotation,apNode.m_mtxStartLocal.GetRotation());
+//			mtxNode.SetTranslation(_Pos(a_idNode));	
+			mtxNode = apNode.m_mtxCurrentWorldRotation;
+			mtxNode.SetTranslation(apNode.mvPosition);
+		}
+		else
+		{
+			//cMatrixf mtxLocal = cMath_MatrixMul(pNode.m_mtxCurrentRotation, pNode.m_mtxStartLocal);
+			//mtxNode = cMath_MatrixMul(a_mtxParent, mtxLocal);
+			
+			mtxNode = cMath_MatrixMul(a_mtxParent, apNode.m_mtxCurrentRotation);
+			mtxNode = cMath_MatrixMul(mtxNode, apNode.m_mtxStartLocal);
+		}
+		
+		cVector3f vNodePos = mtxNode.GetTranslation();
+				
+//		cDebugRendererState state = cDebugRendererState_Wireframe;
+//		cDebugRenderer_SetColor(state, cColor(0,1,1,1));
+//		
+//		cDebugRenderer_DrawSphere(vNodePos, mfVerletNodeRadius*1.3, state);
+		
+		Debug_DrawSphere(vNodePos, mfVerletNodeRadius*1.3, cColor(0.2,1,0.2,1) * fColorMul);
+		
+		if(apParent !is null)
+		{
+//			cDebugRenderer_SetColor(state, cColor(1,0,1,1));
+			cVector3f vParentPos = a_mtxParent.GetTranslation();
+//			cDebugRenderer_SetLineThickness(state, 1);
+//			cDebugRenderer_DrawLine(vParentPos, mtxNode.GetTranslation(), cColor(1,1), state);
+			
+			Debug_DrawLine(vParentPos, mtxNode.GetTranslation(), cColor(1,0,1,1) * fColorMul);
+			
+			//cLux_PrintDebug(_S(a_idNode)+" "+cMath_Vector3Dist(vNodePos, vParentPos)+" vs "+cMath_Vector3Dist(pNode.mvPosition, apParent.mvPosition));
+			
+			//cDebugRendererState textState = cDebugRendererState_Text3D;
+			//cDebugRenderer_DrawText(vNodePos+cVector3f(0,0.1f, 0),10.1f, "Len:"+cMath_Vector3Dist(vNodePos, vParentPos), textState);
+		}
+		
+		///////////////////////////////////
+		// Iterate children
+		for(int i=0; i<apNode.mvChildren.size(); ++i)
+		{
+			int lChildIndex = apNode.mvChildren[i];
+			RenderVerlet_Matrix_Node_Rec(mvVerletNodes[lChildIndex], apNode, mtxNode);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	int mlCounter = 0;
+	tID GetFreeCylinder()
+	{
+		++mlCounter;
+		tID idEnt = cLux_GetCurrentMap().GetEntityByName("cylinder_" + mlCounter).GetID();
+		return idEnt;
+	}
+	
+	//------------------------------------------------------------
+	
+//	cVector3f GetLocalRight(cMatrixf a_mtxM)
+//	{
+//		size_t lIndex = GetIndex(a_idEntity);
+//		return cMath::QuaternionRotate(mvRotations[lIndex], cVector3f(1, 0, 0));
+//	}
+	
+	//------------------------------------------------------------
+	
+	void VariableUpdate(float afDeltaTime)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void PostUpdate(float afTimeStep)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnAction(int alAction, bool abPressed)
+	{
+
+	}
+	
+	//------------------------------------------------------------
+
+	void OnAnalogInput(int alAnalogId, const cVector3f &in avAmount)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnExitPressed()
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void AppGotInputFocus()
+	{
+	
+	}
+	void AppLostInputFocus()
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GUI
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnGui(float afTimeStep)
+	{
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnDraw(float afFrameTime)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnPostRender(float afFrameTime)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	array<cVerletNode> mvVerletNodes;
+	array<int> mvVerletTrees;
+	
+	bool mbPaused = false;
+	
+	float mfVerletNodeRadius=0.05;
+	
+	//------------------------------------------------------------
+}

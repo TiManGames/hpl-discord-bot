@@ -1,0 +1,95 @@
+/////////////////////
+// Fast approximate anti-aliasing, stolen from Nvidia
+////////////////////
+
+uniform cTexture2D tex : 0;
+uniform cTexture2D noise : 1;
+
+uniform cVector2f avInvScreenSize;
+uniform float afAmount;
+uniform float afGrainSize;
+uniform float afTime;
+uniform int alFrame;
+
+//-----------------------------------------------
+
+cVector3f RandSample(cVector2f avP)
+{
+	return sample(noise, avP).rgb;
+}
+
+cVector3f ScrollNoise(cVector3f avNoise, float afScrollFrame)
+{
+	const float kfGoldenRatio = 1.61803398875;
+	return fract(avNoise + kfGoldenRatio * afScrollFrame);
+}
+
+cVector3f TriNoiseSample(cVector2f avP)
+{
+	const float kfNoiseSize = 1.0 / 128.0;
+	cVector3f vRand = RandSample(avP * kfNoiseSize);
+
+	cVector3f vA = ScrollNoise(vRand, float(alFrame & 1023));
+	cVector3f vB = ScrollNoise(vRand, float((alFrame + 17) & 1023));
+
+	return vA + vB - 0.5;
+}
+
+cVector3f SmoothTriNoiseSample(cVector2f avP)
+{
+	const float kfNoiseSize = 1.0 / 128.0;
+	const cMatrix2x2f kmtxRotate = cMatrix2x2f(0.7071, 0.7071, -0.7071, 0.7071);
+
+	float fFrame = float((alFrame + 37) & 2047);
+	avP = mul(kmtxRotate, avP);
+	
+	cVector2f vF = fract(avP);
+
+	avP *= kfNoiseSize;
+
+	cVector3f vRand00 = RandSample(avP);
+	cVector3f vRand01 = RandSample(avP + cVector2f(0,kfNoiseSize));
+	cVector3f vRand10 = RandSample(avP + cVector2f(kfNoiseSize, 0));
+	cVector3f vRand11 = RandSample(avP + cVector2f(kfNoiseSize, kfNoiseSize));
+
+	return mix(	mix(ScrollNoise(vRand00, fFrame), ScrollNoise(vRand10, fFrame), vF.x),
+				mix(ScrollNoise(vRand01, fFrame), ScrollNoise(vRand11, fFrame), vF.x),
+				vF.y) * 2.0 - 1.0;
+}
+
+//-----------------------------------------------
+
+void main(in cVector4f px_vPosition,
+		  in cVector4f px_vTexCoord0,
+		  out cVector4f out_vColor0 : 0) 
+{
+	float fNoiseSteps = 1.0 / 128.0;
+	cVector4f vSample = sample(tex, px_vTexCoord0.xy);
+	cVector3f vColor = vSample.rgb;
+	//float fAlpha = vSample.a;
+
+	////////////////
+	// Get pixel grain (to fight banding)
+	cVector3f vGrain = TriNoiseSample(px_vPosition.xy) * fNoiseSteps;
+	
+	////////////
+	// Film grain, afGrainSize pixels at 720p
+	cVector2f vDiv = (cVector2f(1280, 720) * avInvScreenSize) / afGrainSize;
+	cVector3f vNoise = SmoothTriNoiseSample(px_vPosition.xy * vDiv) * 0.21;
+	
+	////////////////////
+	// Apply some noise by moving the image slightly based on brightness
+	float fPrune = dot(cVector3f(0.3, 0.58, 0.12), vColor.rgb * vColor.rgb);
+	fPrune = 1.0 - sqrt(fPrune);
+
+	////////////////
+	// Apply more grain the brighter it is
+	vGrain += vColor * vNoise * fPrune * afAmount;
+
+	///////////////
+	// Apply grain to color
+	vColor.rgb += vGrain;
+
+	out_vColor0 = cVector4f(vColor, 1.0f);
+
+}

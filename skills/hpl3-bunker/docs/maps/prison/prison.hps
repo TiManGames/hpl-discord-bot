@@ -1,0 +1,1291 @@
+#include "interfaces/Map_Interface.hps"
+#include "base/Inputhandler_Types.hps"
+
+#include "helpers/helper_map.hps"
+#include "helpers/helper_props.hps"
+#include "helpers/helper_areas.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_audio.hps"
+#include "helpers/helper_imgui.hps"
+#include "helpers/helper_sequences.hps"
+#include "helpers/helper_game.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_ai.hps"
+#include "helpers/helper_agent.hps"
+#include "helpers/helper_player.hps"
+#include "helpers/helper_imgui.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+#include "custom/helpers/helper_gun.hps"
+#include "custom/helpers/helper_props_custom.hps"
+
+//--------------------------------------------------
+ 
+/*Place any global values here. These must be const variables as they will not be saved*/
+/*This is also the place for enums and classes, but these should be avoided whenever possible*/
+ 
+//--------------------------------------------------
+ 
+class cScrMap : iScrMap
+{
+	//--------------------------------------------
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN CALLBACKS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+ 
+	////////////////////////////
+	// Set up map environment
+	void Setup()
+	{
+		// Put display name entry in english.lang / Levels
+		GetBase().SetDisplayNameEntry("prison");
+		
+		// Set up color grading etc.
+	}
+	
+	//-------------------------------------------------------
+		
+	void PreloadData()
+	{
+		//////////////
+		// Preload entities
+		Entity_Preload("player_bunker.ent");
+	}
+	
+	//-------------------------------------------------------
+	
+	void GiveTestItems()
+	{
+		Item_SetCurrentSlotsCount(15);
+		Item_AddToInventory("Gun");
+		Item_AddToInventory("DynamoLantern");
+		Item_AddToInventory("Lighter");
+		Item_AddToInventory("Fuse");
+		Item_AddToInventory("Cutters");
+		Item_AddToInventory("Flare");
+		Item_AddToInventory("PocketBag");
+		Item_AddToInventory("Medkit");
+		Item_AddToInventory("Bandage");
+		Item_AddToInventory("Dynamite");
+		Item_AddToInventory("DynamiteBundle");
+		Item_AddToInventory("Meat");
+		Item_AddToInventory("LockdownWheel");
+		Item_AddToInventory("DetonatorHandle");
+		Item_AddToInventory("RabbitDoll");
+		Item_AddToInventory("CommunicationsKey");
+		Item_AddToInventory("PillboxKey");
+	}
+	
+	////////////////////////////
+	// Run first time starting map
+	void OnStart()
+	{		
+		/////////////////////////
+		// Debug
+		if(cLux_ScriptDebugOn())
+		{
+			if (ItemType_GetCountInInventory("Gun") == 0)
+			{
+				GiveTestItems();
+			}
+		}
+		
+		/////////////
+		// Setup prisoner
+		Agent_SetSensesActive("GermanPrisoner", false);
+		Map_AddTimer("Timer_ActivatePrisonerSenses", 3.f, "OnTimer_ActivatePrisonerSenses");
+		
+		/////////////
+		// Setup cell doors
+		Entity_SetActive("cell_door_*", true);
+		
+		/////////////
+		// File cabinet
+		Slide_SetLocked("filing_cabinet_box02_3", true, false);
+		
+		/////////////
+		// Audio
+		Sound_Play("Sound_PrisonGunFire_*", 1.0f);
+		Sound_Play("Sound_WoodRoomCreak", 1.0f);
+		
+		if (Sound_Exists("Sound_PrisonGunFire_*"))
+		{
+			Sound_Stop("Sound_PrisonGunFire_*", 5.0f);
+			Sound_Stop("Sound_WoodRoomCreak", 5.0f);
+			Sound_Play("Sound_PrisonGunFire_*", 1.0f);
+			Sound_Play("Sound_WoodRoomCreak", 1.0f);
+		}
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when entering map	
+	void OnEnter()
+	{	
+		////////////////////////
+		// Set rich presence
+		RichPresence_SetCurrent(eRichPresence_Prison);
+
+		/////////////
+		// Setup player body
+		if (PlayerBody_IsActive() == false)
+		{
+			PlayerBody_SetActive(true);
+			PlayerBody_SetModel("player_bunker.ent");
+		}
+		
+		/////////////////////
+		// Setup cell door switches
+		Entity_SetInteractionDisabled("button_cell_*", true);
+		
+		///////////////////////////////
+		// Setup low height auto-teleport
+		Player_SetAutoTeleportWhenBelowAltitude(-20.f);
+		
+		/////////////
+		// Enable rats
+		bool bRatsActive = StateMachine_GetCurrentStateName("GermanPrisoner") == "Dead";
+		RatHandler_SetActive(bRatsActive);
+		
+		/////////////
+		// Setup generator
+		SetupGenerator();
+		
+		/////////////
+		// Setup stalker
+		Blackboard_DoStalkerMapTransfer("Stalker_1");
+		
+		////////////////
+		// Setup bombing effect
+		BombingHandler_SetActive(true);
+		
+		///////////////////
+		// Setup save game info hint
+		SaveRoom_SetSaveHintActive(true);
+		
+		///////////////////
+		// Setup save lamp
+		SaveRoom_SetupSaveLamp(true, "SaveLamp_Easy_Lamp");
+
+		////////////
+		// Update cell door states
+		Map_AddTimer("Timer_Setup", 0.6f, "");
+		Map_AddTimer("Timer_UpdateCellDoors", 0.5f, "OnTimer_UpdateCellDoors");
+		
+		Entity_SetActive("BlockBox_ThrowFix_*", false);
+		
+		cScript_SetGlobalArgBool(0, true);
+		cScript_RunGlobalFunc("State_Thrown", "", "_Global_SetDoMapCallback");
+		
+		////////////
+		// Map change
+		Game_SetupAfterMapChange();
+		
+		float fPrisonDoorOpenAmount = cScript_GetGlobalVarFloat("PrisonDoorOpenAmount");
+		if (fPrisonDoorOpenAmount > 0.f)
+			SwingDoor_SetOpenAmount("prison_bars_door_1", fPrisonDoorOpenAmount);
+			
+		/////////////////
+		// In game map
+		InGameMap_UpdateGlobalMapState();
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when leaving map
+	void OnLeave()
+	{				
+		cScript_SetGlobalVarFloat("PrisonDoorOpenAmount", SwingDoor_GetOpenAmount("prison_bars_door_1"));
+		
+		cScript_SetGlobalArgBool(0, false);
+		cScript_RunGlobalFunc("State_Thrown", "", "_Global_SetDoMapCallback");
+		
+		/////////////
+		// Audio
+		Sound_Stop("Sound_PrisonGunFire_*", 5.0f);
+		Sound_Stop("Sound_WoodRoomCreak", 5.0f);
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// To get when player makes input (mostly used for debug)
+	void OnAction(int alAction, bool abPressed) 
+	{
+		if(abPressed==false) return;
+		
+		if(alAction == eAction_Test1)
+		{
+			if (Generator_GetState() == eGeneratorState_On)
+			{
+				Generator_SetRunForever(false);
+				Generator_ChangeState(eGeneratorState_Off);
+			}
+			else
+			{
+				Generator_AddFuel(2);
+				Generator_ChangeState(eGeneratorState_On);
+				Generator_SetRunForever(true);
+			}
+		}
+		
+		if (alAction == eAction_Test2)
+		{
+			////////////////
+			// Broadcast shot message
+			array<iLuxEntity@> vAgents;
+			cLux_GetCurrentMap().GetEntityArray("*", eLuxEntityType_Agent, "", vAgents);
+			
+			for (int i = 0; i < vAgents.size(); ++i)
+			{
+				vAgents[i].BroadcastMessage(40, null, Player_GetPosition(), -1);
+			}
+		}
+		
+		if (alAction ==eAction_Test3)
+		{
+			////////////////
+			// Disable all agents
+			RatHandler_SetActive(false);
+			
+			array<iLuxEntity@> vAgents;
+			cLux_GetCurrentMap().GetEntityArray("*", eLuxEntityType_Agent, "", vAgents);
+			
+			for (int i = 0; i < vAgents.size(); ++i)
+			{
+				vAgents[i].SetActive(false);
+			}
+		}
+		
+		if (alAction == eAction_Test4)
+		{
+			////////////////
+			// Disable all traps
+			array<iLuxEntity@> vTraps;
+			cLux_GetCurrentMap().GetEntityArray("*", eLuxEntityType_Prop, "cScrPropTrap", vTraps);
+			
+			for (int i = 0; i < vTraps.size(); ++i)
+			{
+				tString sName = vTraps[i].GetName();
+				Entity_SetActive(sName, false);
+				Entity_SetActive(sName+"_*", false);
+			}
+		}
+		
+		if (alAction == eAction_Test5)
+		{
+			Player_Teleport("Startpos_ControlRoom", true);
+			SwingDoor_SetLocked("wooden_door_window_1", false, false);
+			SwingDoor_SetOpenAmount("wooden_door_window_1", 0.5f);
+			Grating_Open("Grating_1");
+		}
+		
+		if (alAction == eAction_Test7)
+		{
+			Entity_SetActive("Stalker_1", true);
+			cScript_RunGlobalFunc("Stalker_1", "", "_Global_Debug");
+		}
+				
+		if (alAction == eAction_TestMinus)
+		{
+			//Entity_SetActive("Stalker_1", true);
+			//Stalker_GoToHole("Stalker_1", "GhoulHole_2", true, true);		
+			GiveTestItems();
+		}
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// This only used for pure debug purposes when info needs to printed.
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afY)
+	{
+		//afY = cLux_DrawDebugText("My Debug value:"+..., afY);
+		return afY;
+	}
+ 	
+	//-------------------------------------------------------
+ 
+	//} END MAIN CALLBACKS
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN FUNCTIONS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+	
+	//-------------------------------------------------------
+	
+	void OnBreak_MoveItemsToTheFloor(const tString &in asEntity)
+	{
+		if (asEntity=="breakable_table_01")
+		{
+			Prop_MoveLinearTo("Note_UpdateOnPrisoner", "Note_UpdateOnPrisoner_Floor", 4, 4, 0, false);
+		}
+		else if (asEntity=="french_desk_wooden_1")
+		{
+			Decal_SetDynamicVisible("blood_splatter_3", false);
+			Decal_SetDynamicVisible("blood_splatter_2", false);
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnThrowItem(const tString &in asEntity)
+	{
+		cCamera@ pCam = cLux_GetPlayer().GetCamera();
+		if (pCam is null) return;
+		
+		cVector3f vStart = pCam.GetPosition();
+		cVector3f vEnd = pCam.GetPosition() + pCam.GetForward() * 10.f;
+		
+		array<iLuxEntity@> vHatchAreas;
+		Map_GetEntityArray("Area_Hatch_*", vHatchAreas, eLuxEntityType_Area);
+		
+		for (int i = 0; i < vHatchAreas.size(); ++i)
+		{
+			cLuxArea@ pArea = cLux_ToArea(vHatchAreas[i]);
+			cBoundingVolume@ pBV = pArea !is null ? pArea.GetAreaBody().GetBoundingVolume() : null;
+			
+			if (pArea is null) continue;
+			if (pBV is null) continue;
+			
+			float fT;		
+			cVector3f vIntersection;
+			if (cMath_CheckAABBLineIntersection(pBV.GetMin(), pBV.GetMax(), vStart, vEnd, vIntersection, fT))
+			{
+				tString sDoor = "cell_door_" + cString_GetNumericSuffixInt(pArea.GetName());		
+				
+				if (Slide_GetSlideAmount(sDoor + "_Hatch") < 0.2f) 
+					continue;
+				
+				SetPrisonDoorBarBodyActive(sDoor, false);
+				break;
+			}
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void SetPrisonDoorBarBodyActive(const tString &in asDoor, bool abActive)
+	{
+		iLuxEntity@ pEnt = Map_GetEntity(asDoor, eLuxEntityType_Prop);
+		iPhysicsBody@ pBody = pEnt !is null ? pEnt.GetBodyFromName("Body_2") : null;
+		
+		if (pBody !is null)
+		{
+			pBody.SetCollide(abActive);
+			
+			if (abActive == false)
+				Map_AddTimer(asDoor, 0.5f, "OnTimer_ResetPrisonDoorBarBody");
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_ResetPrisonDoorBarBody(const tString &in asTimer)
+	{
+		SetPrisonDoorBarBodyActive(asTimer, true);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_ActivatePrisonerSenses(const tString &in asTimer)
+	{
+		Agent_SetSensesActive("GermanPrisoner", true);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnBreak_DisableSlideLock(const tString &in asEntity)
+	{
+		const tString sLockEnt = "Lock_"+asEntity;
+		if (Entity_Exists(sLockEnt)==false) return;
+		Entity_SetActive(sLockEnt, false);
+	}
+	
+	//-------------------------------------------------------
+		
+	bool OnTrigger_LockDoor(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		bool bLock = alState==1;
+		SwingDoor_SetBlocked(Entity_GetVarString(asChild, ""), alState == 1, true);
+		
+		return true;
+	}
+
+	//-------------------------------------------------------
+	
+	void OnLookAt_SaveLamp(const tString &in asEntity, int alState)
+	{
+		tString sHint = GameDifficulty_GetSaveHint();
+		if(alState == 1)
+		{
+			if (Hint_GetCurrentEntry() != sHint)
+			{
+				Hint_StopHint();
+				Hint_RemoveFromGiven("Hints", sHint);
+				Hint_ShowHint_Hold("Hints", sHint, true, 1.5f, true, 15.f, true, true);
+			}
+		}
+		else
+		{
+			if (Hint_GetCurrentEntry() == sHint)
+				Hint_StopHint();
+				
+			Entity_SetPlayerLookAtCallback(asEntity, "");
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnInteract_SaveLamp(const tString &in asEntity)
+	{
+		////////////////
+		// About to get lit!
+		if (Lamp_GetLit(asEntity) == false)
+			SaveGameProgress();
+		else
+			Map_AddTimer(asEntity, 1.f, "OnTimer_SaveGameProgress");
+	
+		////////////////
+		// Add impulse
+		Entity_AddImpulse("SaveLamp_Easy_Chain", cMath_RandomSphereSurfacePoint(0.5f), true, true);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_SaveGameProgress(const tString&in asTimer)
+	{
+		Lamp_SetLit(asTimer, true, true);
+		SaveGameProgress();
+	}
+	
+	//-------------------------------------------------------
+	
+	void SaveGameProgress()
+	{
+		/////////////////
+		// Save game
+		SaveRoom_SaveGame(true, true);
+		
+		////////////////
+		// Hints
+		if (Hint_GetCurrentEntry() == GameDifficulty_GetSaveHint())
+			Hint_StopHint();
+		
+		GameStats_IncreaseEntryAmount(eHeroStats_TimesSaved);
+	}
+		
+	//-------------------------------------------------------
+		 
+	bool CanUse_Fuel(const tString &in asItemType, const tString &in asItemID, const tString &in asPickedEntity)
+	{
+		return asPickedEntity == "SaveLamp_SavingCostsFuel_Aux" && GameDifficulty_GetSettingValueByID_Int(eGameDifficultySetting_SaveSystem) == eDifficultySettingValue_SaveSystem_SavingCostsFuel;
+	}
+		
+	//-------------------------------------------------------
+		 
+	bool CanUse_FuelBottle(const tString &in asItemType, const tString &in asItemID, const tString &in asPickedEntity)
+	{
+		return CanUse_Fuel(asItemType, asItemID, asPickedEntity);
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnUse_FuelBottle(const tString &in asItemType, const tString &in asItemID, const tString &in asTargetEntity, const tString &in asItemEntity, float afTimeElapsed, float afTimeStep)
+	{
+		return OnUse_Fuel(asItemType, asItemID, asTargetEntity, asItemEntity, afTimeElapsed, afTimeStep);
+	}
+
+	//-------------------------------------------------------
+
+	bool OnUse_Fuel(const tString &in asItemType, const tString &in asItemID, const tString &in asTargetEntity, const tString &in asItemEntity, float afTimeElapsed, float afTimeStep)
+	{
+		//////////////////
+		// Save
+		OnInteract_SaveLamp("SaveLamp_Easy_Lamp");
+		Lamp_SetLit("SaveLamp_Easy_Lamp", !Lamp_GetLit("SaveLamp_Easy_Lamp"), true);
+		
+		Sound_PlayGui("update/lantern_fill/fill", 1.f, eSoundEntryType_Gui);
+		
+		//////////////////
+		// Unequip & remove item
+		Item_RemoveFromInventory(asItemID);
+		Player_ChangeStateToNormal();
+		PlayerBody_StopAnimationLayer(ePlayerBodyAnimationLayer_LeftArm, 0.5);
+		PlayerBody_PlayLayerIdleAnimation(ePlayerBodyAnimationLayer_LeftArm, 0.5);
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	 	
+	void OnStartPlayerThrown()
+	{
+		Entity_SetActive("BlockBox_ThrowFix_*", true);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnEndPlayerThrown()
+	{
+		Entity_SetActive("BlockBox_ThrowFix_*", false);
+	}
+		
+	//-------------------------------------------------------
+	
+	bool OnCollide_SetSwitchesActive(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		Entity_SetInteractionDisabled("button_cell_*", alState==-1);
+		return true;
+	}
+		
+	//-------------------------------------------------------
+	
+	void OnCombinationLock_Unlocked(const tString&in asEntityName)
+	{
+		tString sName = Entity_GetVarString(asEntityName, "");
+		
+		const tString sPickupName = "LockerPickup_" + sName + "_*";
+		
+		Pickup_SetCanPickup("RandomLocker_Pickup_*", true);
+		Pickup_SetIsLockerItem("RandomLocker_Pickup_*", false);
+		HighlightEffect_RemoveIgnoreLosEntity("RandomLocker_Pickup_*");
+		
+		Achievement_IncreaseUnlockedLockerCount();
+	
+		///////////////
+		// Deactivate aux areas
+		Entity_SetActive("RandomLocker_InteractAux_*", false);
+	}
+		
+	//-------------------------------------------------------
+	
+	void OnInteract_Player_PrepareGun(const tString &in asEntity)
+	{
+		Map_AddTimer("Timer_GunEquipHint", 9.f, "OnTimer_GunEquipHint");
+	}
+		
+	//-------------------------------------------------------
+	
+	void OnTimer_GunEquipHint(const tString&in asTimer)
+	{
+		if (ItemType_GetCountInInventory("Gun") == 0) return;
+		
+		Hint_StopHint();
+		Hint_ShowHint_Hold("Hints", "HintEquipGun", true, 1.5f, true, 15.f, true, true);
+	}
+	
+	//-------------------------------------------------------
+ 
+	//} END MAIN FUNCTIONS
+	
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// GENERATOR
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+
+	//-------------------------------------------------------
+
+	void SetupGenerator()
+	{
+		Generator_SetupEntities("", "", "", "", "Lamp_Generator_Prison*", "Lamp_GeneratorBackup_*");
+		Generator_SetupFuseBox("FuseBox", "FuseBox_Lamp", "FuseBox_BackupLamp", "FuseBox_Lever", "FuseBox_Socket", 
+							   "FuseBox_Grating", "FuseBox_Fuse_Pickup", "FuseBox_Note", "FuseBox_NoteNail", 
+							   "FuseBox_NoteInteractAux", "FuseBox_InteractArea", "Sound_FuseBoxLoop", "Lamp_Generator_Prison_16");		
+		Generator_EndSetup();
+		
+		if (GameDifficulty_GetSettingValueByID_Bool(eGameDifficultySetting_FusesAndFuseBoxes) == false)
+		{
+			Light_SetBrightness("Light_FuseBox_BackupLamp", 0.f);
+			Light_SetBrightness("Light_FuseBox_Lamp", 0.f);
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnStateChange_Generator(int alState)
+	{
+		///////////////////
+		// Generator sounds
+		if (alState !=1 )
+			Sound_Play("Sound_GeneratorOff", 0.f);
+		
+		////////////////////
+		// Update cell doors
+		UpdateCellDoors(alState);
+	}
+	
+	//-------------------------------------------------------
+	
+	void UpdateCellDoors(int alState)
+	{
+		Map_RemoveTimer("Timer_UpdateCellDoors");
+		
+		if (alState == 1)
+		{
+			OnTimer_UpdateCellDoors("");
+		}
+		else
+		{
+			Map_AddTimer("Timer_UpdateCellDoors", 1.f, "OnTimer_UpdateCellDoors");
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnInteract_FuseBoxFuse(const tString &in asEntity)
+	{
+		Entity_SetActive(Generator_GetFuseInteractArea(), true);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnConnectionStateChange_FuseBoxLever(const tString &in asEntity, int alState)
+	{
+		if (alState != 1) return;
+		if (cLux_GetCurrentMap() is null) return;
+		if (cLux_IsChangingMap()) return;
+		if (Generator_GetIsSetupDone() == false) return;
+		
+		Generator_ActivateFuseBox();
+		
+		if (Generator_GetState(true) == eGeneratorState_On)
+		{
+			UpdateCellDoors(1);
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnLookAt_FuseBoxNote(const tString &in asEntity, int alState)
+	{
+		Generator_SetFuseBoxNoteDiscovered(alState == 1);
+	}
+	
+	//-------------------------------------------------------
+	
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAP STREAMING
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+
+	//-------------------------------------------------------
+
+	bool OnTrigger_Player_SwitchMap_Hub(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		Blackboard_SetupStalkerMapTransfer("Stalker_1");		
+		Game_DoMapChange("officer_hub.hpm", "MapTransfer_Hub_Prison");
+		return true;
+	}
+
+	//-------------------------------------------------------
+ 
+	//} END MAP STREAMING
+	
+	//-------------------------------------------------------
+
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// EVENTS
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+	
+		////////////////////////////////////////////////////////////
+		// Event: The player explores the map room
+		//{/////////////////////////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		void OnInteract_ShowPrisonMap(const tString &in asEntity)
+		{
+			InGameMap_SetMapFound("prison");
+		}
+		 
+		//-------------------------------------------------------
+		
+		void OnGui_Map(float afTimeStep, float afAlpha)
+		{
+			bool bZoomed = ZoomArea_GetIsZoomedIn();
+			
+			cImGuiLabelData labelData = ImGui_GetDefaultLabel();
+			labelData.mFont.SetFile(FontHandler_GetFont(eFontType_Readable,96));
+			labelData.mFont.mvSize = bZoomed ? 24 : 18;
+			labelData.mColorBase = cColor_White;
+			labelData.mGfxBackground.mColor = cColor(0, afAlpha);
+			labelData.mbUseBackgroundGfx = true;
+			
+			ImGui_SetModColorMul(cColor(1, afAlpha));
+			ImGui_SetAlignment(eImGuiAlign_CenterCenter);
+			ImGui_SetTransCategory("MapOverlay");
+			
+			tString sMap = "Prison";
+			DrawMapPins("Map_"+sMap+"_Pin_*", labelData, bZoomed);		
+			if (bZoomed) DrawMapPins("Map_"+sMap+"_ZoomPin_*", labelData, bZoomed);
+			
+			ImGui_SetAlignment(eImGuiAlign_TopLeft);
+			ImGui_SetModColorMul(cColor_White);
+		}
+		
+		//-------------------------------------------------------
+		
+		void DrawMapPins(const tString &in asName, cImGuiLabelData@ apLabelData, bool abZoomed)
+		{
+			array<iLuxEntity@> vPins;
+			Map_GetEntityArray(asName, vPins, eLuxEntityType_Area);
+			
+			for (int i = 0; i < vPins.length(); i++)
+			{
+				iLuxEntity@ pEnt = vPins[i];
+				tString sText = pEnt.GetVarString("");
+				ImGui_DoLabelExt(sText, apLabelData, GetHudPosFromWorldPos(pEnt.GetPosition(), abZoomed));
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		cVector3f GetHudPosFromWorldPos(const cVector3f &in avWorldPos, bool abZoomed)
+		{
+			cVector3f vMagicOffset = abZoomed ? cVector3f(25, 25, 0) : cVector3f(12, 12, 0);
+			cVector2f vScreenSize = cGraphics_GetLowLevel().GetScreenSizeFloat();
+			cRect2l rect = cMath_GetClipRectFromSphere(avWorldPos, 0.01, cLux_GetViewport().GetCamera().GetFrustum(), cVector2l(vScreenSize.x, vScreenSize.y), false, false);
+			cVector2f vHudPos = (cVector2f(rect.x, rect.y) * cLux_GetHudVirtualSize()) / vScreenSize;
+			
+			return cLux_GetHudVirtualStartPos() + cVector3f(vHudPos.x, vHudPos.y, 1) - ImGui_GetCurrentGroupPos() + vMagicOffset;
+		}
+				
+		//-------------------------------------------------------
+
+		//} END Event: The player explores the map room
+		
+		////////////////////////////////////////////////////////////
+		// Event: The player explores the cells
+		//{/////////////////////////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		bool OnTrigger_PlayDebrisSweet(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Entity_SetActive("Trigger_SoundDebris",false);
+			Sound_Play("Sound_DebrisSweet", 0.0f);
+			return false;
+		}
+
+		//-------------------------------------------------------
+		
+		void OnBreak_DisableChainLock(const tString &in asEntity)
+		{
+			if (ChainLock_GetIsBroken("Door_Chainlock") == false)
+				cScript_SetGlobalVarInt("CleithrophobistCount", cScript_GetGlobalVarInt("CleithrophobistCount")+1);
+				
+			Entity_SetActive("Door_Chainlock", false);
+			Entity_SetActive("door_chain_eyelet_2", false);
+		}
+				
+		//-------------------------------------------------------
+		
+		void OnLookAt_Cutters(const tString &in asEntity, int alState)
+		{
+			InGameMap_AddObjective("Obj_GetCutters_A");
+		}
+
+		//-------------------------------------------------------
+		
+		void OnInteract_Cutters(const tString &in asEntity)
+		{
+			Map_RemoveTimer(asEntity);
+			Map_AddTimer(asEntity, 0.1f, "OnTimer_SetCuttersObjectiveDone");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_SetCuttersObjectiveDone(const tString &in asTimer)
+		{
+			if (Entity_Exists(asTimer)) return;
+			if (Entity_IsActive(asTimer)) return;
+			
+			InGameMap_SetObjectiveCompleted("Obj_GetCutters_A");
+			InGameMap_SetObjectiveCompleted("Obj_GetCutters_B");
+			
+			Achievement_Unlock(eAchievement_Toolist);
+			Music_Play("Bunker_CuttersPickup.ogg", 0.1f, false, eMusicPrio_MinorEvent);
+			
+			Entity_SetInteractionDisabled("pack_food_empty_01_1", false);
+			Prop_SetStaticPhysics("pack_food_empty_01_1", false);
+			
+			//////////////
+			// Increase stalker escalation
+			bool bFullStep = GameDifficulty_GetSettingValueByID_Int(eGameDifficultySetting_StalkerAggressiveness) > eDifficultySettingValue_StalkerAggressiveness_Default;
+			Blackboard_IncreaseStalkerEscalation(bFullStep);
+			cScript_SetGlobalVarInt("LevelProgression", cScript_GetGlobalVarInt("LevelProgression") + 1);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_FadePrisonerVoice(const tString &in asParent, const tString &in asChild, int alState)
+		{			
+			Voice_FadeSceneVolumeTo("Prisoner", alState == 1 ? 0.2f : 1.f, 2.f);			
+			return true;
+		}
+
+		//-------------------------------------------------------
+
+		//} END Event: The player explores the cells
+		
+		////////////////////////////////////////////////////////////
+		// Event: The player uses the cell doors control panel
+		//{/////////////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+
+		void OnConnectionStateChange_ToggleCellDoor(const tString &in asEntity, int alState)
+		{
+			OpenCellDoor(cString_GetNumericSuffix(asEntity), alState == 1);
+			
+			///////////////
+			// Update Warden's Office objective
+			if (asEntity == "button_cell_6")
+			{
+				if (alState == 1)
+				{
+					InGameMap_SetObjectiveCompleted("Obj_GetCutters_B");
+				}
+				else
+				{
+					if (InGameMap_IsObjectiveCompleted("Obj_GetCutters_A") == false)
+					{
+						InGameMap_SetObjectiveNotCompleted("Obj_GetCutters_B");
+						InGameMap_AddObjective("Obj_GetCutters_B");
+					}
+				}
+			}
+		}
+
+		//-------------------------------------------------------
+		
+		void OpenCellDoor(const tString &in asCellId, bool abCellButtonOn)
+		{
+			////////////
+			// Setup vars
+			bool bOpen = abCellButtonOn && Generator_GetState(true) == eGeneratorState_On;
+			bool bInstant = Map_TimerExists("Timer_Setup");
+			
+			tString sDoor = "cell_door_" + asCellId;
+			tString sLamp = sDoor + "_lamp";
+			tString sDoorBlocker = sDoor + "_blocker";
+			tString sDoorBlockerLoS = sDoor + "_los_blocker";
+			tString sCog = sDoor + "_Cog";
+			tString sChain = sDoor + "_Chain";
+			
+			Lamp_SetLit("button_cell_" + asCellId + "_lamp", bOpen, true);
+			
+			if (Map_TimerExists(sDoor))
+				Map_RemoveTimer(sDoor);
+			if (Map_TimerExists(sLamp))
+				Map_RemoveTimer(sLamp);
+			
+			////////////////
+			// Open
+			if (bOpen)
+			{				
+				SlideDoor_SetClosed(sDoor, false, bInstant);
+				Lamp_SetFlickerActive(sLamp, false);
+				Lamp_SetLit(sLamp, true, true);
+				
+				Entity_SetActive(sDoorBlocker, false);
+				Entity_SetActive(sDoorBlockerLoS, false);				
+				Stalker_RemovePathBlockerBody("Stalker_1", Entity_GetMainBodyID(sDoorBlocker));
+				Stalker_RemovePathBlockerBody("Stalker_1", Entity_GetMainBodyID(sDoorBlockerLoS));
+				
+				PlayCogAnimation(sDoor, 0.f, -1.f);
+				PlayCogAnimation(sDoor, 1.f, 0.1f);
+				
+				if (sDoor == "cell_door_6")
+				{
+					cScript_SetGlobalVarBool("Stalker_IgnorePrisonerSounds", false);
+				}
+			}
+			
+			////////////////
+			// Close
+			else
+			{				
+				if (Entity_GetAnimationIsPlaying(sCog, "cogwheel_rotate") == false)
+					Entity_PlayAnimation(sCog, "cogwheel_rotate", 0.f, true, false);
+				if (Entity_GetAnimationIsPlaying(sChain, "chain_rotate") == false)
+					Entity_PlayAnimation(sChain, "chain_rotate", 0.f, true, false);
+				
+				if (bInstant)
+				{
+					Lamp_SetLit(sLamp, false, false);
+					SlideDoor_SetClosed(sDoor, true, true);
+					Entity_SetActive(sDoorBlocker, true);		
+					Entity_SetActive(sDoorBlockerLoS, true);
+					
+					PlayCogAnimation(sDoor, 0.f, -1.f);
+				}
+				else
+				{
+					Lamp_SetLit(sLamp, false, true);					
+					Map_AddTimer(sDoor, 1.f, "OnTimer_CloseCellDoor");		
+				}
+			}
+			
+			////////////////
+			// AI event
+			if (Generator_GetState(true) == eGeneratorState_On)
+			{
+				tString sEvent = bOpen ? "CellDoorOpen" : "CellDoorClosed";
+				if (sDoor == "cell_door_6")
+					sEvent = "Prisoner" + sEvent;
+					
+				mBaseObj.BroadcastSoundHeardEvent(sEvent, Entity_GetPosition(sDoor), 20.f, 3);
+				
+				if (Entity_IsActive("Stalker_1") == false)
+				{
+					Entity_SetActive("Stalker_1", true);
+					Stalker_GoToHole("Stalker_1", "GhoulHole_2", true, true);
+				}
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_CloseCellDoor(const tString & in asTimer)
+		{
+			tString sCellId = cString_GetNumericSuffix(asTimer);
+			tString sDoor = "cell_door_" + sCellId;	
+			
+			/////////////////////////
+			// Close door
+			SlideDoor_SetClosed(asTimer, true, false);
+			Entity_SetActive(asTimer + "_blocker", true);	
+			Entity_SetActive(asTimer + "_los_blocker", true);
+			
+			if (SlideDoor_GetOpenAmount(sDoor) > 0.05f)
+			{
+				if (Entity_GetCollide(sDoor, "Trigger_Cell_Door_" + sCellId) == false)
+				{
+					PlayCogAnimation(sDoor, 0.f, -1.f);
+					PlayCogAnimation(sDoor, -1.f, 1.f);
+				}
+				else
+				{
+					PlayCogAnimation(sDoor, -1.f, -1.f);
+					PlayCogAnimation(sDoor, 0.f, 5.5f);
+				}				
+			}
+			
+			/////////////////////////
+			// Achievement
+			if (asTimer == "cell_door_6")
+			{
+				if (Entity_IsActive("chain_cutters_pickup_1") == false &&
+					StateMachine_GetCurrentStateName("GermanPrisoner") != "Dead" &&
+					Entity_GetCollide("Stalker_1", "Trigger_Cell_6") == false)
+				{
+					Achievement_Unlock(eAchievement_LifePreserver);
+				}
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void PlayCogAnimation(const tString &in asDoor, float afSpeed, float afFadeTime)
+		{
+			tString sCog = asDoor + "_Cog";
+			tString sChain = asDoor + "_Chain";
+			
+			if (Entity_GetAnimationIsPlaying(sCog, "cogwheel_rotate") == false)
+				Entity_PlayAnimation(sCog, "cogwheel_rotate", 0.f, true, false);
+			if (Entity_GetAnimationIsPlaying(sChain, "chain_rotate") == false)
+				Entity_PlayAnimation(sChain, "chain_rotate", 0.f, true, false);
+				
+			if (afFadeTime > 0.f)
+			{
+				Entity_FadeAnimationSpeed(sCog, "cogwheel_rotate", afSpeed, afFadeTime);
+				Entity_FadeAnimationSpeed(sChain, "chain_rotate", afSpeed, afFadeTime);
+			}
+			else
+			{
+				Entity_SetAnimationSpeed(sCog, "cogwheel_rotate", afSpeed);
+				Entity_SetAnimationSpeed(sChain, "chain_rotate", afSpeed);
+			}
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event: The player uses the cell doors control panel
+		
+		////////////////////////////////////////////////////////////
+		// Event: The cell doors open/close if power is off
+		//{/////////////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		tString msPlayerInCell = "";
+		tString msStalkerInCell = "";
+		int mlStalkerKillPlayerInCellStage = 0;
+		
+		//-------------------------------------------------------
+
+		bool OnCollide_CellDoorClosed(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState != 1)
+				return true;
+				
+			tString sSuffix = cString_GetNumericSuffix(asParent);
+			tString sDoor = "cell_door_" + sSuffix;				
+			tString sCog = sDoor + "_Cog";
+			tString sChain = sDoor + "_Chain";
+			
+			//////////////////
+			// Player locked inside
+			if (msPlayerInCell == sSuffix &&
+				Generator_GetState(true) == eGeneratorState_Off)
+			{
+				Map_AddTimer(sSuffix, 1.f, "OnTimer_StalkerGoToPlayerCell");
+				
+				// Failsafe
+				Map_AddTimer("Timer_ForceStalkerIntoHoles", 21.f, "OnTimer_ForceStalkerIntoHoles");
+			}
+			
+			//////////////////
+			// Anims
+			if (Entity_GetAnimationIsPlaying(sCog, "cogwheel_rotate"))
+				Entity_FadeAnimationSpeed(sCog, "cogwheel_rotate", 0.f, 5.5f);
+			if (Entity_GetAnimationIsPlaying(sChain, "chain_rotate"))
+				Entity_FadeAnimationSpeed(sChain, "chain_rotate", 0.f, 5.5f);
+			
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_StalkerGoToPlayerCell(const tString &in asTimer)
+		{
+			tString sHole = "GhoulHole_Cell_" + msPlayerInCell;
+			
+			////////////////////
+			// Player not in cell? Skip!
+			if (msPlayerInCell == "") 
+			{
+				Map_RemoveTimer("Timer_ForceStalkerIntoHoles");
+				return;
+			}
+			
+			////////////////////
+			// In a cell? Different behaviour then
+			if (msStalkerInCell != "")
+			{
+				Map_RestartCurrentTimer(1.f);
+				return;
+			}
+			
+			////////////////////
+			// Not active?
+			if (Entity_IsActive("Stalker_1") == false)
+			{
+				Entity_SetActive("Stalker_1", true);
+				Map_RestartCurrentTimer(1.f);
+				return;
+			}
+			
+			////////////////////
+			// Retreat
+			if (mlStalkerKillPlayerInCellStage == 0)
+			{
+				tString sBlocker = "cell_door_" + asTimer + "_blocker";
+				tString sBlockerLoS = "cell_door_" + asTimer + "los_blocker";
+				
+				Entity_SetActive(sHole, true);
+				Entity_SetActive(sBlocker, true);		
+				Entity_SetActive(sBlockerLoS, true);		
+				Stalker_AddPathBlockerBody("Stalker_1", Entity_GetMainBodyID(sBlocker), true);
+				
+				Stalker_SetMode("Stalker_1", eStalkerMode_Passive, true);
+
+				if (Stalker_GetIsInsideWalls("Stalker_1") == false)
+					Stalker_Retreat("Stalker_1");
+					
+				mlStalkerKillPlayerInCellStage = 2;
+			}
+			
+			////////////////////
+			// Emerge from hole by player
+			else if (mlStalkerKillPlayerInCellStage == 2)
+			{
+				if (Stalker_GetIsInsideWalls("Stalker_1"))
+				{
+					Map_RemoveTimer("Timer_ForceStalkerIntoHoles");
+					
+					Agent_SetSensesActive("Stalker_1", false);
+					Stalker_EmergeFromHole("Stalker_1", sHole, false);
+				}
+			}
+			
+			Map_RestartCurrentTimer(1.f);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ForceStalkerIntoHoles(const tString &in asTimer)
+		{
+			msStalkerInCell = "";
+			
+			if (Stalker_GetIsInsideWalls("Stalker_1") == false)
+			{
+				Agent_StopCutsceneAnimation("Stalker_1");
+				Stalker_GoToHole("Stalker_1", "GhoulHole_3", true, true);
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_SetCharacterInCell(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			tString sCell = cString_GetNumericSuffix(asParent);
+			tString sHole = "GhoulHole_Cell_" + sCell;
+			bool bInCell = alState == 1;
+			
+			if (asChild == "Player") 			msPlayerInCell = bInCell ? sCell : "";
+			else if (asChild == "Stalker_1")	msStalkerInCell = bInCell ? sCell : "";
+			
+			if (msStalkerInCell == sCell)
+			{
+				Entity_SetActive(sHole, true);	
+			}
+			else if (msPlayerInCell != sCell && msStalkerInCell != sCell)
+			{
+				Entity_SetActive(sHole, false);	
+			}
+					
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_UpdateCellDoors(const tString&in asTimer)
+		{
+			bool bGeneratorOn = Generator_GetState(true) == eGeneratorState_On;
+			
+			/////////////////////
+			// Update door state
+			for (int i = 0; i < 8; ++i)
+			{
+				// Second cell door is broken and open, skip!
+				if (i == 1) continue;
+				
+				tString sId = i + 1;				
+				tString sButton = "button_cell_" + sId;
+				bool bOpen = MovingButton_IsSwitchedOn(sButton) && bGeneratorOn;
+				
+				OpenCellDoor(sId, bOpen);
+			}
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event: The cell doors close if power is off
+		
+		//-------------------------------------------------------
+		
+		////////////////////////////////////////////////////////////
+		// Event: The STALKER hears the PRISONER
+		//{/////////////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_ActivateStalker(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (SlideDoor_GetOpenAmount("cell_door_6") < 0.5f) 
+				return true;
+				
+			if (Entity_IsActive("Stalker_1") == false)
+			{
+				Entity_SetActive("Stalker_1", true);
+				Stalker_GoToHole("Stalker_1", "GhoulHole_2", true, true);
+			}
+			
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_StartSeqStalkerKillPrisoner(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (Stalker_GetIsInsideWalls("Stalker_1")) 
+				return true;
+			
+			if (StateMachine_GetCurrentStateName("GermanPrisoner") != "Dead")
+			{
+				Stalker_PlayCutsceneAtEntity("Stalker_1", "stalker_prisoner_german_death", "Area_KillPrisonerAnim", 0.3f, "OnAnimStart_KillPrisoner");
+				Map_AddTimer("Timer_StalkerGoToWardensOffice", 4.1f, "OnTimer_StalkerGoToWardensOffice");
+			}
+			
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_StalkerGoToWardensOffice(const tString &in asTimer)
+		{
+			Sound_CreateAIEventAtEntity("Area_StalkerInvestigateAfterPrisoner", 50.f, 2);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnAnimStart_KillPrisoner(const tString &in asAnim)
+		{
+			cScript_RunGlobalFunc("GermanPrisoner", "cScrAgentPrisoner", "_Global_PlayKillByStalkerAnim");
+			
+			Entity_SetActive("PrisonerChair", false);
+			Entity_SetActive("PrisonerChair_Animated", true);
+			Entity_PlayAnimation("PrisonerChair_Animated", "chair_prisoner_german_death_stalker", 0.3f);
+		}
+		
+		//-------------------------------------------------------	
+
+		//} END Event: The cell doors close if power is off
+		
+		//-------------------------------------------------------
+		
+		//MUSIC--------------------------------------------------
+		//-------------------------------------------------------
+		
+		bool OnTrigger_PlayPrisonMusic(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Music_Stop(15.0f, eMusicPrio_BgAmb);
+			Map_AddTimer("Timer_LevelMusic", 10.0f, "OnTimer_PlayPrisonMusic");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+
+		void OnTimer_PlayPrisonMusic(const tString &in asTimer)
+			{
+				Map_AddTimer("Timer_MusicStop", cMath_RandRectf(240.f, 300.f), "OnTimer_StopMusic");
+				Music_PlayExt("Bunker_Prison.ogg", true, 0.09f, 1.0f, 15.0f, 1.0f, eMusicPrio_SceneAmb, true);
+			}
+			
+		//-------------------------------------------------------
+
+		void OnTimer_StopMusic(const tString &in asTimer)
+			{
+				Music_Stop(15.0f, eMusicPrio_SceneAmb);
+				Map_AddTimer("Timer_MusicRand", cMath_RandRectf(240.f, 270.f), "OnTimer_PlayPrisonMusic");
+			}
+
+		//-------------------------------------------------------
+		//MUSIC_END----------------------------------------------
+			 
+	//} END EVENTS
+}

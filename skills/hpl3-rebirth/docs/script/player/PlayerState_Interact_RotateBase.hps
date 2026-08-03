@@ -1,0 +1,903 @@
+#include "player/PlayerState_Interact.hps"
+#include "helpers/helper_player.hps"
+
+#include "helpers/helper_modules.hps"
+
+//------------------------------------------------------------
+
+const float gfPosCorrectionTime = 2.f;
+const bool gbDebugDraw = false;
+
+//------------------------------------------------------------
+
+class iScrPlayerState_Interact_RotateBase : iScrPlayerState_Interact
+{
+
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool UseNewWay() { return false; }
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		mbUseNewWay = UseNewWay();
+		
+		if(mbUseNewWay)
+		{
+			mbUseNewWay = UseNewWay();
+			mfPosCorrectionCount = -1.f;
+			mvPosCorrectionStart = 0.f;
+			msStandTar = "";
+			m_idStandTarId = tID_Invalid;
+			
+			mbDefaultLookAt = true;
+			
+			mRotatePid.SetErrorNum(3);
+			mRotatePid.p = 15.0f;
+			mRotatePid.i = 0.0f;
+			mRotatePid.d = 0.3f;
+			
+			mbUseMoveInput = false;
+		}
+		else
+		{
+			mRotatePid.SetErrorNum(10);
+			mRotatePid.p = 10.0f;
+			mRotatePid.i = 0.0f;
+			mRotatePid.d = 1.0f;
+			
+			mfMoveToMouseAddFactor = 1;
+			mfMaxAngularImpulse = 1000;
+			mbResetSpeedWhenNoMouseMovement = true;
+			mfMovementToMoveAddFactor = 0;
+			
+			mfInteractCount = 0.f;
+			
+			mfPosCorrectionCount = -1.f;
+			mvPosCorrectionStart = 0.f;
+			msStandTar = "";
+			m_idStandTarId = tID_Invalid;
+			
+			msLookAtEntity = "";
+			m_idLookAtEntityId = tID_Invalid;
+			mbDefaultLookAt = true;
+		}
+		InitRotateBase();
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// TO BE IMPLEMENTED
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void InitRotateBase(){}
+	
+	void EnterRotateBase(int alPrevStateId){}
+	void LeaveRotateBase(int alNextStateId){}
+	
+	float GetSpeedAdd(cCamera @apCam){ return 0;}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnEnterState(int alPrevStateId)
+	{
+		if(mbUseNewWay)
+		{
+			//////////////////////////////
+			// Setup 
+			mvMoveInput = 0;
+			mvLookInput = 0;
+			mfRotSpeed = 0;
+			mRotatePid.Reset();
+			
+			mvSpeedAmounts.resize(0);
+			
+			EnterInteractState(alPrevStateId);
+		
+			////////////////////////////////
+			// Player setup
+			cScript_SetGlobalVarBool("Climb_Allowed", false);
+		
+			/////////////////////////////////
+			//Get the joint to use
+			iPhysicsBody@ pBody = cLux_ID_Body(mBodyID);
+			iPhysicsJoint@ pJoint = pBody.GetJoint(0);
+			mJointID = pJoint.GetID();
+			
+			/////////////////////////////////
+			//Setup body
+			mbHasGravity = pBody.GetGravity();
+			pBody.SetGravity(false);
+			
+			/////////////////////////////////
+			//Get Max distance
+			iCharacterBody @pCharBody = cLux_GetPlayer().GetCharacterBody();
+			mfMaxDistance = cMath_Vector3Dist(pCharBody.GetFeetPosition(), pJoint.GetPivotPoint());
+			mfMaxDistance = mfMaxDistance * 1.2f + 0.5f;
+			
+			////////////////////////////
+			// Set up pos correction
+			m_idStandTarId = tID_Invalid;
+			mfPosCorrectionCount = -1.f;
+			
+			if (msStandTar != "")
+			{
+				iLuxEntity@ pStandTar = cLux_GetCurrentMap().GetEntityByName(msStandTar);
+				
+				cVector3f vPlayerPos = mBaseObj.mpPlayer.GetCharacterBody().GetFeetPosition();
+				float fDist = cMath_Vector2DistXZ(vPlayerPos, pStandTar.GetPosition());
+				if (fDist < 0.4f) return;
+				
+				mvPosCorrectionStart = vPlayerPos;
+				m_idStandTarId = pStandTar.GetID();
+			}
+			
+			/////////////////////////////////
+			//Callback
+			EnterRotateBase(alPrevStateId);
+		}
+		else
+		{
+			EnterInteractState(alPrevStateId);
+	
+			////////////////////////////////
+			// Player setup
+			cScript_SetGlobalVarBool("Climb_Allowed", false);
+		
+			/////////////////////////////////
+			//Get the joint to use
+			iPhysicsBody@ pBody = cLux_ID_Body(mBodyID);
+			iPhysicsJoint@ pJoint = pBody.GetJoint(0);
+			mJointID = pJoint.GetID();
+			
+			/////////////////////////////////
+			//Reset data
+			mRotatePid.Reset();
+			mfRotSpeed =0;
+			mvMoveAdd = cVector2f(0);
+
+			mfInteractCount = 0.f;
+			mfInertiaFactor = 0.1f;
+
+			/////////////////////////////////
+			//Setup body
+			mbHasGravity = pBody.GetGravity();
+			pBody.SetGravity(false);
+			
+			/////////////////////////////////
+			//Get Max distance
+			iCharacterBody @pCharBody = cLux_GetPlayer().GetCharacterBody();
+			mfMaxDistance = cMath_Vector3Dist(pCharBody.GetFeetPosition(), pJoint.GetPivotPoint());
+			mfMaxDistance = mfMaxDistance * 1.2f + 0.5f;
+			
+			
+			/////////////////////////////////
+			//Callback
+			EnterRotateBase(alPrevStateId);
+			
+			////////////////////////////
+			// Set up look at
+			m_idLookAtEntityId = tID_Invalid;
+			
+			if (msLookAtEntity != "")
+			{
+				iLuxEntity@ pEntity = cLux_GetCurrentMap().GetEntityByName(msLookAtEntity);
+				m_idLookAtEntityId = pEntity.GetID();
+			}
+			
+			////////////////////////////
+			// Set up pos correction
+			m_idStandTarId = tID_Invalid;
+			mfPosCorrectionCount = -1.f;
+			
+			if (msStandTar != "")
+			{
+				iLuxEntity@ pStandTar = cLux_GetCurrentMap().GetEntityByName(msStandTar);
+				
+				cVector3f vPlayerPos = mBaseObj.mpPlayer.GetCharacterBody().GetFeetPosition();
+				float fDist = cMath_Vector2DistXZ(vPlayerPos, pStandTar.GetPosition());
+				if (fDist < 0.4f) return;
+				
+				mvPosCorrectionStart = vPlayerPos;
+				m_idStandTarId = pStandTar.GetID();
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnLeaveState(int alNextStateId)
+	{
+		if(mbUseNewWay)
+		{
+			LeaveInteractState();
+		
+			cLux_GetPlayer().StopCameraRotate(mfLookAtDec);
+			mBaseObj.mpPlayer.GetCharacterBody().SetTestCollision(true);
+						
+			if(cLux_ID_Prop(mPropID) is null) return;
+		
+			cLux_ID_Body(mBodyID).SetGravity(mbHasGravity);
+
+			/////////////////////////////
+			//Resets some general stuff
+			ResetPropInteractVars();
+			
+			////////////////////////////////
+			// Player set back to normal
+			cScript_SetGlobalVarBool("Climb_Allowed", true);
+			cLuxProp@ pProp = cLux_ID_Prop(mPropID);
+			
+			/////////////////////////////////
+			//Callback
+			LeaveRotateBase(alNextStateId);
+		}
+		else
+		{
+			LeaveInteractState();
+			
+			cLux_GetPlayer().StopCameraRotate(mfLookAtDec);
+			mBaseObj.mpPlayer.GetCharacterBody().SetTestCollision(true);
+			
+			LeaveRotateBase(alNextStateId);
+						
+			if(cLux_ID_Prop(mPropID) is null) return;
+		
+			cLux_ID_Body(mBodyID).SetGravity(mbHasGravity);
+
+			/////////////////////////////
+			//Resets some general stuff
+			ResetPropInteractVars();
+			
+			mfInertiaFactor = 0.1f;
+			
+			////////////////////////////////
+			// Player set back to normal
+			cScript_SetGlobalVarBool("Climb_Allowed", true);
+			
+			cLuxProp@ pProp = cLux_ID_Prop(mPropID);
+		}
+	}
+	
+	//------------------------------------------------------------
+		
+	void Update(float afTimeStep)
+	{
+		if(mbUseNewWay)
+		{			
+			if(CheckShouldUpdate()==false) return;
+			
+			UpdateHints(afTimeStep);
+	
+			////////////////////////////
+			// Check so interact is still pressed.
+			if(cInput_IsTriggered(eAction_Interact)==false)
+			{
+				//////////////////////
+				// Change state
+				cLux_GetPlayer().ChangeState(mlPreviousState);
+				return;
+			}
+		
+			UpdateTorque(afTimeStep);
+			CheckOutsideAtScreenEdgeAndMove(afTimeStep);
+			
+			mvLookInput = 0;
+			mvMoveInput = 0;
+		}
+		else
+		{			
+			if(CheckShouldUpdate()==false) return;
+			
+			UpdateHints(afTimeStep);
+			
+			////////////////////////////
+			// Check so interact is still pressed.
+			if(cInput_IsTriggered(eAction_Interact)==false)
+			{
+				//////////////////////
+				// Change state
+				cLux_GetPlayer().ChangeState(mlPreviousState);
+				return;
+			}
+			
+			/////////////////////////////
+			// Show no crosshair!
+			Player_SetCrossHairState(eCrossHairState_None);
+		
+			//////////////////////////////
+			// Set up variables
+			iCharacterBody @pCharBody = cLux_GetPlayer().GetCharacterBody();
+			cCamera @pCam = cLux_GetPlayer().GetCamera();
+			iPhysicsJoint @pJoint = cLux_ID_Joint(mJointID);
+			iPhysicsBody@ pBody = cLux_ID_Body(mBodyID);
+
+			//////////////////////////////
+			// Check if out of range
+			float fDistance = cMath_Vector3Dist(pCharBody.GetFeetPosition(), pJoint.GetPivotPoint());
+			if(fDistance > mfMaxDistance)
+			{
+				cLux_GetPlayer().ChangeState(mlPreviousState);
+				return;
+			}
+			
+			///////////////////////////////////
+			// Slow down the speed based on the current speed
+			float fSlowDownSpeed = cMath_Abs(mfRotSpeed) * mfMoveSlowDownFactor;
+			if(mfRotSpeed > 0) 
+			{
+				mfRotSpeed -= afTimeStep * fSlowDownSpeed;
+				if(mfRotSpeed < 0) mfRotSpeed = 0;
+			}
+			if(mfRotSpeed < 0) 
+			{
+				mfRotSpeed += afTimeStep * fSlowDownSpeed;
+				if(mfRotSpeed > 0) mfRotSpeed = 0;
+			}
+			
+			////////////////////////////////////
+			// If no mouse movement, reset the speed (if var is set)
+			if(mbResetSpeedWhenNoMouseMovement && mvMoveAdd == cVector2f(0))
+			{
+				mfRotSpeed = 0;
+			}
+					
+			///////////////////////////////////
+			// Get vectors and get move speed
+			float fSpeedAdd = GetSpeedAdd(pCam);
+
+			///////////////////////////////////
+			// Change the speed and cap it o max if needed
+			mfRotSpeed += fSpeedAdd * 3000.0f * mfMoveSpeedFactor * afTimeStep;	
+			mfRotSpeed *= mfInertiaFactor;
+			
+			if(mfRotSpeed > mfMoveMaxSpeed)		mfRotSpeed = mfMoveMaxSpeed;
+			if(mfRotSpeed < -mfMoveMaxSpeed)	mfRotSpeed = -mfMoveMaxSpeed;
+
+			///////////////////////////////////
+			// Calculate torque
+			cVector3f vRotateDir = pJoint.GetPinDir();
+			cVector3f vBodyVel = pBody.GetAngularVelocity();
+			cVector3f vHingeVel = vRotateDir * cMath_Vector3Dot(vRotateDir, vBodyVel);
+			cVector3f vWantedVel = vRotateDir * mfRotSpeed;
+			
+			//cLux_AddDebugMessage("Wanted: "+vWantedVel+ " Hinge: "+vHingeVel, true);
+			
+			cVector3f vTorque = mRotatePid.Output(vWantedVel - vHingeVel, afTimeStep);
+			vTorque = cMath_MatrixMul(pBody.GetInertiaMatrix(), vTorque);
+			vTorque = cMath_Vector3MaxLength(vTorque, mfMaxAngularImpulse*pBody.GetMass());
+			pBody.AddTorque(vTorque);
+			
+			if (mfRotSpeed != 0)
+				mfInertiaFactor += (1 - mfAdditionalInertia) * afTimeStep;
+			if (mfInertiaFactor >= 1) mfInertiaFactor = 1;
+			
+			if (mvMoveAdd == cVector2f(0) && mfInertiaFactor > 0.1f)
+			{
+				mfResetInertiaCounter -= afTimeStep;
+				if(mfResetInertiaCounter <= 0)
+					mfInertiaFactor = 0.1f;
+			}
+			else
+			{
+				mfResetInertiaCounter = 0.1f;
+			}
+
+			mvLastMouseAdd = mvMoveAdd;
+			mvMoveAdd = cVector2f(0);		
+				
+			//////////////////////////////
+			// Interact count!
+			float fAbsSpeed = cMath_Abs(mfRotSpeed);
+			if (fAbsSpeed > (mfMoveMaxSpeed * 0.1f))
+				mfInteractCount += afTimeStep;
+			
+			//////////////////////////////
+			// Look at
+			if (m_idLookAtEntityId != tID_Invalid)
+			{
+				if (mfInteractCount >= 0.25f || fAbsSpeed > mfMoveMaxSpeed)
+				{
+					iLuxEntity@ pEnt = cLux_ID_Entity(m_idLookAtEntityId);
+					mBaseObj.mpPlayer.RotateCameraTowards(mfLookAtAcc, mfLookAtSpeedMul, mfLookAtMaxSpeed, m_idLookAtEntityId, false);
+				}
+			}
+			else if (mbDefaultLookAt)
+			{
+				/////////////////////////////
+				// Check if focus position is outside of screen.
+				CheckOutsideAtScreenEdgeAndMove(afTimeStep);
+			}
+			
+			//////////////////////////////
+			// Position correction
+			if (m_idStandTarId != tID_Invalid)
+			{
+				iLuxEntity@ pEnt = cLux_ID_Entity(m_idStandTarId);
+				iCharacterBody@ pBody = mBaseObj.mpPlayer.GetCharacterBody();
+				
+				if (mfInteractCount >= 0.25f && mfPosCorrectionCount == -1.f)
+				{
+					mfPosCorrectionCount = gfPosCorrectionTime;
+					pBody.SetTestCollision(false);
+				}
+					
+				if (mfPosCorrectionCount > 0.f)
+				{
+					mfPosCorrectionCount -= afTimeStep;
+					if (mfPosCorrectionCount <= 0.f)
+					{
+						mfPosCorrectionCount = 0.f;
+						pBody.SetTestCollision(true);	
+					}
+
+					pBody.StopMovement();
+					
+					float fT = cMath_Easing(eEasing_SineInOut, (gfPosCorrectionTime - mfPosCorrectionCount) / gfPosCorrectionTime);		
+					pBody.SetFeetPosition(mvPosCorrectionStart * (1.f - fT) + pEnt.GetPosition() * fT, true);
+				}
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool OnAnalogInput(int alAnalogId, const cVector3f &in avAmount)
+	{
+		if(mbUseNewWay)
+		{
+			///////////////////////////////////
+			// Looking
+			if(alAnalogId == eAnalogType_Look)
+			{
+				cVector2f vAmount(avAmount.x, avAmount.y);
+				if(cLux_GetInputHandler().IsYAxisInverted()) vAmount.y = -vAmount.y;
+				mvLookInput += vAmount;
+				return false;
+			}
+			///////////////////////////////////
+			// Moving
+			else if(alAnalogId == eAnalogType_Move || alAnalogId == eAnalogType_GamepadMove)
+			{
+				if (avAmount.SqrLength() < 0.01) return true;
+				
+				cVector2f vAmount(avAmount.x, -avAmount.y);
+				mvMoveInput += vAmount;
+				return true;
+			}
+		}
+		else
+		{
+			///////////////////////////////////
+			// Looking
+			if(alAnalogId == eAnalogType_Look)
+			{
+				cVector2f vAmount(avAmount.x, avAmount.y);
+				if(cLux_GetInputHandler().IsYAxisInverted()) vAmount.y = -vAmount.y;
+				mvMoveAdd += vAmount * mfMoveToMouseAddFactor;
+				
+				return false;
+			}
+			///////////////////////////////////
+			// Moving
+			else if(alAnalogId == eAnalogType_Move || alAnalogId == eAnalogType_GamepadMove)
+			{
+				if (avAmount.SqrLength() < 0.01) return true;
+				
+				cVector2f vAmount(avAmount.x, -avAmount.y);
+				mvMoveAdd += vAmount * mfMovementToMoveAddFactor;
+				
+				return true;
+			}
+		}
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// BODY CALLBACKS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool AllowBuoyancy(iPhysicsBody @apBody)
+	{
+		if(apBody is cLux_ID_Body(mBodyID)) return false;
+		return true;
+	}
+
+	//------------------------------------------------------------
+	
+	
+	/////////////////////////////////////////
+	// HELPERS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Setup_Base_Rotate()
+	{
+		/////////////////////////////////////////
+		// Make interaction position object space 
+		iPhysicsBody@ pBody = cLux_ID_Body(mBodyID);
+		cMatrixf mtxBodySpace = pBody.GetWorldMatrix();
+		mtxBodySpace = cMath_MatrixInverse(mtxBodySpace);
+		mvRelativeInteractPosition = cMath_MatrixMul(mtxBodySpace, mvFocusPos);
+	}
+	
+	//------------------------------------------------------------
+	
+	cVector3f QuaternionRotate(const cQuaternion&in aqRot, const cVector3f&in avVec)
+	{
+		cQuaternion qA = cQuaternion(0, avVec.x, avVec.y, avVec.z);
+
+		cQuaternion qInv = cMath_QuaternionConjugate(aqRot);
+		cQuaternion qResult = cMath_QuaternionMul(qA, qInv);
+		qResult = cMath_QuaternionMul(aqRot, qResult);
+
+		return cVector3f(qResult.x, qResult.y, qResult.z);
+	}
+	
+	//------------------------------------------------------------
+
+	float GetDirection(float afValue, float afMinValue)
+	{
+		if(cMath_Abs(afValue) > afMinValue)
+			return afValue > 0 ? 1 : -1;
+		else
+			return 0;
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateTorque(float afTimeStep)
+	{
+		iPhysicsJoint @pJoint = cLux_ID_Joint(mJointID);
+		iPhysicsJointHinge@ pHinge = cPhysics_ToJointHinge(pJoint);
+		cCamera @pCam = cLux_GetPlayer().GetCamera();
+		iPhysicsBody@ pBody = cLux_ID_Body(mBodyID);
+		
+		////////////////////////////////////
+		// Check if we should leave state
+		bool bLeaveState = false;
+		if(	mbUseMoveInput && mvMoveInput.Length() > 0.01f)
+		{
+			/////////////////////////////////////////
+			// Get angle properties
+			float fAngle = pHinge.GetAngle();
+			float fMinAngle = pHinge.GetMinAngle();
+			float fMaxAngle = pHinge.GetMaxAngle();
+			/////////////////////////////////////////
+			// Calculate angle direction
+			const int lMaxJointAngles=5;
+			mvJointAngles.push_back(fAngle);
+			while(mvJointAngles.size() > lMaxJointAngles) mvJointAngles.pop_front();
+			
+			float fJointDir=0;
+			if(mvJointAngles.size() == lMaxJointAngles)
+			{
+				for(int i=1; i<mvJointAngles.size(); ++i)
+				{
+					fJointDir += mvJointAngles[i]-mvJointAngles[i-1];
+				}
+			}
+						
+			/////////////////////////////////////////
+			// Check if moving towards and near a limit
+			if( (fJointDir<0 && cMath_Abs(fAngle - fMinAngle)<0.01f) || 
+				(fJointDir>0 && cMath_Abs(fAngle - fMaxAngle)<0.01f))
+			{
+				bLeaveState = true;
+			}
+			
+			/////////////////////////////////////////
+			// Check if interaction is too far away
+			if(bLeaveState==false)
+			{
+				cVector3f vInteractPos = cMath_MatrixMul(pBody.GetWorldMatrix(), mvRelativeInteractPosition);
+				float fInteractDistance = cMath_Vector3Dist(vInteractPos, pCam.GetPosition());
+				
+				if(fInteractDistance > mfMaxDistance + 0.25f)
+					bLeaveState = true;
+			}
+		}
+		else
+		{
+			mvJointAngles.resize(0);
+		}
+			
+		if(bLeaveState)
+		{
+			cLux_GetPlayer().ChangeState(mlPreviousState);
+			return;
+		}
+		
+		/////////////////////////////////
+		// Get Speed add
+		float fSpeedAmount = GetSpeedAmount(afTimeStep);
+		if(mlMoveDirection ==1 && fSpeedAmount<0) fSpeedAmount=0;
+		if(mlMoveDirection ==-1 && fSpeedAmount>0) fSpeedAmount=0;
+
+		///////////////////////////////////
+		//If no speed is applied, slow down the speed based on the current speed
+		if(cMath_Abs(fSpeedAmount) < 0.001f)
+		{
+			float fSlowDownSpeed = cMath_Abs(mfRotSpeed) * mfMoveSlowDownFactor *mfMoveMaxSpeed;
+			if(mfRotSpeed > 0) 
+			{
+				mfRotSpeed -= afTimeStep * fSlowDownSpeed;
+				if(mfRotSpeed < 0) mfRotSpeed = 0;
+			}
+			if(mfRotSpeed < 0) 
+			{
+				mfRotSpeed += afTimeStep * fSlowDownSpeed;
+				if(mfRotSpeed > 0) mfRotSpeed = 0;
+			}
+		}
+		
+		///////////////////////////////////
+		//Change the rot speed and cap it o max if needed
+		mfRotSpeed = cMath_IncreaseTo(mfRotSpeed, mfMoveSpeedFactor *mfMoveMaxSpeed * 4 * afTimeStep, fSpeedAmount*mfMoveMaxSpeed);
+
+		///////////////////////////////////
+		// Get PinDir and get it to world space
+		cVector3f vPinDir = pJoint.GetPinDir();
+		
+		//////////////////////////////////
+		// Calculate velocities
+		cVector3f vBodyVel = pBody.GetAngularVelocity();
+		cVector3f vHingeVel = vPinDir * cMath_Vector3Dot(vPinDir, vBodyVel);
+		cVector3f vWantedVel = vPinDir * mfRotSpeed;
+		
+		///////////////////////////
+		// Calculate and add torque
+		cVector3f vTorque = mRotatePid.Output(vWantedVel - vHingeVel, afTimeStep);
+		vTorque = cMath_MatrixMul(pBody.GetInertiaMatrix(), vTorque);
+		pBody.AddTorque(vTorque);
+	}
+	
+	//------------------------------------------------------------
+	
+	float GetSpeedAmount(float afTimeStep)
+	{
+		float fSpeedAmount = 0;
+		float fMoveDir = 0;
+		
+		///////////////////////////////////
+		// Get PinDir 
+		iPhysicsBody@ pBody = cLux_ID_Body(mBodyID);
+		iPhysicsJoint @pJoint = cLux_ID_Joint(mJointID);
+		cVector3f vPinDir = pJoint.GetPinDir();
+		
+		//////////////////////////////
+		// Get the 2D move dir (in world space) and amount (normalized speed)
+		cVector2f vInput = mvMoveInput*0.6f + mvLookInput*33.3f;
+
+		float fMoveX = cMath_Easing(eEasing_QuadInOut,  cMath_Clamp(vInput.x, -1.0f, 1.0f)*0.5f + 0.5f,-1.0f, 1.0f);
+		float fMoveY = cMath_Easing(eEasing_QuadInOut, cMath_Clamp(vInput.y, -1.0f, 1.0f)*0.5f + 0.5f,-1.0f, 1.0f);
+
+		cVector3f v2DMoveDir = cVector3f(fMoveX, fMoveY*-1, 0);
+		
+		float f2DMoveAmount = cMath_Min(v2DMoveDir.Length(), 1.0f);
+		
+		cCamera @pCam = cLux_GetPlayer().GetCamera();
+		cQuaternion qCameraWorldRot = cMath_QuaternionMatrix(pCam.GetRotationMatrix());
+		
+		v2DMoveDir = cMath_MatrixMul3x3(pCam.GetMatrix(), v2DMoveDir);
+		v2DMoveDir.Normalize();
+		
+		cVector3f v2DMoveDirX = QuaternionRotate(qCameraWorldRot, cVector3f(fMoveX, 0,0) );
+		v2DMoveDirX.Normalize();
+		
+		cVector3f v2DMoveDirY = QuaternionRotate(qCameraWorldRot, cVector3f(0, fMoveY*-1,0) );
+		v2DMoveDirY.Normalize();
+				
+		//////////////////////////////
+		// Get the (esstimated) stick direction
+		cVector3f vPivotPoint = pJoint.GetPivotPoint();
+		
+		cBoundingVolume bv = pBody.GetBoundingVolume();
+		cVector3f vStickDir = cMath_Vector3Normalize(bv.GetWorldCenter() - vPivotPoint);
+		
+		//////////////////////////////
+		// Add inward / outward along screen z axis.
+		if(mbUseExtraForwardMotion)
+		{
+			cVector3f vCameraFwd = pCam.GetForward();
+			
+			//Closer stickdir is to the move dir, more forward amount we want.
+			float fFowardAmount = cMath_Max(cMath_Vector3Dot(vCameraFwd, vStickDir),0.0f)*-1; 
+			
+			if( cMath_Abs(fMoveX) > cMath_Abs(fMoveY))
+				v2DMoveDir += vCameraFwd * GetDirection(cMath_Vector3Dot(v2DMoveDirX, vStickDir), 0.5f)*fFowardAmount;
+			else
+				v2DMoveDir += vCameraFwd * GetDirection(cMath_Vector3Dot(v2DMoveDirY, vStickDir), 0.5f)*fFowardAmount;
+		}
+		
+		/////////////////////////////////
+		// Finalize 2DMoveDir
+		v2DMoveDir.Normalize();
+		
+		//if(v2DMoveDir.Length()>0.1f)
+		//	mvDebugMoveDir = v2DMoveDir;
+		
+		//////////////////////////////
+		// Speed Add: Pull at end of stick (apply moveAdd as force at end of stick position)
+		fMoveDir = cMath_Vector3Dot(vPinDir, cMath_Vector3Cross(vStickDir, v2DMoveDir));
+		fMoveDir = GetDirection(fMoveDir, 0.001f);
+			
+		fSpeedAmount = f2DMoveAmount * fMoveDir;
+		
+		///////////////////////////////////
+		// Debug rendering
+		if(gbDebugDraw)
+		{
+			cVector3f vMassCenter = cMath_MatrixMul(pBody.GetWorldMatrix(), pBody.GetMassCenter());
+
+			DebugDraw_PushDepthTest(false);
+			Debug_DrawSphere(vMassCenter, 0.06f, cColor_Blue * 3);
+			Debug_DrawSphere(vPivotPoint, 0.06f, cColor_White * 5);
+			cVector3f v2D_X = cLux_GetPlayer().GetCamera().GetRight();
+			cVector3f v2D_Y = cLux_GetPlayer().GetCamera().GetUp();
+			
+			
+			Debug_DrawLine(vMassCenter, vMassCenter+v2D_X*0.2f, cColor(0.5f,0,0) * 5);
+			Debug_DrawLine(vMassCenter, vMassCenter+v2D_Y*0.2f, cColor(0,0.5f,0) * 5);
+			
+			Debug_DrawLine(vMassCenter, vMassCenter+ vPinDir, cColor(0,0.5f,0) * 5);
+			
+			Debug_DrawLine(vMassCenter, vMassCenter+v2DMoveDir*0.2f, cColor(0,0,5));
+			
+			Debug_DrawLine(vMassCenter, vMassCenter+vStickDir*0.2f, cColor(3,0,0));
+			DebugDraw_PopDepthTest();
+		}
+		
+		///////////////////////////////////
+		// Smooth Speed Amount
+		mvSpeedAmounts.push_back(fSpeedAmount);
+		mvSpeedAmountsTimeStep.push_back(afTimeStep);
+		
+		if(mvSpeedAmounts.size() > 10)
+		{
+			mvSpeedAmounts.pop_front();
+			mvSpeedAmountsTimeStep.pop_front();
+		}
+		
+		fSpeedAmount =0;
+		float fTotalSpeedAmountMul =0;
+		for(int i=0; i<mvSpeedAmounts.size(); ++i)
+		{
+			float fMul = mvSpeedAmountsTimeStep[i] * (0.5 + (float(i+1)/ float(mvSpeedAmounts.size()))*0.5f);
+			fSpeedAmount += mvSpeedAmounts[i] * fMul;
+			fTotalSpeedAmountMul += fMul;
+		}
+		
+		fSpeedAmount /= fTotalSpeedAmountMul;
+		///////////////////////////////////
+		// Return speed to add.
+		return fSpeedAmount;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	// OLD WAY STUFF
+	//------------------------------------------------------------
+
+	//The follow are set at Class Init!
+	
+	float mfMoveToMouseAddFactor;
+	float mfMaxAngularImpulse;
+	bool mbResetSpeedWhenNoMouseMovement;
+	float mfMovementToMoveAddFactor;
+		
+	//------------------------------------------------------------
+	
+	float mfInertiaFactor;
+	float mfAdditionalInertia;
+	float mfResetInertiaCounter;
+	
+	//------------------------------------------------------------
+	// SHARED STUFF
+	//------------------------------------------------------------
+	
+	float mfMoveSpeedFactor;
+	float mfMoveMaxSpeed;
+	float mfMoveSlowDownFactor;
+	
+	//------------------------------------------------------------
+	
+	float mfLookAtAcc;
+	float mfLookAtSpeedMul;
+	float mfLookAtMaxSpeed;
+	float mfLookAtDec;
+	float mfInteractCount;
+	tString msLookAtEntity;
+	tID m_idLookAtEntityId;
+	
+	float mfPosCorrectionCount;
+	tString msStandTar;
+	cVector3f mvPosCorrectionStart;
+	tID m_idStandTarId;
+	bool mbDefaultLookAt;
+			
+	//------------------------------------------------------------
+	
+	tID mJointID;
+
+	bool mbHasGravity;
+	bool mbHasLookAtEntity;
+
+	float mfMaxDistance;
+
+	cVector3f mvJointRight;
+	cVector3f mvJointForward;
+	
+	cVector2f mvMoveAdd;
+	cVector2f mvLastMouseAdd;
+	
+	float mfRotSpeed;
+	
+	cPidControllerVec3 mRotatePid;
+
+	//------------------------------------------------------------
+	// NEW WAY STUFF
+	//------------------------------------------------------------
+	
+	bool mbUseNewWay = true;
+	cVector3f mvRelativeInteractPosition;
+
+	//------------------------------------------------------------
+
+	bool mbUseMoveInput = false;
+	bool mbUseExtraForwardMotion = false;
+
+	int mlMoveDirection = 0;
+	
+	array<float> mvJointAngles;
+	
+	array<float> mvSpeedAmounts;
+	array<float> mvSpeedAmountsTimeStep;
+	
+	//------------------------------------------------------------
+	
+	cVector2f mvLookInput;
+	cVector2f mvMoveInput;
+	
+	//------------------------------------------------------------
+	
+	
+}

@@ -1,0 +1,539 @@
+#include "interfaces/UserModule_Interface.hps"
+#include "modules/ModuleInterfaces.hps"
+#include "helpers/helper_map.hps"
+#include "helpers/helper_player.hps"
+#include "helpers/helper_audio.hps"
+#include "player/Player_Types.hps"
+#include "base/Base_Types.hps"
+#include "base/InputHandler_Types.hps"
+
+//---------------------------------------------------
+
+const cColor gFlashlightColor = cColor(1.4,1.6,1.7,0.7f);
+const float gfFlashlightFadeInSpeed = 4;
+const float gfFlashlightFadeOutSpeed = 1.5;
+const float gfFlashlightNearClip = 0.2f;
+const float gfFlashlightFOV=65;
+const bool gbFlashlightAffectEnvParticles = true;
+const cVector3f gvFlashlightOffset = cVector3f(0.03,-0.03,0);
+const float gfFlashlightSoundEventRadius=5;	
+const float glFlashlightSoundEventPrio=-1;	
+
+//---------------------------------------------------
+
+class cScrFlashlightHandler : iScrUserModule, iScrUserModule_Interface, iScrFlashlightHandler_Interface
+{
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+	}
+
+	//------------------------------------------------------------
+
+	void LoadUserConfig(){}
+	void SaveUserConfig(){}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	//MAP LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap){}
+	void OnMapLeave(cLuxMap @apMap){}
+	void PreloadData(cLuxMap @apMap){}
+	
+	//------------------------------------------------------------
+	
+	void CreateWorldEntities(cLuxMap @apMap)
+	{
+		CreateFlashlight(apMap);
+	}
+	
+	//------------------------------------------------------------
+	
+	void DestroyWorldEntities(cLuxMap @apMap)
+	{
+		if (mFlashlight_Light!=tID_Invalid)
+		{
+			cLightSpot @pFlashlight_Light = cast<cLightSpot>(cLux_ID_Light(mFlashlight_Light));
+			if (pFlashlight_Light !is null)
+			{
+				apMap.GetWorld().DestroyLight(pFlashlight_Light);
+				mFlashlight_Light = tID_Invalid;
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnEnterContainer(const tString&in asOldContainer){}
+	void OnLeaveContainer(const tString&in asNewContainer){}
+	
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+		mbFlashlightOn = false;
+		mfFlashlightAmount = 0;
+		mbFlashlightEnabled = true;
+		msFlashlightOnOffCallback = "";
+		mfFlashlightFadeOutSpeed = gfFlashlightFadeOutSpeed;
+		mfFlashlightFadeInSpeed = gfFlashlightFadeInSpeed;
+		mFlashlightEaseIn = eEasing_Linear;
+		mFlashlightEaseOut = eEasing_Linear;
+		mfFlashLightPower=1;
+		mbFlashlightCheckAgentSeesGoboRaysFired=false;
+	}
+	
+	//------------------------------------------------------------
+	
+	void CreateFlashlight(cLuxMap @apMap)
+	{
+		cLightSpot @pFlashlight_Light = apMap.GetWorld().CreateLightSpot("Flashlight", "player_flashlight.dds", false);
+		pFlashlight_Light.SetDiffuseColor(gFlashlightColor * mfFlashlightAmount);
+		pFlashlight_Light.SetRadius(mfFlashlightRadius);
+		pFlashlight_Light.SetFOV(cMath_ToRad(gfFlashlightFOV));
+		pFlashlight_Light.SetCastShadows(false);
+		pFlashlight_Light.SetVisible(mbFlashlightOn || mfFlashlightAmount>0);
+		pFlashlight_Light.SetNearClipPlane(gfFlashlightNearClip);
+		pFlashlight_Light.SetScriptableIsSaved(false);
+		mFlashlight_Light = pFlashlight_Light.GetID();
+
+		if(gbFlashlightAffectEnvParticles)
+			Map_SetEnvironmentParticlesSpotLight("*", pFlashlight_Light, mfFlashlightEnvParticleMul);
+	}
+	
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// PER-FRAME
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep){}
+	
+	//------------------------------------------------------------
+	
+	void PostUpdate(float afTimeStep)
+	{
+		//////////////////////////////////
+		// Power
+		if(mbFlashlightOn)
+		{
+			mfFlashLightPower = cMath_IncreaseTo(mfFlashLightPower, afTimeStep*0.0025,0);
+			if(mfFlashLightPower<=0) 
+				SetOn(false);
+		}
+		else
+		{
+			mfFlashLightPower = cMath_IncreaseTo(mfFlashLightPower, afTimeStep*0.1,1);
+		}
+		
+		//////////////////////////////////
+		// Visibility
+		cLux_GetPlayer().SetVisibilityRangeMul(eVisibilityType_Flashlight, mbFlashlightOn ? 2.0f : 1.0f);
+		
+		//////////////////////////////////
+		// Is flashlight worth updating? 	
+		if(mbFlashlightOn==false && mfFlashlightAmount<=0)
+		{
+			return;
+		}
+							
+		//////////////////////////////////
+		// Update color
+		float fAmount;
+			
+		if(mbFlashlightOn)
+		{
+			mfFlashlightAmount += mfFlashlightFadeInSpeed * afTimeStep;
+			
+			if(mfFlashlightAmount>1)
+				mfFlashlightAmount = 1;
+			
+			fAmount = cMath_Easing(mFlashlightEaseIn, mfFlashlightAmount);
+		}
+		else
+		{
+			mfFlashlightAmount -= mfFlashlightFadeOutSpeed * afTimeStep;
+			
+			if (mfFlashlightAmount<0.0f)
+				mfFlashlightAmount=0.0f;
+				
+			fAmount = cMath_Easing(mFlashlightEaseOut, mfFlashlightAmount);
+		}
+		
+		fAmount = cMath_Clamp(fAmount, 0.0f, 1.0f);
+		cLightSpot@ pFlashlight_Light = cast<cLightSpot>(cLux_ID_Light(mFlashlight_Light));
+
+		if(pFlashlight_Light is null)
+		{
+			CreateFlashlight(cLux_GetCurrentMap());
+			@pFlashlight_Light = cast<cLightSpot>(cLux_ID_Light(mFlashlight_Light));
+		}
+
+		pFlashlight_Light.SetVisible((fAmount>0.0f));
+		
+		fAmount *= cMath_Easing(eEasing_QuartOut, mfFlashLightPower);
+		
+		pFlashlight_Light.SetDiffuseColor(gFlashlightColor * fAmount);
+		
+		//////////////////////////////////
+		// Update the rotation
+		UpdateFlashlightRotation();	
+	}
+	
+	//------------------------------------------------------------
+		
+	void UpdateFlashlightRotation()
+	{
+		cCamera @pCam = cLux_GetPlayer().GetCamera();
+				
+		//////////////////////////////////////
+		// Get the offset
+		cMatrixf mtxOffset = cMath_MatrixRotateXYZ(cMath_Vector3ToRad(cVector3f(5, 0, 0)) );
+		mtxOffset.SetTranslation(gvFlashlightOffset - cLux_GetPlayer().GetCameraPosAdd(eCameraAddType_Bob));
+		
+		//////////////////////////////////////
+		// Final light rotation
+		cMatrixf mtxLightRotate = pCam.GetMatrix().GetRotation();
+		mtxLightRotate.SetTranslation(pCam.GetPosition());
+		
+		mtxLightRotate = cMath_MatrixMul(mtxLightRotate, mtxOffset);
+		
+		cLux_ID_Light(mFlashlight_Light).SetMatrix(mtxLightRotate);
+	}
+	
+	//------------------------------------------------------------
+	
+	void VariableUpdate(float afTimeStep)
+	{
+		/////////////////////////
+		// Update check shining on an NPC
+		UpdateFlashLightLOS(afTimeStep);
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateFlashLightLOS(float afTimeStep)
+	{
+		if(mbFlashlightOn==false && mfFlashlightAmount<=0)
+		{
+			return;
+		}
+		cLightSpot@ pFlashlight_Light = cast<cLightSpot>(cLux_ID_Light(mFlashlight_Light));
+
+		if(pFlashlight_Light is null)
+		{
+			CreateFlashlight(cLux_GetCurrentMap());
+			@pFlashlight_Light = cast<cLightSpot>(cLux_ID_Light(mFlashlight_Light));
+		}
+
+		/////////////////////////
+		// Update check shining on an NPC
+		mfFlashLightUpdateShineOnAgentCount-=afTimeStep;
+		if(mfFlashLightUpdateShineOnAgentCount<=0)
+		{
+			mfFlashLightUpdateShineOnAgentCount = cMath_RandRectf(0.45f, 0.55f);
+			
+			cLuxEntityComponentIterator @pIt = cLux_GetCurrentMap().GetEntityComponentIterator(eLuxEntityComponentType_LightSensor);
+			while(pIt.HasNext())
+			{
+				iLuxEntityComponent @pComp = pIt.Next();
+				cLuxLightSensor @pSensor = cast<cLuxLightSensor>(pComp);
+				if(pSensor.IsSensoring()==false) continue;
+				
+				iLuxEntity @pEnt = pComp.GetEntity();
+				
+				iPhysicsBody @pBody = pEnt.GetMainBody();
+				
+				eCollision coll = pFlashlight_Light.GetFrustum().CollideAABB(pBody.GetBoundingVolume().GetMin(), 
+																			pBody.GetBoundingVolume().GetMax(),6);
+				if(coll == eCollision_Outside) continue;
+				
+				bool bLOS = cLux_CheckLineOfSight(pFlashlight_Light.GetWorldPosition(), pBody.GetLocalPosition(),true, false);				
+				if(bLOS==false) continue;
+				
+				pEnt.BroadcastMessage(eCustomEntityMessage_HitByFlashlight, null, 0,0);
+			}
+		}
+		
+		//////////////////////////////////////
+		// Update Agent sees gobo Rays
+		mfFlashlightCheckAgentSeesGoboCount-=afTimeStep;
+		if(mfFlashlightCheckAgentSeesGoboCount<=0)
+		{
+			mfFlashlightCheckAgentSeesGoboCount = cMath_RandRectf(0.25f, 0.35f);
+			
+			cCamera @pCam = cLux_GetPlayer().GetCamera();
+						
+			///////////////////////////////
+			// Get the flashlight hit position
+			mvFlashlightGoboPositions.resize(0);
+			
+			for(int i=0; i<3; i++)
+			{
+				cVector3f vRot;
+				
+				float fAngle = pFlashlight_Light.GetFOV()*0.5 * 0.5;
+				
+				vRot.x = pCam.GetPitch() + cMath_RandRectf(-fAngle, fAngle);
+				vRot.y = pCam.GetYaw() + cMath_RandRectf(-fAngle, fAngle);
+				vRot.z = pCam.GetRoll();
+				
+				cVector3f vFwd = cMath_MatrixMul(cMath_MatrixRotateZXY(vRot), cVector3f(0,0,-1));
+				
+				float fDistance=0;
+				cVector3f vSurfaceNormal;
+				if(cLux_GetClosestBody(pCam.GetPosition(), vFwd, pFlashlight_Light.GetRadius()*0.8f, fDistance,vSurfaceNormal) !is null)
+				{
+					mbFlashlightCheckAgentSeesGoboRaysFired = true;
+					
+					cVector3f vPos = pCam.GetPosition() + vFwd * (fDistance- 0.3f);
+					mvFlashlightGoboPositions.push_back(vPos);
+				}
+			}
+		}
+		
+		//////////////////////////////////////
+		// Update Agent see gobo LOS check
+		if(mbFlashlightCheckAgentSeesGoboRaysFired)
+		{
+			mbFlashlightCheckAgentSeesGoboRaysFired=false;
+			
+			///////////////////////////////
+			// Go through all light sensors!
+			cLuxEntityComponentIterator @pIt = cLux_GetCurrentMap().GetEntityComponentIterator(eLuxEntityComponentType_LightSensor);
+			while(pIt.HasNext())
+			{
+				iLuxEntityComponent @pComp = pIt.Next();
+				cLuxLightSensor @pSensor = cast<cLuxLightSensor>(pComp);
+				if(pSensor.IsSensoring()==false)
+					continue;
+				
+				iLuxEntity @pEnt = pComp.GetEntity();
+				if(pEnt.GetEntityType() != eLuxEntityType_Agent)
+					continue;
+				
+				cLuxAgent @pAgent = cLux_ToAgent(pEnt);
+				
+				cVector3f vEyePos = pAgent.GetEyePostion();
+				
+				for(int i=0; i<mvFlashlightGoboPositions.size(); ++i)
+				{
+					cVector3f vPos = mvFlashlightGoboPositions[i];
+					
+					/////////////////////
+					// Distance
+					if(cMath_Vector3Dist(vPos, pAgent.GetEyePostion())> pAgent.GetSightRange() *pAgent.GetSightRangeMul())
+					{
+						continue;
+					}
+					
+					/////////////////////
+					// FOV
+					if(pAgent.GetPointIsInFOV(vPos, pAgent.GetFOV()*pAgent.GetFOVMul(), pAgent.GetCharBody().GetForward())==false)
+					{
+						continue;
+					}
+					
+					/////////////////////
+					// Line of Sight
+					if(cLux_CheckLineOfSight(vEyePos, vPos, false, false))
+					{
+						pEnt.BroadcastMessage(eCustomEntityMessage_SeeFlashlightGobo, null, vPos,0);
+						break;
+					}
+				}
+			}
+			
+		}
+	}
+	
+	//------------------------------------------------------------
+		
+	void OnDraw(float afFrameTime){}
+	void OnPostRender(float afFrameTime){}
+	
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetEnvParticleMul(float afX)
+	{
+		mfFlashlightEnvParticleMul = afX;
+		cLightSpot@ pFlashlight_Light = cast<cLightSpot>(cLux_ID_Light(mFlashlight_Light));
+
+		if(pFlashlight_Light !is null) Map_SetEnvironmentParticlesSpotLight("*", pFlashlight_Light, mfFlashlightEnvParticleMul);
+	}
+
+	//------------------------------------------------------------
+	
+	void SetOn(bool abX, bool abSuppressSound = false)
+	{
+		if (!mbFlashlightEnabled) return;
+		
+		iLight@ pLight = cLux_ID_Light(mFlashlight_Light);
+
+		if(pLight is null)
+		{
+			cLux_AddDebugMessage("Create light!");
+			CreateFlashlight(cLux_GetCurrentMap());
+			@pLight = cLux_ID_Light(mFlashlight_Light);
+		}
+
+		bool bChanged = (mbFlashlightOn!=abX);
+		
+		mbFlashlightOn = abX;
+		
+		if (bChanged && (msFlashlightOnOffCallback != "") )
+		{
+			cLuxMap @pMap = cLux_GetCurrentMap();
+			if(pMap.ScriptPrepare("void " + msFlashlightOnOffCallback + "(bool abLit)") )
+			{
+				pMap.SetArgBool(0, abX);
+				pMap.ScriptExecute();
+			}
+		}
+		
+		if(mbFlashlightOn && pLight !is null)
+		{
+			pLight.SetVisible(true); //If turning off, we want to fade before setting visible to false!
+			UpdateFlashlightRotation();
+		}
+		
+		if (bChanged && !abSuppressSound)
+		{
+			tString sSuffix = Player_GetUnderwater()? "_uw" : "";
+			
+			if(mbFlashlightOn)
+				Sound_PlayGui("player/gear/flashlight_on"+sSuffix, 1);
+			else 
+				Sound_PlayGui("player/gear/flashlight_off"+sSuffix, 1);
+				
+			cLux_GetCurrentMap().BroadcastSoundHeardEvent(	"Flashlight On/Off",
+															cLux_GetPlayer().GetCharacterBody().GetPosition(), 
+															gfFlashlightSoundEventRadius, 
+															glFlashlightSoundEventPrio); 
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	bool IsOn()
+	{
+		return mbFlashlightOn;
+	}
+	
+	//------------------------------------------------------------
+	
+	float GetRange()
+	{
+		return mfFlashlightRadius;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetFadeOut(float afSpeed, eEasing aEasing = eEasing_Linear)
+	{
+		mFlashlightEaseOut = aEasing;
+		mfFlashlightFadeOutSpeed = afSpeed;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetFadeIn(float afSpeed, eEasing aEasing = eEasing_Linear)
+	{
+		mFlashlightEaseIn = aEasing;
+		mfFlashlightFadeInSpeed = afSpeed;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetEnabled(bool abEnabled)
+	{
+		mbFlashlightEnabled = abEnabled;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetOnOffCallback(const tString &in asCallback)
+	{
+		msFlashlightOnOffCallback = asCallback;
+	}
+		
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// GLOBALS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnAction(int alAction, bool abPressed)
+	{
+		///////////////////////////////////
+		// Flashlight
+		if(abPressed && alAction==eAction_Flashlight)
+		{
+			SetOn(!mbFlashlightOn);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnAnalogInput(int alAnalogId, const cVector3f &in avAmount){}
+	void OnExitPressed(){}
+	void AppGotInputFocus(){}
+	void AppLostInputFocus(){}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	[nosave] tID mFlashlight_Light = tID_Invalid;
+	bool mbFlashlightOn;
+	float mfFlashlightAmount;
+	float mfFlashlightRadius = 10.0f;
+	float mfFlashlightEnvParticleMul = 16.0f;
+	float mfFlashlightCheckAgentSeesGoboCount=0;
+	bool mbFlashlightCheckAgentSeesGoboRaysFired=false;
+	array<cVector3f> mvFlashlightGoboPositions;
+	
+	tString msFlashlightOnOffCallback;
+	bool mbFlashlightEnabled;
+	float mfFlashlightFadeOutSpeed;
+	float mfFlashlightFadeInSpeed;
+	eEasing mFlashlightEaseOut;
+	eEasing mFlashlightEaseIn;
+	float mfFlashLightPower=1;
+	float mfFlashLightUpdateShineOnAgentCount=0;
+	
+	//------------------------------------------------------------
+}

@@ -1,0 +1,1068 @@
+#include "interfaces/Prop_Interface.hps"
+#include "base/Player_Types.hps"
+#include "utilities/Utility_JointFix.hps"
+#include "helpers/helper_effects.hps"
+
+class cScrPropWheel : iScrProp, iScrProp_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		mlCurrentState  = 0;//-1 = min, 1=max, 0= middle
+		mlStuckState = 0;//-1 = min, 1=max, 0= not stuck
+		mfAngle =0;
+		mfPrevAngle=0;
+		
+		mfJointAngle = 0;
+		mfPrevJointAngle = 0;
+
+		mfLastToMin = 0;
+		mfLastToMax = 0;
+
+		mfStuckSoundTimer =0;
+
+		mbAutoMoving = false;
+		mfAutoMoveGoal = 0;
+		
+		mRotatePid.SetErrorNum(10);
+		mRotatePid.p = 10.0f;
+		mRotatePid.i = 0.0f;
+		mRotatePid.d = 0.5f;
+
+		mbInteractionDisablesStuck = false;
+		mbInteractLookAtEnabled = true;
+		
+		mbInteractConnectionSetup = false;
+		mbInteractConnectionInvert = false;
+		mbInteractConnectionOneWay = false;
+		mbInteractConnectionMovementActive = false;
+		mfInteractConnectionState = 0.f;
+		msInteractConnectedProp = "";
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	int ToSpinDir(const tString&in asType)
+	{
+		if(asType == "BothWays")	return 0;
+		if(asType == "ToMax")		return 1;
+		if(asType == "ToMin")		return -1;
+
+		return 0;
+	}
+
+	int ToStuckState(const tString&in asType)
+	{
+		if(asType == "None")	return 0;
+		if(asType == "Min")		return -1;
+		if(asType == "Max")		return 1;
+		return 0;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		mfMoveMaxSpeed  = apVars.GetVarFloat("MoveMaxSpeed", 5);
+		mfMoveSlowDownFactor = apVars.GetVarFloat("MoveSlowDownFactor", 3);
+		mfMoveSpeedFactor = apVars.GetVarFloat("MoveSpeedFactor", 1);
+		mfAdditionalInertia = apVars.GetVarFloat("AdditionalInertia", 0);
+		mbCanInteractWithStaticBody = apVars.GetVarBool("CanInteractWithStaticBody", false);
+		mbCanInteractOnlyWithMainBody = apVars.GetVarBool("InteractOnlyWithMainBody", false);
+		mfMinLimitRange  = cMath_ToRad(apVars.GetVarFloat("MinLimitRange", 5));
+		mfMaxLimitRange = cMath_ToRad(apVars.GetVarFloat("MaxLimitRange", 5));
+		msMinLimitSound = apVars.GetVarString("MinLimitSound", "");
+		msMaxLimitSound = apVars.GetVarString("MaxLimitSound", "");
+		msStuckSound = apVars.GetVarString("StuckSound", "");
+		mbSlowDownRotation = apVars.GetVarBool("SlowDownRotation", true);
+		mbSkipMiddleState = apVars.GetVarBool("SkipMiddleState", false);
+		mbIsOneHanded = apVars.GetVarBool("IsOneHanded", false);
+		
+		mfMinLimit = cMath_ToRad(apInstanceVars.GetVarFloat("MinLimit", -360));
+		mfMaxLimit = cMath_ToRad(apInstanceVars.GetVarFloat("MaxLimit", 360));
+		mbMinLimitStuck = apInstanceVars.GetVarBool("MinLimitStuck", false); 
+		mbMaxLimitStuck = apInstanceVars.GetVarBool("MaxLimitStuck", false); 
+		
+		mfAutoRotateMul = apInstanceVars.GetVarFloat("AutoRotateMul", 10);
+
+		mlSpinDir = ToSpinDir(apInstanceVars.GetVarString("SpinDir", "BothWays"));
+	
+		//Important that this is here so limits are set up properly!
+		int lStuckState = ToStuckState(apInstanceVars.GetVarString("StuckState", ""));
+		SetStuckState(lStuckState, false, false);
+
+		mbInteractionDisablesStuck = apInstanceVars.GetVarBool("InteractionDisablesStuck", false);
+		
+		iPhysicsJoint @pJoint = mBaseObj.GetJoint(0);
+		if ( (pJoint == null) || (pJoint.GetType() != ePhysicsJointType_Hinge) )
+		{
+			Error("Wheel '"+mBaseObj.GetName()+"' does not have a hinge joint!\n");
+			@mpHingeJoint = null;
+			return;
+		}
+		
+		@mpHingeJoint = cPhysics_ToJointHinge(pJoint);
+		@mpWheelBody = mpHingeJoint.GetChildBody();
+
+		mpWheelBody.SetGravity(false); //Make sure gravity is off!
+
+		///////////////////////
+		//Set update properties
+		if(mlSpinDir==0)
+		{
+			mpHingeJoint.SetStickyMinLimit(true);
+			mpHingeJoint.SetStickyMaxLimit(true);
+		}
+
+		mpHingeJoint.SetMinAngle(0);
+		mpHingeJoint.SetMaxAngle(0);
+		
+		///////////////////////
+		// Setup joint sounds
+		tString sMoveSound = apVars.GetVarString("MoveSound", "");
+		if (sMoveSound != "")
+		{
+			mpHingeJoint.SetMoveSound(sMoveSound);
+			mpHingeJoint.SetMoveSpeedType(ePhysicsJointSpeed_Angular);
+		}
+		float fMinMoveSoundSpeed = apVars.GetVarFloat("MinMoveSoundSpeed", -1);
+		if (fMinMoveSoundSpeed >= 0)
+		{
+			mpHingeJoint.SetMinMoveSpeed(fMinMoveSoundSpeed);
+		}
+
+		// Allow c++ bug fix to reset the joint to its inital position if it disappears
+		bool bJointResetFix = apInstanceVars.GetVarBool("JointResetFix", false);
+		mpHingeJoint.SetAllowPositionReset(bJointResetFix);
+		
+		mJointFix.Init(mpWheelBody);
+		
+		/////////////////////////
+		// Interact connections
+		msInteractConnectedProp = apInstanceVars.GetVarString("ConnectedProp", "");
+		mbInteractConnectionInvert = apInstanceVars.GetVarBool("Invert", false);
+		mbInteractConnectionOneWay = apInstanceVars.GetVarBool("OneWayConnection", false);
+		
+		msLookAtEntity = apInstanceVars.GetVarString("LookAtEntity", "");
+		mfLookAtAcc = apInstanceVars.GetVarFloat("LookAtAcc", 0.01f);
+		mfLookAtSpeedMul = apInstanceVars.GetVarFloat("LookAtSpeedMul", 0.5f);
+		mfLookAtMaxSpeed = apInstanceVars.GetVarFloat("LookAtMaxSpeed", 0.5f);
+		mfLookAtDec = apInstanceVars.GetVarFloat("LookAtDec", 0.02f);
+		
+		msStandTar = apInstanceVars.GetVarString("StandTar", "");
+		mbDefaultLookAt = apInstanceVars.GetVarBool("DefaultLookAt", true);
+		mbLookAtDisabledIfStuck = apInstanceVars.GetVarBool("DisabledIfStuck", false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupInteractConnections()
+	{
+		if (mbInteractConnectionSetup)
+			return;
+		
+		mbInteractConnectionSetup = true;
+			
+		if (msInteractConnectedProp == "") 
+			return;
+			
+		array<tString> vsEnts;
+		array<iLuxEntity@> vEnts;			
+		cString_GetStringVec(msInteractConnectedProp, vsEnts, ", ");
+			
+		for (int i = 0; i < vsEnts.size(); i++)
+		{
+			if (cString_GetLastChar(vsEnts[i]) == "*")
+			{
+				array<iLuxEntity@> vCurrentEnts;
+				mBaseObj.GetMap().GetEntityArray(vsEnts[i], eLuxEntityType_Prop, "", vCurrentEnts);
+					
+				for (int j = 0; j < vCurrentEnts.size(); j++)
+					vEnts.push_back(vCurrentEnts[j]);
+			}
+			else
+			{
+				vEnts.push_back(mBaseObj.GetMap().GetEntityByName(vsEnts[i], eLuxEntityType_Prop, ""));
+			}
+		}
+		
+		cLuxProp@ pProp = null;
+		for (int i = 0; i < vEnts.size(); i++)
+		{
+			@pProp = cLux_ToProp(vEnts[i]);
+			if (pProp is null) 
+				continue;
+				
+			mBaseObj.AddInteractConnection(pProp.GetName(), pProp, mbInteractConnectionInvert);
+				
+			if (mbInteractConnectionOneWay == false)
+				pProp.AddInteractConnection("Main", mBaseObj, mbInteractConnectionInvert);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnUpdate(float afTimeStep)
+	{
+		SetupInteractConnections();
+		
+		//////////////////////
+		// Disable auto sleep if interacted with since this might have really small movements
+		bool bAutoDisable = mbAutoMoving == false && mBaseObj.IsInteractedWith() == false;
+		mpWheelBody.SetAutoDisable(bAutoDisable);
+		
+		if(mpHingeJoint is null) return; //TEMP!
+		if(mfStuckSoundTimer >0) mfStuckSoundTimer-=afTimeStep; 
+		
+		UpdateAngle(afTimeStep);
+		UpdateCheckLimit(afTimeStep);
+		UpdateAutoRotation(afTimeStep);
+		UpdateInteractConnection();
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnPostUpdate(float afTimeStep)
+	{
+		// Hack for trying to cure Newton instability
+		mJointFix.Update(mBaseObj,mpWheelBody);
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetProperties()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void BeforeEntityDestruction()
+	{
+	}
+		
+	//------------------------------------------------------------
+	
+	void OnStartMove()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnSetActive(bool abX)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void GiveDamage(iPhysicsBody@ apBodyHit, const cVector3f&in avOrigin, const cVector3f&in avHitPos, cLuxDamageProperties@ apDamageProps)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnHealthChange()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnConnectionStateChange(iLuxEntity@ apEntity,int alState)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnInteractConnectionStateChange(cLuxProp@ apProp, float afT)
+	{		
+		if (mBaseObj.IsInteractedWith())
+			return;
+				
+		mbInteractConnectionMovementActive = true;
+		
+        float fAngle = mfMinLimit + afT * (mfMaxLimit - mfMinLimit);
+        SetAngle(fAngle, true);
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnUpdateAutoSleep()
+	{
+		return mbAutoMoving == false;
+	}
+	
+	//------------------------------------------------------------
+	
+	//NOTE: This is only useable if SetScriptCollisionCallbackActive is true
+	void OnPhysicsCollision(iPhysicsBody @apBody, iPhysicsBody @apCollideBody, cPhysicsContactData&in apContactData)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// INTERACT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	bool CanInteract(int alType, iPhysicsBody@ apBody)
+	{
+		if(mBaseObj.GetParentType() == eParentType_StickyStuck) return false;
+		if(mbCanInteractWithStaticBody==false && apBody.GetMass()==0) return false;
+		if(mbCanInteractOnlyWithMainBody && apBody !is mBaseObj.GetMainBody()) return false;
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+		
+	bool OnInteract(int alType, iPhysicsBody@ apBody, const cVector3f &in avFocusPos, const tString&in asData)
+	{
+		//Make sure correct body is used! (in case static body was interacted with)
+		@apBody = mpWheelBody;
+		
+		//Want no automoving during interaction
+		ResetAutoMove();
+		
+		//Disable
+		if(mlStuckState !=0 && mbInteractionDisablesStuck) SetStuckState(0, true);
+	
+		///////////////////////////////
+		//Set up the wheel state
+		cScript_SetGlobalArgID(0, mBaseObj.GetID()); //Object ID
+		cScript_SetGlobalArgInt(1, apBody.GetUniqueID()); //Body Id
+		cScript_SetGlobalArgVector3f(2, avFocusPos);//The grab postion
+		
+		cScript_SetGlobalArgFloat(3, mfMoveMaxSpeed);
+		cScript_SetGlobalArgFloat(4, mfMoveSpeedFactor);
+		cScript_SetGlobalArgFloat(5, mfMoveSlowDownFactor);
+		cScript_SetGlobalArgBool(6, mlStuckState != 0); //When stuck we want it to wiggle back and forth when u try and move!
+		
+		bool bLookAtDisabled = mbInteractLookAtEnabled == false || mbLookAtDisabledIfStuck && (mlStuckState != 0 || mbJammed);
+		cScript_SetGlobalArgString(7, bLookAtDisabled ? "" : msLookAtEntity);
+		cScript_SetGlobalArgFloat(8, mfLookAtAcc);
+		cScript_SetGlobalArgFloat(9, mfLookAtSpeedMul);
+		cScript_SetGlobalArgFloat(10, mfLookAtMaxSpeed);
+		cScript_SetGlobalArgFloat(11, mfLookAtDec);
+		cScript_SetGlobalArgFloat(12, mfAdditionalInertia);
+		cScript_SetGlobalArgString(13, bLookAtDisabled ? "" : msStandTar);
+		cScript_SetGlobalArgBool(14, mbDefaultLookAt);
+		cScript_SetGlobalArgString(15, mBaseObj.GetName());
+		
+		cScript_RunGlobalFunc("State_Interact_Wheel", "", "SetupWheel");
+		
+		///////////////////////////////
+		//Set up the wheel state
+		cLux_GetPlayer().ChangeState(ePlayerState_Wheel);
+		
+		//Effect_Rumble_Start(0.5, 0.2);
+		
+		///////////////////////////////
+		// Update interact connection
+		mbInteractConnectionMovementActive = false;	
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	int GetInteractIconId(int alType, iPhysicsBody@ apBody)
+	{
+		return mbIsOneHanded ? eCrossHairState_RotateOneHanded : eCrossHairState_Rotate;
+	}
+	
+	//------------------------------------------------------------
+	
+	
+	/////////////////////////////////////////
+	// WHEEL SPECIFIC ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetInteractLookAtEntity()
+	{
+		msLookAtEntity = cScript_GetGlobalArgString(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetStuckState()
+	{
+		SetStuckState(cScript_GetGlobalArgInt(0), cScript_GetGlobalArgBool(1));
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetStuckState(int alState, bool abEffects, bool abChangeConnectionState = true)
+	{
+		if(mlStuckState == alState) return;
+
+		mlStuckState = alState;
+		
+		//cLux_AddDebugMessage("Wheel: "+mBaseObj.GetName()+" got stuckstate: "+mlStuckState, false);
+
+		mfStuckSoundTimer =0; //Reset the stuck timer!
+
+		/////////////////////////////
+		//Max
+		if(mlStuckState == 1)
+		{
+			mfAngle = mfMaxLimit - mfMaxLimitRange/2.0f;
+			mfPrevAngle = mfAngle;
+
+			float fAngle = mpHingeJoint.GetAngle();
+			float fMax = cMath_Min(fAngle + cMath_ToRad(2),cMath_ToRad(177));
+			float fMin = cMath_Max(fAngle - cMath_ToRad(2),cMath_ToRad(-177));
+
+			mpHingeJoint.SetMaxAngle(fMax);
+			mpHingeJoint.SetMinAngle(fMin);
+
+			ChangeState(1, abEffects, abChangeConnectionState);
+			ResetAutoMove();
+		}
+		/////////////////////////////
+		//Min
+		else if(mlStuckState == -1)
+		{
+			mfAngle = mfMinLimit + mfMinLimitRange/2.0f;
+			mfPrevAngle = mfAngle;
+
+			float fAngle = mpHingeJoint.GetAngle();
+			float fMax = cMath_Min(fAngle + cMath_ToRad(2),cMath_ToRad(177));
+			float fMin = cMath_Max(fAngle - cMath_ToRad(2),cMath_ToRad(-177));
+
+			mpHingeJoint.SetMaxAngle(fMax);
+			mpHingeJoint.SetMinAngle(fMin);
+
+			ChangeState(-1, abEffects, abChangeConnectionState);
+			ResetAutoMove();
+		}
+		/////////////////////////////
+		//None
+		else
+		{
+			mpHingeJoint.SetMinAngle(0);
+			mpHingeJoint.SetMaxAngle(0);
+		}
+		
+		///////////////////////////////
+		// Enable wiggle if this is an interaction
+		if(mBaseObj.IsInteractedWith() && mlStuckState != 0)
+		{
+			cScript_RunGlobalFunc("State_Interact_Wheel", "", "EnableWiggle");
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetAngle()
+	{
+		SetAngle(cScript_GetGlobalArgFloat(0), cScript_GetGlobalArgBool(1));
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetRotationAmount()
+	{
+		cScript_SetGlobalReturnFloat(GetRotationAmount());
+	}
+	
+	//------------------------------------------------------------
+	
+	float GetRotationAmount()
+	{
+		float fRange = (mfMaxLimit - mfMinLimit);
+		if (fRange == 0.f) return 0;		
+		return (mfAngle - mfMinLimit) / fRange;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetAngle(float afX, bool abAutoMoveToAngle)
+	{
+		if(afX == mfAngle) return;
+	
+		float fWantedAngle = afX;
+		if(fWantedAngle < mfMinLimit) fWantedAngle = mfMinLimit;
+		if(fWantedAngle > mfMaxLimit) fWantedAngle = mfMaxLimit;
+
+		/////////////////////////////
+		//If it is a request to move directly, then we can do proper equal
+		if(abAutoMoveToAngle)
+		{
+			if(fWantedAngle == mfAngle) return;
+		}
+		/////////////////////////////
+		//If not then just check if close enough
+		else
+		{
+			if(cMath_Abs(fWantedAngle - mfAngle) < 0.0001f) return;
+		}
+
+		if(abAutoMoveToAngle)
+		{
+			mbAutoMoving = true;
+			mfAutoMoveGoal = fWantedAngle;
+			mRotatePid.Reset();
+			mBaseObj.WakeUp();
+		}
+		else
+		{
+			mfAngle = fWantedAngle;
+			mfPrevAngle = mfAngle;
+			ResetAutoMove();
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetInteractConnectedProp()
+	{
+		cScript_SetGlobalReturnString(msInteractConnectedProp);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetCurrentAngle()
+	{
+		cScript_SetGlobalReturnFloat(mfAngle);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetInteractionDisablesStuck()
+	{
+		mbInteractionDisablesStuck = cScript_GetGlobalArgBool(0);
+	}
+
+	//------------------------------------------------------------
+	
+	void _Global_GetState()
+	{
+		cScript_SetGlobalReturnInt(mlCurrentState);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_IsAutoMoving()
+	{
+		cScript_SetGlobalReturnBool(mbAutoMoving);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetMoveMaxSpeed()
+	{
+		mfMoveMaxSpeed = cScript_GetGlobalArgFloat(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetAutoRotateMul()
+	{
+		mfAutoRotateMul = cScript_GetGlobalArgFloat(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetJammed()
+	{
+		mbJammed = cScript_GetGlobalArgBool(0);
+		mfJammedMinLimit = cMath_ToRad(cScript_GetGlobalArgFloat(1));
+		mfJammedMaxLimit = cMath_ToRad(cScript_GetGlobalArgFloat(2));
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetJammed()
+	{
+		cScript_SetGlobalReturnBool(mbJammed);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetLinearAutoMove()
+	{
+		mbLinearAutoMove = cScript_GetGlobalArgBool(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetInteractLookAtEnabled()
+	{
+		mbInteractLookAtEnabled = cScript_GetGlobalArgBool(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_StopAutoMove()
+	{
+		ResetAutoMove();
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetMinLimit()
+	{
+		mfMinLimit = cScript_GetGlobalArgFloat(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetMaxLimit()
+	{
+		mfMaxLimit = cScript_GetGlobalArgFloat(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetAutoMove()
+	{
+		mbAutoMoving = false;
+		mRotatePid.Reset();
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetMaxJointAngle(float afMaxAngle)
+	{
+		float fDistToMax = afMaxAngle - mfAngle;
+
+		if(fDistToMax > cMath_Pi){//TOo far away, no need to set limit.
+			mpHingeJoint.SetMaxAngle(cMath_PiMul2);
+			return; 
+		}
+
+		float fJointMax = mfJointAngle + fDistToMax; //Get the value of the joint maximum.
+		
+		/////////////////////////////
+		//The max value is in the 0 - Pi half
+		if( (mfJointAngle >=0 && fJointMax <= cMath_Pi) || (mfJointAngle <0 && fJointMax<0) )
+		{
+			//Make sure limit is not too close to 180 (might make it bug out)
+			float fLimit = cMath_ToRad(177);
+			if(fJointMax > fLimit) fJointMax = fLimit;
+			
+			mpHingeJoint.SetMaxAngle(fJointMax);
+		}
+		else
+		{
+			mpHingeJoint.SetMaxAngle(cMath_PiMul2);
+		}
+	}
+
+	//-----------------------------------------------------------------------
+
+	void SetMinJointAngle(float afMinAngle)
+	{
+		float fDistToMin = mfAngle - afMinAngle;
+
+		if(fDistToMin > cMath_Pi){//TOo far away, no need to set limit.
+			mpHingeJoint.SetMinAngle(-cMath_PiMul2);
+			return; 
+		}
+
+		float fJointMax = mfJointAngle - fDistToMin; //Get the value of the joint minimum
+		
+		//The max value is in the 0 - Pi half
+		if( (mfJointAngle >=0 && fJointMax >= 0) || (mfJointAngle <0 && fJointMax > -cMath_Pi))
+		{
+			//Make sure limit is not too close to 180 (might make it bug out)
+			float fLimit = cMath_ToRad(-177);
+			if(fJointMax < fLimit) fJointMax = fLimit;
+		
+			mpHingeJoint.SetMinAngle(fJointMax);
+		}
+		else
+		{
+			mpHingeJoint.SetMinAngle(-cMath_PiMul2);
+		}
+	}
+	
+	//-----------------------------------------------------------------------
+
+	float GetMinJointAngle()
+	{
+		return mpHingeJoint.GetMinAngle();
+	}
+
+	//-----------------------------------------------------------------------
+
+	void ChangeState(int alState, bool abEffects, bool abChangeConnectionState = true)
+	{
+		if(mlCurrentState == alState) return;
+		if(mbSkipMiddleState && alState==0) return;
+
+		mlCurrentState = alState;
+		
+		tString sSound = "";
+		
+		/////////////////
+		//Max
+		if(mlCurrentState == 1)
+		{
+			sSound = msMaxLimitSound;
+		}
+		/////////////////
+		//Min
+		else if(mlCurrentState == -1)
+		{
+			sSound = msMinLimitSound;
+		}
+
+		///////////////////////
+		//Play sound
+		if(abEffects  && sSound != "")
+		{
+			cSoundEntity @pSound = mBaseObj.GetMap().GetWorld().CreateSoundEntity("WheelSound", sSound, true);
+			if(pSound !is null) pSound.SetPosition(mpHingeJoint.GetPivotPoint());
+		}
+
+		/////////////////
+		//Connection
+		if (abChangeConnectionState)
+			mBaseObj.ChangeConnectionState(mlCurrentState);
+	}
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// WHEEL SPECIFIC UPDATES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void UpdateAngle(float afTimeStep)
+	{
+		/////////////////////////////////////////
+		//Update the Angle value
+		float fLast = mfAngle;
+		mfJointAngle = mpHingeJoint.GetAngle();
+		float fAngleAdd = cMath_GetAngleDistanceRad(mfPrevJointAngle, mfJointAngle);
+		
+		mfPrevAngle = mfAngle;
+		mfAngle += fAngleAdd;
+
+		mfPrevJointAngle = mfJointAngle;
+		
+		/////////////////////////////////////
+		//Check for movement and play stuck sound
+		if(mlStuckState!=0 && mBaseObj.IsInteractedWith())
+		{
+			if(mfStuckSoundTimer <= 0 && cMath_Abs(fAngleAdd) >0.01f * afTimeStep)
+			{
+				mBaseObj.PlaySound("WheelStuck", msStuckSound, true, true);
+				mfStuckSoundTimer = 1.5f;
+			}
+		}
+
+		/////////////////////////////////////
+		//Get value to used to set limit for spinning in one direction.
+		float fSpinVal =0;
+		bool bSetOneDirBlockAngle = false;
+		if(mlSpinDir==1 && mfAngle > mfLastToMax)
+		{
+			mfLastToMax = mfAngle;
+			fSpinVal = mpHingeJoint.GetAngle();
+			bSetOneDirBlockAngle = true;
+		}
+		if(mlSpinDir==-1 && mfAngle < mfLastToMin){
+			mfLastToMin = mfAngle;
+			fSpinVal = mpHingeJoint.GetAngle();
+			bSetOneDirBlockAngle = true;
+		}
+
+		//If no limits, skip the rest.
+		if(mfMaxLimit ==0 && mfMinLimit==0) return;
+
+		/////////////////////////////////////
+		//Set Max and min limit
+		if(mlStuckState==0)
+		{
+			if(mlSpinDir==1)
+			{
+				SetMaxJointAngle(mfMaxLimit);
+				if(bSetOneDirBlockAngle) mpHingeJoint.SetMinAngle(fSpinVal - cMath_ToRad(5.0f));
+			}
+			else if(mlSpinDir==-1)
+			{
+				SetMinJointAngle(mfMinLimit);	
+				if(bSetOneDirBlockAngle)  mpHingeJoint.SetMaxAngle(fSpinVal + cMath_ToRad(5.0f));
+			}
+			else
+			{
+				SetMaxJointAngle(mfMaxLimit);	
+				SetMinJointAngle(mfMinLimit);
+			}
+		}
+		
+		 if (mbJammed)
+		 {
+			 SetMinJointAngle(mfJammedMinLimit);
+			 SetMaxJointAngle(mfJammedMaxLimit);
+		 }
+	}
+
+	//-----------------------------------------------------------------------
+
+	void UpdateCheckLimit(float afTimeStep)
+	{
+		if(mlStuckState !=0) return;
+		
+		if(mfMaxLimit ==0 && mfMinLimit==0) return;
+		
+		///////////////////////
+		//Max
+		if(mfAngle > (mfMaxLimit - mfMaxLimitRange) && mlCurrentState != 1)
+		{
+			ChangeState(1, true);
+			if(mbMaxLimitStuck) SetStuckState(1, false);
+		}
+		///////////////////////
+		//Min
+		else if(mfAngle < (mfMinLimit + mfMinLimitRange) && mlCurrentState != -1)
+		{
+			ChangeState(-1, true);
+			if(mbMinLimitStuck) SetStuckState(-1, false);
+		}
+		///////////////////////
+		//Middle
+		else if(mfAngle < (mfMaxLimit - mfMaxLimitRange) && mfAngle > (mfMinLimit + mfMinLimitRange) &&
+			    mlCurrentState != 0 && mbSkipMiddleState==false)
+		{
+			ChangeState(0, true);
+		}
+	}
+
+	//-----------------------------------------------------------------------
+
+	void UpdateAutoRotation(float afTimeStep)
+	{
+		/////////////////////////////
+		//Auto move to angle
+		if(mbAutoMoving)
+		{			
+			if (cMath_Abs(mfAngle-mfAutoMoveGoal) < cMath_ToRad(0.1f))
+			{
+				ResetAutoMove();
+			}
+			else
+			{				
+				float fWantedSpeed = (mfAngle - mfAutoMoveGoal) * mfAutoRotateMul + (mfPrevAngle - mfAngle)*afTimeStep*1.0f;
+				
+				if (mbLinearAutoMove)
+				{
+					float fDiff = mfAngle - mfAutoMoveGoal;
+					if (cMath_Abs(fDiff) > cMath_ToRad(2.f)) 
+						fDiff = cMath_Sign(fDiff);
+						
+					fWantedSpeed = fDiff * mfAutoRotateMul + (mfPrevAngle - mfAngle) * afTimeStep;
+				}
+				
+				if (mbInteractConnectionMovementActive)
+					fWantedSpeed = (mfAngle - mfAutoMoveGoal) / afTimeStep;					
+					
+				//Log("Angle: %f Wanted: %f Diff: %f Speed: %f\n", cMath_ToDeg(mfAngle), cMath_ToDeg(mfAutoMoveGoal),cMath_Abs(mfAngle-mfAutoMoveGoal), fWantedSpeed);
+				
+				cVector3f vRotateDir = mpHingeJoint.GetPinDir();
+				cVector3f vBodyVel = mpWheelBody.GetAngularVelocity();
+				cVector3f vHingeVel = vRotateDir * cMath_Vector3Dot(vRotateDir, vBodyVel);
+				cVector3f vWantedVel = vRotateDir * fWantedSpeed;
+
+				cVector3f vTorque = mRotatePid.Output(vWantedVel - vHingeVel, afTimeStep);
+				vTorque = cMath_MatrixMul(mpWheelBody.GetInertiaMatrix(), vTorque);
+				
+				mpWheelBody.AddTorque(vTorque);
+			}
+		}
+		
+		//If there is an interaction, do not do any slow down
+		if(mBaseObj.IsInteractedWith())
+		{
+			return;
+		}
+
+		/////////////////////////////
+		//Slowdown rotation to 0
+		if(mlStuckState==0 && mbAutoMoving==false && mbSlowDownRotation)
+		{
+			cVector3f vBodyVel = mpWheelBody.GetAngularVelocity();
+			cVector3f vWantedVel = cVector3f(0);
+
+			cVector3f vTorque = mRotatePid.Output(vWantedVel - vBodyVel, afTimeStep);
+			vTorque = cMath_MatrixMul(mpWheelBody.GetInertiaMatrix(), vTorque);
+
+			mpWheelBody.AddTorque(vTorque);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateInteractConnection()
+	{			
+		/////////////////////////////
+		// Update leader
+		if (mbInteractConnectionMovementActive == false)
+			mBaseObj.UpdateInteractConnectionLeader();
+		
+		mbInteractConnectionMovementActive = false;
+			
+		//////////////////////
+		// Limit angle based on connected prop (if not one way connection)
+		float fRange = cMath_Max(mfMaxLimit - mfMinLimit, 0.0001f);		
+		float fLastState = mBaseObj.GetLastInteractConnectionState();
+		
+		if (mBaseObj.IsInteractedWith() &&
+			mbInteractConnectionOneWay == false &&
+			fLastState > 0.1f && fLastState < 0.9f)
+		{		
+			float fAngle = mfMinLimit + fLastState * fRange;			
+			SetMinJointAngle(fAngle - cMath_ToRad(5.f));
+			SetMaxJointAngle(fAngle + cMath_ToRad(5.f));
+		}
+		
+		//////////////////////
+		// Broadcast state
+		if (mfAngle != mfPrevAngle)
+		{
+			float fT = cMath_Clamp((mfAngle - mfMinLimit) / fRange, 0.f, 1.f);
+			mBaseObj.ChangeInteractConnectionState(fT);
+		}			
+	}
+	
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		/*apSet.DrawFont(tWString("Wheel:"+mBaseObj.GetName()+" Dir:"+mlSpinDir), apFont, cVector3f(5,afStartY,0), cVector2f(14), cColor(1,1) );
+		afStartY += 14;
+		apSet.DrawFont(tWString("Angle:"+cMath_ToDeg(mfAngle)+" LastToMin:"+cMath_ToDeg(mfLastToMin)+" Joint angle:"+cMath_ToDeg(mpHingeJoint.GetAngle())+" Min:"+cMath_ToDeg(mfMinLimit)+" Max:"+cMath_ToDeg(mfMaxLimit)), apFont, cVector3f(5,afStartY,0), cVector2f(14), cColor(1,1) );
+		afStartY += 14;
+		apSet.DrawFont(tWString("Joint Min:"+cMath_ToDeg(mpHingeJoint.GetMinAngle())+" Joint Max:"+cMath_ToDeg(mpHingeJoint.GetMaxAngle()) ), apFont, cVector3f(5,afStartY,0), cVector2f(14), cColor(1,1) );
+		afStartY += 14;*/
+		
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	[nosave] cPidControllerVec3 mRotatePid;
+
+	[nosave] iPhysicsJointHinge @mpHingeJoint;
+	[nosave] iPhysicsBody @mpWheelBody;
+	
+	//------------------------------------------------------------
+	
+	[nosave] float mfMoveMaxSpeed;
+    [nosave] float mfMoveSlowDownFactor;
+    [nosave] float mfMoveSpeedFactor;
+	[nosave] float mfAdditionalInertia;
+    [nosave] bool mbCanInteractWithStaticBody;
+	[nosave] bool mbCanInteractOnlyWithMainBody;
+    [nosave] float mfMinLimitRange;
+    [nosave] float mfMaxLimitRange;
+	[nosave] tString msMinLimitSound;
+	[nosave] tString msMaxLimitSound;
+	[nosave] tString msStuckSound;
+	[nosave] tString msStandTar;
+	[nosave] tString msLookAtEntity;
+	[nosave] float mfLookAtAcc;
+	[nosave] float mfLookAtSpeedMul;
+	[nosave] float mfLookAtMaxSpeed;
+	[nosave] float mfLookAtDec;
+	[nosave] bool mbSlowDownRotation;
+	[nosave] bool mbSkipMiddleState;
+	[nosave] bool mbIsOneHanded;
+	[nosave] bool mbDefaultLookAt;
+	[nosave] bool mbLookAtDisabledIfStuck;
+	
+	//------------------------------------------------------------
+	
+	float mfMinLimit;
+	float mfMaxLimit;
+	float mfAutoRotateMul;
+	bool mbMinLimitStuck;
+	bool mbMaxLimitStuck;
+	int mlSpinDir;
+	bool mbInteractionDisablesStuck;
+	
+	bool mbJammed;
+	float mfJammedMinLimit;
+	float mfJammedMaxLimit;
+	
+	//------------------------------------------------------------
+	
+	float mfAngle;
+	float mfPrevAngle;
+
+	float mfStuckSoundTimer;
+
+	float mfLastToMax;
+	float mfLastToMin;
+	
+	int mlCurrentState;
+	int mlStuckState;
+
+	float mfJointAngle;
+	float mfPrevJointAngle;
+
+	bool mbAutoMoving;
+	float mfAutoMoveGoal;
+	bool mbLinearAutoMove = false;
+	
+	bool mbInteractLookAtEnabled;
+	
+	cUtility_JointFix mJointFix;
+	
+	//------------------------------------------------------------
+	
+	bool mbInteractConnectionSetup;
+	bool mbInteractConnectionMovementActive;
+	bool mbInteractConnectionInvert;
+	bool mbInteractConnectionOneWay;
+	float mfInteractConnectionState;
+	tString msInteractConnectedProp;
+	
+	//------------------------------------------------------------
+		
+}	

@@ -1,0 +1,420 @@
+//----------------------------------------------------------------------
+
+////////////////////////////////
+// GHOUL                      //
+////////////////////////////////
+
+//----------------------------------------------------------------------
+
+/*
+    void State_XX_Enter() {}
+	void State_XX_Leave() {}
+	void State_XX_Update(float afTimeStep) {}
+	bool State_XX_Message(int alMessageId) { return false; }
+	void State_XX_TimerUp(uint64 alId) {}
+*/
+
+// TODO LIST
+
+// - Loading and setup
+
+// - Implement standard states
+//		`--- Idle 
+//		`--- Wait 
+//		`--- Patrol 
+//		`--- Search 
+//		`--- Investigate 
+//		`--- Player Spotted 
+//		`--- Hunt 
+//		`--- Attack 
+
+// - Speed States
+
+// - Create States for Aggression Level
+
+// - Get response to light working
+//		`--- Direct from flashlight
+// 		`--- Poll light level at area
+
+//----------------------------------------------------------------------
+
+#include "agents/Agent_Humanoid.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_player.hps"
+#include "custom/player/PlayerTypes_Custom.hps"
+#include "base/Base_Types.hps"
+
+//----------------------------------------------------------------------
+
+enum eGhoulState
+{
+	eGhoulState_Idle,
+	eGhoulState_Wait,
+	eGhoulState_Patrol,
+	eGhoulState_Investigate,
+	eGhoulState_Search,
+	eGhoulState_Hunt,
+	eGhoulState_PlayerSpotted,
+	eGhoulState_Attack,
+}
+
+//----------------------------------------------------------------------
+
+enum eGhoulSpeed
+{
+	eGhoulSpeed_Walk,
+	eGhoulSpeed_FastWalk,
+	eGhoulSpeed_Investigate,
+	eGhoulSpeed_Run,
+}
+
+//----------------------------------------------------------------------
+
+enum eGhoulProximity
+{
+	eGhoulProximity_Touching,
+	eGhoulProximity_Close,
+	eGhoulProximity_Midrange,
+	eGhoulProximity_Far,
+}
+
+//----------------------------------------------------------------------
+
+class cScrAgentGenAgent : cScrAgentHumanoid
+{
+	//===========================================================
+
+	//////////////////////////////////////////
+	//=======================================
+	// MAIN FUNCTIONS
+	//=======================================
+	//{///////////////////////////////////////
+	//===========================================================
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	//{///////////////////////////////////////
+		
+	//------------------------------------------------------------
+		
+	void Init()
+	{
+		mBaseObj.SetUpdatePlayerDetection(true);
+	}
+		
+	//} END INIT
+	
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// LOADING
+	//{////////////////////////////////////////
+		
+	//------------------------------------------------------------
+		
+	void SetupCharBody()
+	{
+		cScrAgentHumanoid::SetupCharBody();
+		iCharacterBody@ pCharBody = mBaseObj.GetCharBody();
+		
+		pCharBody.SetMass(80);
+		pCharBody.SetMaxPositiveMoveSpeed(eCharDir_Forward,1.0f);
+		pCharBody.SetMoveAcc(eCharDir_Forward,4);
+		pCharBody.SetMoveDeacc(eCharDir_Forward,8);
+		pCharBody.SetMaxPushMass(20);
+		pCharBody.SetMaxPushForce(300);
+		pCharBody.SetAccurateClimbing(true);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		cScrAgentHumanoid::SetupAfterLoad(apWorld, apVars, apInstanceVars);
+		
+		//////////////////////
+		// General Setup
+		mBaseObj.SetAlignEntityWithGroundRay(true);
+		mBaseObj.SetFOV(cMath_ToRad(170.0f));
+		mBaseObj.SetSightRange(90.0f);
+		mBaseObj.SetSightRangeMul(mfSightMul);
+		mBaseObj.SetRelativeEyeHeight(0.8f);	
+		
+		////////////
+		// Pathfinder Setup
+		mpPathfinder.SetNodeContainerName("Ghoul");
+		mpPathfinder.SetMaxHeight(0.8f);
+		
+		SetupComponents(apWorld, apVars, apInstanceVars);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupComponents(cWorld @apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		////////////
+		// State Machine
+		@mpStateMachine = cLux_CreateEntityComponent_StateMachine(mBaseObj);
+		
+		mpStateMachine.AddState("Idle", eGhoulState_Idle);
+		mpStateMachine.AddState("Wait", eGhoulState_Wait);
+		mpStateMachine.AddState("Investigate", eGhoulState_Investigate);
+		mpStateMachine.AddState("Search", eGhoulState_Search);
+		mpStateMachine.AddState("Hunt", eGhoulState_Hunt);
+		mpStateMachine.AddState("Patrol", eGhoulState_Patrol);
+		mpStateMachine.AddState("PlayerSpotted", eGhoulState_PlayerSpotted);
+		mpStateMachine.AddState("Attack", eGhoulState_Attack);
+		
+		////////////
+		// Listener
+		@mpSoundListener = cLux_CreateEntityComponent_SoundListener(mBaseObj);
+		mpSoundListener.LoadFromInstanceVariables(apInstanceVars);
+		mpSoundListener.SetHearRadius(10.0f);
+		mpSoundListener.SetSoundRadiusMul(mfHearingMul);
+		
+		////////////
+		// Light Sensor
+		@mpLightSensor = cLux_CreateEntityComponent_LightSensor(mBaseObj);
+		
+		///////////////////////////////
+		//Proximity Sensor
+		@mpProximitySensor = cLux_CreateEntityComponent_ProximitySensor(mBaseObj);
+		mpProximitySensor.AddState(eGhoulProximity_Touching, 1, 1.1, true, false);
+		mpProximitySensor.AddState(eGhoulProximity_Close, 2.4, 2.6, true, false);
+		
+		////////////
+		// Mover Setup
+		mpMover.SetupWallAvoidance(0.9f, 5.0f, 4);
+		mpMover.SetWallAvoidanceActive(true);
+		mpMover.SetupDynamicObjectAvoidance(1.7f, 10, 3);
+		
+		mpMover.SetVerticalMoveSpeedExtraAnimMul(0.5f);
+		
+		mpMover.SetMaxForwardSpeed(1);
+		mpMover.SetMaxBackwardSpeed(1);
+		
+		mpMover.SetRunToWalkSpeed(1.9);
+		mpMover.SetWalkToRunSpeed(2.0);
+		
+		/////////////////////////////////
+		// Speed States
+		float fWalkMul = apInstanceVars.GetVarFloat("WalkSpeedMul", 1.0f);
+		float fRunMul = apInstanceVars.GetVarFloat("RunSpeedMul", 2.25f);
+		
+		mpMover.AddSpeedState(eGhoulSpeed_Walk);
+		mpMover.SetSpeedState_Forward(0.8*fWalkMul);
+		
+		mpMover.AddSpeedState(eGhoulSpeed_FastWalk);
+		mpMover.SetSpeedState_Forward(1.6*fWalkMul);
+		
+		mpMover.AddSpeedState(eGhoulSpeed_Investigate);
+		mpMover.SetSpeedState_Forward(1.2*fWalkMul);
+		
+		mpMover.AddSpeedState(eGhoulSpeed_Run);
+		mpMover.SetSpeedState_Forward(4.2);
+		mpMover.SetSpeedState_TurnMaxSpeed(6);
+		mpMover.SetSpeedState_TurnSpeedMul(10);
+		mpMover.SetSpeedState_TurnBreakMul(0.2);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnAfterWorldLoad()
+	{
+		cScrAgentHumanoid::OnAfterWorldLoad();
+	}
+	
+	//------------------------------------------------------------
+	
+	//} END Loading
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	//{///////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnUpdate(float afTimeStep)
+	{
+		cScrAgentHumanoid::OnUpdate(afTimeStep);
+		if(mBaseObj.IsActive()==false) return;
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetProperties()
+	{
+		cScrAgentHumanoid::ResetProperties();
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnSetActive(bool abX)
+	{
+		cScrAgentHumanoid::OnSetActive(abX);
+	}
+	
+	//------------------------------------------------------------
+	
+	//} END GENERAL
+	
+	//}END MAIN FUNCTIONS
+
+	//===========================================================
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPERS
+	//{//////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	//------------------------------------------------------------
+	
+	//} END HELPERS
+	
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// GLOBAL FUNCS
+	//{//////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	//------------------------------------------------------------
+	
+	//} END GLOBAL
+	
+	//===========================================================
+	
+	/////////////////////////////////////////
+	//=======================================
+	// STATES
+	//=======================================
+	//{//////////////////////////////////////
+	
+	//===========================================================
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////////
+	// STATE: DEFAULT
+	//{////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	//}END STATE: DEFAULT
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////////
+	// STATE: IDLE
+	//{////////////////////////////////
+	
+	//------------------------------------------------------------
+	//------------------------------------------------------------
+	//}END STATE: IDLE
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////////
+	// STATE: WAIT
+	//{////////////////////////////////
+	
+	//------------------------------------------------------------
+	//------------------------------------------------------------
+	//}END STATE: WAIT
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////////
+	// STATE: PATROL
+	//{////////////////////////////////
+	
+	//------------------------------------------------------------
+	//------------------------------------------------------------
+	//}END STATE: PATROL
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////////
+	// STATE: INVESTIGATE
+	//{////////////////////////////////
+	
+	//------------------------------------------------------------
+	//------------------------------------------------------------
+	//}END STATE: INVESTIGATE
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////////
+	// STATE: SEARCH
+	//{////////////////////////////////
+	
+	//------------------------------------------------------------
+	//------------------------------------------------------------
+	//}END STATE SEARCH
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////////
+	// STATE: PLAYERSPOTTED
+	//{////////////////////////////////
+	
+	//------------------------------------------------------------
+	//------------------------------------------------------------
+	//}END STATE: PLAYERSPOTTED
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////////
+	// STATE: HUNT
+	//{////////////////////////////////
+	
+	//------------------------------------------------------------
+	//------------------------------------------------------------
+	//}END STATE: HUNT
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////////
+	// STATE: ATTACK
+	//{////////////////////////////////
+	
+	//------------------------------------------------------------
+	//------------------------------------------------------------
+	//}END STATE: ATTACK
+		
+	//===========================================================
+	//}END STATES
+	
+	//------------------------------------------------------------
+	/////////////////////////////////////////
+	// PROPERTIES
+	//{//////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	cLuxStateMachine@ mpStateMachine;
+	cLuxSoundListener@ mpSoundListener;
+	cLuxBarkMachine@ mpBarkMachine;
+	cLuxHeadTracker@ mpHeadTracker;
+	cLuxLightSensor@ mpLightSensor;
+	cLuxProximitySensor@ mpProximitySensor;
+	
+	float mfSightMul = 1.0f;
+	float mfHearingMul = 1.0f;
+	
+	//------------------------------------------------------------
+	
+	//} END PROPERTIES
+	
+	//------------------------------------------------------------
+	
+	
+}

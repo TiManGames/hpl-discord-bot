@@ -1,0 +1,759 @@
+#include "effect/Effects.hps"
+#include "helpers/helper_audio.hps"
+#include "custom/effects/Effects_Custom.hps"
+
+//------------------------------------------------------------
+
+const float gfTentacleScaleMax = 6.0f;// 7.0f;
+const float gfTentacleScaleMin = 4.0f;
+
+const float gfRotateSpeed = 0.01f;
+
+const float gfSpreadDistMin = -0.2f; //-0.15f;
+const float gfSpreadDistMax = -0.075f; //0.f;
+
+const float gfSpreadDistMin_Ring = -0.675f;
+const float gfSpreadDistMax_Ring = 0.3f;
+
+const float gfRingVignetteMin = 0.425f;
+const float gfRingVignetteMax = 0.95f;
+
+const float gfRefractionMin = 0.0f;
+const float gfRefractionMax = 0.2f;
+
+const int glHorizontalNum = 12;
+const int glVerticalNum = 8;
+
+const float gfVignetteAlphaSpeed = 0.25f;
+
+const bool gbDebug = false;
+const bool gbDebug_DisableAnimations = false;
+
+const tString[] gsTentacleMaterials = { "test_mul_tex_01.mat", "tentacle_focus_mat.mat" };
+
+const tString gsTentacleLoopSound = "player/UI/fear_tentacles/tentacle_loop";
+
+//------------------------------------------------------------
+
+class cTentacle
+{
+	float mfRotationSpeedMul = 1.f;
+	float mfRotation;
+	cVector3f mvEdgePosition;
+	cVector3f mvRingPosition;
+	int mlID;
+}
+
+//------------------------------------------------------------
+
+class cScrEffect_FearTentacles : iScrEffect, iScrEffect_Interface, iScrEffect_FearTentacles
+{
+	
+	//----------------------------------
+	
+	void Init()
+	{
+		
+	}
+		
+	//----------------------------------
+	
+	void OnDestroy()
+	{
+		Reset();
+
+		if(mpEffect is null) return;
+		
+		cLux_GetViewport().GetPostEffectComposite().RemovePostEffect(mpEffect);
+		cGraphics_DestroyPostEffect(mpEffect);
+		@mpEffect = null;
+	}
+	
+	void CreatePostEffect()
+	{
+		if(mbEffectLoaded == false)
+		{
+			//////////////////
+			// Create the post effect if null
+			@mpEffect = cast<cPostEffect_FearTentacles@>(cLux_GetViewport().GetPostEffectComposite().GetPostEffectFromType("FearTentacles"));
+
+			if(mpEffect is null)
+			{
+				@mpEffect = cGraphics_CreatePostEffect_FearTentacles();
+				cLux_GetViewport().GetPostEffectComposite().AddPostEffect(mpEffect, 10);
+			}
+
+			//////////////
+			// Create the tentacle meshes
+			if(gbDebug)
+			{
+				mpEffect.SetupTentacleEntity("pf_tentacle.ent", 1, 1);
+				mpEffect.SetupTentacleMaterial(eFearTentacleMaterial_Default, gsTentacleMaterials[eFearTentacleMaterial_Default]);
+				mpEffect.SetupTentacleMaterial(eFearTentacleMaterial_Focus, gsTentacleMaterials[eFearTentacleMaterial_Focus]);
+
+				CreateTentacleEntity(0, 0);
+			}
+			else
+			{
+				mpEffect.SetupTentacleEntity("pf_tentacle.ent", (glHorizontalNum + glVerticalNum) * 2, 6);
+				mpEffect.SetupTentacleMaterial(eFearTentacleMaterial_Default, gsTentacleMaterials[eFearTentacleMaterial_Default]);
+				mpEffect.SetupTentacleMaterial(eFearTentacleMaterial_Focus, gsTentacleMaterials[eFearTentacleMaterial_Focus]);
+
+				CreateEntities();
+
+				///////////
+				// Add animations
+				mpEffect.SetupTentacleAnimation("pf_tentacle_loop", 0.9f, 1.1f);
+				mpEffect.SetupTentacleAnimation("pf_tentacle_low", 1.0f, 1.25f);
+				mpEffect.SetupTentacleAnimation("pf_tentacle_high", 1.0f, 1.25f);
+				mpEffect.SetupTentacleAnimation("pf_tentacle_critical", 0.8f, 1.1f);
+				
+				///////////
+				// Setup material
+				SetMaterial(eFearTentacleMaterial_Default);
+			}
+			
+			mbEffectLoaded = true;
+		}
+	}
+	
+	//----------------------------------
+
+	void LoadUserConfig()
+	{
+	}
+	
+	//----------------------------------
+	
+	/////////////////////////////////////////
+	// PULBIC METHODS
+	/////////////////////////////////////////
+	
+	//----------------------------------
+		
+	void Start()
+	{
+		mBaseObj.SetActive(true);
+		Reset();
+	}
+	
+	void Stop()
+	{
+		mBaseObj.SetActive(false);
+		Reset();
+		
+		cSoundEntry@ pEntry = cSound_GetEntry(gsTentacleLoopSound);
+		if (pEntry !is null)
+		{			
+			Sound_StopGui(gsTentacleLoopSound, 0.2f);
+		}
+	}
+	
+	//----------------------------------
+	
+	void CreateEntities()
+	{
+		array<cVector3f> vSides = 
+		{
+			cVector3f(0, 1, 0),
+			cVector3f(0, -1, 0), 
+			cVector3f(1, 0, 0),
+			cVector3f(-1, 0, 0), 
+		};
+		
+		////////////////
+		// Create tentacles
+		int lNumEnts = glHorizontalNum * 2 + glVerticalNum * 2;
+		for(int i = 0; i < lNumEnts; ++i)
+		{
+			CreateTentacleEntity(0, i);
+		}
+
+		////////////
+		// Update tentacle pos
+		int lCount = 0;
+		lCount = UpdateEntitiesAlongScreenSide(vSides[0], cVector3f(1, 0, 0), 2, lCount, glHorizontalNum);
+		lCount = UpdateEntitiesAlongScreenSide(vSides[1], cVector3f(1, 0, 0), 2, lCount, glHorizontalNum);
+		lCount = UpdateEntitiesAlongScreenSide(vSides[2], cVector3f(0, 1, 0), 2, lCount, glVerticalNum);
+		lCount = UpdateEntitiesAlongScreenSide(vSides[3], cVector3f(0, 1, 0), 2, lCount, glVerticalNum);
+		
+		////////////
+		// Update tentacle circular pos
+		float fStep = cMath_PiMul2 / float(lNumEnts);
+		for(int i = 0; i < lNumEnts; ++i)
+		{
+			cTentacle@ pTentacle = mvTentacles[i];
+			pTentacle.mvRingPosition = cMath_MatrixMul(cMath_MatrixRotateZ(fStep * i), cVector3f_Up);
+		}
+	}
+	
+	//----------------------------------
+	
+	void Reset()
+	{
+		mfCritical = 0;
+		mfCoverage = 0;
+		mfIntensity = 0;
+		mfScaleAdd = 0;
+		mfAlpha = 1;
+		mbVignetteEnabled = true;
+		
+		CreatePostEffect();
+
+		if(mpEffect !is null)
+		{
+			SetMaterial(eFearTentacleMaterial_Default);
+			mpEffect.SetActive(false);
+		}
+	}
+	
+	//----------------------------------
+	
+	void SetAlpha(float afX)
+	{
+		mfAlpha = afX;
+	}
+	
+	void FadeAlpha(float afX, float afFadeTime)
+	{
+		mbFadeAlpha = true;
+		mfAlphaFadeSpeed = 1.f / afFadeTime;
+		mfAlphaTarget = afX;
+		mfAlphaSaved = mfAlpha;
+		mfAlphaFadeT = 0.f;
+		
+		if(afFadeTime <= 0.f)
+		{
+			mbFadeAlpha = false;
+			mfAlpha = afX;
+		}
+	}
+	
+	//----------------------------------
+	
+	void FadeCoverage(float afX, float afFadeTime, bool abClampValue)
+	{
+		mbFadeCoverage = true;
+		
+		if (abClampValue)
+			afX = cMath_Clamp(afX, 0.f, 1.f);
+		
+		mfCoverageFadeSpeed = 1.f / afFadeTime;
+		mfCoverageTarget = afX;
+		mfCoverageSaved = mfCoverage;
+		mfCoverageFadeT = 0.f;
+		
+		if(afFadeTime <= 0.f)
+		{
+			mbFadeCoverage = false;
+			mfCoverage = afX;
+		}
+	}
+	
+	//----------------------------------
+	
+	void SetIntensity(float afX)
+	{
+		mfIntensity = afX;
+	}
+	
+	//----------------------------------
+	
+	void SetCoverage(float afX)
+	{
+		mfCoverage = afX;
+	}
+
+	//----------------------------------
+	
+	void SetCritical(float afX)
+	{
+		mfCritical = afX;
+	}
+	
+	
+	//----------------------------------
+	
+	void SetScaleAdd(float afX)
+	{
+		mfScaleAdd = afX;
+	}
+	
+	//----------------------------------
+	
+	void FadeScaleAdd(float afX, float afFadeTime)
+	{
+		mbFadeScaleAdd = true;
+		mfScaleAddFadeSpeed = 1.f / afFadeTime;
+		mfScaleAddTarget = afX;
+		mfScaleAddSaved = mfScaleAdd;
+		mfScaleAddFadeT = 0.f;
+		
+		if(afFadeTime <= 0.f)
+		{
+			mbFadeScaleAdd = false;
+			mfScaleAdd = afX;
+		}
+	}
+	
+	//----------------------------------
+	
+	void SetMul(float afX)
+	{
+		mfEffectMul = afX;
+	}
+	
+	//----------------------------------
+	
+	float GetMul()
+	{
+		return mfEffectMul;
+	}
+	
+	//----------------------------------
+	
+	void FadeMul(float afX, float afFadeTime)
+	{
+		mbFadeMul = true;
+		afX = cMath_Clamp(afX, 0.f, 1.f);
+		mfMulFadeSpeed = 1.f / afFadeTime;
+		mfMulTarget = afX;
+		mfMulSaved = mfEffectMul;
+		mfMulFadeT = 0.f;
+		
+		if(afFadeTime <= 0.f)
+		{
+			mbFadeMul = false;
+			mfCoverage = afX;
+		}
+	}
+	
+	//----------------------------------
+	
+	void FadeMinVignette(float afX, float afFadeTime)
+	{
+		mbFadeMinVignette = true;
+		afX = cMath_Clamp(afX, 0.f, 1.f);
+		mfMinVignetteFadeSpeed = 1.f / afFadeTime;
+		mfMinVignetteTarget = afX;
+		mfMinVignetteSaved = mfMinVignette;
+		mfMinVignetteFadeT = 0.f;
+		
+		if(afFadeTime <= 0.f)
+		{
+			mbFadeMinVignette = false;
+			mfMinVignette = afX;
+		}
+	}
+	
+	//----------------------------------
+	
+	void SetVignetteMul(float afX)
+	{
+		mfVignetteMul = afX;
+	}
+	
+	//----------------------------------
+	
+	void SetMinVignette(float afX)
+	{
+		mfMinVignette = afX;
+	}
+	
+	//----------------------------------
+	
+	void SetVignetteEnabled(bool abX)
+	{
+		mbVignetteEnabled = abX;
+	}
+	
+	//----------------------------------
+	
+	void SetSpeedMul(float afX)
+	{
+		mfSpeedMul = afX;
+	}
+	
+	float GetSpeedMul()
+	{
+		return mfSpeedMul;
+	}
+	
+	//----------------------------------
+	
+	void SetMaterial(eFearTentacleMaterial aMat)
+	{
+		mpEffect.SetTentacleMaterial(aMat, 0.0f);
+	}
+
+	void FadeMaterial(eFearTentacleMaterial aMat, float afTime)
+	{
+		mpEffect.SetTentacleMaterial(aMat, afTime);
+	}
+	
+	//----------------------------------
+	
+	void SetRingModeActive(bool abX)
+	{
+		mbRingMode = abX;
+	}
+	
+	//----------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL CALLBACKS
+	/////////////////////////////////////////
+	
+	//----------------------------------
+	
+	void OnStart()
+	{
+	}
+
+	//----------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+		Reset();
+	}
+	
+	//----------------------------------
+	
+	void OnMapLeave(cLuxMap @apMap)
+	{
+		Reset();
+	}
+	
+	//----------------------------------
+	
+	void PreloadData(cLuxMap@ apMap)
+	{
+		apMap.PreloadEntity("pf_tentacle.ent");
+		
+		for (uint i = 0; i < gsTentacleMaterials.length(); ++i)
+			apMap.PreloadMaterial(gsTentacleMaterials[i]);
+	}
+
+	//----------------------------------
+	
+	void Update(float afTimeStep)
+	{
+		mfVignetteAlpha = cMath_IncreaseTo(mfVignetteAlpha, afTimeStep * gfVignetteAlphaSpeed, mfAlpha);
+		
+		cSoundEntry@ pEntry = cSound_GetEntry(gsTentacleLoopSound);
+		if (pEntry is null)
+		{			
+			Sound_PlayGui(gsTentacleLoopSound, 1.0f);
+		}
+	}
+	
+	//----------------------------------
+	
+	void OnDraw(float afFrameTime)
+	{
+		if(cLux_GetCurrentMap() is null) 
+		{
+			mBaseObj.SetActive(false);
+			Reset();
+
+			return;
+		}
+		
+		CreatePostEffect();
+
+		if(mbFadeAlpha)
+		{
+			mfAlphaFadeT = cMath_Clamp(mfAlphaFadeT + afFrameTime * mfAlphaFadeSpeed, 0.f, 1.f);
+			mfAlpha = cMath_InterpolateLinear(mfAlphaSaved, mfAlphaTarget, mfAlphaFadeT);
+			if(mfAlpha == mfAlphaTarget)
+				mbFadeAlpha = false;
+		}
+		
+		if(mbFadeCoverage)
+		{
+			mfCoverageFadeT = cMath_Clamp(mfCoverageFadeT + afFrameTime * mfCoverageFadeSpeed, 0.f, 1.f);
+			mfCoverage = cMath_Easing(eEasing_QuadInOut, mfCoverageFadeT, mfCoverageSaved, mfCoverageTarget);
+			if(mfCoverage == mfCoverageTarget)
+				mbFadeCoverage = false;
+		}
+		
+		if(mbFadeScaleAdd)
+		{
+			mfScaleAddFadeT = cMath_Clamp(mfScaleAddFadeT + afFrameTime * mfScaleAddFadeSpeed, 0.f, 1.f);
+			mfScaleAdd = cMath_InterpolateLinear(mfScaleAddSaved, mfScaleAddTarget, mfScaleAddFadeT);
+			if(mfScaleAdd == mfScaleAddTarget)
+				mbFadeScaleAdd = false;
+		}
+		
+		if(mbFadeMul)
+		{
+			mfMulFadeT = cMath_Clamp(mfMulFadeT + afFrameTime * mfMulFadeSpeed, 0.f, 1.f);
+			mfEffectMul = cMath_InterpolateLinear(mfMulSaved, mfMulTarget, mfMulFadeT);
+			mfEffectMul = cMath_Easing(eEasing_CubicInOut, mfMulFadeT, mfMulSaved, mfMulTarget);
+			//mfEffectMul = mfMulTarget;
+			if(mfEffectMul == mfMulTarget)
+				mbFadeMul = false;
+		}
+		
+		if (mbFadeMinVignette)
+		{
+			mfMinVignetteFadeT = cMath_Clamp(mfMinVignetteFadeT + afFrameTime * mfMinVignetteFadeSpeed, 0.f, 1.f);
+			mfMinVignette = cMath_InterpolateLinear(mfMinVignetteSaved, mfMinVignetteTarget, mfMinVignetteFadeT);
+			if (mfMinVignette == mfMinVignetteTarget)
+				mbFadeMinVignette = false;
+		}
+
+		if(mbFadeInCritical)
+			mfCritical = cMath_IncreaseTo(mfCritical, mfCriticalFadeSpeed * afFrameTime, 1.f);
+		else
+			mfCritical = cMath_IncreaseTo(mfCritical, mfCriticalFadeSpeed * afFrameTime, 0.f);
+			
+		if(mfAlpha > 0.0)
+		{
+			UpdateAnimations();
+			
+			cVector3f vAspectRatio(cGraphics_GetLowLevel().GetScreenSizeFloat());
+			float fAspectMul = vAspectRatio.y/vAspectRatio.x;
+			
+			for(uint i = 0; i < mvTentacles.size(); ++i)
+			{
+				mvTentacles[i].mfRotation += mvTentacles[i].mfRotationSpeedMul * gfRotateSpeed * afFrameTime;
+				
+				if(gbDebug)
+					mvTentacles[i].mfRotation = 0;
+					
+				cVector3f vPos = mvTentacles[i].mvEdgePosition;
+				if (mbRingMode)
+				{
+					vPos = mvTentacles[i].mvRingPosition;
+					vPos.x *= fAspectMul;
+				}
+				mpEffect.SetTentacleTransform(i, vPos, cVector3f(0, cMath_Pi, mvTentacles[i].mfRotation));
+			}
+		}
+
+		UpdateShaderParams();
+		mpEffect.SetActive(mfAlpha > 0.f);
+		
+	}
+	
+	//----------------------------------
+	
+	/////////////////////////////////////////
+	// HELPERS
+	/////////////////////////////////////////
+
+	//----------------------------------
+
+	float RemapValue(float afX, float afNewLow, float afNewHigh, float afOldLow = 0.f, float afOldHigh = 1.f)
+	{
+		return cMath_Clamp(afNewLow + (afX - afOldLow) * (afNewHigh - afNewLow) / (afOldHigh - afOldLow), afNewLow, afNewHigh);
+	}
+	
+	//----------------------------------
+
+	void UpdateShaderParams()
+	{
+		//////////////
+		// Intensity
+		float fIntensity = cMath_Easing(eEasing_ElasticInOut, mfIntensity, 0.8f, 1);
+		fIntensity*= mfEffectMul;
+	
+		////////////
+		// Circular vignette
+		float fCircleRadius = 0.6f;
+		float fCircleAlpha = 0.0f;
+		float fCircleSoftness = 0.5f;
+	
+		////////////////
+		// Spread dist
+		float fSpreadDist = 0;
+		if (mbRingMode)
+		{
+			float fSpreadT = mfCoverage * mfEffectMul;
+			float fMaxDist = gfSpreadDistMax_Ring - (gfSpreadDistMin_Ring - gfSpreadDistMax_Ring) * 0.05f * mfCritical;
+			fSpreadDist = cMath_InterpolateLinear(gfSpreadDistMin_Ring, fMaxDist, fSpreadT);
+
+			fCircleRadius = cMath_InterpolateLinear(gfRingVignetteMax, gfRingVignetteMin, fSpreadT);
+			fCircleAlpha = 1.0f;
+			fCircleSoftness = 0.5f;
+		}
+		else
+		{
+			float fMaxDist = gfSpreadDistMax - (gfSpreadDistMin - gfSpreadDistMax) * 0.05f * mfCritical;
+			fSpreadDist = cMath_Easing(eEasing_QuadIn, mfCoverage * mfEffectMul, gfSpreadDistMin, fMaxDist);
+		}
+		
+		//////////////
+		// Scale
+		float fScale = cMath_InterpolateLinear(gfTentacleScaleMin, gfTentacleScaleMax, mfCoverage);
+		fScale += mfScaleAdd;
+		fScale *= mfEffectMul;
+		
+		/////////////
+		// Refraction
+		float fRefraction = cMath_InterpolateLinear(gfRefractionMin, gfRefractionMax, mfCoverage * mfAlpha);
+
+		/////////////
+		// Vingette
+		float fVignette = 0;
+		if (mbVignetteEnabled && mfVignetteMul > 0.f)
+		{
+			fVignette = cMath_InterpolateLinear(0, 1, mfCoverage);
+			if(mfCoverage < 0.5)
+			{
+				float fX = mfCoverage == 0 ? 0 : mfCoverage == 1 ? 1 : mfCoverage < 0.5 ? cMath_Pow(2, 20 * mfCoverage - 10) / 2 : (2 - cMath_Pow(2, -20 * mfCoverage + 10)) / 2;
+				fX = mfCoverage == 1.f ? 1.f : 1.f - cMath_Pow(3.f, -10.f * mfCoverage);
+				fVignette = RemapValue(fX, 0.0, 0.5);
+			}
+				
+			fVignette *= mfEffectMul;
+			fVignette *= mfVignetteMul;
+			fVignette *= cMath_Clamp(mfVignetteAlpha, 0.f, 1.f);
+			fVignette = cMath_Max(fVignette, mfMinVignette);	
+		}
+		
+		//////////
+		// Send to effect
+		mpEffect.SetParams(fIntensity, fScale, fSpreadDist, fRefraction, fVignette, mfAlpha, fCircleRadius, fCircleAlpha, fCircleSoftness);
+		//cLux_AddDebugMessage("Intensity: " + fIntensity + "    Scale: " + fScale + "    Spread: " + fSpreadDist + "    refract: " +  fRefraction + "    Coverage: " + mfCoverage + "    Alpha: " + mfAlpha);
+		
+		if (Sound_GuiIsPlaying(gsTentacleLoopSound))
+		{
+			Sound_SetGuiParam(gsTentacleLoopSound, "intensity", fIntensity);
+			Sound_SetGuiParam(gsTentacleLoopSound, "coverage", fSpreadDist);
+		}
+	}
+
+	//----------------------------------
+	
+	int UpdateEntitiesAlongScreenSide(const cVector3f&in avSideCenter, const cVector3f&in avDirection, float afLength, int alStartEnt, int alNumEnts)
+	{
+		cVector3f vOffset = avSideCenter;
+		cVector3f vStart = vOffset - avDirection * afLength / 2.f;
+		float fStepSize = afLength / float(alNumEnts);
+		
+		for(int i = 0; i < alNumEnts; ++i)
+		{
+			vOffset = vStart + avDirection * ((fStepSize/2) + i * fStepSize);
+			mvTentacles[alStartEnt].mvEdgePosition = vOffset;
+		
+			mpEffect.SetTentacleTransform(alStartEnt, vOffset, cVector3f(0, cMath_Pi, mvTentacles[alStartEnt].mfRotation));
+			alStartEnt++;
+		}
+
+		return alStartEnt;
+	}
+	
+	//----------------------------------
+	
+	void UpdateAnimations()
+	{	
+		mpEffect.SetTentacleAnimationSpeed("pf_tentacle_loop", mfSpeedMul);	
+		mpEffect.SetTentacleAnimationWeight("pf_tentacle_loop", 1.0f);
+		
+		mpEffect.SetTentacleAnimationSpeed("pf_tentacle_low", mfSpeedMul);
+		mpEffect.SetTentacleAnimationWeight("pf_tentacle_low", (1.f - mfIntensity) * (1.f - mfCritical));
+		
+		mpEffect.SetTentacleAnimationSpeed("pf_tentacle_high", mfSpeedMul);
+		mpEffect.SetTentacleAnimationWeight("pf_tentacle_high", mfIntensity * (1.f - mfCritical));
+		
+		mpEffect.SetTentacleAnimationSpeed("pf_tentacle_critical", mfSpeedMul);
+		mpEffect.SetTentacleAnimationWeight("pf_tentacle_critical", mfCritical);
+	}
+	
+	//----------------------------------
+	
+	int CreateTentacleEntity(const cVector3f&in avOffset, int alIndex)
+	{
+		/////////////////////
+		// Setup rotation
+		cTentacle tentacle;
+		tentacle.mfRotation = cMath_RandRectf(-cMath_Pi, cMath_Pi);
+		tentacle.mlID = alIndex;
+		tentacle.mvEdgePosition = avOffset;
+		tentacle.mvRingPosition = avOffset;
+		
+		if(gbDebug)
+		{
+			cMeshEntity@ pEntity = mpEffect.GetTentacleEntity(alIndex);
+			if(gbDebug_DisableAnimations)
+				pEntity.Stop();
+			tentacle.mfRotation = 0;
+		}
+		
+		mpEffect.SetTentacleTransform(alIndex, tentacle.mvEdgePosition, cVector3f(0, cMath_Pi, tentacle.mfRotation));
+		mvTentacles.push_back(tentacle);
+		return alIndex;
+	}
+	
+	//----------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//----------------------------------
+	
+	[nosave] cPostEffect_FearTentacles@ mpEffect = null;
+	[nosave] bool mbEffectLoaded=false;
+
+	[nosave] array<cTentacle> mvTentacles;
+	
+	float mfEffectMul = 1.f;
+	float mfCoverage;
+	float mfIntensity;
+	float mfCritical;
+	float mfAlpha;
+	float mfScaleAdd;
+	
+	float mfVignetteMul = 1.f;
+	float mfVignetteAlpha = 0.f;
+	
+	bool mbFadeInCritical = false;
+	
+	float mfCriticalFadeSpeed;
+	float mfCriticalTarget;
+	
+	bool mbFadeAlpha = false;
+	float mfAlphaFadeSpeed;
+	float mfAlphaTarget;
+	float mfAlphaFadeT;
+	float mfAlphaSaved;
+	
+	int mlAnimLow = -1;
+	int mlAnimHigh = -1;
+	int mlAnimCritical = -1;
+	
+	bool mbFadeCoverage = false;
+	float mfCoverageFadeSpeed;
+	float mfCoverageFadeT;
+	float mfCoverageSaved;
+	float mfCoverageTarget;
+	
+	bool mbFadeScaleAdd = false;
+	float mfScaleAddFadeSpeed;
+	float mfScaleAddFadeT;
+	float mfScaleAddSaved;
+	float mfScaleAddTarget;
+	
+	bool mbFadeMul = false;
+	float mfMulFadeSpeed;
+	float mfMulFadeT;
+	float mfMulSaved;
+	float mfMulTarget;
+	
+	bool mbFadeMinVignette = false;
+	float mfMinVignetteFadeSpeed;
+	float mfMinVignetteFadeT;
+	float mfMinVignetteSaved;
+	float mfMinVignetteTarget;
+	float mfMinVignette = 0.f;
+	bool mbVignetteEnabled = true;
+	
+	float mfSpeedMul = 1.f;
+	
+	bool mbRingMode = false;
+	
+	//----------------------------------
+}

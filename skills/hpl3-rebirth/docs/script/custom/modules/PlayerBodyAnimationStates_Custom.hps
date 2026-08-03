@@ -1,0 +1,227 @@
+#include "interfaces/UserModule_Interface.hps"
+#include "modules/ModuleInterfaces.hps"
+#include "InputHandler_Types.hps"
+#include "helper_player.hps"
+
+#include "helpers/helper_components.hps"
+
+#include "custom/helpers/helper_player_custom.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+
+#include "PlayerBodyAnimationStates.hps"
+
+//------------------------------------------------------------
+
+enum ePlayerBodyAnimationState_Custom
+{
+	ePlayerBodyAnimationState_Custom_SwimIdle=ePlayerBodyAnimationState_LastEnum,
+	ePlayerBodyAnimationState_Custom_SwimForward,
+	ePlayerBodyAnimationState_Custom_SwimFastToSlowTr,
+	ePlayerBodyAnimationState_Custom_SwimForwardSlow,
+	
+	ePlayerBodyAnimationState_Custom_LastEnum
+}
+	
+//------------------------------------------------------------
+
+class cPlayerBodyAnimationState_Custom_SwimBase : cPlayerBodyAnimationState
+{
+	ePlayerBodyAnimation_Custom mSwimAnim;
+	cVector3f mvPreviousBodyPosition;
+    float mfAngle=0;
+	float mfSlowSwimSpeedThershold=0.8f;
+	float mfAnimFadeTime=0.3f;
+	float mfAnimTime=0;
+	
+	cPlayerBodyAnimationState_Custom_SwimBase()
+	{
+	}
+	
+	void OnEnter(cScrPlayerBodyHandler@ aBody) override
+	{
+		/////////////////////////
+		// Play Anim
+		tString sSwimAnim = aBody.GetAnimation(ePlayerBodyAnimation(mSwimAnim));
+		if (sSwimAnim!="")
+		{
+			aBody.PlayAnimationInLayer(sSwimAnim, ePlayerBodyAnimationLayer_FullBody, true, false, true, mfAnimFadeTime, 1.f, 0.f, true);
+			mfAnimTime = aBody.GetAnimationState(sSwimAnim).GetLength();
+		}
+		
+		/////////////////////////
+		// Get init body position
+		iCharacterBody@ pBody = cLux_GetPlayer().GetCharacterBody();
+		if (pBody==null) return;
+		mvPreviousBodyPosition = pBody.GetPosition();
+	}
+	
+	void OnLeave(cScrPlayerBodyHandler@ aBody) override
+	{
+		aBody.StopAnimationLayer(ePlayerBodyAnimationLayer_FullBody, 0.3f, true, false);
+	}
+	
+	void OnVariableUpdate(cScrPlayerBodyHandler@ aBody, float afTimeStep) override
+	{
+		//cLux_AddDebugMessage("Swim State = " + GetName());
+		
+		iCharacterBody@ pBody = cLux_GetPlayer().GetCharacterBody();
+		if (pBody==null) return;
+
+		UpdateSwimAnimState(aBody, afTimeStep);
+		
+		mvPreviousBodyPosition = pBody.GetPosition();
+	}
+	
+	void UpdateSwimAnimState(cScrPlayerBodyHandler@ aBody, float afTimeStep){}
+    
+    float GetTargetFeetYaw(cScrPlayerBodyHandler@ aBody, float afTimeStep)
+	{	
+		return mfAngle;
+	}
+	
+	bool GetDisableLowerYawBones() override
+	{
+		return true;
+	}
+	
+	tString GetName() override
+	{
+		return "Swim Idle";
+	}
+	
+	float GetSwimSpeed(const float afTimeStep)
+	{
+		iCharacterBody@ pBody = cLux_GetPlayer().GetCharacterBody();
+		if (pBody==null) return 0;
+		
+		// Get actual CharacterBody velocity since aBody.GetVelocity2D() isn't working here.
+		cVector3f vVelocity = (pBody.GetPosition() - mvPreviousBodyPosition) / afTimeStep;
+		vVelocity.y=0.f;
+		return vVelocity.Length();
+	}
+}
+
+//------------------------------------------------------------
+
+class cPlayerBodyAnimationState_Custom_SwimIdle : cPlayerBodyAnimationState_Custom_SwimBase
+{
+	cPlayerBodyAnimationState_Custom_SwimIdle()
+	{
+		mSwimAnim = ePlayerBodyAnimation_Custom_SwimIdle;
+	}
+	
+	void UpdateSwimAnimState(cScrPlayerBodyHandler@ aBody, float afTimeStep)
+	{
+		if (GetSwimSpeed(afTimeStep) < 0.01f) return;
+		
+		if (GetSwimSpeed(afTimeStep) < mfSlowSwimSpeedThershold)
+		{
+			aBody.ChangeAnimationState(ePlayerBodyAnimationState(ePlayerBodyAnimationState_Custom_SwimForwardSlow), false, mfAnimFadeTime);
+			return;
+		}
+		
+		aBody.ChangeAnimationState(ePlayerBodyAnimationState(ePlayerBodyAnimationState_Custom_SwimForward), false, mfAnimFadeTime);
+	}
+	
+	tString GetName() override
+	{
+		return "Swim Idle";
+	}
+}
+
+//------------------------------------------------------------
+
+class cPlayerBodyAnimationState_Custom_SwimForward : cPlayerBodyAnimationState_Custom_SwimBase
+{
+	cPlayerBodyAnimationState_Custom_SwimForward()
+	{
+		mSwimAnim = ePlayerBodyAnimation_Custom_SwimForward;
+	}
+	
+	void UpdateSwimAnimState(cScrPlayerBodyHandler@ aBody, float afTimeStep)
+	{
+		////////////////////
+		// Update Anim State
+		if (GetSwimSpeed(afTimeStep)<0.01f)
+		{
+			aBody.ChangeAnimationState(ePlayerBodyAnimationState(ePlayerBodyAnimationState_Custom_SwimIdle), false, mfAnimFadeTime);
+			return;
+		}
+		
+		if (GetSwimSpeed(afTimeStep) > mfSlowSwimSpeedThershold) return;
+		aBody.ChangeAnimationState(ePlayerBodyAnimationState(ePlayerBodyAnimationState_Custom_SwimForwardSlow), false, mfAnimFadeTime);
+	}
+	
+	tString GetName() override
+	{
+		return "Swim Forward";
+	}
+}
+
+//------------------------------------------------------------
+
+class cPlayerBodyAnimationState_Custom_SwimFastToSlow : cPlayerBodyAnimationState_Custom_SwimBase
+{
+	cPlayerBodyAnimationState_Custom_SwimFastToSlow()
+	{
+		mSwimAnim = ePlayerBodyAnimation_Custom_SwimFastToSlow;
+	}
+	
+	void UpdateSwimAnimState(cScrPlayerBodyHandler@ aBody, float afTimeStep)
+	{
+		mfAnimTime-=afTimeStep;
+		
+		/////////////////
+		// Switch to Idle
+		if (GetSwimSpeed(afTimeStep)<0.01f)
+		{
+			aBody.ChangeAnimationState(ePlayerBodyAnimationState(ePlayerBodyAnimationState_Custom_SwimIdle), false, mfAnimFadeTime);
+			return;
+		}
+		
+		if (GetSwimSpeed(afTimeStep) > mfSlowSwimSpeedThershold)
+		{
+			aBody.ChangeAnimationState(ePlayerBodyAnimationState(ePlayerBodyAnimationState_Custom_SwimForward), false, mfAnimFadeTime);
+			return;
+		}
+		
+		/////////////////////////
+		// Switch to Forward Slow
+		if (mfAnimTime > mfAnimFadeTime) return;
+		aBody.ChangeAnimationState(ePlayerBodyAnimationState(ePlayerBodyAnimationState_Custom_SwimForwardSlow), false, mfAnimFadeTime);
+	}
+	
+	tString GetName() override
+	{
+		return "Swim Fast to Slow";
+	}
+}
+
+//------------------------------------------------------------
+
+class cPlayerBodyAnimationState_Custom_SwimForwardSlow : cPlayerBodyAnimationState_Custom_SwimBase
+{
+	cPlayerBodyAnimationState_Custom_SwimForwardSlow()
+	{
+		mSwimAnim = ePlayerBodyAnimation_Custom_SwimForwardSlow;
+	}
+	
+	void UpdateSwimAnimState(cScrPlayerBodyHandler@ aBody, float afTimeStep)
+	{
+		////////////////////
+		// Update Anim State
+		if (GetSwimSpeed(afTimeStep)<0.01f)
+		{
+			aBody.ChangeAnimationState(ePlayerBodyAnimationState(ePlayerBodyAnimationState_Custom_SwimIdle), false, mfAnimFadeTime);
+			return;
+		}
+
+		if (GetSwimSpeed(afTimeStep) < mfSlowSwimSpeedThershold) return;
+		aBody.ChangeAnimationState(ePlayerBodyAnimationState(ePlayerBodyAnimationState_Custom_SwimForward), false, mfAnimFadeTime);
+	}
+	
+	tString GetName() override
+	{
+		return "Swim Forward Slow";
+	}
+}

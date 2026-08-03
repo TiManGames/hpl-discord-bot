@@ -1,0 +1,754 @@
+#include "interfaces/UserModule_Interface.hps"
+#include "custom/modules/ModuleInterfaces_Custom.hps"
+#include "custom/Player/PlayerTypes_Custom.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+#include "custom/helpers/helper_player_custom.hps"
+#include "helpers/helper_game.hps"
+
+//----------------------------------------------------------------------------------------
+
+const float gfMolotov_DamageTimeIntervalMin = 1.25f;
+const float gfMolotov_DamageTimeIntervalMax = 1.75f;
+
+const float gfGas_DamageTimeIntervalMin = 3.f;
+const float gfGas_DamageTimeIntervalMax = 4.f;
+const float gfGas_LifeTimeUntilDamage = 3.f;
+
+const float gfDamage_MinInitialGasDamageCount = 0.25f;
+const float gfDamage_MaxInitialGasDamageCount = 0.75f;
+
+const float gfDamage_MinInitialFireDamageCount = 0.15f;
+const float gfDamage_MaxInitialFireDamageCount = 0.25f;
+
+const float gfDamage_MinCheckCenterInsideCharBodyRadius = 1.f;
+
+const tString gsEnvironmentalDamage_BlockBodyEnt = "path_area_blocker.ent";
+
+const int glMaxEntitiesToCheckPerFrame = 5;
+const float gfCheckAreaTime = 0.15f;
+
+//----------------------------------------------------------------------------------------
+
+class cDamageArea
+{
+	cVector3f mvMin;
+	cVector3f mvMax;
+	eDamageType mType;
+	tID m_idPS;
+	tID m_idBlockerBody;
+	float mfLifeCount;
+	tID m_idDamageEntity;
+	bool mbIsTrap;
+}
+
+//----------------------------------------------------------------------------------------
+
+
+class cEntityDamageInstance
+{
+	bool mbActive;
+	float mfDamageCount;
+	eDamageType mType;
+	tID m_idDamageBody;
+	tID m_idDamageEntity;
+	bool mbIsTrap;
+}
+
+class cEntityToCheckInstance
+{
+	tID m_idEnt;
+	bool mbInGas;
+	bool mbInMolotov;
+	float mfAreaCheckCount;
+
+	cEntityDamageInstance mMolotovDmg;
+	cEntityDamageInstance mGasDmg;
+}
+
+//----------------------------------------------------------------------------------------
+
+class cScrEnvironmentalDamageHandler : iScrUserModule, iScrUserModule_Interface, iScrEnvironmentalDamageHandler_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		mvDamageAreas.resize(0);
+		mvEntityDamageInstances.resize(0);
+		mvEntitiesToCheck.resize(0);
+		mvEntityInstancesToCheck.resize(0);
+	}
+		
+	//------------------------------------------------------------
+	
+	void LoadUserConfig() {}
+	void SaveUserConfig() {}
+	
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// MAP LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap@ apMap)
+	{
+	}
+
+	//------------------------------------------------------------
+
+	void OnMapLeave(cLuxMap@ apMap)
+	{
+		///////////////////////
+		// Clear damage areas on map leave
+		for (int i = 0; i < mvDamageAreas.size(); ++i)
+		{
+			cDamageArea@ pArea = mvDamageAreas[i];
+			DestroyDamageAreaData(pArea);
+		}
+
+		mvDamageAreas.resize(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void PreloadData(cLuxMap@ apMap) {}
+	void CreateWorldEntities(cLuxMap@ apMap) {}
+	void DestroyWorldEntities(cLuxMap@ apMap) {}
+	void OnEnterContainer(const tString&in asOldContainer) {}
+	void OnLeaveContainer(const tString&in asNewContainer) {}
+	
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+		mvDamageAreas.resize(0);
+		mvEntityDamageInstances.resize(0);
+		mvEntitiesToCheck.resize(0);
+		mvEntityInstancesToCheck.resize(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////	
+	
+	//------------------------------------------------------------
+	
+	void VariableUpdate(float afDeltaTime)
+	{
+		///////////////
+		// Setup vars
+		cLuxMap@ pMap = cLux_GetCurrentMap();
+		if (pMap is null) return;
+
+		/////////
+		// Save game fix, readd
+		for(int i = 0; i < mvEntitiesToCheck.size(); ++i)
+		{
+			AddEntityToCheck(mvEntitiesToCheck[i]);
+		}
+		mvEntitiesToCheck.resize(0);
+		
+		///////////////
+		// Get entities to check
+		array<iLuxEntity@> vEntitiesToCheck;
+
+
+		///////////////
+		// Update damage areas
+		for (int i = 0; i < mvDamageAreas.size(); ++i)
+		{
+			///////////////
+			// Get area
+			cDamageArea@ pArea = mvDamageAreas[i];	
+			cParticleSystem@ pPS = pArea !is null ? cLux_ID_ParticleSystem(pArea.m_idPS) : null;
+			
+			///////////////
+			// Remove area?
+			if (pArea is null || pPS is null)
+			{
+				DestroyDamageAreaData(pArea);
+				mvDamageAreas.removeAt(i);
+				--i;
+
+				continue;
+			}
+			
+			///////////////
+			// Time
+			if (pArea.mfLifeCount < 9999999.f)
+				pArea.mfLifeCount += afDeltaTime;
+		}
+
+		int lEntitesChecked = 0;
+
+		// Easy to optimize this further if needed, like checking one entity per frame or similar
+		for(int i = 0; i < mvEntityInstancesToCheck.size(); ++i)
+		{
+			int lIndex = (i+mlLastEntityIndexChecked) % mvEntityInstancesToCheck.size();
+			
+			///////////////
+			// Setup vars
+			cEntityToCheckInstance@ pInstance = mvEntityInstancesToCheck[lIndex];
+			iLuxEntity@ pEnt = cLux_ID_Entity(pInstance.m_idEnt);
+			cBoundingVolume@ pBounds = null;
+			
+
+			if (pEnt !is null && pEnt.GetMainBody() !is null) 
+			{
+				@pBounds = pEnt.GetMainBody().GetBoundingVolume();
+			}
+			
+			if(pBounds is null)
+			{
+				mvEntityInstancesToCheck.removeAt(lIndex);
+				i--;
+				continue;
+			}
+
+			cLuxAgent@ pAgent = cLux_ToAgent(pEnt);
+			tID idEnt = pInstance.m_idEnt;
+			
+			if (pEnt.IsActive() == false) continue;
+
+			////////////
+			// Update if entity is in area
+			pInstance.mfAreaCheckCount += afDeltaTime;
+
+			if ((pInstance.mfAreaCheckCount > gfCheckAreaTime &&
+				lEntitesChecked < glMaxEntitiesToCheckPerFrame) || //check a few ents per frame
+				pEnt.GetEntityType() == eLuxEntityType_Player) //always check player
+			{
+				pInstance.mbInGas = false;
+				pInstance.mbInMolotov = false;
+				pInstance.mfAreaCheckCount = 0.0f;
+				if (pEnt.GetEntityType() != eLuxEntityType_Player) lEntitesChecked++;
+				
+				for(int i = 0; i < mvDamageAreas.size(); ++i)
+				{
+					//////////
+					// Cant take more damage
+					if(pInstance.mbInGas && pInstance.mbInMolotov)
+						break;
+
+					cDamageArea@ pArea = mvDamageAreas[i];	
+
+					///////////////
+					// Already marked as inside?
+					if (pArea.mType == eDamageType_Fire && pInstance.mbInMolotov ||
+						pArea.mType == eDamageType_Gas && pInstance.mbInGas)
+					{
+						continue;
+					}
+
+					///////////////
+					// Don't give damage yet?
+					if (pArea.mType == eDamageType_Gas && pArea.mfLifeCount < gfGas_LifeTimeUntilDamage)
+						continue;
+
+					//////////////////////
+					// Check for collision
+					bool bCollision = false;
+					bool bCheckCenterIsInside = pAgent !is null && 
+												pAgent.GetCharBody().GetSize().x > gfDamage_MinCheckCenterInsideCharBodyRadius;
+												
+					if (bCheckCenterIsInside)
+					{
+						bCollision = cMath_CheckPointInAABBIntersection(pEnt.GetPosition(), pArea.mvMin, pArea.mvMax);
+					}
+					else
+					{
+						bCollision = cMath_CheckAABBIntersection(pArea.mvMin, pArea.mvMax, pBounds.GetMin(), pBounds.GetMax());
+					}
+
+					///////////////
+					// Is there a collision?
+					if (bCollision == false)
+						continue;
+
+					///////////////
+					// Mark as inside!
+					cEntityDamageInstance@ pDmg = null;
+
+					if (pArea.mType == eDamageType_Fire)	
+					{
+						pInstance.mbInMolotov = true;
+						@pDmg = pInstance.mMolotovDmg;
+					}
+					else if (pArea.mType == eDamageType_Gas)		
+					{
+						pInstance.mbInGas = true;
+						@pDmg = pInstance.mGasDmg;
+					}
+					
+					/////////////
+					// Check if its already taking this kind of dmg
+					if( pDmg is null ||
+						pDmg.mbActive)
+						continue;
+
+					////////////////////////
+					// Add damage instance!
+					pDmg.mbActive = true;
+					pDmg.mType = pArea.mType;
+					pDmg.m_idDamageBody = pArea.m_idBlockerBody;
+					pDmg.m_idDamageEntity = pArea.m_idDamageEntity;
+					pDmg.mbIsTrap = pArea.mbIsTrap;
+					
+					if (pArea.mType == eDamageType_Gas)
+					{
+						pDmg.mfDamageCount = cMath_RandRectf(gfDamage_MinInitialGasDamageCount, gfDamage_MaxInitialGasDamageCount);
+					}
+					else if (pArea.mType == eDamageType_Fire)
+					{
+						pDmg.mfDamageCount = cMath_RandRectf(gfDamage_MinInitialFireDamageCount, gfDamage_MaxInitialFireDamageCount);
+					}
+				}
+			}
+
+			///////////
+			// Apply gas damage every X sec
+			if (pInstance.mGasDmg.mbActive)
+			{
+				if(CheckAndGiveDamage(pInstance.mGasDmg, pEnt, pInstance.mbInGas, afDeltaTime))
+				{
+					//////////
+					// Keep dmg active is ent is in area
+					pInstance.mGasDmg.mbActive = pInstance.mbInGas;
+				}
+			}
+
+			///////////
+			// Apply fire damage every X sec
+			if (pInstance.mMolotovDmg.mbActive)
+			{
+				if(CheckAndGiveDamage(pInstance.mMolotovDmg, pEnt, pInstance.mbInMolotov, afDeltaTime))
+				{
+					//////////
+					// Keep dmg active is ent is in area
+					pInstance.mMolotovDmg.mbActive = pInstance.mbInMolotov;
+				}
+			}
+		}
+		
+		mlLastEntityIndexChecked += glMaxEntitiesToCheckPerFrame; 
+	}
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep) {}
+	void PostUpdate(float afTimeStep) {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnAction(int alAction, bool abPressed) {}
+	void OnAnalogInput(int alAnalogId, const cVector3f &in avAmount) {}	
+	void OnExitPressed() {}
+	
+	//------------------------------------------------------------
+	
+	void AppGotInputFocus() {}
+	void AppLostInputFocus() {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPERS
+	/////////////////////////////////////////
+		
+	//------------------------------------------------------------
+	
+	void SetNoDeathDamageActive(bool abX)
+	{
+		mbNoDeathDamage = abX;
+	}
+	
+	//------------------------------------------------------------
+	
+	tID AddDamageArea(eDamageType aType, tID a_idPS, const cVector3f &in avMin, const cVector3f &in avMax, bool abIsTrap)
+	{
+		cLuxMap@ pMap = cLux_GetCurrentMap();
+		if (pMap is null)
+			return tID_Invalid;
+		if (a_idPS == tID_Invalid)
+			return tID_Invalid;
+		
+		///////////////////
+		// Create blocker
+		++mlDamageAreaBlockerCount;
+		
+		pMap.CreateEntity("DamageAreaPathBlocker_" + mlDamageAreaBlockerCount, gsEnvironmentalDamage_BlockBodyEnt, 
+						  cMatrixf_Identity, cVector3f(1.f));
+		
+		iLuxEntity@ pEnt = pMap.GetLatestEntity();
+		if (pEnt is null)
+			return tID_Invalid;
+		
+		cVector3f vScale = (avMax - avMin);
+		cVector3f vPos = (avMin + avMax) / 2.f;
+			
+		cMatrixf mtxNew = pEnt.GetMatrix();
+		mtxNew = cMath_MatrixMul(cMath_MatrixScale(vScale), mtxNew);
+		mtxNew.SetTranslation(vPos);
+		
+		pEnt.SetMatrix(mtxNew);
+		
+		///////////////////
+		// Add area
+		cDamageArea area;
+		area.mType = aType;
+		area.m_idPS = a_idPS;
+		area.mvMin = avMin;
+		area.mvMax = avMax;
+		area.m_idBlockerBody = pEnt.GetMainBody().GetID();
+		area.mfLifeCount = 0.f;
+		area.m_idDamageEntity = pEnt.GetID();
+		area.mbIsTrap = abIsTrap;
+		mvDamageAreas.push_back(area);
+		
+		///////////////////
+		// Add to blackboard
+		Blackboard_AddDamageAreaBody(area.m_idBlockerBody);
+		
+		///////////////////
+		// Map callback
+		tString sCallback = "void OnAddDamageArea(const tString &in asDamageArea)";
+		if (pMap.ScriptMethodExists(sCallback) && pMap.ScriptPrepare(sCallback))
+		{
+			tString sArea = pEnt.GetName();
+			pMap.SetArgString(0, sArea);
+			pMap.ScriptExecute();
+		}
+		
+		return pEnt.GetID();
+	}
+	
+	//------------------------------------------------------------
+	
+	void DestroyDamageAreaData(cDamageArea@ pArea)
+	{
+		if (pArea is null) return;
+		
+		cLuxMap@ pMap = cLux_GetCurrentMap();
+		iPhysicsBody@ pBody = cLux_ID_Body(pArea.m_idBlockerBody);
+		iLuxEntity@ pEnt = pBody !is null ? cLux_GetBodyEntity(pBody) : null;
+		
+		if (pMap !is null && pBody !is null && pEnt !is null)
+		{
+			///////////////////
+			// Map callback
+			tString sCallback = "void OnRemoveDamageArea(const tString &in asDamageArea)";
+			if (pMap.ScriptMethodExists(sCallback) && pMap.ScriptPrepare(sCallback))
+			{
+				tString sArea = pEnt.GetName();
+				pMap.SetArgString(0, sArea);
+				pMap.ScriptExecute();
+			}
+			
+			///////////////////
+			// Destroy it
+			pMap.DestroyEntity(pEnt);
+			pArea.m_idBlockerBody = tID_Invalid;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	bool CheckAndGiveDamage(cEntityDamageInstance@ apDamage, iLuxEntity@ apEnt, bool abInArea, float afDeltaTime)
+	{
+		///////////////
+		// Give damage?
+		apDamage.mfDamageCount -= afDeltaTime;
+		if(apDamage.mfDamageCount > 0)
+			return false;
+		
+		//////////////
+		// Reset damage count
+		if (apDamage.mType == eDamageType_Fire)
+		{
+			apDamage.mfDamageCount = cMath_RandRectf(gfMolotov_DamageTimeIntervalMin, gfMolotov_DamageTimeIntervalMax);
+		}
+		else if (apDamage.mType == eDamageType_Gas)
+		{
+			apDamage.mfDamageCount = cMath_RandRectf(gfGas_DamageTimeIntervalMin, gfGas_DamageTimeIntervalMax);
+		}
+		
+		//////////////
+		// Give damage if inside!
+		if (abInArea)
+		{
+			GiveDamage(apDamage, apEnt);
+		}
+
+		return true;
+	}
+
+	//------------------------------------------------------------
+	
+	void GiveDamage(cEntityDamageInstance@ apDamage, iLuxEntity@ apEnt)
+	{
+		//////////////
+		// Setup vars
+		cLuxMap@ pMap = cLux_GetCurrentMap();
+		if (apDamage is null || apEnt is null || pMap is null) 
+			return;
+		
+		////////////////////////
+		// Define damage levels
+		int lDmgLevel = GameDifficulty_GetSettingValueByID_Int(eGameDifficultySetting_PlayerDamageFromGasFire);
+		float fFireDmg = 0.3f;
+		float fGasDmg = 0.1f;
+		switch(lDmgLevel)
+		{
+			case 0:
+				fFireDmg = 0.15f;
+				fGasDmg = 0.05f;
+				break;
+			case 2:
+				fFireDmg = 0.35f;
+				fGasDmg = 0.2f;
+				break;
+			case 3:
+				fFireDmg = 0.45f;
+				fGasDmg = 0.3f;
+				break;
+			default:
+				break;
+		}
+			
+		///////////////
+		// Setup damage
+		float fDamage = 0.f;
+		if (apDamage.mType == eDamageType_Fire)			fDamage = fFireDmg;
+		else if (apDamage.mType == eDamageType_Gas)		fDamage = fGasDmg;
+		
+		int lDamageId = pMap.GetNewAttackInstanceID();
+		
+		/////////////////////////
+		// Flag damage from traps
+		iLuxEntity@ pEnt = cLux_ID_Entity(apDamage.m_idDamageEntity);
+		if (pEnt !is null)
+		{
+			pEnt.SetVarBool("IsTrap", apDamage.mbIsTrap);
+		}
+
+		///////////////
+		// Damage player?
+		if (apEnt is pMap.GetPlayerEntity())
+		{
+			if (apDamage.mType == eDamageType_Gas)
+			{
+				if (Player_GetGasMaskEquipped()) return;
+				if (Player_GetIgnoreGasDamage()) return;
+			}
+			
+			const float fMinHealth = mbNoDeathDamage ? 0.1f : 0.f;
+			cLux_GetPlayer().GiveDamage(fDamage, 1, apDamage.mType, fMinHealth, apDamage.m_idDamageEntity, lDamageId);
+		}
+		
+		///////////////
+		// Damage entity
+		else
+		{
+			cLuxAgent@ pAgent = cLux_ToAgent(apEnt);
+			iPhysicsBody@ pBody = pAgent is null ? apEnt.GetMainBody() : pAgent.GetCharBody().GetCurrentBody();
+			cVector3f vPos = apEnt.GetPosition();
+			
+			apEnt.GiveDamage(pBody, vPos, vPos, apDamage.mType, fDamage, 1, 0.f, 0.f, apDamage.m_idDamageEntity, lDamageId);
+		}
+	}
+	
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INTERFACE
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	tID AddMolotovDamageArea(tID a_idPS, const cVector3f &in avMin, const cVector3f &in avMax, bool abIsTrap)
+	{
+		return AddDamageArea(eDamageType_Fire, a_idPS, avMin, avMax, abIsTrap);
+	}
+	
+	//------------------------------------------------------------
+	
+	tID AddGasDamageArea(tID a_idPS, const cVector3f &in avMin, const cVector3f &in avMax, bool abIsTrap)
+	{
+		return AddDamageArea(eDamageType_Gas, a_idPS, avMin, avMax, abIsTrap);
+	}
+	
+	//------------------------------------------------------------
+	
+	void RemoveDamageArea(tID a_idPS)
+	{
+		for (int i = 0; i < mvDamageAreas.size(); ++i)
+		{
+			cDamageArea@ pArea = mvDamageAreas[i];
+			if (pArea is null) continue;
+			
+			if (pArea.m_idPS == a_idPS)
+			{
+				DestroyDamageAreaData(pArea);
+				mvDamageAreas.removeAt(i);
+				--i;
+				return;
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	array<tID> GetDamageAreasOfType(eDamageType aType)
+	{
+		array<tID> vIds;
+		for (int i = 0; i < mvDamageAreas.size(); ++i)
+		{
+			cDamageArea@ pArea = mvDamageAreas[i];
+			
+			if (pArea is null) 			continue;
+			if (pArea.mType != aType)	continue;
+			
+			iPhysicsBody@ pBody = cLux_ID_Body(pArea.m_idBlockerBody);
+			iLuxEntity@ pEnt = pBody !is null ? cLux_GetBodyEntity(pBody) : null;
+			
+			vIds.push_back(pEnt.GetID());
+		}
+		
+		return vIds;
+	}
+	
+	//------------------------------------------------------------
+	
+	eDamageType GetDamageAreaType(tID a_idArea)
+	{
+		for (int i = 0; i < mvDamageAreas.size(); ++i)
+		{
+			cDamageArea@ pArea = mvDamageAreas[i];
+			if (pArea is null) continue;
+			
+			if (pArea.m_idBlockerBody == a_idArea) return pArea.mType;
+			
+			iPhysicsBody@ pBody = cLux_ID_Body(pArea.m_idBlockerBody);
+			iLuxEntity@ pEnt = pBody !is null ? cLux_GetBodyEntity(pBody) : null;
+			
+			if (pEnt !is null && pEnt.GetID() == a_idArea) return pArea.mType;
+		}
+		
+		return eDamageType_Default;
+	}
+	
+	//------------------------------------------------------------
+	
+	void AddEntityToCheck(tID a_idEntity)
+	{
+		for(int i = 0; i < mvEntityInstancesToCheck.size();  ++i)
+		{
+			if(mvEntityInstancesToCheck[i].m_idEnt == a_idEntity)
+				return;
+		}
+
+		cEntityToCheckInstance instance;
+		instance.m_idEnt = a_idEntity;
+		instance.mGasDmg.mbActive = false;
+		instance.mMolotovDmg.mbActive = false;
+		instance.mbInGas = false;
+		instance.mbInMolotov = false;
+		instance.mfAreaCheckCount = 0.0f;
+
+		mvEntityInstancesToCheck.push_back(instance);
+	}
+
+	void RemoveEntityToCheck(tID a_idEntity)
+	{
+		for(int i = 0; i < mvEntityInstancesToCheck.size();  ++i)
+		{
+			if(mvEntityInstancesToCheck[i].m_idEnt == a_idEntity)
+			{
+				mvEntityInstancesToCheck.removeAt(i);
+				return;
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// GUI
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+
+	void OnGui(float afTimeStep) {}	
+	void OnDraw(float afFrameTime) {}
+	void OnPostRender(float afFrameTime) {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	float DrawDebugOutput(cGuiSet@ apSet, iFontData@ apFont, float afStartY)
+	{
+		afStartY = cLux_DrawDebugText("--------- Environmental Damage ---------", afStartY);		
+		afStartY = cLux_DrawDebugText("Damage areas: " + mvDamageAreas.size(), afStartY);
+		afStartY = cLux_DrawDebugText("Damage instances: " + mvEntityDamageInstances.size(), afStartY);
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnRenderSolid(cRendererCallbackFunctions@ apFunctions)
+	{
+		if (cLux_ShowEntityInfoOn() == false)
+			return;
+		
+		for (int i = 0; i < mvDamageAreas.size(); ++i)
+		{
+			cDamageArea@ pArea = mvDamageAreas[i];
+			if (pArea is null) continue;
+			
+			cColor color = pArea.mType == eDamageType_Gas ? cColor_White : cColor_Red;
+			apFunctions.GetLowLevelGfx().DrawBoxMinMax(pArea.mvMin, pArea.mvMax, color);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// VARIABLES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	int mlDamageAreaBlockerCount = 0;	
+	array<cDamageArea> mvDamageAreas;
+	array<cEntityDamageInstance> mvEntityDamageInstances;
+
+	array<tID> mvEntitiesToCheck;
+	array<cEntityToCheckInstance> mvEntityInstancesToCheck;
+	int mlLastEntityIndexChecked;
+	
+	bool mbNoDeathDamage = false;
+	
+	//------------------------------------------------------------
+}

@@ -1,0 +1,655 @@
+#include "interfaces/UserModule_Interface.hps"
+#include "custom/modules/ModuleInterfaces_Custom.hps"
+#include "custom/base/AchievementHandler_Types.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_modules_custom.hps"
+#include "helpers/helper_imgui.hps"
+#include "helpers/helper_audio.hps"
+#include "helpers/helper_game.hps"
+
+//----------------------------------------------------------------------------------------
+
+const float gfNewObjectiveNotifyDisplayTime = 15.0f;
+const float gfNewObjectiveNotifyFadeInTime = 0.5f;
+const float gfNewObjectiveNotifyFadeOutTime = 1.0f;
+const cVector3f gvNotifyNewObjectiveIconPosition = cVector3f(0.87,0.825, 25);
+
+const int glSubMapCount = 4;
+
+const tString[] gvFuseBoxMaps = { "prison", "soldier_quarters", "arsenal", "maintenance" };
+
+//----------------------------------------------------------------------------------------
+
+class cMapObjective
+{
+	cMapObjective() {};
+	cMapObjective(const tString &in asID, const tString &in asMap, const tString &in asRoomEnt)
+	{
+		msObjectiveID = asID;
+		msMap = asMap;
+		msRoomEnt = asRoomEnt;
+	}
+	
+	tString msObjectiveID;
+	tString msMap;
+	tString msRoomEnt;
+};
+
+//----------------------------------------------------------------------------------------
+
+class cMapObjectiveDelayed
+{
+	int mlId = -1;
+	float mfCount = 0.f;
+};
+
+//----------------------------------------------------------------------------------------
+
+const cMapObjective[] gvObjectives = { cMapObjective("Obj_GetDynamite", 				"arsenal", 			"arsenal_objective_explosives"),
+									   cMapObjective("Obj_GetHandle", 					"arsenal", 			"arsenal_objective_tunnels"),
+									   cMapObjective("Obj_GetWheel", 					"officer_hub", 		"officer_hub_objective_mission_storage"),
+									   cMapObjective("Obj_GetWheel_NoMarker", 			"", 				""),
+									   cMapObjective("Obj_DelislesRoom", 				"officer_hub", 		"officer_hub_objective_delisle"),
+									   cMapObjective("Obj_EmergencyLockdown", 			"officer_hub", 		"officer_hub_objective_emergency_lockdown"),
+									   cMapObjective("Obj_GetRadioCode_Communications", "soldier_quarters", "soldier_quarters_objective_communications"),
+									   cMapObjective("Obj_GetRadioCode_Security", 		"soldier_quarters", "soldier_quarters_objective_security"),
+									   cMapObjective("Obj_GetRadioCode_Barracks", 		"soldier_quarters", "soldier_quarters_objective_barracks"),
+									   cMapObjective("Obj_GetRadioCode_PowerSwitch",	"soldier_quarters", "soldier_quarters_objective_utility_room"),
+									   cMapObjective("Obj_GetRadioCode_NoMarker",		"", 				""),
+									   cMapObjective("Obj_GetWrench_Foreman", 			"nest", 			"nest_objective_foremans_office"),
+									   cMapObjective("Obj_GetWrench_Pillbox_A", 		"nest", 			"nest_objective_pillbox"),
+									   cMapObjective("Obj_GetWrench_Pillbox_B", 		"nest", 			"nest_objective_pillbox"),
+									   cMapObjective("Obj_GetWrench_Chapel", 			"nest", 			"nest_objective_chapel"),
+									   cMapObjective("Obj_GetWrench_Locker",			"officer_hub", 		"officer_hub_objective_mission_storage"),
+									   cMapObjective("Obj_GetWrench_NoMarker", 			"", 				""),
+									   cMapObjective("Obj_GetCutters_A", 				"prison", 			"prison_objective_cells"),
+									   cMapObjective("Obj_GetCutters_B", 				"prison", 			"prison_objective_wardens_office"),
+									   cMapObjective("Obj_BlowUpExit", 					"officer_hub", 		"officer_hub_objective_exit") };
+
+//----------------------------------------------------------------------------------------
+
+class cScrInGameMapHandler : iScrUserModule, iScrUserModule_Interface, iScrInGameMapHandler_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+	}
+		
+	//------------------------------------------------------------
+	
+	void LoadUserConfig() {}
+	void SaveUserConfig() {}
+	
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// MAP LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap@ apMap)
+	{
+		
+	}
+
+	//------------------------------------------------------------
+
+	void OnMapLeave(cLuxMap@ apMap)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void PreloadData(cLuxMap@ apMap) {}
+	void CreateWorldEntities(cLuxMap@ apMap) {}
+	void DestroyWorldEntities(cLuxMap@ apMap) {}
+	void OnEnterContainer(const tString&in asOldContainer) {}
+	void OnLeaveContainer(const tString&in asNewContainer) {}
+	
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+		mvMaps.resize(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////	
+	
+	//------------------------------------------------------------
+	
+	void VariableUpdate(float afDeltaTime) {}	
+	void Update(float afTimeStep) {}
+	void PostUpdate(float afTimeStep) {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnAction(int alAction, bool abPressed) {}
+	void OnAnalogInput(int alAnalogId, const cVector3f &in avAmount) {}	
+	void OnExitPressed() {}
+	
+	//------------------------------------------------------------
+	
+	void AppGotInputFocus() {}
+	void AppLostInputFocus() {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPERS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetObjectiveActive(int alId, bool abX)
+	{
+		const cMapObjective@ pObjective = gvObjectives[alId];
+		if (pObjective is null) return;
+		
+		bool bMapFound = GetMapFound(pObjective.msMap);
+		ChangeObjectiveMarkerRefCount(pObjective.msMap + "_objective", pObjective.msObjectiveID, abX, bMapFound);
+		ChangeObjectiveMarkerRefCount(pObjective.msRoomEnt, pObjective.msObjectiveID, abX, !bMapFound);
+	}
+
+	//------------------------------------------------------------
+	
+	void ChangeObjectiveMarkerRefCount(const tString &in asEntName, const tString &in asObjectiveID, bool abIncrease, bool abForceInactive)
+	{
+		cLuxMap@ pMap = cLux_GetCurrentMap();		
+		iLuxEntity@ pMarkerEnt = pMap !is null ? pMap.GetEntityByName(asEntName, eLuxEntityType_Prop) : null;
+		
+		if (pMap is null) return;
+		if (pMarkerEnt is null) return;
+		
+		bool bRefExists = pMarkerEnt.GetVarBool("Ref_"+asObjectiveID);
+		int lRefCount = pMarkerEnt.GetVarInt("RefCount");
+		
+		if (bRefExists && !abIncrease) lRefCount--;
+		if (!bRefExists && abIncrease) lRefCount++;
+		
+		pMarkerEnt.SetVarInt("RefCount", cMath_Max(lRefCount, 0));
+		pMarkerEnt.SetVarBool("Ref_"+asObjectiveID, abIncrease);
+		
+		pMarkerEnt.SetActive(!abForceInactive && lRefCount > 0);
+	}
+
+	//------------------------------------------------------------
+
+	void ShowUpdatedMapIcon()
+	{
+		mfNewObjectiveNotifyPreDisplayTimer = 0.3f;
+		mfNewObjectiveNotifyDisplayTimer = gfNewObjectiveNotifyDisplayTime;
+		
+		Sound_PlayGui("player/tools/sketchbook/add_objective", 1);
+	}
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INTERFACE
+	/////////////////////////////////////////
+			
+	//-----------------------------------------------------------
+	
+	bool GetMapFound(const tString&in asMapName)
+	{
+		if (asMapName == "officer_hub")
+			return true;
+		
+		return mvMaps.find(asMapName) >= 0;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetMapFound(const tString&in asMapName)
+	{
+		if (GetMapFound(asMapName)) return;
+		
+		mvMaps.push_back(asMapName);
+		
+		if (mvMaps.length() >= glSubMapCount)
+		{
+			Achievement_Unlock(eAchievement_Cartographer);
+		}
+		
+		UpdateGlobalMapState();
+		
+		Hint_StopHint(0.f);
+		Hint_ShowHint_Hold("Hints", "HintMapAquired", true, 1.5f, false, 5.f, true, true);
+		
+		ShowUpdatedMapIcon();
+	}
+	
+	//------------------------------------------------------------
+
+	void AddObjective(const tString &in asObjectiveID)
+	{
+		if (HasObjective(asObjectiveID))
+			return;
+
+		int lId = GetObjectiveId(asObjectiveID);
+		if (lId != -1)
+		{
+			mvObjectiveIds.push_back(lId);
+			
+			UpdateGlobalMapState();
+			ShowUpdatedMapIcon();
+
+			mBaseObj.Timer_Add("Timer_ObjectiveHint", 1.f, "OnTimer_ThrowObjectiveHint");
+			
+			cLux_AddDebugMessage("[InGameMapHandler] Added objective: " + asObjectiveID);
+		}		
+	}
+	
+	//------------------------------------------------------------
+
+	void AddObjective(const tString &in asObjectiveID, float afDelay)
+	{
+		if (HasObjective(asObjectiveID))
+			return;
+		
+		int lId = GetObjectiveId(asObjectiveID);
+		if (lId != -1)
+		{
+			cMapObjectiveDelayed objective;
+			objective.mlId = lId;
+			objective.mfCount = afDelay;
+			
+			mvObjectivesToAdd.push_back(objective);
+		}
+	}
+
+	//------------------------------------------------------------
+	
+	void OnTimer_ThrowObjectiveHint(uint64 alId)
+	{
+		Hint_StopHint();
+		Hint_ShowHint_Hold("Hints", "HintObjective", false, 1.5f, true, -1.f, true);
+	}
+	
+	//------------------------------------------------------------
+
+	void RemoveObjective(const tString&in asObjectiveID)
+	{
+		for(uint i = 0; i < mvObjectiveIds.size(); ++i)
+		{
+			int lId = mvObjectiveIds[i];
+			if (gvObjectives[lId].msObjectiveID == asObjectiveID)
+			{
+				SetObjectiveActive(lId, false);
+				
+				mvObjectiveIdsToDisable.push_back(lId);
+				
+				bool bRemovedFromHub = gvObjectives[lId].msMap == "";
+				bool bRemovedFromSubMap = gvObjectives[lId].msMap == "officer_hub" || gvObjectives[lId].msMap == "";
+				mvRemovedFromHub.push_back(bRemovedFromHub);
+				mvRemovedFromSubMap.push_back(bRemovedFromSubMap);
+				
+				mvObjectiveIds.removeAt(i);
+				
+				UpdateGlobalMapState();
+				
+				cLux_AddDebugMessage("[InGameMapHandler] Removed objective: " + asObjectiveID);	
+				return;
+			}
+		}
+
+		cLux_AddDebugMessage("[InGameMapHandler] Could not remove objective: " + asObjectiveID);
+	}
+
+	//------------------------------------------------------------
+
+	bool HasObjective(const tString&in asObjectiveID)
+	{
+		return IsObjectiveActive(asObjectiveID) || IsObjectiveCompleted(asObjectiveID);
+	}
+
+	//------------------------------------------------------------
+
+	bool IsObjectiveActive(const tString&in asObjectiveID)
+	{
+		for(uint i = 0; i < mvObjectiveIds.size(); ++i)
+		{
+			if (gvObjectives[mvObjectiveIds[i]].msObjectiveID == asObjectiveID)
+			{	
+				return true;
+			}
+		}
+		
+		return false;
+	}
+
+	//------------------------------------------------------------
+
+	bool IsObjectiveCompleted(const tString&in asObjectiveID)
+	{
+		for (uint i = 0; i < mvObjectivesCompleted.size(); ++i)
+		{
+			if (mvObjectivesCompleted[i] == asObjectiveID)
+			{
+				return true;
+			}
+		}
+		
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetCanAddObjective(const tString &in asObjectiveID)
+	{
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetObjectiveCompleted(const tString&in asObjectiveID)
+	{
+		if (IsObjectiveActive(asObjectiveID))
+		{
+			RemoveObjective(asObjectiveID);
+		}
+
+		if (IsObjectiveCompleted(asObjectiveID) == false)
+		{
+			mvObjectivesCompleted.push_back(asObjectiveID);
+			cLux_AddDebugMessage("[InGameMapHandler] Objective completed: " + asObjectiveID);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetObjectiveNotCompleted(const tString&in asObjectiveID)
+	{
+		int lId = mvObjectivesCompleted.find(asObjectiveID);
+		if (lId != -1)
+			mvObjectivesCompleted.removeAt(lId);
+	}
+
+	//------------------------------------------------------------
+	
+	void UpdateGlobalMapState()
+	{
+		cLuxMap@ pMap = cLux_GetCurrentMap();
+		if (pMap is null) return;
+		
+		////////////////////////
+		// Activate submaps
+		for (int i = 0; i < mvMaps.size(); i++)
+		{
+			const tString sMapEntName = mvMaps[i];
+			iLuxEntity@ pInGameMapEnt = pMap.GetEntityByName(sMapEntName, eLuxEntityType_Prop);
+			if (pInGameMapEnt is null) continue;
+			
+			pInGameMapEnt.SetActive(true);
+		}
+		
+		/////////////////////////
+		// Activate objectives
+		for (int i = 0; i < mvObjectiveIds.size(); i++)
+		{
+			SetObjectiveActive(mvObjectiveIds[i], true);
+		}
+		
+		/////////////////////////
+		// Complete objectives
+		for (int i = 0; i < mvObjectiveIdsToDisable.size(); i++)
+		{
+			bool bIsHub = pMap.GetName() == "officer_hub";
+			UpdateObjectiveDeactivation(i, bIsHub);
+			
+			if (mvRemovedFromHub[i] == true && mvRemovedFromSubMap[i] == true)
+			{
+				mvObjectiveIdsToDisable.removeAt(i);
+				mvRemovedFromHub.removeAt(i);
+				mvRemovedFromSubMap.removeAt(i);
+				--i;
+			}
+		}
+		
+		/////////////////////////
+		// Update map power icons
+		if (GameDifficulty_GetSettingValueByID_Bool(eGameDifficultySetting_FusesAndFuseBoxes))
+		{
+			array<tString>@ pMapsWithActivatedFuseBox = Generator_GetMapsWithActivatedFuseBox();
+			
+			for (int i = 0; i < gvFuseBoxMaps.length(); ++i)
+			{
+				tString sFuseBoxMap = gvFuseBoxMaps[i];
+				bool bMapPowered = pMapsWithActivatedFuseBox !is null &&
+								   pMapsWithActivatedFuseBox.find(sFuseBoxMap) != -1;
+								   		
+				tString sIconOn = sFuseBoxMap + "_power_icon";
+				tString sIconOff = sFuseBoxMap + "_power_off_icon";
+			
+				Entity_SetActive(sIconOn, bMapPowered);
+				Entity_SetActive(sIconOff, bMapPowered == false);
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateObjectiveDeactivation(int alIx, bool abHub)
+	{
+		array<bool>@ vRemovedFrom = abHub ? mvRemovedFromHub : mvRemovedFromSubMap;
+		if (vRemovedFrom[alIx]) return;
+			
+		const cMapObjective@ pObjective = gvObjectives[mvObjectiveIdsToDisable[alIx]];
+		if (pObjective is null) return;
+		
+		iLuxEntity@ pObjectiveEnt = cLux_GetCurrentMap().GetEntityByName(pObjective.msRoomEnt, eLuxEntityType_Prop);
+		if (pObjectiveEnt is null) return;
+		
+		vRemovedFrom[alIx] = true;
+		SetObjectiveActive(mvObjectiveIdsToDisable[alIx], false);
+		return;
+	}
+	
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// HELPERS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	int GetObjectiveId(const tString &in asID)
+	{
+		for (int i = 0; i < gvObjectives.length(); ++i)
+		{
+			if (gvObjectives[i].msObjectiveID == asID)
+				return i;
+		}
+		
+		return -1;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GUI
+	/////////////////////////////////////////	
+
+	//------------------------------------------------------------
+
+	void DoNotifyNewObjective(float afTimeStep)
+	{
+		////////////////////
+		// Count
+		if (mfNewObjectiveNotifyPreDisplayTimer > 0.f)
+		{
+			mfNewObjectiveNotifyPreDisplayTimer -= afTimeStep;
+			return;
+		}
+		
+		////////////////////
+		// Draw icon
+		const cVector3f vGroupPos(cLux_GetHudVirtualOffset() * -1.f);	
+		const cVector2f vSize(ImGui_GetSize());
+		ImGui_GroupBegin(vGroupPos, vSize);
+			
+			if (mfNewObjectiveNotifyDisplayTimer > 0.f)
+			{
+				if (mfNewObjectiveNotifyDisplayTimer >= 1.f)
+				{
+					mfNewObjectiveNotifyAlpha += (1.f / gfNewObjectiveNotifyFadeInTime) * afTimeStep;
+					if (mfNewObjectiveNotifyAlpha > 1.f)
+						mfNewObjectiveNotifyAlpha = 1.f;
+				}
+				else
+				{
+					mfNewObjectiveNotifyAlpha -= (1.f / gfNewObjectiveNotifyFadeOutTime) * afTimeStep;
+					if (mfNewObjectiveNotifyAlpha < 0.f)
+						mfNewObjectiveNotifyAlpha = 0.f;
+				}
+				
+				mfNewObjectiveNotifyDisplayTimer -= afTimeStep;
+				
+				float fBlink = cMath_Easing(eEasing_QuadIn, cMath_Abs(cMath_Cos(mfNewObjectiveNotifyDisplayTimer * 2.5f)), 0.5f, 1.0f);
+				
+				cImGuiGfx gfxNotification("map_update", eImGuiGfx_Texture);
+				
+				cVector3f vIconPos = gvNotifyNewObjectiveIconPosition;
+
+				iScrSketchbookUIHandler_Interface @pSketchbookHandler = cast<iScrSketchbookUIHandler_Interface>( cLux_GetUserModuleFromID(eModuleType_Custom_SketchbookUIHandler) );
+				iScrItemHandler_Interface@ pItemHandler = cast<iScrItemHandler_Interface>( cLux_GetUserModuleFromID(eModuleType_Custom_ItemHandler) );
+				if (pSketchbookHandler !is null && pItemHandler !is null)
+				{
+					if(pSketchbookHandler.GetNotifyNewNote() || pItemHandler.GetIsHoverGuiAnimating())
+					{
+						vIconPos.y -= 0.1f;
+					}
+				}
+				
+				//gfxNotification.mColor = cColor(0.f, mfNewObjectiveNotifyAlpha * 0.75);
+				//ImGui_DoImageCorrectAspect(gfxNotification, ImGui_NrmPosGroup(vIconPos + cVector3f(-0.001, -0.001, -0.1)), ImGui_NrmSizeGroupKeepRatio(0.09));
+				gfxNotification.mColor = cColor(1.f, mfNewObjectiveNotifyAlpha * fBlink);
+				ImGui_DoImageCorrectAspect(gfxNotification, ImGui_NrmPosGroup(vIconPos), ImGui_NrmSizeGroupKeepRatio(0.083));
+			}
+		
+		ImGui_GroupEnd();
+	}
+	
+	//------------------------------------------------------------
+
+	void OnGui(float afTimeStep)
+	{
+		////////////////////
+		// Add delayed objectives		
+		for (int i = 0; i < mvObjectivesToAdd.size(); ++i)
+		{
+			cMapObjectiveDelayed@ pObjective = mvObjectivesToAdd[i];
+			if (pObjective is null) continue;
+			
+			pObjective.mfCount -= afTimeStep;
+			if (pObjective.mfCount <= 0.f)
+			{
+				AddObjective(gvObjectives[pObjective.mlId].msObjectiveID);
+				
+				mvObjectivesToAdd.removeAt(i);
+				--i;
+				break;
+			}
+		}
+		
+		////////////////////
+		// Notify new objective
+		DoNotifyNewObjective(afTimeStep);
+	}
+
+	//------------------------------------------------------------
+
+	void OnDraw(float afFrameTime) {}
+	void OnPostRender(float afFrameTime) {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	float DrawDebugOutput(cGuiSet@ apSet, iFontData@ apFont, float afStartY)
+	{
+		//return afStartY;
+	
+		afStartY = cLux_DrawDebugText("--------- In Game Maps ---------", afStartY);
+		
+		tString sMaps = "";
+		for (int i = 0; i<mvMaps.size(); i++)
+		{
+			sMaps += mvMaps[i] + ", ";
+		}
+		
+		afStartY = cLux_DrawDebugText("Maps: "+ sMaps, afStartY);
+		
+		afStartY = cLux_DrawDebugText("Objectives: ", afStartY);		
+		for (int i = 0; i < mvObjectiveIds.size(); i++)
+		{
+			const cMapObjective@ pObjective = gvObjectives[mvObjectiveIds[i]];
+			if (pObjective is null) continue;
+			
+			afStartY = cLux_DrawDebugText("ID: " + pObjective.msObjectiveID + ", Map: " + pObjective.msMap + ", RoomEnt: " + pObjective.msRoomEnt,afStartY);
+		}
+
+		afStartY = cLux_DrawDebugText("Objectives to remove: ", afStartY);
+		for (int i = 0; i < mvObjectiveIdsToDisable.size(); i++)
+		{
+			const cMapObjective@ pObjective = gvObjectives[mvObjectiveIdsToDisable[i]];
+			if (pObjective is null) continue;
+			
+			afStartY = cLux_DrawDebugText("ID: " + pObjective.msObjectiveID + ", Map: " + pObjective.msMap + ", RoomEnt: " + pObjective.msRoomEnt + ", Removed Hub: " + mvRemovedFromHub[i] + ", Removed SubMap: " + mvRemovedFromSubMap[i], afStartY);
+		}
+
+		afStartY = cLux_DrawDebugText("Completed objectives: ", afStartY);
+		for (int i = 0; i < mvObjectivesCompleted.size(); i++)
+		{
+			afStartY = cLux_DrawDebugText("ID: " + mvObjectivesCompleted[i], afStartY);
+		}
+
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// VARIABLES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	array<tString> mvMaps;
+	array<int> mvObjectiveIds;
+	array<int> mvObjectiveIdsToDisable;
+	array<bool> mvRemovedFromHub;
+	array<bool> mvRemovedFromSubMap;
+	array<cMapObjectiveDelayed> mvObjectivesToAdd;
+	array<tString> mvObjectivesCompleted;
+	
+	float mfAddObjectiveDelayCount = 0.f;
+	float mfNewObjectiveNotifyPreDisplayTimer = 0;
+	float mfNewObjectiveNotifyDisplayTimer = 0;
+	float mfNewObjectiveNotifyAlpha = 0;
+	
+	//------------------------------------------------------------
+}

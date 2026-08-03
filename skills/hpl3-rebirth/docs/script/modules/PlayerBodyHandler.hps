@@ -1,0 +1,3198 @@
+#include "interfaces/UserModule_Interface.hps"
+#include "modules/ModuleInterfaces.hps"
+#include "InputHandler_Types.hps"
+#include "helper_player.hps"
+
+#include "helpers/helper_components.hps"
+
+#include "custom/helpers/helper_player_custom.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+
+#include "PlayerBodyAnimationStates.hps"
+
+float gfMovementLeanDisableDelay = 0.625f;	//How long you can move while leaning before the lean is disabled.
+cVector3f gfLeanCameraPosOffset = -0.05; 	//Offset along camera z axis for calculations if the camera will be colliding with anything while leaning.
+
+const float gfCutsceneDefaultMaxYaw = 1.0f;
+const float gfCutsceneDefaultMaxPitch = 1.0f;
+
+float gfStateChangeDelayTime = 0.01f;
+
+//------------------------------------------------------------
+
+bool gbUseHandCollision = true;
+bool gbBoxHandShape = true;
+bool gbDrawHandShape = false;
+float gfHandShapeSphereRadius = 0.15f;
+cVector3f gvHandShapeBoxSize = cVector3f(0.2, 0.2, 0.2);
+
+float gfCollisionPullAwaySpeed = 3.f;
+float gfCollisionPullUpSpeed = 3.f;
+
+int glCollisionMaxCollisionChecks = 3;
+float gfCollisionAddedAngle = cMath_ToRad(15.f);
+float gfCollisionMinLeftHandOffset = cMath_ToRad(40.f);
+float gfCollisionMinRightHandOffset = cMath_ToRad(5.f);
+
+//------------------------------------------------------------
+
+int glBodyRenderLayer = 0;
+
+//------------------------------------------------------------
+
+class cPlayerBodyAnimationLayer
+{
+	ePlayerBodyAnimationLayer mID;
+	ePlayerBodyAnimationLayer mParent = ePlayerBodyAnimationLayer_LastEnum;
+	array<ePlayerBodyAnimationLayer> mvChildLayers;
+	
+	array<tString> mvCurrentAnimations;
+	tString msCallback;
+	bool mbStopAnimationWhenOver;
+	bool mbReturnToIdleAfterAnim;
+	bool mbIsIdle;
+}
+
+//------------------------------------------------------------
+
+class cScrPlayerBodyHandler : iScrUserModule, iScrUserModule_Interface, iScrPlayerBodyHandler_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	//{//////////////////////////////////////
+	
+	//------------------------------------------------------------
+
+	void Init()
+	{
+		mvAnimationStates.resize(0);
+		
+		mCurrentAnimationState = ePlayerBodyAnimationState_Idle;
+		PopulateStateList();
+		
+		mvAnimations.resize(0);
+		mvAnimations.resize(ePlayerBodyAnimation_LastEnum);
+	}
+
+	//------------------------------------------------------------
+
+	void LoadUserConfig(){}
+	void SaveUserConfig(){}
+	
+	//------------------------------------------------------------
+	
+	//} END OF INIT
+	
+	/////////////////////////////////////////
+	//MAP LOADING
+	//{//////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+		mlBodyNum = 0;
+		mvCustomAnimCamAdd = cVector3f_Zero;
+		mvCustomAnimCamRot = cVector3f_Zero;
+		
+		Cutscene_ResetPitchYawLimits();
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnMapLeave(cLuxMap @apMap)
+	{
+		mbActive = false;
+	}
+	
+	//------------------------------------------------------------
+	
+	void PreloadData(cLuxMap @apMap)
+	{
+		PreloadBodyModel(msBodyModel);
+	}
+	
+	//------------------------------------------------------------
+	
+	void CreateWorldEntities(cLuxMap @apMap)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void DestroyWorldEntities(cLuxMap @apMap)
+	{
+		DestroyBodyModel(apMap);
+		
+		//Dont delete it, it might have been created on another submap, iPhysicsWorld takes care of the destruction automatically
+		@mpLean_HeadShape = null;
+		@mpHandShape = null;
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnEnterContainer(const tString&in asOldContainer){}
+	void OnLeaveContainer(const tString&in asNewContainer){}
+	
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+		mbActive = false;
+		
+		m_idBody = tID_Invalid;
+		
+		mvAnimationLayers.resize(0);
+		mvAnimationStates.resize(0);
+		
+		for (int i = 0; i < ePlayerBodyAnimationLayer_LastEnum; i++)
+		{
+			cPlayerBodyAnimationLayer layer;
+			layer.mID = ePlayerBodyAnimationLayer(i);
+			mvAnimationLayers.push_back(layer);
+		}
+		
+		AddLayerChild(ePlayerBodyAnimationLayer_FullBody, ePlayerBodyAnimationLayer_Body);
+		AddLayerChild(ePlayerBodyAnimationLayer_FullBody, ePlayerBodyAnimationLayer_Arms);
+		AddLayerChild(ePlayerBodyAnimationLayer_Arms, ePlayerBodyAnimationLayer_LeftArm);
+		AddLayerChild(ePlayerBodyAnimationLayer_Arms, ePlayerBodyAnimationLayer_RightArm);
+		
+		mCurrentAnimationState = ePlayerBodyAnimationState_Idle;
+		PopulateStateList();
+
+		//Lean
+		@mpLean_HeadShape = null;
+		mfLeanAmount = 0;
+		mfTargetLeanAmount = 0;
+		mfLeanDisableDelay = gfMovementLeanDisableDelay;
+		mfLeanSpeedMul = 0;
+		mbLeanDisabled = false;
+		mfLeanPitchLimit = -1;
+		
+		// hand pushback
+		@mpHandShape = null;
+		mfLeftArmCollidingPitchTarget = 0.f;
+		mfRightArmCollidingPitchTarget = 0.f;
+		mfLeftArmCollisionPitchOffset = 0.f;
+		mfRightArmCollisionPitchOffset = 0.f;
+		
+		mbAttached = false;
+		ResetYaw();
+	}
+	
+	void PopulateStateList()
+	{
+		mvAnimationStates.resize(ePlayerBodyAnimationState_LastEnum);
+		@mvAnimationStates[ePlayerBodyAnimationState_Idle] = mAnimationState_Idle;
+		@mvAnimationStates[ePlayerBodyAnimationState_Walk] = mAnimationState_Walk;
+		@mvAnimationStates[ePlayerBodyAnimationState_Run] = mAnimationState_Run;
+		@mvAnimationStates[ePlayerBodyAnimationState_CrouchTransition] = mAnimationState_CrouchTransition;
+		@mvAnimationStates[ePlayerBodyAnimationState_InAir] = mAnimationState_InAir;
+		@mvAnimationStates[ePlayerBodyAnimationState_Ladder] = mAnimationState_Ladder;
+		@mvAnimationStates[ePlayerBodyAnimationState_Cutscene] = mAnimationState_Cutscene;
+		@mvAnimationStates[ePlayerBodyAnimationState_Custom] = mAnimationState_Custom;
+		@mvAnimationStates[ePlayerBodyAnimationState_Interactive] = mAnimationState_Interactive;
+		@mvAnimationStates[ePlayerBodyAnimationState_AnimatedMove] = mAnimationState_AnimatedMove;
+		@mvAnimationStates[ePlayerBodyAnimationState_CustomAnimation] = mAnimationState_CustomAnimation;
+	}
+	
+	void AddLayerChild(ePlayerBodyAnimationLayer aParent, ePlayerBodyAnimationLayer aChild)
+	{
+		mvAnimationLayers[aParent].mvChildLayers.push_back(aChild);
+		mvAnimationLayers[aChild].mParent = aParent;
+	}
+	
+	//------------------------------------------------------------
+	//} END OF MAP LOADING
+		
+	/////////////////////////////////////////
+	// PER-FRAME
+	//{//////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep)
+	{	
+		if(mbActive==false) return;
+		
+		if(mbResetYaw)
+		{
+			ResetYaw();
+			mbResetYaw = false;
+		}
+		
+		////////////////////////////////
+		// Update state weights
+		mvAnimationStates[mCurrentAnimationState].UpdateWeight(afTimeStep);
+		
+		if(mPrevAnimationState != -1)
+		{
+			mvAnimationStates[mPrevAnimationState].UpdateWeight(afTimeStep);
+		}
+		
+		////////////////////////////////
+		// Update movement animations
+		if (uint(mCurrentAnimationState) < mvAnimationStates.length())
+		{
+			mvAnimationStates[mCurrentAnimationState].OnUpdate(this, afTimeStep);
+		}
+		
+		////////////////////
+		// Update orientation, smooth slightly to avoid jitter on uneven ground
+		if (mbAttached==false)
+		{
+			UpdateOrientation(afTimeStep, mbPosSmoothingActive);
+		}
+		
+		
+		///////////////////
+		// Update cutscene fade
+		if(	mbCameraAnimation_Active )
+		{
+			iLuxEntity @pEntity = cLux_ID_Entity(m_idBody);
+			if(pEntity is null) return;
+			
+			cCamera @pCam = cLux_GetPlayer().GetCamera();
+			cNode3D@ pAttachNode = pEntity.GetMeshEntity().GetSocket("CameraSocket");
+
+			
+			cMeshEntity @pMeshEnt = pEntity.GetMeshEntity();
+			
+			////////////////////////////
+			//Get the T value
+			float fStep = mfCameraAnimation_FadeInTime<0.0001f ? 100000.0f : afTimeStep/mfCameraAnimation_FadeInTime;
+			mfCameraAnimation_FadeInT = cMath_IncreaseTo(mfCameraAnimation_FadeInT, fStep, 1.0f);
+			
+			// Fade in speed on normal cutscene animations
+			if (mCurrentAnimationState == ePlayerBodyAnimationState_Cutscene && mfCameraAnimation_Speed != -1.f)
+				GetAnimationState(msCameraAnimation_Name).SetSpeed(mfCameraAnimation_Speed * mfCameraAnimation_FadeInT);
+			
+			///////////////////////////////////////////////////
+			// Play animation at specific position and angle
+			if (mbCameraAnimation_GlobalSpace)
+			{
+				// Move player body
+				cVector3f vNewPos = mvCameraAnimation_StartPosition * (1.0f-mfCameraAnimation_FadeInT) + mvCameraAnimation_Position * mfCameraAnimation_FadeInT;
+				cLux_GetPlayer().GetCharacterBody().SetFeetPosition(vNewPos, false);
+				
+				// Rotate player root joint
+				iLuxEntity@ pEnt = cLux_ID_Entity(m_idBody);
+				cBoneState@ pBone = pEnt.GetMeshEntity().GetBoneStateFromName("j_Root");
+				pBone.SetUsePreTransform(true);
+				
+				float fYaw = cMath_InterpolateLinear(mfCameraAnimation_StartAngle, mfCameraAnimation_StartAngle + cMath_GetAngleDistanceRad(mfCameraAnimation_StartAngle, mfCameraAnimation_Angle), mfCameraAnimation_FadeInT);
+				pBone.SetPreTransform(cMath_MatrixRotateXYZ(cVector3f(0, -cMath_GetAngleDistanceRad(fYaw, mfCameraAnimation_Angle), 0)));
+				mfYaw = mfCameraAnimation_Angle;
+			}
+		}
+		
+		UpdateCoverage(afTimeStep);
+		UpdateBones(afTimeStep);
+	}
+	
+	//------------------------------------------------------------
+	
+	void PostUpdate(float afTimeStep)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void VariableUpdate(float afTimeStep)
+	{
+		if(mbActive==false) return;
+		
+		iLuxEntity @pEntity = cLux_ID_Entity(m_idBody);
+
+		if(pEntity is null) return;
+		
+		if (mbStateChanged==false)
+			mfPendingStateDelay = gfStateChangeDelayTime;
+		mbStateChanged = false;
+		if (mfPendingStateDelay>0)
+			mfPendingStateDelay -= afTimeStep;
+					
+		/////////////////////////
+		// Check if animations are over
+		for (int i = 0; i < ePlayerBodyAnimationLayer_LastEnum; i++)
+		{
+			CheckAnimationOver(ePlayerBodyAnimationLayer(i));
+		}
+		
+		////////////////////////////////
+		// Update movement animations
+		if (uint(mCurrentAnimationState) < mvAnimationStates.length())
+		{
+			mvAnimationStates[mCurrentAnimationState].OnVariableUpdate(this, afTimeStep);
+		}
+
+		//cLux_AddDebugMessage("CamRel: "+(cLux_GetPlayer().GetCamera().GetPosition()-cLux_GetPlayer().GetCharacterBody().GetPosition()));
+		UpdateCutsceneControls(afTimeStep);
+		UpdateLeaning(afTimeStep);
+		
+		UpdateHands();
+		VariableUpdateBones(afTimeStep);
+		
+		/////////////////////////
+		// Update attachments
+		if (mbAttached)
+		{
+			if(pEntity !is null)
+				pEntity.UpdateEntityAttachment();
+		}
+	
+		///////////////////
+		// Update camera
+		cCamera @pCam = cLux_GetPlayer().GetCamera();
+		cNode3D@ pAttachNode = pEntity.GetMeshEntity().GetSocket("CameraSocket");
+		
+		if(	mbCameraAnimation_Active )
+		{
+			cMeshEntity @pMeshEnt = pEntity.GetMeshEntity();
+			
+			/////////////////////////
+			// Update mesh (if needed)
+			// This in needed for the nodes to keep proper positions.
+			if(pMeshEnt.IsVisible()==false)
+			{
+				pMeshEnt.SetVisible(true);
+				pMeshEnt.ResetGraphicsUpdated();
+				pMeshEnt.UpdateAnimation(0.0f);
+				pMeshEnt.UpdateLogic(0.0f);
+				pMeshEnt.PostUpdateLogic(0.0f);
+				pMeshEnt.SetVisible(false);
+			}
+			
+			////////////////////////////
+			//Set rotation of camera
+			cMatrixf mtxSocketRot = pAttachNode.GetWorldMatrix().GetRotation();	
+			mtxSocketRot = cMath_MatrixMul(mtxSocketRot, cMath_MatrixRotateY(cMath_Pi));
+			cMatrixf mtxRot = mtxSocketRot;
+			
+			if (mbCameraAnimation_FadeCameraRot)
+			{
+				iCharacterBody@ pCharBody = cLux_GetPlayer().GetCharacterBody();
+				mvCameraAnimation_FadeInStartRotation.y = pCharBody.GetYaw();
+				cVector3f vPlayerRot = mvCameraAnimation_FadeInStartRotation;
+				mtxRot = cMath_MatrixSlerp( mfCameraAnimation_FadeInT, cMath_MatrixRotateXYZ(vPlayerRot), mtxSocketRot, true);	
+			}
+			
+			cVector3f vCamPosAdd = 0.f;
+			vCamPosAdd+=pCam.GetRight()*mvCustomAnimCamAdd.x;
+			vCamPosAdd+=pCam.GetUp()*mvCustomAnimCamAdd.y;
+			vCamPosAdd+=pCam.GetForward()*mvCustomAnimCamAdd.z;
+			
+			if (mvCustomAnimCamRot.SqrLength()>0.0f)
+			{
+				mtxRot = cMath_MatrixMul(mtxRot, cMath_MatrixRotateZYX(mvCustomAnimCamRot));
+			}
+
+			pCam.SetRotationMatrix(mtxRot.GetTranspose());
+			pCam.SetPosition(pAttachNode.GetWorldPosition() + vCamPosAdd);
+		}
+		else
+		{
+			iCharacterBody@ pCharBody = cLux_GetPlayer().GetCharacterBody();
+			
+			cVector3f vCamPosAddSum = cLux_GetPlayer().GetCameraPosAddSum();			
+			cVector3f vCamPosAdd = 0.f;
+			
+			vCamPosAdd.y = vCamPosAddSum.y;
+			vCamPosAdd += pCharBody.GetRight() * vCamPosAddSum.x;
+			vCamPosAdd += pCharBody.GetForward() * vCamPosAddSum.z;
+			
+			pCam.SetPosition(pAttachNode.GetWorldPosition() + vCamPosAdd);
+		}
+		
+		mvCameraPos = pCam.GetPosition();
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateCutsceneControls(float afTimeStep)
+	{
+		if (mvAnimationStates[mCurrentAnimationState].IsCameraAnimation()==false ||
+			mCurrentAnimationState == ePlayerBodyAnimationState_CustomAnimation)
+			return;
+		
+		if (mbCameraAnimation_ResetCamera)
+		{
+			mfCameraAnimation_CameraResetTimer -= afTimeStep;
+			if (mfCameraAnimation_CameraResetTimer <= 0)
+			{
+				float fT = cMath_Min(mfCameraAnimation_CameraResetTimer*-0.2, 1.0f);
+				mfCameraAnimation_Yaw = cMath_Easing(eEasing_QuadIn, fT, mfCameraAnimation_Yaw, 0);
+				mfCameraAnimation_Pitch = cMath_Easing(eEasing_QuadIn, fT, mfCameraAnimation_Pitch, 0);
+			}
+		}
+		
+		mfCameraAnimation_MaxPitch = cMath_IncreaseTo(mfCameraAnimation_MaxPitch, mfCameraAnimation_MaxPitchVelocity*afTimeStep, mfCameraAnimation_MaxPitchTarget);
+		mfCameraAnimation_MaxYaw = cMath_IncreaseTo(mfCameraAnimation_MaxYaw, mfCameraAnimation_MaxYawVelocity*afTimeStep, mfCameraAnimation_MaxYawTarget);
+
+		float fMaxPitch = mfCameraAnimation_MaxPitch;
+		float fMaxYaw = mfCameraAnimation_MaxYaw;
+		
+		////////////
+		// Fades the camera to the center when leaving the animation
+		cAnimationState@ pAnim = GetAnimationState(msCameraAnimation_Name);
+		if (pAnim !is null && pAnim.IsLooping() == false)
+		{
+			//TO DO: this is a hack! Currently need to disable this for the Town interact animation where the loop is hardcoded
+			if (mCurrentAnimationState != ePlayerBodyAnimationState_Interactive)
+			{
+				float fMaxMultiplier = (pAnim.GetLength() - pAnim.GetTimePosition())/2.0f;
+				fMaxMultiplier = cMath_Clamp(fMaxMultiplier, 0, 1.0f);
+				fMaxPitch *= fMaxMultiplier;
+				fMaxYaw *= fMaxMultiplier;
+			}
+		}
+		
+		mfCameraAnimation_Yaw = cMath_Clamp(mfCameraAnimation_Yaw, -fMaxYaw, fMaxYaw);
+		mfCameraAnimation_Pitch = cMath_Clamp(mfCameraAnimation_Pitch, -fMaxPitch, fMaxPitch);	
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetHandWorldCollision(const cMatrixf&in aMtxHandTarget, iCollideShape@ apCollider)
+	{	
+		iPhysicsWorld@ pPhysicsWorld = cLux_GetCurrentMap().GetPhysicsWorld();
+		
+		if(gbDrawHandShape)
+		{
+			if(gbBoxHandShape)
+				Debug_DrawBox(aMtxHandTarget, cColor_Blue * 5.f, gvHandShapeBoxSize);
+			else
+				Debug_DrawSphere(aMtxHandTarget.GetTranslation(), gfHandShapeSphereRadius, cColor_Blue * 5.f);
+		}
+		
+		// Do this delayed?
+		cVector3f vPushBack = 0;
+		return pPhysicsWorld.CheckShapeWorldCollision(vPushBack, apCollider, aMtxHandTarget, null, false, false, false);
+	}
+	
+	cMatrixf GetCorrectedHandTransform(const cMatrixf&in a_mtxControlBone, const cMatrixf&in a_mtxControlBoneInv, const cMatrixf&in a_mtxHand, float afAddedPitch, const cVector3f&in avAxis)
+	{
+		// Get socket transform relative to control bone
+		cMatrixf mtxLocalOffset = cMath_MatrixMul(a_mtxControlBoneInv, a_mtxHand);
+		
+		// Get how much arm rotation without collision offset
+		cVector3f vRotation = avAxis * -afAddedPitch;
+			
+		// Rotate control world to get transform without collision offset
+		cMatrixf mtxRotatedControlBone = cMath_MatrixMul(a_mtxControlBone, cMath_MatrixRotateXYZ(vRotation));
+		
+		// Return corrected socket world transform
+		return cMath_MatrixMul(mtxRotatedControlBone, mtxLocalOffset);
+	}
+	
+	float GetHandColliding(iLuxEntity @apBodyEntity, cCamera @apCam, bool abLeft)
+	{
+		// Skip if not holding anything
+		if(Item_IsHeld(abLeft ? eItemHandlerHand_Left : eItemHandlerHand_Right) == false)
+			return 0.f;
+			
+		if(cMath_Abs(mfLeanAmount) > 0.1f)
+		{
+			float fOffset = abLeft ? gfCollisionMinLeftHandOffset : gfCollisionMinRightHandOffset; 
+			float fCurrent = abLeft ? mfCurrentLeftArmPitch : -mfCurrentRightArmPitch;
+			return mfMinPitch + (fCurrent - fOffset) * mfLeanAmount;
+		}
+			
+		
+		iPhysicsWorld@ pPhysicsWorld = cLux_GetCurrentMap().GetPhysicsWorld();
+	
+		// Create shape for testing with, save this later!!
+		if(mpHandShape is null)
+		{
+			if(gbBoxHandShape)
+				@mpHandShape = pPhysicsWorld.CreateBoxShape(gvHandShapeBoxSize, cMatrixf_Identity);
+			else
+				@mpHandShape = pPhysicsWorld.CreateSphereShape(gfHandShapeSphereRadius, cMatrixf_Identity);
+		}
+		
+		// Get right socket/control bone
+		tString sSocketName = abLeft ? "L_Hand" : "R_Hand"; // Save this in ent
+		tString sControlBoneName = abLeft ? msLeftArmControlBone : msRightArmControlBone;
+		
+		// TODO(Edvin): Save index to socket instead of getting it with name
+		cBoneState@ pBoneState = apBodyEntity.GetMeshEntity().GetBoneStateFromName(sControlBoneName);
+		cNode3D@ pSocket = GetSocket(sSocketName);
+		
+		// Normalize scale
+		cMatrixf mtxSocketWorld = cMath_MatrixSetScale(pSocket.GetWorldMatrix(), cVector3f_One);
+		cMatrixf mtxControlBoneWorld = cMath_MatrixSetScale(pBoneState.GetWorldMatrix(), cVector3f_One);
+		cMatrixf mtxControlBoneWorldInv = cMath_MatrixInverse(mtxControlBoneWorld);
+		
+		// Setup variables
+		float fCurrentAngle = abLeft ? mfLeftArmCollisionPitchOffset : mfRightArmCollisionPitchOffset;
+		cVector3f vAxis = abLeft ? mvLeftArmPitchAxis : mvRightArmPitchAxis;
+		
+		cMatrixf mtxHand = cMatrixf_Identity;
+		float fAddedAngle = 0.f;
+		int lCount = 0;
+		bool bLastCollide = true;
+		
+		while(lCount < glCollisionMaxCollisionChecks && bLastCollide)
+		{
+			if(lCount > 0)
+				fAddedAngle -= gfCollisionAddedAngle;
+			
+			mtxHand = GetCorrectedHandTransform(mtxControlBoneWorld, mtxControlBoneWorldInv, mtxSocketWorld, fCurrentAngle + fAddedAngle, vAxis);
+			bLastCollide = GetHandWorldCollision(mtxHand, mpHandShape);
+			
+			lCount++;
+			
+			if(!bLastCollide)
+			{
+				cVector3f vStart = apCam.GetPosition();
+				cVector3f vDir = mtxHand.GetTranslation() - vStart;
+				float fDistance = vDir.Normalize();
+				float fDistanceOut = 0.f;
+				cVector3f vNormalOut = 0.f;
+				
+				iPhysicsBody@ pBody = cLux_GetClosestBody(vStart, vDir, fDistance, fDistanceOut, vNormalOut);
+				if(pBody !is null)
+					bLastCollide = true;
+			}
+		}
+		
+		if(lCount >= glCollisionMaxCollisionChecks && bLastCollide)
+		{
+			float fOffset = abLeft ? gfCollisionMinLeftHandOffset : gfCollisionMinRightHandOffset; 
+			float fCurrent = abLeft ? mfCurrentLeftArmPitch : -mfCurrentRightArmPitch;
+			return mfMinPitch + fCurrent - fOffset;
+		}
+		
+		return fAddedAngle;
+	}
+	
+	void UpdateHands()
+	{
+		if(!gbUseHandCollision)
+			return;
+		iLuxEntity @pEntity = cLux_ID_Entity(m_idBody);
+		cCamera @pCam = cLux_GetPlayer().GetCamera();
+		
+		if(pEntity != null && pCam != null)
+		{
+			mfLeftArmCollidingPitchTarget = GetHandColliding(pEntity, pCam, true);
+			mfRightArmCollidingPitchTarget = GetHandColliding(pEntity, pCam, false);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateLeaning(float afTimeStep)
+	{
+		////////////////////////////////
+		// Create lean shape
+		if (mpLean_HeadShape is null)
+		{
+			float fRadius = gvBodySize.x/2 * 0.34f;
+			float fHeight = 0.1f;
+			cMatrixf mtxOffset = cMath_MatrixRotateZ(cMath_PiDiv2); 
+			@mpLean_HeadShape = cLux_GetCurrentMap().GetPhysicsWorld().CreateCylinderShape(fRadius,fHeight, mtxOffset);
+		}
+		
+		////////////////////////////////
+		// Disable leaning when moving to avoid awkward poses and shadows
+		if (mbLeanDisabled)
+		{
+			mfLeanDisableDelay -= afTimeStep;
+			
+			// Player is not trying to lean
+			if (mfTargetLeanAmount == 0)
+			{
+				mfLeanDisableDelay = 0;
+				mfLeanSpeedMul = 1;
+			}
+			
+			// The delay allows the player to adjust their position slightly while leaning.
+			else if (mfLeanDisableDelay <= 0)
+			{
+				if (mfLeanSpeedMul < 0.5f)
+					mfLeanSpeedMul = cMath_IncreaseTo(mfLeanSpeedMul, afTimeStep*8.0f, 0.5);
+				mfTargetLeanAmount = 0;
+			}
+			
+			if (mCurrentAnimationState == ePlayerBodyAnimationState_Idle || mCurrentAnimationState == ePlayerBodyAnimationState_CrouchTransition)
+			{
+				mbLeanDisabled = false;
+				mfLeanSpeedMul = 1;
+			}
+		}
+		else
+		{
+			mfLeanSpeedMul = cMath_IncreaseTo(mfLeanSpeedMul, afTimeStep*8.0f, 1);
+			
+			if (mCurrentAnimationState == ePlayerBodyAnimationState_Walk)
+			{
+				mfLeanSpeedMul = 0;
+				mbLeanDisabled = true;
+				mfLeanDisableDelay = gfMovementLeanDisableDelay;
+			}
+			else if (mCurrentAnimationState != ePlayerBodyAnimationState_Idle && mCurrentAnimationState != ePlayerBodyAnimationState_CrouchTransition)
+			{
+				mbLeanDisabled = true;
+				mfLeanSpeedMul = 1;
+				mfLeanDisableDelay = 0;
+			}
+		}
+		
+		///////////////////////////////////////
+		// Update movement towards target
+		float fPrevMovement = mfLeanAmount;
+		if(mfTargetLeanAmount != mfLeanAmount)
+		{
+			const float fMaxMoveSpeed = 0.1f*2;
+			const float fMaxRotSpeed = 0.13f*2;
+			
+			//////////////
+			//Position
+			float fMoveSpeed = cMath_Easing(eEasing_CubicOut, cMath_Abs(mfTargetLeanAmount - mfLeanAmount));
+			if (cMath_Abs(fMoveSpeed) < 0.06) fMoveSpeed = 0.06;
+			mfLeanAmount = cMath_IncreaseTo(mfLeanAmount, fMoveSpeed * afTimeStep * mfLeanSpeedMul * 3, mfTargetLeanAmount);
+		}
+		
+		////////////////////
+		//Check collision
+		if (mfTargetLeanAmount != 0)
+		{
+			cCamera@ pCam = cLux_GetPlayer().GetCamera();
+			cLuxMap@ pMap = cLux_GetCurrentMap();
+			iPhysicsWorld@ pPhysicsWorld = pMap.GetPhysicsWorld();
+
+			float fReverseMov = fPrevMovement - mfLeanAmount;
+			if (fReverseMov==0) fReverseMov = mfLeanAmount*-0.1;
+
+			// Tries to predict where the camera will be based on where camera is now
+			// Would be good to use the animation data for more accuracy, but taking all the animations playing
+			// into account gets extremely complex with the functions we currently have at our disposal.
+			float fLeanDiff = (mfLeanAmount-fPrevMovement);
+			cVector3f vVelocity = pCam.GetRight();
+			
+			vVelocity.y -= 0.125*cMath_Sign(fLeanDiff); // Increases stability in rare cases when leaning into a horizontal surface
+			
+			cVector3f vPos = pCam.GetPosition() + pCam.GetForward()*gfLeanCameraPosOffset + vVelocity * fLeanDiff;
+
+			int lCount = 0;
+			cVector3f vPush;
+			bool bCollide = false;
+			float fPrev = mfLeanAmount;
+			while(pPhysicsWorld.CheckShapeWorldCollision(vPush, mpLean_HeadShape, cMath_MatrixTranslate(vPos), null, false, true, false))
+			{
+				bCollide = true;
+				mfLeanAmount += fReverseMov;
+				
+				if(fReverseMov < 0 && mfLeanAmount <0)
+				{
+					mfLeanAmount = 0;
+					break;
+				}
+				
+				if(fReverseMov > 0 && mfLeanAmount >0)
+				{
+					mfLeanAmount = 0;
+					break;
+				}
+				
+				fReverseMov = fPrevMovement - mfLeanAmount;
+				//if (fReverseMov==0) fReverseMov = mfLeanAmount*-0.1;
+				
+				vPos = pCam.GetPosition() + pCam.GetForward()*gfLeanCameraPosOffset + vVelocity * fReverseMov;
+				lCount++;
+				if(lCount >10)
+				{
+					mfLeanAmount = 0;
+					break;
+				}
+			}
+			
+			mfLeanAmount = cMath_IncreaseTo(fPrev, afTimeStep * mfLeanSpeedMul * 3, mfLeanAmount);
+		}
+		
+		// Reset target so leaning moves back to 0 if Player doesnt tell body to keep leaning
+		mfTargetLeanAmount = 0; 
+		
+		//mfLeanAmount = cMath_Easing(eEasing_QuadOut, afTimeStep*37.5, fPrevMovement, mfLeanAmount);
+ 
+		//////////////////////////////////////
+		// Update pose based on lean amount
+		cAnimationState@ pLeftLeanState = GetAnimationState("lean_left");
+		cAnimationState@ pRightLeanState = GetAnimationState("lean_right");
+		if (pLeftLeanState is null || pRightLeanState is null)
+		{
+			if (mfLeanAmount != 0)
+				cLux_AddDebugMessage("[PLAYER BODY] One or both leaning animations missing!");
+		}
+		else if (cMath_Abs(mfLeanAmount)==0)
+		{
+			pLeftLeanState.SetRelativeTimePosition(0);
+			pRightLeanState.SetRelativeTimePosition(0);
+			StopAnimation("lean_left", 0);
+			StopAnimation("lean_right", 0);
+			
+			if (mfLeanPitchLimit!=0)
+			{
+				mfLeanPitchLimit = 0;
+				Player_ResetCameraLimits();
+			}
+		}
+		else
+		{
+			if (mfLeanAmount > 0)
+			{
+				StopAnimation("lean_left", 0);
+				if (pRightLeanState.IsActive()==false)
+					PlayAdditativeAnimation("lean_right", false, 0, 0, 0);
+					
+				pRightLeanState.SetRelativeTimePosition(mfLeanAmount);
+			}
+			else if (mfLeanAmount < 0)
+			{
+				StopAnimation("lean_right", 0);
+				if (pLeftLeanState.IsActive()==false)
+					PlayAdditativeAnimation("lean_left", false, 0, 0, 0);
+					
+				
+				pLeftLeanState.SetRelativeTimePosition(-mfLeanAmount);
+			}
+			
+			mfLeanPitchLimit = cMath_IncreaseTo(Player_GetPitchLimits().x, 100*afTimeStep, -35.f);
+			Player_SetPitchLimits(mfLeanPitchLimit, Player_GetPitchLimits().y);
+		}
+		cLux_GetPlayer().FadeCameraRollTo(ePlayerRoll_Lean, -mfLeanAmount*0.13, 5,3);
+	}
+	
+	//------------------------------------------------------------
+	
+	void VariableUpdateBones(float afTimeStep)
+	{
+	}
+	
+	void UpdateBones(float afTimeStep)
+	{
+		/////////////////////////
+		// Setup Properties
+		cCamera @pCam = cLux_GetPlayer().GetCamera();
+		iLuxEntity @pEntity = cLux_ID_Entity(m_idBody);
+		
+		//////////////////////////////
+		// Update feet/upper body yaw
+		if (mbCameraAnimation_Active == false)
+		{
+			//float fCharBodyYaw = cEngine_GetGameTime()*-1;
+			float fCharBodyYaw = cLux_GetPlayer().GetCharacterBody().GetYaw();
+			pCam.SetYaw(fCharBodyYaw);
+		
+			mfTargetYaw = mvAnimationStates[mCurrentAnimationState].GetTargetFeetYaw(this, afTimeStep);
+			float fBodyYawDistance = cMath_GetAngleDistanceRad(mfYaw, fCharBodyYaw);
+			float fYawOffsetHardLimit = Player_GetCrouching() ? mfCrouchYawHardLimit : mfYawHardLimit;
+	
+			// Remove any body rotation while leaning as it messes up the lean direction
+			if (cMath_Abs(mfLeanAmount) > 0.1)
+			{
+				mfYaw = cMath_InterpolateLinear(mfYaw, fCharBodyYaw, cMath_Abs(mfLeanAmount));
+				mfTargetYaw = fCharBodyYaw;
+			}
+	
+			// Hard limit stops head from spinning 180 degrees if mouse is moved fast enough
+			if (cMath_Abs(fBodyYawDistance) > fYawOffsetHardLimit)
+				mfYaw = fCharBodyYaw-fYawOffsetHardLimit*cMath_Sign(fBodyYawDistance);
+			
+			// Increase feet yaw toward target
+			if (mfYaw != mfTargetYaw)
+			{
+				// TODO EDVIN: Fix these so gfBodyHipTurnSpeed is correct and has a mul from each state
+				float fSpeed = afTimeStep / 0.333f /*gfBodyHipTurnSpeed*/;
+				float fDiff = mfTargetYaw - mfYaw;
+
+				if (cMath_Abs(fDiff)<fSpeed)
+					mfYaw = mfTargetYaw;
+				else
+					mfYaw += cMath_Sign(fDiff)*fSpeed;
+			}
+		}
+		
+		///////////////////////////////////////
+		// Procedural modification of skeleton
+		float fLookPitch = mbCameraAnimation_Active ? mfCameraAnimation_Pitch : pCam.GetPitch();
+		for (uint i = 0; i < mvPitchBones.length(); i++)
+		{
+			cBoneState@ pPitchBone = pEntity.GetMeshEntity().GetBoneStateFromName(mvPitchBones[i]);
+			pPitchBone.SetUsePreTransform(true);
+			cVector3f vRotVec = mvPitchBoneAxes[i]*(fLookPitch*mvPitchBoneWeights[i]);
+			pPitchBone.SetPreTransform(cMath_MatrixRotateXYZ(vRotVec));
+		}
+		
+		float fLookYaw = mbCameraAnimation_Active ? mfCameraAnimation_Yaw : (pCam.GetYaw()-mfYaw);
+		for (uint i = 0; i < mvYawBones.length(); i++)
+		{
+			cBoneState@ pYawBone = pEntity.GetMeshEntity().GetBoneStateFromName(mvYawBones[i]);
+			bool bUsePreTransform = true;
+			float fBoneWeightGoal = mvStandardYawBoneWeights[i];
+			
+			// Only rotate bones above the arms while on ladders, during cutscenes or struggling.
+			// (This assumes there's only one neck bone and that it's last in the array)
+			
+			bool bDisableLowerYawBones = mvAnimationStates[mCurrentAnimationState].GetDisableLowerYawBones();
+			
+			if (bDisableLowerYawBones || cLux_GetPlayer().GetCurrentMoveStateId() == eMoveState_Animated || !mbUseLowerBonesYaw)
+			{
+				bUsePreTransform = mvYawBoneWeights[i] > 0.f;
+				fBoneWeightGoal = (i == mvYawBones.length() - 1) ? 1.f : 0.f;
+			}
+			
+			mvYawBoneWeights[i] = cMath_IncreaseTo(mvYawBoneWeights[i], afTimeStep, fBoneWeightGoal);
+			
+			cVector3f vYawBoneAxis = mvYawBoneAxes[i];
+			if (mvCustomYawBoneAxes.size() > 0) // Used for better camera control in specific cutscenes
+				vYawBoneAxis = mvCustomYawBoneAxes[i];
+			
+			pYawBone.SetUsePreTransform(bUsePreTransform);
+			cVector3f vRotVec = vYawBoneAxis * (fLookYaw * mvYawBoneWeights[i]);
+			pYawBone.SetPreTransform(cMath_MatrixRotateXYZ(vRotVec));
+		}
+		
+		
+		//Screen shake
+		for (uint i = 0; i < mvShakeBones.length(); i++)
+		{
+			if (mvShakeAmount.SqrLength()==0) break;
+			
+			cBoneState@ pShakeBone = pEntity.GetMeshEntity().GetBoneStateFromName(mvShakeBones[i]);
+			bool bUsePreTransform = true;
+			float fBoneWeight = mvShakeBoneWeights[i];
+			
+			float fShakeMul = 100.0f; //Used to approximate the same effect as when not using the player body
+			
+			bool bDisableLowerYawBones = mvAnimationStates[mCurrentAnimationState].GetDisableLowerYawBones();
+			
+			if (mvShakeAmount.SqrLength()==0 ||
+				bDisableLowerYawBones ||
+				cLux_GetPlayer().GetCurrentMoveStateId() == eMoveState_Animated)
+			{
+				bUsePreTransform = (i == mvYawBones.length()-1);
+				fBoneWeight = 1.0f;
+			}
+			
+			pShakeBone.SetUsePreTransform(bUsePreTransform);
+			cMatrixf mtxCurrent = pShakeBone.GetPreAnimTransform();
+			cVector3f vRotVec = mvShakeBoneAxes[i] * mvShakeAmount * fShakeMul * fBoneWeight;
+			pShakeBone.SetPreTransform(cMath_MatrixMul(cMath_MatrixTranslate(vRotVec), mtxCurrent));
+		}
+	
+		////////////////////
+		// Pitch arms if necessary to keep animations in frame.
+		{
+			cBoneState@ pArmBone = pEntity.GetMeshEntity().GetBoneStateFromName(msRightArmControlBone);
+			if (pArmBone is null)
+			{
+				Error("Cannot find arm bone with name "+msRightArmControlBone);
+			}
+			pArmBone.SetUsePreTransform(true);
+			
+			bool bResetPitch = true;
+			bool bResetYaw = true;
+			if (GetAnimationPlayingInLayer(ePlayerBodyAnimationLayer_RightArm, true, true, true))
+			{
+				if (mbPitchRightArmAnimation)
+				{
+					float fPitchTar = cMath_Clamp(pCam.GetPitch(), mfMinPitch, mfMaxPitch);
+					mfCurrentRightArmPitch = cMath_InterpolateLinear(mfCurrentRightArmPitch, fPitchTar, afTimeStep*8);
+					bResetPitch = false;
+				}
+				if (mbYawRightArmAnimation)
+				{
+					float fYawTar = cMath_Clamp((pCam.GetYaw()-mfYaw)*0.5f, mfMinYaw, mfMaxYaw);
+					mfCurrentRightArmYaw = cMath_InterpolateLinear(mfCurrentRightArmYaw, fYawTar, afTimeStep*8);
+					bResetYaw = false;
+				}
+			}
+			
+			if (bResetPitch)
+				mfCurrentRightArmPitch = cMath_InterpolateLinear(mfCurrentRightArmPitch, 0, afTimeStep*16);
+			if (bResetYaw)
+				mfCurrentRightArmYaw = cMath_InterpolateLinear(mfCurrentRightArmYaw, 0, afTimeStep*16);	
+			
+						
+			float fSpeed = gfCollisionPullAwaySpeed;
+			if(mfLeftArmCollidingPitchTarget == 0.f)
+				fSpeed = gfCollisionPullUpSpeed;
+			
+			mfRightArmCollisionPitchOffset = cMath_InterpolateLinear(mfRightArmCollisionPitchOffset, mfRightArmCollidingPitchTarget, afTimeStep*fSpeed);
+			
+			cVector3f vRotation = mvRightArmPitchAxis*(mfCurrentRightArmPitch + mfRightArmCollisionPitchOffset) + mvRightArmYawAxis*mfCurrentRightArmYaw;
+			pArmBone.SetPreTransform(cMath_MatrixRotateXYZ(vRotation));
+		}
+		{
+			cBoneState@ pArmBone = pEntity.GetMeshEntity().GetBoneStateFromName(msLeftArmControlBone);
+			if (pArmBone is null)
+			{
+				Error("Cannot find arm bone with name "+msLeftArmControlBone);
+			}
+			pArmBone.SetUsePreTransform(true);
+			
+			bool bResetPitch = true;
+			bool bResetYaw = true;
+			
+			if (GetAnimationPlayingInLayer(ePlayerBodyAnimationLayer_LeftArm, true, true, true))
+			{
+				if (mbPitchLeftArmAnimation)
+				{
+					float fPitchTar = cMath_Clamp(-pCam.GetPitch(), -mfMaxPitch, -mfMinPitch);
+					mfCurrentLeftArmPitch = cMath_InterpolateLinear(mfCurrentLeftArmPitch, fPitchTar, afTimeStep*8);
+					bResetPitch = false;
+				}
+				
+				if (mbYawLeftArmAnimation)
+				{
+					//TODO: Limit the arm movement somewhat
+/*					float fYawOffsetSoftLimit = Player_GetCrouching() ? mfCrouchYawSoftLimit : mfYawSoftLimit;
+					float fMinArmYaw = -0.4f;
+					float fMaxArmYaw = 0.60f;
+					float fFract = (pCam.GetYaw()-mfYaw)/(fYawOffsetSoftLimit);
+					float fYawTar = cMath_InterpolateLinear(0, fFract > 0 ? fMaxArmYaw : fMinArmYaw, cMath_Abs(fFract));*/
+					float fYawTar = cMath_Clamp((pCam.GetYaw()-mfYaw)*0.5f, mfMinYaw, mfMaxYaw);
+					mfCurrentLeftArmYaw = cMath_InterpolateLinear(mfCurrentLeftArmYaw, fYawTar, afTimeStep*8);
+					bResetYaw = false;
+				}
+			}
+			
+			if (bResetPitch)
+				mfCurrentLeftArmPitch = cMath_InterpolateLinear(mfCurrentLeftArmPitch, 0.f, afTimeStep*16);
+			if (bResetYaw)
+				mfCurrentLeftArmYaw = cMath_InterpolateLinear(mfCurrentLeftArmYaw, 0, afTimeStep*8);
+				
+				
+			float fSpeed = gfCollisionPullAwaySpeed;
+			if(mfLeftArmCollidingPitchTarget == 0.f)
+				fSpeed = gfCollisionPullUpSpeed;
+			
+			mfLeftArmCollisionPitchOffset = cMath_InterpolateLinear(mfLeftArmCollisionPitchOffset, -mfLeftArmCollidingPitchTarget, afTimeStep*fSpeed);
+
+			
+			cVector3f vRotation = mvLeftArmPitchAxis*(mfCurrentLeftArmPitch + mfLeftArmCollisionPitchOffset) + mvLeftArmYawAxis*mfCurrentLeftArmYaw;
+			pArmBone.SetPreTransform(cMath_MatrixRotateXYZ(vRotation));
+		}
+	}
+
+	//------------------------------------------------------------
+	
+	void UpdateOrientation(float afTimeStep, bool abSmooth)
+	{
+		iLuxEntity @pEntity = cLux_ID_Entity(m_idBody);
+		if (pEntity is null) return;
+		
+		cVector3f vFeetPos = cLux_GetPlayer().GetCharacterBody().GetFeetPosition();
+		cVector3f vPos = vFeetPos;
+		if (abSmooth)
+		{			
+			float fMaxDistance = 0.125f;
+			if ((mvPrevSmoothPos-vFeetPos).Length() > fMaxDistance)
+			{
+				mvPrevSmoothPos = vFeetPos+cMath_Vector3Normalize(mvPrevSmoothPos-vFeetPos)*fMaxDistance;
+			}
+			vPos = mvPrevSmoothPos + (vFeetPos-mvPrevSmoothPos)*afTimeStep*10;
+		}
+		mvPrevSmoothPos = vPos;
+		
+		cMatrixf mtxBodyOrientation = cMath_MatrixRotateY(cMath_Pi+mfYaw);
+		mtxBodyOrientation.SetTranslation(vPos);
+		pEntity.SetMatrix(mtxBodyOrientation);
+	}
+
+	//------------------------------------------------------------
+	
+	void UpdateCoverage(float afTimeStep)
+	{
+		if (mfCoverage == mfCoverageTarget) return;
+		mfCoverage = cMath_IncreaseTo(mfCoverage, afTimeStep * 5.0, mfCoverageTarget);
+		
+		iLuxEntity @pEntity = cLux_ID_Entity(m_idBody);
+		if (pEntity is null) return;
+		pEntity.GetMeshEntity().SetCoverageAmount(mfCoverage);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnDraw(float afFrameTime)
+	{
+		
+	}
+	
+	void OnPostRender(float afFrameTime){}
+	
+	//------------------------------------------------------------
+	
+	// Code below is used for visualizing weights as a curve
+	//
+	/*
+	array<float> mvIdleWeights;
+	array<float> mvWalkWeights;
+	array<float> mvWalkWeightMul;
+	array<float> mvWalkWeightTotal;
+	array<float> mvWalkStateTime;
+	
+	int mlNumWeights = 128;
+	int mlCurrentIndex = 0;
+	
+	bool mbIdleActive = true;
+	bool mbWalkActive = true;
+	bool mbWalkMulActive = false;
+	bool mbWalkTotActive = false;
+	
+	bool mbStateTimeActive = false;
+	
+	void OnGui(float afTimeStep)
+	{
+		
+		
+		float fWidth = 0.75f;
+		float fHeight = 0.5f;
+		
+		cVector3f vTopLeft = ImGui_NrmPos(1.0f - fWidth, 0.05f, 1.f);
+		cVector3f vBotRight = ImGui_NrmPos(1.0f, fHeight + 0.05f, 1.f);
+		cVector2f vFrameSize = ImGui_NrmSize(fWidth, fHeight);
+		
+		mbIdleActive = ImGui_DoCheckBox("IdleCheckBox", "Idle", true,ImGui_NrmPos(0.25f, 0.f, 1.f), cVector2f(-1, -1));
+		mbWalkActive = ImGui_DoCheckBox("WalkCheckBox", "turn_left", true,ImGui_NrmPos(0.25f, 0.025f, 1.f),  cVector2f(-1, -1));
+		mbWalkTotActive = ImGui_DoCheckBox("WalkTotCheckBox", "Walk Tot", false,ImGui_NrmPos(0.32f, 0.0f, 1.f),  cVector2f(-1, -1));
+		mbWalkMulActive = ImGui_DoCheckBox("WalkMulCheckBox", "Walk mul", false,ImGui_NrmPos(0.32f, 0.025f, 1.f),  cVector2f(-1, -1));
+		mbStateTimeActive = ImGui_DoCheckBox("StateTimeThingie", "turn_right", false,ImGui_NrmPos(0.42f, 0.0f, 1.f),  cVector2f(-1, -1));
+		cImGuiFrameGfx frame;
+		ImGui_DrawFrame(frame, vTopLeft, vFrameSize, cColor(0.5, 0.5));
+		
+		float fLineY = vTopLeft.y;
+		float fStepHeight = vFrameSize.y / 10.f;
+		
+		for(int i = 0; i < 10; ++i)
+		{
+			ImGui_DrawLine(cVector2f(vTopLeft.x, fLineY), cVector2f(vBotRight.x, fLineY), 1, 2, cColor(0.5, 0.5));
+			fLineY += fStepHeight;
+		}
+		
+		cMeshEntity@ pMesh = cLux_ID_Entity(m_idBody).GetMeshEntity();
+		cAnimationState@ pIdleState = pMesh.GetAnimationStateFromName("crouch_idle");
+		cAnimationState@ pWalkState = pMesh.GetAnimationStateFromName("crouch_left");
+		cAnimationState@ pRunState = pMesh.GetAnimationStateFromName("crouch_turn_right");
+		
+		if(mvIdleWeights.size() == 0)
+		{
+			mvIdleWeights.resize(mlNumWeights);
+			mvWalkWeights.resize(mlNumWeights);
+			mvWalkWeightMul.resize(mlNumWeights);
+			mvWalkWeightTotal.resize(mlNumWeights);
+			mvWalkStateTime.resize(mlNumWeights);
+		}
+		if(cLux_GetGamePaused() == false)
+		{
+			mvIdleWeights[mlCurrentIndex] = pIdleState.GetWeight();
+			mvWalkWeights[mlCurrentIndex] = pWalkState.GetWeight();
+			mvWalkStateTime[mlCurrentIndex] = pRunState.GetWeight();
+
+			mvWalkWeightMul[mlCurrentIndex] = mAnimationState_Walk.mfWeight;
+			mvWalkWeightTotal[mlCurrentIndex] = mAnimationState_Idle.mfWeight;
+			
+			
+			mlCurrentIndex = ++mlCurrentIndex % mlNumWeights;
+		}
+		
+		float fX = vTopLeft.x;
+		float fY = vBotRight.y;
+		float fXStep = vFrameSize.x / mlNumWeights;
+		
+		for(int i = 0; i < mlNumWeights; ++i)
+		{
+			float fCurrentY = mvIdleWeights[i] * vFrameSize.y;
+			float fNextY 	= mvIdleWeights[(i + 1) % mlNumWeights] * vFrameSize.y;
+			if(mbIdleActive)
+				ImGui_DrawLine(cVector2f(fX, fY - fCurrentY), cVector2f(fX + fXStep, fY - fNextY), 2, 2, cColor_Red);
+			
+			fCurrentY = mvWalkWeights[i] * vFrameSize.y;
+			fNextY 	= mvWalkWeights[(i + 1) % mlNumWeights] * vFrameSize.y;
+			if(mbWalkActive)
+				ImGui_DrawLine(cVector2f(fX, fY - fCurrentY), cVector2f(fX + fXStep, fY - fNextY), 2, 2, cColor_Green);
+			
+			fCurrentY = mvWalkWeightMul[i] * vFrameSize.y;
+			fNextY 	= mvWalkWeightMul[(i + 1) % mlNumWeights] * vFrameSize.y;
+			if(mbWalkMulActive)
+				ImGui_DrawLine(cVector2f(fX, fY - fCurrentY), cVector2f(fX + fXStep, fY - fNextY), 2, 2, cColor_Blue);
+			
+			fCurrentY = mvWalkWeightTotal[i] * vFrameSize.y;
+			fNextY 	= mvWalkWeightTotal[(i + 1) % mlNumWeights] * vFrameSize.y;
+			if(mbWalkTotActive)
+				ImGui_DrawLine(cVector2f(fX, fY - fCurrentY), cVector2f(fX + fXStep, fY - fNextY), 2, 2, cColor(1,1,0,1));
+			
+			fCurrentY = mvWalkStateTime[i] * vFrameSize.y;
+			fNextY 	= mvWalkStateTime[(i + 1) % mlNumWeights] * vFrameSize.y;
+			if(mbStateTimeActive)
+				ImGui_DrawLine(cVector2f(fX, fY - fCurrentY), cVector2f(fX + fXStep, fY - fNextY), 2, 2, cColor(0,1,1,1));
+			
+			if(i % 10 == 0)
+				ImGui_DrawLine(cVector2f(fX, fY), cVector2f(fX, fY - vFrameSize.y), 1, 2, cColor(0.5, 0.5));
+			if(i == mlCurrentIndex)
+				ImGui_DrawLine(cVector2f(fX, fY), cVector2f(fX, fY - vFrameSize.y), 1, 2, cColor(1, 0.5));
+			fX += fXStep;
+		}
+		
+		//for (int i = 0; i < pMesh.GetAnimationStateNum(); i++)
+		//{
+		//	cAnimationState@ state = pMesh.GetAnimationState(i);
+		//	if (state.GetWeight() <= 0) continue;
+		//	tString sName = state.GetName();
+		//	cColor col = cColor_White;
+		//	float fSize = 14;
+		//	afStartY = cLux_DrawDebugText("    '" + sName + "' weight: "+state.GetWeight()+ "    relTime: "+state.GetRelativeTimePosition(), afStartY, fSize, col);
+		//}
+	}
+	*/
+	
+	//------------------------------------------------------------
+	
+	void OnRenderSolid(cRendererCallbackFunctions@ apFunctions)
+	{
+		return;
+		
+		if (cLux_ScriptDebugOn()==false) return;
+
+		cVector3f vCharFwd = cLux_GetPlayer().GetCharacterBody().GetForward();
+		cVector3f vBodyFwd = cLux_ID_Entity(m_idBody).GetMatrix().GetForward();
+		cVector3f vCameraFwd = cLux_GetPlayer().GetCamera().GetForward();
+		
+		cVector3f vBodyPos = cLux_ID_Entity(m_idBody).GetMatrix().GetTranslation() + cVector3f_Up;
+		
+		apFunctions.GetLowLevelGfx().DrawLine(vBodyPos, vBodyPos + vCharFwd, cColor_Blue * 5);
+		apFunctions.GetLowLevelGfx().DrawLine(vBodyPos, vBodyPos + vBodyFwd, cColor_Red * 5);
+		apFunctions.GetLowLevelGfx().DrawLine(vBodyPos, vBodyPos + vCameraFwd, cColor_Green * 5);
+
+		iLuxEntity@ pEnt = cLux_ID_Entity(m_idBody);
+		cBoneState@ pBone = pEnt.GetMeshEntity().GetBoneStateFromName("j_Char_root");
+		cVector3f vPos = pBone.GetWorldPosition();
+		apFunctions.GetLowLevelGfx().DrawSphere(vPos, 0.5f, cColor_Blue);
+		//return; //Comment this out/in if you want to enable/disable skeleton rendering.
+
+		if (!mbActive) return;
+		
+		//Renders skeleton in front of body
+		iLuxEntity@ pBodyEnt = cLux_ID_Entity(m_idBody);
+		if (pBodyEnt is null) return;
+		
+		cVector3f vOffset = cLux_GetPlayer().GetCamera().GetForward();
+		vOffset.y = 0;
+		vOffset = cMath_Vector3Normalize(vOffset);
+		//vOffset += cLux_GetPlayer().GetCamera().GetRight()*0.15;
+		
+		
+		apFunctions.GetLowLevelGfx().DrawSphere(pBodyEnt.GetPosition()+vOffset,  0.03,  cColor(10,0,10,1));
+
+		for (int i = 0; i < pBodyEnt.GetMeshEntity().GetBoneStateNum(); i++)
+		{
+			cBoneState@ bone = pBodyEnt.GetMeshEntity().GetBoneState(i);
+			if (cString_GetFirstStringPos(bone.GetName(), "Grp") > -1 ||
+				cString_GetFirstStringPos(bone.GetName(), "Rbn") > -1)
+					continue;
+			
+			float fNodeSize = 0.01;
+			cColor nodeCollor = cColor(10,0,0,1);
+			if (bone.GetName()=="j_Char_root")
+			{
+				fNodeSize = 0.03;
+				nodeCollor = cColor(10,10,0,1);
+			}
+			//apFunctions.GetLowLevelGfx().DrawSphere(bone.GetWorldPosition()+vOffset,  fNodeSize,  nodeCollor);
+			apFunctions.GetLowLevelGfx().DrawLine(bone.GetWorldPosition()+vOffset, bone.GetWorldPosition()+vOffset+(bone.GetWorldMatrix().GetTranspose().GetForward()*2), cColor(0, 0, 10, 1));
+			apFunctions.GetLowLevelGfx().DrawLine(bone.GetWorldPosition()+vOffset, bone.GetWorldPosition()+vOffset+(bone.GetWorldMatrix().GetTranspose().GetRight()*2), cColor(10, 0, 0, 1));
+			apFunctions.GetLowLevelGfx().DrawLine(bone.GetWorldPosition()+vOffset, bone.GetWorldPosition()+vOffset+(bone.GetWorldMatrix().GetTranspose().GetUp()*2), cColor(0, 10, 0, 1));
+			cNode3DIterator@ iterator = bone.GetChildIterator();
+			while (iterator.HasNext())
+			{
+				cNode3D@ pNode = iterator.Next();
+				if (pNode.GetName()=="CameraSocket") 
+				{
+					apFunctions.GetLowLevelGfx().DrawSphere(pNode.GetWorldPosition()+vOffset,  0.01,  cColor(0,10,0,1));
+					cVector3f vFromCenter = pNode.GetWorldPosition()-cLux_GetPlayer().GetCharacterBody().GetFeetPosition();
+					vFromCenter.y = 0;
+					float fFromCenter = vFromCenter.Length();
+					float fFromEdge = gvBodySize.z*0.5 - fFromCenter;
+					apFunctions.GetLowLevelGfx().DrawLine(pNode.GetWorldPosition()+vOffset, (pNode.GetWorldPosition()+cMath_Vector3Normalize(vFromCenter)*fFromEdge)+vOffset, cColor(0,10,0,1));
+					apFunctions.GetLowLevelGfx().DrawLine(pNode.GetWorldPosition()+vOffset, cLux_GetPlayer().GetCamera().GetPosition()+vOffset, cColor(10,0,0,1));
+				}
+				apFunctions.GetLowLevelGfx().DrawLine(bone.GetWorldPosition()+vOffset, pNode.GetWorldPosition()+vOffset, cColor(10,10,10,0.1));
+			}
+		}
+		
+		cVector3f vVelocity = GetVelocity2D(false)*0.25;
+		apFunctions.GetLowLevelGfx().DrawLine(cLux_GetPlayer().GetCharacterBody().GetPosition()+vOffset, cLux_GetPlayer().GetCharacterBody().GetPosition()+vOffset+vVelocity, cColor(0,10,0,1));
+		
+		//Render bounding box
+		//apFunctions.GetLowLevelGfx().DrawBoxMinMax(pBodyEnt.GetMeshEntity().GetBoundingVolume().GetMin()+vOffset, pBodyEnt.GetMeshEntity().GetBoundingVolume().GetMax()+vOffset, cColor(5,10,0,1));
+	}
+	
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		if(mbActive)
+		{
+			afStartY = cLux_DrawDebugText("Player Body yaw: " + mfYaw, afStartY);
+			afStartY = cLux_DrawDebugText("Player Body target yaw: " + mfTargetYaw, afStartY);
+			afStartY = cLux_DrawDebugText("Player char yaw: " + cLux_GetPlayer().GetCharacterBody().GetYaw(), afStartY);
+			
+			afStartY = cLux_DrawDebugText("Player lean: " + mfLeanAmount, afStartY);
+			
+			afStartY = cLux_DrawDebugText("Player Body State: "+mvAnimationStates[mCurrentAnimationState].GetName(), afStartY);
+			afStartY = cLux_DrawDebugText("CurrentStateWeight: ( " + mvAnimationStates[mCurrentAnimationState].GetName() + " )" + mvAnimationStates[mCurrentAnimationState].mfWeight, afStartY);
+			
+			if (mPrevAnimationState >= 0 && mvAnimationStates[mPrevAnimationState] !is null)
+				afStartY = cLux_DrawDebugText("PrevStateWeight: ( " + mvAnimationStates[mPrevAnimationState].GetName() + " )" + mvAnimationStates[mPrevAnimationState].mfWeight, afStartY);
+			
+			if(mbCameraAnimation_Active)
+			{
+	
+				afStartY = cLux_DrawDebugText("Camera animation: ", afStartY);
+				afStartY = cLux_DrawDebugText("Yaw: " + mfYaw, afStartY);
+				afStartY = cLux_DrawDebugText("CameraAnimation_FadeInT: " + mfCameraAnimation_FadeInT, afStartY);
+				afStartY = cLux_DrawDebugText("mfCameraAnimation_Angle" + mfCameraAnimation_Angle, afStartY);
+				afStartY = cLux_DrawDebugText("mfCameraAnimation_StartAngle" + mfCameraAnimation_StartAngle , afStartY);
+				
+				//afStartY = cLux_DrawDebugText("mfCameraAnimation_Pitch" + mfCameraAnimation_Pitch , afStartY);
+				//afStartY = cLux_DrawDebugText("mfCameraAnimation_Yaw" + mfCameraAnimation_Yaw , afStartY);
+				
+				//afStartY = cLux_DrawDebugText("mfCameraAnimation_MaxPitch" + mfCameraAnimation_MaxPitch , afStartY);
+				//afStartY = cLux_DrawDebugText("mfCameraAnimation_MaxYaw" + mfCameraAnimation_MaxYaw , afStartY);
+				
+				//afStartY = cLux_DrawDebugText("mbCameraAnimation_FadeCameraRot" + mbCameraAnimation_FadeCameraRot , afStartY);
+				//afStartY = cLux_DrawDebugText("mbCameraAnimation_ResetCamera" + mbCameraAnimation_ResetCamera , afStartY);
+				//afStartY = cLux_DrawDebugText("msCameraAnimation_Name" + msCameraAnimation_Name , afStartY);
+				//afStartY = cLux_DrawDebugText("mfCameraAnimation_MaxPitchTarget" + mfCameraAnimation_MaxPitchTarget , afStartY);
+				//afStartY = cLux_DrawDebugText("gfCutsceneDefaultMaxPitch" + gfCutsceneDefaultMaxPitch , afStartY);
+				//afStartY = cLux_DrawDebugText("mfCameraAnimation_MaxYawTarget" + mfCameraAnimation_MaxYawTarget , afStartY);
+				//afStartY = cLux_DrawDebugText("mfCameraAnimation_MaxPitchVelocity" + mfCameraAnimation_MaxPitchVelocity , afStartY);
+				//afStartY = cLux_DrawDebugText("mfCameraAnimation_MaxYawVelocity" + mfCameraAnimation_MaxYawVelocity , afStartY);
+				//afStartY = cLux_DrawDebugText("mfCameraAnimation_Speed" + mfCameraAnimation_Speed , afStartY);
+				//
+				//afStartY = cLux_DrawDebugText("mfCameraAnimation_CameraResetTimer" + mfCameraAnimation_CameraResetTimer , afStartY);
+				//
+				//afStartY = cLux_DrawDebugText("CAMERA MODE: " + ((cLux_GetPlayer().GetCamera().GetRotateMode() == eCameraRotateMode_Matrix) ? "eCameraRotateMode_Matrix" : "eCameraRotateMode_EulerAngles"), afStartY);
+	
+			}
+
+			afStartY = cLux_DrawDebugText("Arm pitch stuff", afStartY);
+			
+			afStartY = cLux_DrawDebugText("Pitch Left Arm Animation: " + mbPitchLeftArmAnimation, afStartY);
+			afStartY = cLux_DrawDebugText("Left Arm Pitch: " + mfCurrentLeftArmPitch, afStartY);
+			
+			afStartY = cLux_DrawDebugText("Pitch Right Arm Animation: " + mbPitchRightArmAnimation, afStartY);
+			afStartY = cLux_DrawDebugText("Right Arm Pitch: " + mfCurrentRightArmPitch, afStartY);
+			
+			afStartY = cLux_DrawDebugText("Player Body Animations: ", afStartY);
+
+			cMeshEntity@ pMesh = cLux_ID_Entity(m_idBody).GetMeshEntity();
+			for (int i = 0; i < pMesh.GetAnimationStateNum(); i++)
+			{
+				cAnimationState@ state = pMesh.GetAnimationState(i);
+				if (state.GetWeight() <= 0) continue;
+				tString sName = state.GetName();
+				cColor col = cColor_White;
+				float fSize = 14;
+				afStartY = cLux_DrawDebugText("    '" + sName + "' weight: "+state.GetWeight()+ "    relTime: "+state.GetRelativeTimePosition(), afStartY, fSize, col);
+			}
+	
+			afStartY = cLux_DrawDebugText("Animation layers: ", afStartY);
+			
+			for(uint i = 0; i < mvAnimationLayers.size(); ++i)
+			{
+				if(mvAnimationLayers[i].mvCurrentAnimations.size() == 0) continue;
+				float fTotalLayerWeight = 0.f;
+				for(uint j = 0; j< mvAnimationLayers[i].mvCurrentAnimations.size(); ++j)
+				{
+					cAnimationState@ state = pMesh.GetAnimationStateFromName(mvAnimationLayers[i].mvCurrentAnimations[j]);
+					fTotalLayerWeight += state.GetWeight();
+				}
+				cColor color = cColor_White;
+				if(fTotalLayerWeight > 1.f)
+					color = cColor_Red;
+				
+				afStartY = cLux_DrawDebugText("Layer ID: " + mvAnimationLayers[i].mID, afStartY, 14, color);
+				afStartY = cLux_DrawDebugText("Layer total weight: " + fTotalLayerWeight, afStartY, 14, color);
+				afStartY = cLux_DrawDebugText("Layer total num: " + mvAnimationLayers[i].mvCurrentAnimations.size(), afStartY, 14, color);
+				
+				for(uint j = 0; j < mvAnimationLayers[i].mvCurrentAnimations.size(); ++j)
+				{
+					afStartY = cLux_DrawDebugText("- " + j + ": Layer anim: " + mvAnimationLayers[i].mvCurrentAnimations[j], afStartY, 14, color);
+					
+				}
+			}
+		}
+				
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	//} END OF PER-FRAME
+	
+	/////////////////////////////////////////
+	// INTERFACE
+	//{//////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetActive(bool abX)
+	{
+		if(mbActive == abX) return;
+
+		if(abX == true && msBodyModel == "")
+		{
+			if(Pregnancy_GetStage() != ePregStage_Max)
+				SetBodyModel(Pregnancy_GetStageBodyModel());
+			else
+				SetBodyModel("player.ent");
+		}
+
+		CreateBodyModelIfNeeded(cLux_GetCurrentMap());
+		
+		mbActive = abX;
+		iLuxEntity @pEntity = cLux_ID_Entity(m_idBody);
+		pEntity.SetActive(abX);
+			
+		cLux_GetPlayer().GetCharacterBody().SetCameraUpdateActive(!abX);
+		mvPrevSmoothPos.x = -100000;
+		
+		mfYaw = cLux_GetPlayer().GetCamera().GetYaw();
+		mfTargetYaw = mfYaw;
+		mbResetYaw = true;
+
+
+		pEntity.StopAllAnimations(0);
+		if(abX)
+		{
+			//Set start state
+			ChangeAnimationState(ePlayerBodyAnimationState_Idle);
+			
+			PlayLayerIdleAnimation(ePlayerBodyAnimationLayer_FullBody);
+			
+			bool bCrouching = Player_GetCrouching();
+			mbCrouching = !bCrouching; //Forces the SetCrouch function to run
+			SetCrouch(bCrouching, true);
+			cLux_GetPlayer().SetCameraPosAdd(eCameraAddType_Crouch, 0);
+		}
+		
+		tString sBodyEnt = GetEntityName();
+		Entity_SetEffectsActive(sBodyEnt,false,false);
+	}
+	
+	//------------------------------------------------------------
+	
+	bool IsActive()
+	{
+		return mbActive;
+	}
+	
+	//------------------------------------------------------------
+		
+	void PreloadBodyModel(const tString& in asFile)
+	{
+		Entity_Preload(asFile);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetBodyModel(const tString& in asFile)
+	{
+		if(msBodyModel == asFile) return;
+		
+		/////////////////
+		// Destroy old & create new model
+		DestroyBodyModel(cLux_GetCurrentMap());
+		msBodyModel = asFile;
+		CreateBodyModelIfNeeded(cLux_GetCurrentMap());
+
+		/////////////////
+		// Set all weights to zero
+		iLuxEntity @pEntity = cLux_ID_Entity(m_idBody);	
+		if(pEntity !is null)
+		{
+			pEntity.StopAllAnimations(0);
+			cMeshEntity @pMesh = pEntity.GetMeshEntity();
+			
+			int lAnimNum = pMesh.GetAnimationStateNum();
+			for (int i = 0; i < lAnimNum; i++)
+			{
+				pMesh.GetAnimationState(i).SetWeight(0);
+			}
+		}
+		
+		//////////////////////////
+		// Set anim state
+		mCurrentAnimationState = ePlayerBodyAnimationState(-1);
+		ChangeAnimationState(ePlayerBodyAnimationState_Idle);
+		
+		if(pEntity !is null && cScript_RunGlobalFunc(pEntity.GetName(), "cScrPropPlayerBody", "_Global_SetupPlayerBody")==false)
+		{
+			Error("Could not find body with name '"+pEntity.GetName()+"' for setting up the body handler.");
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetArmLiquidAmount(float afLiquidAmount)
+	{
+		iLuxEntity@ pEntity = cLux_ID_Entity(m_idBody);
+		if (pEntity is null)
+			return;
+
+		cLuxProp@ pProp = cast<cLuxProp>(pEntity);
+		pProp.SetLiquidAmount(afLiquidAmount);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetAnimationSet(const tString&in asSet)
+	{
+		if (asSet == msCurrentAnimationSet) return;
+
+		mvAnimationStates[mCurrentAnimationState].OnAnimationSetLeave(this);
+
+		msPrevAnimationSet = msCurrentAnimationSet;
+		msCurrentAnimationSet = asSet;
+		
+		mvAnimationStates[mCurrentAnimationState].OnAnimationSetEnter(this);
+	}
+	
+	//------------------------------------------------------------
+	
+	tString GetEntityName()
+	{
+		iLuxEntity @pEntity = cLux_ID_Entity(m_idBody);
+		return pEntity !is null ? pEntity.GetName() : "";
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetAnimation(ePlayerBodyAnimation aAnimationType, const tString &in asAnimation)
+	{
+		mvAnimations[aAnimationType] = asAnimation;
+	}
+	
+	//------------------------------------------------------------
+	
+	tString GetAnimation(ePlayerBodyAnimation aAnimationType)
+	{
+		if (aAnimationType == -1 || uint(aAnimationType) >= mvAnimations.length())
+			return "";
+		return mvAnimations[aAnimationType];
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetPermafailWakeUpAnims(const array<tString> &in avStandingAnims, const array<tString> &in avCrouchingAnims)
+	{
+		mvPFWakeUpAnimations = avStandingAnims;
+		mvPFWakeUpCrouchAnimations = avCrouchingAnims;
+	}
+	
+	//------------------------------------------------------------
+	
+	tString GetRandomPermafailWakeUpAnim(bool abStanding)
+	{
+		array<tString>@ vAnims = abStanding ? mvPFWakeUpAnimations : mvPFWakeUpCrouchAnimations;
+		if (vAnims.length()==0) return "wake_up_from_permafail";
+		if (vAnims.length()==1) return vAnims[0]; //can't randomize
+		
+		// Avoid picking the same anim twice in a row
+		int lRand = 0;
+		do
+		{
+			lRand = cMath_RandRectl(0, vAnims.length()-1);
+		}
+		while (lRand == mlLastPickedPFWakeUpAnim);
+			
+		mlLastPickedPFWakeUpAnim = lRand;
+		return vAnims[lRand];
+	}
+	
+	//------------------------------------------------------------
+	
+	
+	void SetYawBones(const array<tString> &in avBones, const array<float> &in avWeights, const array<cVector3f> &in avAxes)
+	{
+		mvYawBones = avBones;
+		mvYawBoneWeights = avWeights;
+		mvStandardYawBoneWeights = avWeights;
+		mvYawBoneAxes = avAxes;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetPitchBones(const array<tString> &in avBones, const array<float> &in avWeights, const array<cVector3f> &in avAxes)
+	{
+		mvPitchBones = avBones;
+		mvPitchBoneWeights = avWeights;
+		mvPitchBoneAxes = avAxes;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetShakeBones(const array<tString> &in avBones, const array<float> &in avWeights, const array<cVector3f> &in avAxes)
+	{
+		mvShakeBones = avBones;
+		mvShakeBoneWeights = avWeights;
+		mvShakeBoneAxes = avAxes;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetCustomYawBoneAxis(const cVector3f &in avAxis)
+	{
+		mvCustomYawBoneAxes.resize(mvYawBoneAxes.size());
+		for (uint i = 0; i < mvCustomYawBoneAxes.size(); ++i)
+			mvCustomYawBoneAxes[i] = avAxis;
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetCustomYawBoneAxis()
+	{
+		mvCustomYawBoneAxes.resize(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetArmControlBones(const tString &in asLeftArmBone, const cVector3f &in avLeftArmPitchAxis, const cVector3f &in avLeftArmYawAxis,
+							const tString &in asRightArmBone, const cVector3f &in avRightArmPitchAxis, const cVector3f &in avRightArmYawAxis)
+	{
+		msLeftArmControlBone = asLeftArmBone;
+		mvLeftArmPitchAxis = avLeftArmPitchAxis;
+		mvLeftArmYawAxis = avLeftArmYawAxis;
+		msRightArmControlBone = asRightArmBone;
+		mvRightArmPitchAxis = avRightArmPitchAxis;
+		mvRightArmYawAxis = avRightArmYawAxis;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetYawLimit(float afYawSoftLimit, float afYawHardLimit, float afCrouchYawSoftLimit, float afCrouchYawHardLimit)
+	{
+		mfYawSoftLimit = cMath_ToRad(afYawSoftLimit);
+		mfYawHardLimit = cMath_ToRad(afYawHardLimit);
+		mfCrouchYawSoftLimit = afCrouchYawSoftLimit > 0 ? cMath_ToRad(afCrouchYawSoftLimit) : mfYawSoftLimit;
+		mfCrouchYawHardLimit = afCrouchYawHardLimit > 0 ? cMath_ToRad(afCrouchYawHardLimit) : mfYawHardLimit;
+	}
+	
+	//------------------------------------------------------------
+	
+	float GetYawSoftLimit()
+	{
+		return Player_GetCrouching() ? mfCrouchYawSoftLimit : mfYawSoftLimit;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetMinRunSpeed(float afSpeed)
+	{
+		mfMinRunSpeed = afSpeed;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetMinRunSpeedMul(float afMul)
+	{
+		mfMinRunSpeedMul = afMul;
+	}
+	
+	//------------------------------------------------------------
+	
+	cBoneState@ GetBoneState(const tString& in asBone)
+	{
+		CreateBodyModelIfNeeded(cLux_GetCurrentMap());
+		
+		return cLux_ID_Entity(m_idBody).GetMeshEntity().GetBoneStateFromName(asBone);
+	}
+	
+	//------------------------------------------------------------
+	
+	cNode3D@ GetSocket(const tString& in asSocket)
+	{
+		CreateBodyModelIfNeeded(cLux_GetCurrentMap());
+		
+		return cLux_ID_Entity(m_idBody).GetMeshEntity().GetSocket(asSocket);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetVisible(bool abX)
+	{
+		CreateBodyModelIfNeeded(cLux_GetCurrentMap());
+		
+		iLuxEntity @pEntity = cLux_ID_Entity(m_idBody);
+		pEntity.GetMeshEntity().SetVisible(abX);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetCoverageAmount(float afCoverage, bool abSmooth = true)
+	{
+		CreateBodyModelIfNeeded(cLux_GetCurrentMap());
+		
+		mfCoverageTarget = afCoverage;
+		if (abSmooth == false)
+		{
+			mfCoverage = afCoverage;
+			iLuxEntity @pEntity = cLux_ID_Entity(m_idBody);
+			if (pEntity !is null) pEntity.GetMeshEntity().SetCoverageAmount(mfCoverage);
+		}
+	}
+	
+	//------------------------------------------------------------
+
+	void PlayAnimationInLayer(ePlayerBodyAnimation aAnim, ePlayerBodyAnimationLayer aLayer, bool abLoop, bool abIdle, bool abReturnToIdleAfterAnim, float afFadeTime, float afSpeed, float afRelTimePos, bool abStopPreviousAnim=true, bool abFadeWeight=true)
+	{
+		PlayAnimationInLayer(GetAnimationForLayer(aAnim, aLayer), aLayer, abLoop, abIdle, abReturnToIdleAfterAnim, afFadeTime, afSpeed, afRelTimePos, abStopPreviousAnim, abFadeWeight);
+	}
+	
+	//------------------------------------------------------------
+	
+	void PlayAnimationInLayer(const tString &in asAnim, ePlayerBodyAnimationLayer aLayer, bool abLoop, bool abIdle, bool abReturnToIdleAfterAnim, float afFadeTime, float afSpeed, float afRelTimePos, bool abStopPreviousAnim=true, bool abFadeWeight=true)
+	{	
+		if (abIdle && mvAnimationLayers[aLayer].mvCurrentAnimations.length() != 0 && mvAnimationLayers[aLayer].mbIsIdle == false)
+			return;
+			
+		if (GetAnimationState(asAnim) is null) 
+		{
+			Error("[Body Handler] Cannot find animation state"+asAnim);
+			return;
+		}
+		
+		// Skip if animation is already playing in a parent layer
+		// Possible this needs to be made more flexible.
+		if (mvAnimationLayers[aLayer].mParent != ePlayerBodyAnimationLayer_LastEnum &&
+			GetAnimationPlayingInLayer(mvAnimationLayers[aLayer].mParent, false, true))
+			return;
+			
+		if (abStopPreviousAnim) 
+			StopAnimationLayer(aLayer, afFadeTime, false);
+		
+		PlayAnimation(asAnim, abLoop, afFadeTime, afSpeed, afRelTimePos, "", abFadeWeight);
+		mvAnimationLayers[aLayer].mvCurrentAnimations.push_back(asAnim);
+		mvAnimationLayers[aLayer].mbReturnToIdleAfterAnim = abReturnToIdleAfterAnim;
+		mvAnimationLayers[aLayer].mbIsIdle = abIdle;
+	}
+	
+	//------------------------------------------------------------
+	
+	void PlayAdditativeAnimation(const tString &in asAnim, bool abLoop, float afFadeTime, float afSpeed, float afRelTimePos)
+	{
+		PlayAnimation(asAnim, abLoop, afFadeTime, afSpeed, afRelTimePos, "");
+	}
+	
+	//------------------------------------------------------------
+	
+	void PlayCutsceneAnimation(const tString &in asAnim, bool abLoop, float afFadeTime, const tString &in asCallback, float afSpeed, 
+							   float afRelTimePos, bool abGlobalSpace, const cVector3f &in avPos, float afAngle, bool abFadeSpeed, bool abIgnoreYaw)
+	{
+		SetupCameraAnimation(asAnim, afFadeTime, afSpeed, abGlobalSpace, avPos, afAngle, abFadeSpeed, abIgnoreYaw);
+		ChangeAnimationState(ePlayerBodyAnimationState_Cutscene);
+		AdditionalCutsceneSetup();
+		
+		PlayAnimationInLayer(asAnim, ePlayerBodyAnimationLayer_FullBody, abLoop, false, false, afFadeTime, afSpeed, afRelTimePos);
+		SetLayerAnimationCallback(ePlayerBodyAnimationLayer_FullBody, asCallback);
+		
+		// Fix rotations
+		if(mbCameraAnimation_GlobalSpace)
+		{
+			iLuxEntity@ pEnt = cLux_ID_Entity(m_idBody);
+			cBoneState@ pBone = pEnt.GetMeshEntity().GetBoneStateFromName("j_Root");
+			pBone.SetUsePreTransform(true);
+			pBone.SetPreTransform(cMath_MatrixRotateXYZ(cVector3f(0, -mfCameraAnimation_StartAngle, 0)));
+			mfYaw = mfCameraAnimation_Angle;
+		}
+		
+		mbCutsceneAutoEnd = true;
+	}
+	
+	//------------------------------------------------------------
+	
+	void PlayInteractiveAnimation(const tString &in asAnim, float afFadeTime, const tString &in asCallback, bool abGlobalSpace,
+								  const cVector3f &in avPos, float afAngle, bool abAutoReverse, bool abExitAtStart, bool abExitAtEnd,
+								  float afSpeedAddRate, bool abFadeSpeed, bool abLoop, bool abIgnoreYaw, bool abAnyInputDir)
+	{
+		SetupCameraAnimation(asAnim, afFadeTime, 1.0f, abGlobalSpace, avPos, afAngle, false, abIgnoreYaw);
+		mbCameraAnimation_ResetCamera = false;
+		mAnimationState_Interactive.msCallback = asCallback;
+		
+		//////////////////////////////////
+		// Set up interactive anim state
+		cScript_SetGlobalArgString(0, asAnim);
+		cScript_SetGlobalArgFloat(1, abFadeSpeed ? afFadeTime : -1.f);
+		cScript_SetGlobalArgFloat(2, afSpeedAddRate);
+		cScript_SetGlobalArgBool(3, abAutoReverse);
+		cScript_SetGlobalArgBool(4, abExitAtStart);
+		cScript_SetGlobalArgBool(5, abExitAtEnd);
+		cScript_SetGlobalArgBool(6, abLoop);
+		cScript_SetGlobalArgBool(7, abAnyInputDir);
+		cScript_RunGlobalFunc("State_InteractiveCutsceneAnimation", "", "_Global_Setup");
+		
+		ChangeAnimationState(ePlayerBodyAnimationState_Interactive);
+		AdditionalCutsceneSetup();
+		
+		//////////////////////////////////
+		// Play anim
+		PlayAnimationInLayer(asAnim, ePlayerBodyAnimationLayer_FullBody, false, false, false, afFadeTime, 0.f, 0.f);
+		
+		//////////////////////////////////
+		// Play anim on connected entity (if any)
+		cScript_SetGlobalArgFloat(0, afFadeTime);
+		cScript_RunGlobalFunc("State_InteractiveCutsceneAnimation", "", "_Global_PlayEntityAnimation");
+		
+		// Fix rotations
+		if(mbCameraAnimation_GlobalSpace)
+		{
+			iLuxEntity@ pEnt = cLux_ID_Entity(m_idBody);
+			cBoneState@ pBone = pEnt.GetMeshEntity().GetBoneStateFromName("j_Root");
+			pBone.SetUsePreTransform(true);
+			pBone.SetPreTransform(cMath_MatrixRotateXYZ(cVector3f(0, -mfCameraAnimation_StartAngle, 0)));
+			mfYaw = mfCameraAnimation_Angle;
+		}
+		
+		mbCutsceneAutoEnd = true;
+	}
+	
+	//------------------------------------------------------------
+	
+	void Cutscene_AddPitch(float afAmount, bool abSlowDownAwayFromCenter=true)
+	{
+		int lYDir = -1;
+		float fPitchMultiplier = 1;
+		float fMaxPitch = mfCameraAnimation_MaxPitch;
+		
+		/////////////////////////////////////////////////////
+		// Decrease speed if rotating away from center
+		if (abSlowDownAwayFromCenter && cMath_Sign(afAmount * lYDir) == cMath_Sign(mfCameraAnimation_Pitch))
+		{
+			if (fMaxPitch > 0)
+				fPitchMultiplier = 1 - cMath_Abs(mfCameraAnimation_Pitch)/fMaxPitch;
+			else
+				fPitchMultiplier = 0;
+		}
+		mfCameraAnimation_Pitch += afAmount * lYDir * fPitchMultiplier * 0.5f;
+		mfCameraAnimation_Pitch = cMath_Clamp(mfCameraAnimation_Pitch, -fMaxPitch, fMaxPitch);
+		
+		if (afAmount != 0) mfCameraAnimation_CameraResetTimer = 0.15f;
+	}
+	
+	void Cutscene_AddYaw(float afAmount, bool abSlowDownAwayFromCenter=true)
+	{
+		float fYawMultiplier = 1;
+		float fMaxYaw = mfCameraAnimation_MaxYaw;
+		
+		////////////////////////////
+		// Decrease speed if rotating away from center
+		if (abSlowDownAwayFromCenter && cMath_Sign(-afAmount) == cMath_Sign(mfCameraAnimation_Yaw))
+		{
+			if (fMaxYaw > 0)
+				fYawMultiplier = 1 - cMath_Abs(mfCameraAnimation_Yaw)/fMaxYaw;
+			else
+				fYawMultiplier = 0;
+		}
+			
+		mfCameraAnimation_Yaw -= afAmount * fYawMultiplier * 0.5f;
+		mfCameraAnimation_Yaw = cMath_Clamp(mfCameraAnimation_Yaw, -fMaxYaw, fMaxYaw);
+		
+		if (afAmount != 0) mfCameraAnimation_CameraResetTimer = 0.15f;
+	}
+	
+	void Cutscene_SetMaxPitch(float afAmount)
+	{
+		if (afAmount < 0)
+			afAmount = gfCutsceneDefaultMaxPitch;
+			
+		mfCameraAnimation_MaxPitch = afAmount;
+		
+		mfCameraAnimation_MaxPitchVelocity = 0.f;		
+		mfCameraAnimation_MaxPitchTarget = gfCutsceneDefaultMaxPitch;
+	}
+	
+	void Cutscene_SetMaxYaw(float afAmount)
+	{
+		if (afAmount < 0)
+			afAmount = gfCutsceneDefaultMaxYaw;
+			
+		mfCameraAnimation_MaxYaw = afAmount;
+		
+		mfCameraAnimation_MaxYawVelocity = 0.f;
+		mfCameraAnimation_MaxYawTarget = gfCutsceneDefaultMaxYaw;
+	}
+	
+	void Cutscene_ResetPitchYawLimits()
+	{
+		mfCameraAnimation_MaxPitch = gfCutsceneDefaultMaxPitch;
+		mfCameraAnimation_MaxYaw = gfCutsceneDefaultMaxYaw;
+		
+		mfCameraAnimation_MaxPitchVelocity = 0.f;
+		mfCameraAnimation_MaxYawVelocity = 0.f;
+		
+		mfCameraAnimation_MaxPitchTarget = gfCutsceneDefaultMaxPitch;
+		mfCameraAnimation_MaxYawTarget = gfCutsceneDefaultMaxYaw;
+	}
+	
+	void Cutscene_FadeMaxPitch(float afTarget, float afTime)
+	{
+		if (afTarget < 0)
+			afTarget = gfCutsceneDefaultMaxPitch;
+			
+		mfCameraAnimation_MaxPitchTarget = afTarget;
+		mfCameraAnimation_MaxPitchVelocity = cMath_Abs(mfCameraAnimation_MaxPitchTarget-mfCameraAnimation_MaxPitch)/afTime;
+	}
+	
+	void Cutscene_FadeMaxYaw(float afTarget, float afTime)
+	{
+		if (afTarget < 0)
+			afTarget = gfCutsceneDefaultMaxYaw;
+			
+		mfCameraAnimation_MaxYawTarget = afTarget;
+		mfCameraAnimation_MaxYawVelocity = cMath_Abs(mfCameraAnimation_MaxYawTarget-mfCameraAnimation_MaxYaw)/afTime;
+	}
+	
+	void Cutscene_AutoResetCamera(bool abX)
+	{
+		mbCameraAnimation_ResetCamera = abX;
+	}
+	
+	void Cutscene_SetAutoEnd(bool abX)
+	{
+		mbCutsceneAutoEnd = abX;
+	}
+	
+	float Cutscene_GetPitch()
+	{
+		return mfCameraAnimation_Pitch;
+	}
+	
+	float Cutscene_GetYaw()
+	{
+		return mfCameraAnimation_Yaw;
+	}
+	
+	float Cutscene_GetMaxPitch()
+	{
+		return mfCameraAnimation_MaxPitch;
+	}
+	
+	float Cutscene_GetMaxYaw()
+	{
+		return mfCameraAnimation_MaxYaw;
+	}
+	
+	//------------------------------------------------------------
+	
+	void AttachProp(const tString &in asProp, const tString &in asSocket, bool abUseParentBoneRotation = false, bool abReplacePrevProp = true)
+	{
+		iLuxEntity @pEntity = cLux_ID_Entity(m_idBody);
+		if(pEntity is null) return;
+		
+		cScript_SetGlobalArgString(0, asProp);
+		cScript_SetGlobalArgString(1, asSocket);
+		cScript_SetGlobalArgBool(2, abUseParentBoneRotation);
+		cScript_SetGlobalArgBool(3, abReplacePrevProp);
+		cScript_RunGlobalFunc(pEntity.GetName(), "cScrPropPlayerBody", "_Global_AttachProp");
+	}
+	
+	//------------------------------------------------------------
+	
+	void DetachProp(const tString &in asProp)
+	{
+		iLuxEntity @pEntity = cLux_ID_Entity(m_idBody);
+		if(pEntity is null) return;
+		
+		cScript_SetGlobalArgString(0, asProp);
+		cScript_RunGlobalFunc(pEntity.GetName(), "cScrPropPlayerBody", "_Global_DetachProp");
+	}
+	
+	//------------------------------------------------------------
+	
+	void FreeSocket(const tString &in asSocket)
+	{
+		iLuxEntity @pEntity = cLux_ID_Entity(m_idBody);
+		if(pEntity is null) return;
+		
+		cScript_SetGlobalArgString(0, asSocket);
+		cScript_RunGlobalFunc(pEntity.GetName(), "cScrPropPlayerBody", "_Global_FreeSocket");
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetLayerAnimationCallback(ePlayerBodyAnimationLayer aLayer, const tString &in asCallback)
+	{
+		cPlayerBodyAnimationLayer@ pLayer = mvAnimationLayers[aLayer];
+		pLayer.msCallback = asCallback;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetArmAnimationPitch(bool abX, bool abRight, bool abLeft)
+	{
+		if (abLeft) mbPitchLeftArmAnimation = abX;
+		if (abRight) mbPitchRightArmAnimation = abX;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetArmAnimationPitchLimits(float afMin, float afMax)
+	{
+		mfMinPitch = afMin;
+		mfMaxPitch = afMax;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetArmAnimationYaw(bool abX, bool abRight, bool abLeft)
+	{
+		if (abLeft) mbYawLeftArmAnimation = abX;
+		if (abRight) mbYawRightArmAnimation = abX;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetArmAnimationYawLimits(float afMin, float afMax)
+	{
+		mfMinYaw = afMin;
+		mfMaxYaw = afMax;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetUseLowerBonesYaw(bool abX)
+	{
+		mbUseLowerBonesYaw = abX;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetUseLowerBonesYaw()
+	{
+		return mbUseLowerBonesYaw;
+	}
+	
+	//------------------------------------------------------------
+	
+	void AlignLowerBodyToCameraYaw(bool abInstant=false)
+	{
+		mfTargetYaw = cLux_GetPlayer().GetCamera().GetYaw();
+		if (abInstant)
+			mfYaw = mfTargetYaw;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetAnimationPlayingInLayer(ePlayerBodyAnimationLayer aLayer, bool abCheckChildLayers, bool abCheckParentLayers=true, bool abIncludeIfOver = false)
+	{
+		cPlayerBodyAnimationLayer@ pLayer = mvAnimationLayers[aLayer];
+		
+		iLuxEntity @pEntity = cLux_ID_Entity(m_idBody);
+		if (pEntity is null)
+			return false;
+		if (pLayer.mvCurrentAnimations.length() > 0 && AnimationIsBaseAnimation(aLayer, pLayer.mvCurrentAnimations[0])==false)
+		{
+			cMeshEntity@ pMeshEntity = pEntity.GetMeshEntity();
+			for (uint i = 0; i < pLayer.mvCurrentAnimations.length(); i++)
+			{
+				cAnimationState@ pAnimState = pMeshEntity.GetAnimationStateFromName(pLayer.mvCurrentAnimations[i]);
+				if ((pAnimState !is null && pAnimState.IsOver() == false) || 
+					(pAnimState !is null && pAnimState.IsOver() == true && abIncludeIfOver == true))
+				{
+					//cLux_AddDebugMessage("Animation "+pLayer.mvCurrentAnimations[i]+" is playing in "+GetLayerName(aLayer));
+					return true;
+				}
+			}
+		}
+		
+		if (abCheckParentLayers && pLayer.mParent != ePlayerBodyAnimationLayer_LastEnum)
+		{
+			if (GetAnimationPlayingInLayer(pLayer.mParent, false, true))
+				return true;
+		}
+		
+		if (abCheckChildLayers==false) return false;
+		
+		for (uint i = 0; i < pLayer.mvChildLayers.length(); i++)
+		{
+			if (GetAnimationPlayingInLayer(pLayer.mvChildLayers[i], true, false))
+				return true;
+		}
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	// NOTE: Only gives you the first current animation if there are multiple animations playing
+	cAnimationState@ GetLayerCurrentAnimationState(ePlayerBodyAnimationLayer aLayer)
+	{
+		cPlayerBodyAnimationLayer@ pLayer = mvAnimationLayers[aLayer];
+		if (pLayer.mvCurrentAnimations.length()==0)
+			return null;
+			
+		iLuxEntity @pEntity = cLux_ID_Entity(m_idBody);
+		if (pEntity is null)
+			return null;
+		
+		cMeshEntity@ pMeshEntity = pEntity.GetMeshEntity();
+		
+		return pMeshEntity.GetAnimationStateFromName(pLayer.mvCurrentAnimations[0]);
+	}
+	
+	//------------------------------------------------------------
+	
+	cAnimationState@ GetAnimationState(ePlayerBodyAnimation aAnim)
+	{
+		return GetAnimationState(mvAnimations[aAnim]);
+	}
+	
+	//------------------------------------------------------------
+	
+	cAnimationState@ GetAnimationState(const tString& in asAnimName)
+	{
+		if(asAnimName=="") return null;
+		
+		CreateBodyModelIfNeeded(cLux_GetCurrentMap());
+		
+		if(msCurrentAnimationSet != "")
+		{
+			cAnimationState@ state = cLux_ID_Entity(m_idBody).GetMeshEntity().GetAnimationStateFromName(asAnimName + "_" + msCurrentAnimationSet);
+			if(state !is null)
+				return state;
+		}
+		
+		return cLux_ID_Entity(m_idBody).GetMeshEntity().GetAnimationStateFromName(asAnimName);
+	}
+	
+	//------------------------------------------------------------
+	
+	tString GetSetForAnimationIfExists(ePlayerBodyAnimation aAnim)
+	{
+		if(msCurrentAnimationSet != "")
+		{
+			cAnimationState@ state = cLux_ID_Entity(m_idBody).GetMeshEntity().GetAnimationStateFromName(GetAnimation(aAnim) + "_" + msCurrentAnimationSet);
+			if(state !is null)
+				return msCurrentAnimationSet;
+		}
+		
+		return "";
+	}
+	
+	//------------------------------------------------------------
+	
+	void StopAnimation(const tString &in asAnim, float afFadeTime)
+	{
+		CreateBodyModelIfNeeded(cLux_GetCurrentMap());
+		
+		iLuxEntity @pEntity = cLux_ID_Entity(m_idBody);
+		
+		float fFadeTime = afFadeTime;
+		if(pEntity.IsActive()==false)
+		{
+			fFadeTime=0;
+		}
+		
+		pEntity.StopAnimation(asAnim, fFadeTime);
+	}
+	
+	//------------------------------------------------------------
+	
+	void StopAnimationInLayer(ePlayerBodyAnimation aAnim, ePlayerBodyAnimationLayer aLayer, float afFadeTime)
+	{
+		StopAnimationInLayer(GetAnimationForLayer(aAnim, aLayer), aLayer, afFadeTime);
+	}
+	
+	//------------------------------------------------------------
+	
+	void StopAnimationInLayer(const tString &in asAnim, ePlayerBodyAnimationLayer aLayer, float afFadeTime)
+	{
+		cPlayerBodyAnimationLayer@ pLayer = mvAnimationLayers[aLayer];
+		
+		if (pLayer.mvCurrentAnimations.length()==0)
+			return;
+		
+		for (uint i = 0; i < pLayer.mvCurrentAnimations.length(); i++)
+		{
+			if (pLayer.mvCurrentAnimations[i]==asAnim)
+			{
+				StopAnimation(asAnim, afFadeTime);
+				pLayer.mvCurrentAnimations.removeAt(i);
+				break;
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void RemoveAnimationFromLayer(ePlayerBodyAnimation aAnim, ePlayerBodyAnimationLayer aLayer)
+	{
+		tString sAnim = GetAnimationForLayer(aAnim, aLayer);
+		cPlayerBodyAnimationLayer@ pLayer = mvAnimationLayers[aLayer];
+		
+		if (pLayer.mvCurrentAnimations.length()==0)
+			return;
+		
+		for (uint i = 0; i < pLayer.mvCurrentAnimations.length(); i++)
+		{
+			if (pLayer.mvCurrentAnimations[i]==sAnim)
+			{
+				pLayer.mvCurrentAnimations.removeAt(i);
+				break;
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void StopAnimationLayer(ePlayerBodyAnimationLayer aLayer, float afFadeTime, bool abAllowReturnToIdle=true, bool abIdleOnly = false)
+	{
+		cPlayerBodyAnimationLayer@ pLayer = mvAnimationLayers[aLayer];
+		
+		if (pLayer.mvCurrentAnimations.length() > 0 && (abIdleOnly == false || AnimationIsBaseAnimation(aLayer, pLayer.mvCurrentAnimations[0])))
+		{
+			for (uint i = 0; i < pLayer.mvCurrentAnimations.length(); i++)
+			{
+				StopAnimation(pLayer.mvCurrentAnimations[i], afFadeTime);
+			}
+			
+			pLayer.mvCurrentAnimations.resize(0);
+			if (pLayer.mbReturnToIdleAfterAnim && abAllowReturnToIdle)
+			{
+				PlayLayerIdleAnimation(aLayer, afFadeTime);
+			}
+		}
+		
+		// Stop animations in child layers recursively
+		for (uint i = 0; i < pLayer.mvChildLayers.length(); i++)
+		{
+			StopAnimationLayer(pLayer.mvChildLayers[i], afFadeTime, abAllowReturnToIdle, abIdleOnly);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetFeetYawOffset(float afOffset)
+	{
+		if (cMath_Abs(afOffset-mfTargetYaw) > 0.3)
+		{
+			float fDir = cMath_Sign(mfTargetYaw-afOffset);
+			PlayAnimationInLayer(fDir > 0 ? mvAnimations[ePlayerBodyAnimation_TurnLeft] : mvAnimations[ePlayerBodyAnimation_TurnRight], ePlayerBodyAnimationLayer_Body, false, true, true, 0.1, 1, 0);
+		}
+			
+		mfTargetYaw = cLux_GetPlayer().GetCharacterBody().GetYaw()+afOffset;
+	}
+	
+	//------------------------------------------------------------
+	
+	void PlayJumpAnimation()
+	{
+		ChangeAnimationState(ePlayerBodyAnimationState_InAir);
+		mAnimationState_InAir.mbJumping = true;
+	}
+	
+	//------------------------------------------------------------
+	
+	void PlayLandingAnimation()
+	{
+		if (mCurrentAnimationState !=ePlayerBodyAnimationState_InAir)
+			return;
+		
+		mAnimationState_InAir.mbLanding = true;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetCrouch(bool abX, bool abInstant)
+	{
+		if (abX == mbCrouching) return;
+
+		if(abInstant)
+			FootPlacement_SetActive(GetEntityName(), !abX);
+		else
+		{
+			if(abX)
+				FootPlacement_FadeOut(GetEntityName(), 0.3f);
+			else
+				FootPlacement_FadeIn(GetEntityName(), 0.3f);
+		}
+		mvAnimationStates[mCurrentAnimationState].SetCrouch(this, abX, abInstant);
+		mbCrouching = abX;
+	}
+		
+	//------------------------------------------------------------
+	
+	void SetLadderClimb(bool abX, float afAngle)
+	{
+		cLux_GetPlayer().GetCharacterBody().SetCameraUpdateActive(abX);
+		cLuxProp@ pProp = cLux_ID_Prop(m_idBody);
+		if (pProp !is null) pProp.SetRenderLayer(abX ? 0 : glBodyRenderLayer);
+		
+		mAnimationState_Ladder.mfAngle = afAngle;
+		ChangeAnimationState(abX ? ePlayerBodyAnimationState_Ladder : ePlayerBodyAnimationState_Idle);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetCustomStateActive(bool abX)
+	{
+		ChangeAnimationState(abX ? ePlayerBodyAnimationState_Custom : ePlayerBodyAnimationState_Idle);
+	}
+    
+	//------------------------------------------------------------
+	
+	void SetTargetLeanAmount(float afAmount)
+	{
+		mfTargetLeanAmount = afAmount;
+	}
+	
+	//------------------------------------------------------------
+	
+	void ClampLeanAmount(float afAmount)
+	{
+		if (cMath_Sign(afAmount) == cMath_Sign(mfLeanAmount) &&
+			cMath_Abs(mfLeanAmount) > cMath_Abs(afAmount))
+		{
+			mfTargetLeanAmount = afAmount;
+			mfLeanAmount = afAmount;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetShakeAmount(const cVector3f &in avAmount)
+	{
+		mvShakeAmount = avAmount;
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetYaw()
+	{
+		//mfYaw = cLux_GetPlayer().GetCamera().GetYaw();
+		mfYaw = 0;
+		if (cLux_GetPlayer() !is null && cLux_GetPlayer().GetCharacterBody() !is null)
+			mfYaw = cLux_GetPlayer().GetCharacterBody().GetYaw();
+		mfTargetYaw = mfYaw;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetYaw(float afYaw)
+	{
+		mfYaw = afYaw;
+	}
+	
+	//------------------------------------------------------------
+	
+	float GetYaw()
+	{
+		return mfYaw;
+	}
+	
+	//------------------------------------------------------------
+    
+    void SetAnimatedMoveStateActive(bool abActive, tString&in asAnimName, tString&in asAtEntity, float afAnimBlendInTime, bool abLoop, float afSpeed)
+    {
+        if (abActive==false)
+        {
+            if (cLux_GetPlayer().GetCurrentMoveStateId()==eMoveState_Animated)
+            {
+                ChangeAnimationState(ePlayerBodyAnimationState_Idle);
+                cLux_GetPlayer().ChangeMoveState(eMoveState_Normal);
+                cLux_GetPlayer().ChangeState(ePlayerState_Normal);
+            }
+            return;
+        }
+        
+        mAnimationState_AnimatedMove.msAnimatedMoveAnimName = asAnimName;
+        mAnimationState_AnimatedMove.mfAnimFadeTime = afAnimBlendInTime;
+        mAnimationState_AnimatedMove.mbAnimLoop = abLoop;
+        mAnimationState_AnimatedMove.mfAnimSpeed = afSpeed;
+
+        ChangeAnimationState(ePlayerBodyAnimationState_AnimatedMove);
+        cLux_GetPlayer().ChangeMoveState(eMoveState_Animated);
+        
+        cScript_SetGlobalArgString(0, asAtEntity);
+        cScript_SetGlobalArgFloat(1, afAnimBlendInTime);
+
+        cScript_RunGlobalFunc("MoveState_Animated", "", "_Global_SetupAnimatedMove");
+    }
+    
+    //------------------------------------------------------------
+    
+    void SetAnimatedMoveBodyYaw(const float afAngle)
+    {
+        mAnimationState_AnimatedMove.mfAngle = afAngle;
+    }
+
+	//------------------------------------------------------------
+	
+	void SetCameraAnimationPositionAndYaw(bool abGlobal, const cVector3f &in avPos, float afAngle, float afFadeTime)
+	{
+		//ResetYaw();
+		mbCameraAnimation_GlobalSpace = abGlobal;
+		mvCameraAnimation_Position = avPos;
+		//mvCameraAnimation_StartPosition = cLux_GetPlayer().GetCharacterBody().GetFeetPosition();
+		mfCameraAnimation_Angle = afAngle;
+		//mfCameraAnimation_StartAngle = mfYaw;
+		//mbCameraAnimation_ResetCamera = true;
+		//mbCameraAnimation_FadeCameraRot = mCurrentAnimationState != ePlayerBodyAnimationState_Interactive &&
+		//								  mCurrentAnimationState != ePlayerBodyAnimationState_Cutscene;
+	
+		//cCamera@ pCam = cLux_GetPlayer().GetCamera();
+		//mvCameraAnimation_FadeInStartRotation.x = pCam.GetPitch();
+		//mvCameraAnimation_FadeInStartRotation.y = pCam.GetYaw();
+		//mvCameraAnimation_FadeInStartRotation.z = pCam.GetRoll();
+		/*
+		//msCameraAnimation_Name = asAnim;
+		StopAnimationLayer(ePlayerBodyAnimationLayer_FullBody, afFadeTime, false, false);
+		ChangeAnimationState(ePlayerBodyAnimationState_Thrown);
+		*/
+		/*
+		mfCameraAnimation_Speed = 1.f;
+		mfCameraAnimation_FadeInTime = afFadeTime;
+		mfCameraAnimation_FadeInT = 0;
+		*/
+		//PlayAnimationInLayer(asAnim, ePlayerBodyAnimationLayer_FullBody, abLoop, false, false, afFadeTime, afSpeed, afRelTimePos);
+		//SetLayerAnimationCallback(ePlayerBodyAnimationLayer_FullBody, asCallback);
+		
+		// Fix rotations
+		//if(mbCameraAnimation_GlobalSpace)
+		//{
+		//	iLuxEntity@ pEnt = cLux_ID_Entity(m_idBody);
+		//	cBoneState@ pBone = pEnt.GetMeshEntity().GetBoneStateFromName("j_Root");
+		//	pBone.SetUsePreTransform(true);
+		//	pBone.SetPreTransform(cMath_MatrixRotateXYZ(cVector3f(0, -mfCameraAnimation_StartAngle, 0)));
+		//	mfYaw = mfCameraAnimation_Angle;
+		//}
+	}
+	
+	//------------------------------------------------------------
+	
+	void StartCustomAnimation(const tString &in asAnim, bool abLoop, float afFadeTime, bool abGlobal = false, const cVector3f &in avPos = 0.f, float afAngle = 0.f, bool abIgnoreYaw = false)
+	{
+		SetupCameraAnimation(asAnim, afFadeTime, 1.0f, abGlobal, avPos, afAngle, false, abIgnoreYaw);
+		ChangeAnimationState(ePlayerBodyAnimationState_CustomAnimation);
+		AdditionalCutsceneSetup();
+		
+		if (asAnim != "")
+		{
+			PlayAnimationInLayer(asAnim, ePlayerBodyAnimationLayer_FullBody, abLoop, false, false, afFadeTime, 1.f, 0.f);
+			SetLayerAnimationCallback(ePlayerBodyAnimationLayer_FullBody, "");
+		}
+		
+		// Fix rotations
+		if(mbCameraAnimation_GlobalSpace)
+		{
+			iLuxEntity@ pEnt = cLux_ID_Entity(m_idBody);
+			cBoneState@ pBone = pEnt.GetMeshEntity().GetBoneStateFromName("j_Root");
+			pBone.SetUsePreTransform(true);
+			pBone.SetPreTransform(cMath_MatrixRotateXYZ(cVector3f(0, -mfCameraAnimation_StartAngle, 0)));
+			mfYaw = mfCameraAnimation_Angle;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void StopCustomAnimation(const tString &in asAnim = "")
+	{
+		if (asAnim != "")
+			StopAnimation(asAnim, 0.f);
+		
+		mAnimationState_Idle.mbSkipFadeIn = true;
+		ChangeAnimationState(ePlayerBodyAnimationState_Idle);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetCustomAnimCameraAdd(cVector3f avCamAdd)
+	{
+		mvCustomAnimCamAdd = avCamAdd;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetCustomAnimCameraRot(cVector3f avCamRot)
+	{
+		mvCustomAnimCamRot = avCamRot;
+	}
+	
+	//------------------------------------------------------------
+	
+	//} END OF INTERFACE
+		
+	/////////////////////////////////////////
+	//	HELPER METHODS
+	//{//////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	tString GetLayerName(ePlayerBodyAnimationLayer aLayer)
+	{
+		switch (aLayer)
+		{
+			case ePlayerBodyAnimationLayer_FullBody: return "FullBody";
+			case ePlayerBodyAnimationLayer_Body: return "Body";
+			case ePlayerBodyAnimationLayer_Arms: return "Arms";
+			case ePlayerBodyAnimationLayer_LeftArm: return "LeftArm";
+			case ePlayerBodyAnimationLayer_RightArm: return "RightArm";
+			default: return "UNKNOWN";
+		}
+		return "";
+	}
+	
+	//------------------------------------------------------------
+	
+	void CreateBodyModelIfNeeded(cLuxMap @apMap)
+	{
+		if(m_idBody != tID_Invalid)
+		{
+			return;
+		}
+		
+		if(msBodyModel=="")
+		{
+			Error("[PlayerBodyHandler] Trying to create body without specifying body entity file!");
+			return;
+		}
+
+		iLuxEntity @pEntity = null;
+				
+		///////////////////////////////
+		//Load the file
+		if(pEntity is null)
+		{
+			cLux_AddDebugMessage("Create "+msBodyModel);
+			apMap.CreateEntity("PlayerBody_"+mlBodyNum++,msBodyModel, cMatrixf_Identity, cVector3f(1));
+			@pEntity = apMap.GetLatestEntity();
+			
+			if(pEntity !is null)
+			{
+				cLuxProp@ pProp = cast<cLuxProp>(pEntity);
+				pProp.SetAllowMapTransfer(false);
+				pProp.SetRenderLayer(glBodyRenderLayer);
+				pProp.SetNormalizeAnimationWeights(false);
+				pProp.SetLiquidAmount(0);
+			}
+		}
+		
+		///////////////////////////////
+		//Set up the model
+		if(pEntity is null)
+		{
+			Error("Could not load player body model: '"+msBodyModel+"'");
+		}
+		else
+		{				
+			m_idBody = pEntity.GetID();
+			
+			SetBodyModelReflectionVisibility(false);
+			
+			//pEntity.GetMeshEntity().SetNormalizeAnimationLayers(true);
+			//pEntity.GetMeshEntity().SetNormalizeAnimationWeights(true);
+			//SetActive(false);
+			pEntity.GetMeshEntity().SetDisableSleep(true);
+			//pEntity.GetMeshEntity().SetVariableAnimationUpdate(true);
+			pEntity.SetActive(mbActive);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetBodyModelReflectionVisibility(bool abVisible)
+	{
+		iLuxEntity@ pEnt = cLux_ID_Prop(m_idBody);
+		if (pEnt is null)
+			return;
+		
+		cMeshEntity@ pMeshEnt = pEnt.GetMeshEntity();		
+		int lHeadId = pMeshEnt.GetSubMeshEntityIndex(pEnt.GetName()+"_m_Tasi_Head");
+		
+		if (lHeadId > -1)
+		{
+			cSubMeshEntity@ pHeadMeshEnt = pMeshEnt.GetSubMeshEntity(lHeadId);
+			pHeadMeshEnt.SetRenderFlagBit(eRenderableFlag_VisibleInNonReflection, abVisible);
+			pHeadMeshEnt.SetRenderFlagBit(eRenderableFlag_ShadowCaster, true);
+		}
+		
+		pMeshEnt.SetRenderFlagBit(eRenderableFlag_VisibleInReflection, abVisible);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetHeadModelShadowCasting(bool abActive)
+	{
+		iLuxEntity@ pEnt = cLux_ID_Prop(m_idBody);
+		if (pEnt is null)
+			return;
+		
+		cMeshEntity@ pMeshEnt = pEnt.GetMeshEntity();		
+		int lHeadId = pMeshEnt.GetSubMeshEntityIndex(pEnt.GetName()+"_m_Tasi_Head");
+		
+		if (lHeadId > -1)
+		{
+			cSubMeshEntity@ pHeadMeshEnt = pMeshEnt.GetSubMeshEntity(lHeadId);
+			pHeadMeshEnt.SetRenderFlagBit(eRenderableFlag_ShadowCaster, abActive);
+		}
+	}
+	
+	
+	//------------------------------------------------------------
+		
+	void DestroyBodyModel(cLuxMap @apMap)
+	{
+		if(m_idBody != tID_Invalid)
+		{
+			iLuxEntity@ pEnt = cLux_ID_Entity(m_idBody);			
+			apMap.DestroyEntity(pEnt);
+			
+			m_idBody = tID_Invalid;
+			msBodyModel = "";
+			
+			for (int i = 0; i < ePlayerBodyAnimationLayer_LastEnum; i++)
+				mvAnimationLayers[i].mvCurrentAnimations.resize(0);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void PlayAnimation(const tString &in asAnim, bool abLoop, float afFadeTime, float afSpeed, float afRelTimePos, const tString &in asCurrentAnimID, bool abFadeWeight=true)
+	{
+		CreateBodyModelIfNeeded(cLux_GetCurrentMap());
+		
+		iLuxEntity @pEntity = cLux_ID_Entity(m_idBody);
+		
+		float fFadeTime = afFadeTime;
+		if(pEntity.IsActive()==false)
+		{
+			fFadeTime=0;
+		}
+
+		cMeshEntity@ pMeshEntity = pEntity.GetMeshEntity();
+		cAnimationState@ pAnim = pMeshEntity.GetAnimationStateFromName(asAnim);
+		if (pAnim !is null)
+		{	
+			bool bIsFading = pAnim.IsFading();
+			float fWeight = pAnim.GetWeight();
+			if (pAnim.IsActive())
+			{
+				if(abFadeWeight)
+					pAnim.FadeIn(fFadeTime);
+			}
+			else
+			{
+				pMeshEntity.PlayName(asAnim, abLoop, false);
+				
+				if (bIsFading==false) pAnim.SetWeight(0);
+				else 				  pAnim.SetWeight(fWeight);
+				
+				if(abFadeWeight)
+					pAnim.FadeIn(fFadeTime);
+			}
+			
+			////////////////////////////////////
+			// Set up animation state
+			if(abFadeWeight == false)
+			{
+				cLux_AddDebugMessage("IsActive: " + pAnim.IsActive());
+				cLux_AddDebugMessage("IsPaused: " + pAnim.IsPaused());
+			}
+					
+			pAnim.SetSpeed(afSpeed);
+			if(bIsFading==false && afRelTimePos<0)
+			{
+				if(afSpeed<0) 	pAnim.SetRelativeTimePosition(1);
+				else			pAnim.SetRelativeTimePosition(0);
+			}
+			else if (afRelTimePos>=0)
+			{
+				pAnim.SetRelativeTimePosition(afRelTimePos);
+			}	
+		}
+		
+		////////////////////////////////////
+		// Set up properties
+		SetActive(true);
+	}
+	
+	//------------------------------------------------------------
+	
+	void PlayLayerIdleAnimation(ePlayerBodyAnimationLayer aLayer, float afFadeTime = 0.3f, bool abLoop = true, bool abFromStart = false)
+	{
+		ePlayerBodyAnimationLayer currentLayer = aLayer;
+		cPlayerBodyAnimationLayer@ pLayer = null;
+		cPlayerBodyAnimationState@ pState = mvAnimationStates[mCurrentAnimationState];
+		tString sAnimation = "";
+		
+		//////////////////////////////////////////////////////////////
+		// Look up the hierarchy for the correct idle animation
+		// e.g. aLayer is LeftArm and there is no idle animation for 
+		// the LeftArm layer only, but there is one for the Arms layer.
+		do
+		{
+			@pLayer = mvAnimationLayers[currentLayer];
+			sAnimation = pState.GetBaseAnimation(this, currentLayer);
+			
+			if (GetAnimationState(sAnimation) is null)
+				sAnimation = "";
+				
+			if (pLayer.mParent == ePlayerBodyAnimationLayer_LastEnum) break;
+			if (sAnimation!="") break;
+			currentLayer = pLayer.mParent;
+		} while (true);
+		
+		///////////////////////
+		// Play animation
+		if (sAnimation != "")
+		{
+			// Never override other animations with idle animations
+			if (GetAnimationPlayingInLayer(currentLayer, true, true)==false)
+			{
+				PlayAnimationInLayer(sAnimation, currentLayer, abLoop, true, false, afFadeTime, 1, abFromStart ? 0.f : pState.GetIdleRelativeTime(this));
+			}
+			return;
+		}
+		
+		////////////////////////////////////////////////////////////////////////////
+		// Go down the hierarchy and play idle animations in appropriate layers
+		// Allows for aLayer to be FullBody, which starts the idle animation in each
+		// layer with an available idle animation.
+		@pLayer = mvAnimationLayers[aLayer];
+		for (uint i = 0; i < pLayer.mvChildLayers.length(); i++)
+			PlayLayerIdleAnimation_Recursive(pLayer.mvChildLayers[i], afFadeTime, abLoop, abFromStart);
+	}
+	
+	//------------------------------------------------------------
+	
+	void PlayLayerIdleAnimation_Recursive(ePlayerBodyAnimationLayer aLayer, float afFadeTime = 0.3f, bool abLoop = true, bool abFromStart = false)
+	{
+		cPlayerBodyAnimationLayer@ pLayer = mvAnimationLayers[aLayer];
+		cPlayerBodyAnimationState@ pState = mvAnimationStates[mCurrentAnimationState];
+		tString sAnimation = pState.GetBaseAnimation(this, aLayer);
+
+		if (GetAnimationState(sAnimation) !is null)
+		{
+			if (GetAnimationPlayingInLayer(aLayer, true, true))
+				return;
+
+			PlayAnimationInLayer(sAnimation, aLayer, abLoop, true, false, afFadeTime, 1, abFromStart ? 0.f : pState.GetIdleRelativeTime(this));
+			return;
+		}
+		
+		for (uint i = 0; i < pLayer.mvChildLayers.length(); i++)
+			PlayLayerIdleAnimation_Recursive(pLayer.mvChildLayers[i], afFadeTime, abLoop, abFromStart);
+	}
+	
+	//------------------------------------------------------------
+	
+	bool CheckAnimationOver(ePlayerBodyAnimationLayer aLayer)
+	{
+		cPlayerBodyAnimationLayer@ pLayer = mvAnimationLayers[aLayer];
+		if(pLayer.mvCurrentAnimations.length()==0 || AnimationIsBaseAnimation(aLayer, pLayer.mvCurrentAnimations[0]))
+			return false;
+			
+		if (pLayer.mvCurrentAnimations.length()>1)
+		{
+			cLux_AddDebugMessage("[PlayerBodyHandler] WARNING: Multiple non-idle animations currently playing in the same layer. This is probably a bug!");
+			for (uint i = 0; i < pLayer.mvCurrentAnimations.length(); i++)
+				cLux_AddDebugMessage("[PlayerBodyHandler] Animation "+i+": "+pLayer.mvCurrentAnimations[i]);
+		}
+			
+		cAnimationState@ pAnim = GetAnimationState(pLayer.mvCurrentAnimations[0]);
+		if (pAnim !is null && pAnim.IsOver()==false)
+			return false;
+		
+		//////////////////////////////////
+		//Callback
+		if(pLayer.msCallback != "" && pAnim !is null)
+		{								
+			cLuxMap @pMap = cLux_GetCurrentMap();
+			tString sMethod = "void "+pLayer.msCallback+"(const tString& in asAnimName)";
+			pLayer.msCallback = "";
+			if (pMap.ScriptMethodExists(sMethod) && pMap.ScriptPrepare(sMethod))
+			{
+				pMap.SetArgString(0, pLayer.mvCurrentAnimations[0]);
+				pMap.ScriptExecute();
+			}
+		}
+		
+		////////////////////////////////////
+		// Disable
+		if(pLayer.mbReturnToIdleAfterAnim)
+		{
+			cLux_AddDebugMessage("Stopping and removing "+pLayer.mvCurrentAnimations[0]);
+			StopAnimation(pLayer.mvCurrentAnimations[0], 0.3);
+			pLayer.mvCurrentAnimations.removeAt(0);
+			
+			PlayLayerIdleAnimation(aLayer);
+		}
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	void ChangeAnimationState(ePlayerBodyAnimationState aNewState, bool abInstant = true, float afStopTime = 0.3)
+	{
+		if (mCurrentAnimationState == aNewState) return;
+		// Handle delay change, this means the ChangeAnimationState must be called
+		// every frame for x seconds for the change to have an effect, preventing rapid 
+		// change back and forth between states.
+		
+		mNextAnimationState = aNewState;
+		mbStateChanged = true;
+		
+		if (abInstant==false)
+		{
+			if (mPendingState != aNewState)
+			{
+				mPendingState = aNewState;
+				mfPendingStateDelay = gfStateChangeDelayTime;
+				return;
+			}
+			else if (mfPendingStateDelay > 0)
+			{
+				return;
+			}
+		}
+		else
+		{
+			mfPendingStateDelay = gfStateChangeDelayTime;
+			mPendingState = ePlayerBodyAnimationState(mvAnimationStates.length());
+		}
+		
+		//cLux_AddDebugMessage("Changing from state "+mvAnimationStates[mCurrentAnimationState].GetName()+" to "+mvAnimationStates[aNewState].GetName());
+		StopAnimationLayer(ePlayerBodyAnimationLayer_FullBody, afStopTime, false, true);
+		
+		if(mCurrentAnimationState != -1)
+			mvAnimationStates[mCurrentAnimationState].OnLeave(this);
+		
+		mPrevAnimationState = mCurrentAnimationState;
+		mCurrentAnimationState = aNewState;
+	
+		mvAnimationStates[aNewState].OnEnter(this);
+		
+		if(mPrevAnimationState != -1)
+			mvAnimationStates[mPrevAnimationState].FadeWeight(0.f, afStopTime);
+			
+		mvAnimationStates[mCurrentAnimationState].FadeWeight(1.f, afStopTime);
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	bool AnimationIsBaseAnimation(ePlayerBodyAnimationLayer aLayer, tString asAnimation)
+	{
+		return mvAnimationStates[mCurrentAnimationState].AnimationIsBaseAnimation(this, asAnimation, aLayer);
+	}
+	
+	//------------------------------------------------------------
+	
+	cVector3f GetVelocity2D(bool abUseInputDirection)
+	{
+		iCharacterBody@ pBody = cLux_GetPlayer().GetCharacterBody();
+		iPhysicsBody@ pAttachedBody = pBody.GetGravityAttachedBody();
+		
+		cVector3f vVel2D = 0;
+		
+		cVector3f vPhysicsVel;
+		if (pAttachedBody is null) vPhysicsVel = pBody.GetVelocity(1.0f/60.0f);
+		else vPhysicsVel = pBody.GetVelocity(1.0f/60.0f) - pAttachedBody.GetLinearVelocity();
+		
+		vPhysicsVel.y = 0;
+		
+		// Use input direction if possible
+		if (abUseInputDirection)
+		{
+			vVel2D += pBody.GetForward() * pBody.GetMoveSpeed(eCharDir_Forward);
+			vVel2D += pBody.GetRight() * pBody.GetMoveSpeed(eCharDir_Right);
+		}
+		
+		// Check if velocity of the character body should be used instead
+		if (abUseInputDirection==false || vVel2D.SqrLength() < 0.05)
+		{
+			if (vPhysicsVel.SqrLength() > vVel2D.SqrLength())
+				vVel2D = vPhysicsVel;
+		}
+		else
+		{
+			// Use the speed of the physics velocity to avoid fast walking when moving into walls etc.
+			vVel2D = cMath_Vector3Normalize(vVel2D)*vPhysicsVel.Length();
+		}
+		return vVel2D;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetAnimationControlledCamera(bool abX)
+	{
+		if (abX == mbCameraAnimation_Active) return;
+
+		mbCameraAnimation_Active = abX;
+		cCamera @pCam = cLux_GetPlayer().GetCamera();
+		iCharacterBody@ pBody = cLux_GetPlayer().GetCharacterBody();
+		
+		pBody.SetGravityActive(!abX);
+		pBody.SetPhysicsBodyActive(!abX);
+		pBody.SetTestCollision(!abX);
+		
+		if (abX)
+		{			
+			pCam.SetRotateMode(eCameraRotateMode_Matrix);
+			// Need to set the start rotation since we're switching rotate mode
+			cMatrixf mtxRot = cMath_MatrixRotateXYZ(mvCameraAnimation_FadeInStartRotation).GetTranspose();
+			pCam.SetRotationMatrix(mtxRot);
+			
+			pBody.StopMovement();
+			FootPlacement_FadeOut(GetEntityName(), 0.3f);
+		}
+		else
+		{
+			cVector3f vFwd = pCam.GetForward();
+			
+			float fYaw = -cMath_ATan2(vFwd.x, -vFwd.z);
+			float fPitch = cMath_ATan2(vFwd.y, cMath_Sqrt(vFwd.x*vFwd.x + vFwd.z * vFwd.z));
+			pCam.SetRotateMode(eCameraRotateMode_EulerAngles);
+			pCam.SetPitch(fPitch);
+			pCam.SetYaw(fYaw);
+			pBody.SetYaw(fYaw);
+			mfYaw = fYaw;
+			mfTargetYaw = mfYaw;
+			
+			cScript_SetGlobalArgFloat(0, fYaw);
+			cScript_SetGlobalArgFloat(1, fPitch);
+			cScript_RunGlobalFunc("LuxPlayer", "", "_Global_SetSmoothingTarget");
+			
+			iLuxEntity@ pEnt = cLux_ID_Entity(m_idBody);
+			cBoneState@ pBone = pEnt.GetMeshEntity().GetBoneStateFromName("j_Char_root");
+			
+			cVector3f vPos = pBone.GetWorldPosition();
+			pBody.SetFeetPosition(vPos, false);
+			mvPrevSmoothPos = vPos;
+			
+			mfCameraAnimation_FadeInT = 0;
+			mfCameraAnimation_Pitch = 0;
+			mfCameraAnimation_Yaw = 0;
+			mfCameraAnimation_MaxPitchTarget = mfCameraAnimation_MaxPitch;
+			mfCameraAnimation_MaxYawTarget = mfCameraAnimation_MaxYaw;
+			mfCameraAnimation_MaxPitchVelocity = 0.f;
+			mfCameraAnimation_MaxYawVelocity = 0.f;
+			FootPlacement_FadeIn(GetEntityName(), 0.3f);
+			FootPlacement_SetFootActive(GetEntityName(), true, true);
+			FootPlacement_SetFootActive(GetEntityName(), true, false);
+		}
+	}
+	
+	bool GetAnimationControlledCamera()
+	{
+		return mbCameraAnimation_Active;
+	}
+	
+	
+	tString GetAnimationForLayer(ePlayerBodyAnimation aAnimation, ePlayerBodyAnimationLayer aLayer, bool abUseCustomSet = false, const tString &in asAnimSet = "")
+	{
+		return GetAnimationForLayer(GetAnimation(aAnimation), aLayer, abUseCustomSet, asAnimSet);
+	}
+	
+	tString GetAnimationForLayer(const tString &in asBaseAnim, ePlayerBodyAnimationLayer aLayer, bool abUseCustomSet = false, const tString &in asAnimSet = "")
+	{
+		tString toReturn = "";
+		if (aLayer == ePlayerBodyAnimationLayer_Body)
+			toReturn = asBaseAnim;
+		if (aLayer == ePlayerBodyAnimationLayer_LeftArm)
+			toReturn = asBaseAnim + "_larm";
+		if (aLayer == ePlayerBodyAnimationLayer_RightArm)
+			toReturn = asBaseAnim + "_rarm";
+		
+		// 
+		if(abUseCustomSet)
+		{
+			if(asAnimSet != "")
+			{
+				if(GetAnimationState(toReturn + "_" + asAnimSet) !is null)
+					toReturn += "_" + asAnimSet;	
+			}
+		}
+		else if(msCurrentAnimationSet != "")
+		{
+			if(GetAnimationState(toReturn + "_" + msCurrentAnimationSet) !is null)
+				toReturn += "_" + msCurrentAnimationSet;
+		}
+		
+		return toReturn;
+	}
+	
+	cVector3f GetCameraPos()
+	{
+		return mvCameraPos;
+	}
+	
+	//------------------------------------------------------------
+	
+	void AttachToEntity(const tString &in asEntity, const tString &in asBody)
+	{
+		mbAttached = true;
+		UpdateOrientation(0, false);
+		Entity_AttachToEntity(GetEntityName(), asEntity, asBody, true, false, true);
+	}
+	
+	//------------------------------------------------------------
+	
+	void AttachToSocket(const tString &in asEntity, const tString &in asSocket)
+	{
+		mbAttached = true;
+		UpdateOrientation(0, false);
+		Entity_AttachToSocket(GetEntityName(), asEntity, asSocket, true, false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void DetachFromEntity()
+	{
+		mbAttached = false;
+		iLuxEntity@ pEnt = cLux_ID_Entity(m_idBody);
+		pEnt.RemoveEntityAttachment();
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnReceivePlayerBodyMessage(int alMessageId, cLuxEntityMessageData @apData)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupCameraAnimation(const tString &in asAnim, float afFadeTime, float afSpeed, bool abGlobalSpace, const cVector3f &in avPos, 
+							  float afAngle, bool abFadeSpeed, bool abIgnoreYaw)
+	{		
+		ResetYaw();
+		mbCameraAnimation_GlobalSpace = abGlobalSpace;
+		mvCameraAnimation_Position = avPos;
+		mvCameraAnimation_StartPosition = cLux_GetPlayer().GetCharacterBody().GetFeetPosition();
+		
+		mbCameraAnimation_ResetCamera = true; //missing in PlayInteractiveAnimation
+		mbCameraAnimation_FadeCameraRot = mvAnimationStates[mCurrentAnimationState].IsCameraAnimation() == false;
+		if(abIgnoreYaw == false)
+		{
+			mfCameraAnimation_Angle = afAngle;
+			mfCameraAnimation_StartAngle = mfYaw;
+		}
+		else
+		{
+			mfCameraAnimation_StartAngle = mfCameraAnimation_Angle;
+		}
+			
+		cCamera@ pCam = cLux_GetPlayer().GetCamera();
+		if (pCam.GetRotateMode()==eCameraRotateMode_EulerAngles)
+		{
+			mvCameraAnimation_FadeInStartRotation.x = pCam.GetPitch();
+			mvCameraAnimation_FadeInStartRotation.y = pCam.GetYaw();
+			mvCameraAnimation_FadeInStartRotation.z = pCam.GetRoll();
+		}
+		else
+		{
+			mvCameraAnimation_FadeInStartRotation = cMath_MatrixToEulerAngles(pCam.GetRotationMatrix());
+		}
+		
+		msCameraAnimation_Name = asAnim;
+		StopAnimationLayer(ePlayerBodyAnimationLayer_FullBody, afFadeTime, false, false);
+		
+		mfCameraAnimation_Speed = abFadeSpeed ? afSpeed : -1.f;  //missing in PlayInteractiveAnimation
+		mfCameraAnimation_FadeInTime = afFadeTime;
+		mfCameraAnimation_FadeInT = 0;
+	}
+	
+	//------------------------------------------------------------
+	
+	void AdditionalCutsceneSetup()
+	{
+		// Overriden in PlayerBodyHandler_Custom.hps
+	}
+	
+	//------------------------------------------------------------
+	
+	//} END OF HELPERS
+		
+	/////////////////////////////////////////
+	// GLOBALS
+	//{//////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	//------------------------------------------------------------
+	
+	//} END OF GLOBALS
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	//{//////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnAction(int alAction, bool abPressed){}
+	void OnAnalogInput(int alAnalogId, const cVector3f &in avAmount){}
+	void OnExitPressed(){}
+	void AppGotInputFocus(){}
+	void AppLostInputFocus(){}
+	
+	//------------------------------------------------------------
+	
+	//} END OF ACTIONS
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	//{//////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool mbActive = false;
+	
+	tID m_idBody = tID_Invalid;
+	bool mbPosSmoothingActive = true;
+	cVector3f mvPrevSmoothPos;
+	cVector3f mvCameraPos;
+	float mfYaw = 0;
+	float mfTargetYaw = 0;
+	bool mbResetYaw = false;
+	int mlFeetDirection = 1;
+	
+	bool mbCrouching = false;
+	
+	float mfMinRunSpeedMul = 1.0f;
+	
+	[volatile] iCollideShape@ mpHandShape = null;
+
+	
+	float mfLeftArmCollidingPitchTarget = 0.f;
+	float mfRightArmCollidingPitchTarget = 0.f;
+	
+	float mfLeftArmCollisionPitchOffset = 0.f;
+	float mfRightArmCollisionPitchOffset = 0.f;
+	
+	bool mbPitchLeftArmAnimation = false;
+	bool mbPitchRightArmAnimation = false;
+	float mfCurrentLeftArmPitch = 0;
+	float mfCurrentRightArmPitch = 0;
+	float mfMinPitch = -1.5f;
+	float mfMaxPitch = 1.2f;
+	
+	bool mbYawLeftArmAnimation = false;
+	bool mbYawRightArmAnimation = false;
+	float mfCurrentLeftArmYaw = 0;
+	float mfCurrentRightArmYaw = 0;
+	float mfMinYaw = -100.f;
+	float mfMaxYaw = 100.f;
+	
+	float mfCoverage = 1;
+	float mfCoverageTarget = 1;
+	
+	bool mbUseLowerBonesYaw = true;
+	
+	int mlBodyNum = 0;
+	tString msBodyModel = "";
+	
+	[volatile] iCollideShape@ mpLean_HeadShape = null;
+	float mfLeanAmount = 0;
+	float mfTargetLeanAmount = 0;
+	float mfLeanDisableDelay = gfMovementLeanDisableDelay;
+	float mfLeanSpeedMul = 0;
+	bool mbLeanDisabled = false;
+	float mfLeanPitchLimit = -1;
+	
+	bool mbCameraAnimation_Active = false;
+	bool mbCameraAnimation_FadeCameraRot = true;
+	bool mbCameraAnimation_ResetCamera = true;
+	tString msCameraAnimation_Name = "";
+	float mfCameraAnimation_Yaw = 0;
+	float mfCameraAnimation_Pitch = 0;
+	float mfCameraAnimation_MaxYaw = gfCutsceneDefaultMaxYaw;
+	float mfCameraAnimation_MaxPitch = gfCutsceneDefaultMaxPitch;
+	float mfCameraAnimation_MaxPitchTarget = gfCutsceneDefaultMaxPitch;
+	float mfCameraAnimation_MaxYawTarget = gfCutsceneDefaultMaxYaw;
+	float mfCameraAnimation_MaxPitchVelocity = 0;
+	float mfCameraAnimation_MaxYawVelocity = 0;
+	float mfCameraAnimation_Speed = 0.f;
+	float mfCameraAnimation_CameraResetTimer = 0.3f;
+	
+	bool mbCameraAnimation_GlobalSpace = false;
+	cVector3f mvCameraAnimation_Position = 0;
+	cVector3f mvCameraAnimation_StartPosition = 0;
+	float mfCameraAnimation_Angle = 0;
+	float mfCameraAnimation_StartAngle = 0;
+	
+	float mfCameraAnimation_FadeInTime = 1;
+	float mfCameraAnimation_FadeInT = 1;
+	cVector3f mvCameraAnimation_FadeInStartRotation;
+	bool mbCameraAnimation_IgnorePlayerState = false;
+	array<cPlayerBodyAnimationLayer> mvAnimationLayers;
+	
+	
+	[volatile] array<cPlayerBodyAnimationState@> mvAnimationStates;
+	
+	ePlayerBodyAnimationState mCurrentAnimationState = ePlayerBodyAnimationState_LastEnum;
+	ePlayerBodyAnimationState mPrevAnimationState = ePlayerBodyAnimationState_LastEnum;
+	ePlayerBodyAnimationState mNextAnimationState = ePlayerBodyAnimationState_LastEnum;
+	
+	cPlayerBodyAnimationState_Idle mAnimationState_Idle;
+	cPlayerBodyAnimationState_Walk mAnimationState_Walk;
+	cPlayerBodyAnimationState_Run mAnimationState_Run;
+	cPlayerBodyAnimationState_CrouchTransition mAnimationState_CrouchTransition;
+	cPlayerBodyAnimationState_InAir mAnimationState_InAir;
+	cPlayerBodyAnimationState_Ladder mAnimationState_Ladder;
+	cPlayerBodyAnimationState_Cutscene mAnimationState_Cutscene;
+	cPlayerBodyAnimationState_Custom mAnimationState_Custom;
+	cPlayerBodyAnimationState_Interactive mAnimationState_Interactive;
+	cPlayerBodyAnimationState_AnimatedMove mAnimationState_AnimatedMove;
+	cPlayerBodyAnimationState_CustomAnimation mAnimationState_CustomAnimation;
+	
+	ePlayerBodyAnimationState mPendingState = ePlayerBodyAnimationState_LastEnum;
+	float mfPendingStateDelay = gfStateChangeDelayTime;
+	bool mbStateChanged = false;
+	cVector3f mvShakeAmount = 0;
+	
+	int mlLastPickedPFWakeUpAnim = -1;
+	
+	bool mbCutsceneAutoEnd = true;
+	
+	// From PlayerBody Prop
+	array<tString> mvAnimations;
+	array<tString> mvPFWakeUpAnimations;
+	array<tString> mvPFWakeUpCrouchAnimations;
+	array<tString> mvYawBones;
+	array<float> mvYawBoneWeights;
+	array<float> mvStandardYawBoneWeights;
+	array<cVector3f> mvYawBoneAxes;
+	array<cVector3f> mvCustomYawBoneAxes;
+	array<tString> mvPitchBones;
+	array<float> mvPitchBoneWeights;
+	array<cVector3f> mvPitchBoneAxes;
+	array<tString> mvShakeBones;
+	array<float> mvShakeBoneWeights;
+	array<cVector3f> mvShakeBoneAxes;
+	tString msLeftArmControlBone;
+	cVector3f mvLeftArmPitchAxis;
+	cVector3f mvLeftArmYawAxis;
+	tString msRightArmControlBone;
+	cVector3f mvRightArmPitchAxis;
+	cVector3f mvRightArmYawAxis;
+	float mfYawSoftLimit;
+	float mfYawHardLimit;
+	float mfCrouchYawSoftLimit;
+	float mfCrouchYawHardLimit;
+	float mfMinRunSpeed;
+	
+	array<tString> mvAnimationSets;
+	tString msCurrentAnimationSet = "";
+	tString msPrevAnimationSet = "";
+	cVector3f mvCustomAnimCamAdd = cVector3f_Zero;
+	cVector3f mvCustomAnimCamRot = cVector3f_Zero;
+	
+	bool mbAttached = false;
+	
+	//} END OF PROPERTIES
+	
+}

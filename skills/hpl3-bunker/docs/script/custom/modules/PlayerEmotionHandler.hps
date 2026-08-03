@@ -1,0 +1,668 @@
+//----------------------------------------------------------------------------------------
+
+#include "interfaces/UserModule_Interface.hps"
+#include "custom/modules/ModuleInterfaces_Custom.hps"
+#include "base/Player_Types.hps"
+#include "base/InputHandler_Types.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_modules_custom.hps"
+#include "helpers/helper_map.hps"
+#include "helpers/helper_player.hps"
+
+//----------------------------------------------------------------------------------------
+
+class cEmotionSoundInstance
+{
+	cEmotionSoundInstance(eEmotionSoundType aType, const int alPrio, const int alID, const tString&in asSoundName, const tString&in asSoundFile, const bool abIsVocal, const float afDuration, const float afFadeIn, const float afFadeOut)
+	{
+		mfVolume = 1.0f;
+		mSoundID = tID_Invalid;
+		mlID = alID;
+		msSoundName = asSoundName;
+		msSoundFile = asSoundFile;
+		mbIsVocal = abIsVocal;
+		mlPrio = alPrio;
+		mfDuration = afDuration;
+		mfTimeActive = 0;
+		mfFadeIn = TimeToSoundFade(afFadeIn);
+		mfFadeOut = TimeToSoundFade(afFadeOut);
+		mfParam = 0.f;
+		mbActive = true;
+		mbIsPlaying = true;
+		mbSilenced = false;
+		mbPaused = false;
+		mlType = aType;
+	}
+	
+	//------------------------------------------------------------
+	
+	float TimeToSoundFade(float afFadeTime)
+	{
+		return (afFadeTime > 0) ? (1.f / afFadeTime) : 0.001f;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetSoundParam(float afParam)
+	{
+		mfParam = afParam;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetVolume(const float afVolume)
+	{
+		mfVolume = afVolume;
+	}
+	
+	//------------------------------------------------------------
+	
+	void Update(const float afTimeStep)
+	{
+		///////////////
+		// Create Sound
+		if (mSoundID == tID_Invalid)
+		{
+			Sound_CreateAtEntity(msSoundName, msSoundFile, "player", mfFadeIn);
+			cSoundEntity@ pSound = cLux_GetCurrentMap().GetWorld().GetSoundEntity(msSoundName);
+			if (pSound == null) return;
+			mSoundID = pSound.GetID();
+		}
+		
+		cSoundEntity@ pSound = cLux_ID_SoundEntity(mSoundID);
+		
+		mbIsPlaying = pSound!=null && pSound.IsActive();
+		
+		if (pSound==null)
+		{
+			mSoundID = tID_Invalid;
+			return;
+		}
+				
+		pSound.FadeIn(mfFadeIn);
+		
+		//////////////////
+		// Handle Duration
+		mfTimeActive += afTimeStep;
+		if (mbActive && mfDuration > 0)
+			mbActive = (mfTimeActive < mfDuration);
+		
+		/////////////
+		// Stop Sound		
+		if (mbActive==false)
+		{
+			pSound.FadeOut(mfFadeOut);
+			return;
+		}
+		
+		//////////////////////////////////
+		// Check if the sound should pause
+		bool bCanPlayNonVocal = cLux_IsChangingMap()==false;
+		bool bCanPlayVocal = bCanPlayNonVocal && /*cLux_GetVoiceHandler().CharacterIsSpeaking("Player")==false &&*/ Player_GetUnderwater()==false;
+		bool bCanPlay = mbIsVocal ? bCanPlayVocal : bCanPlayNonVocal;
+		
+		//cLux_AddDebugMessage("bCanPlay " + bCanPlay);
+		
+		mbPaused = bCanPlay==false || mbSilenced;
+
+		/////////////////////////////////////////////
+		// Set sound params for types that support it
+		if (mlType != eEmotionSoundType_OneShotEvent)
+		{
+			pSound.SetParam(0, mfParam);
+		}
+		
+		//////////
+		// Pausing
+		if (mbPaused)
+		{
+			// Do not resume one shot sounds
+			if (mlType == eEmotionSoundType_OneShotEvent)
+			{
+				mbActive=false;
+				return;
+			}
+			
+			pSound.FadeVolumeMul(0.f, mfFadeOut);
+			return;
+		}
+		
+		pSound.FadeVolumeMul(mfVolume, mfFadeIn);
+	}
+	
+	//------------------------------------------------------------
+	
+	tID mSoundID;
+	int mlID;
+	
+	tString msSoundName;
+	tString msSoundFile;
+	bool mbIsVocal;
+	int mlPrio;
+	
+	float mfDuration;
+	float mfTimeActive;
+	
+	float mfFadeIn;
+	float mfFadeOut;
+	
+	float mfVolume;
+	float mfParam;
+	
+	bool mbActive;
+	bool mbIsPlaying;
+	
+	bool mbSilenced;
+	bool mbPaused;
+	
+	int mlType;
+}
+
+//----------------------------------------------------------------------------------------
+
+class cEmotionSoundPlaylist
+{	
+	cEmotionSoundPlaylist(int alID)
+	{
+		mvPlaylist.resize(0);
+		mlLastEmotionSoundID=-1;
+		mlCurrentPrio=-1;
+		mlID=alID;
+	}
+	
+	//------------------------------------------------------------
+	
+	void Clear()
+	{
+		StopAllEmotionSounds();
+		mvPlaylist.resize(0);
+		mlLastEmotionSoundID=-1;
+		mlCurrentPrio=-1;
+	}
+	
+	//------------------------------------------------------------
+	
+	void StopAllEmotionSounds()
+	{
+		for(int i=0; i<mvPlaylist.length(); ++i)
+		{
+			cEmotionSoundInstance@ pCurrInst = mvPlaylist[i];
+			if (pCurrInst==null) continue;
+			pCurrInst.mbActive=false;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	int StartEmotionSound(eEmotionSoundType aType, int alPrio, const tString&in asSoundFile, const bool abIsVocal, const float afDuration, float afFadeIn, float afFadeOut)
+	{
+		alPrio = cMath_Max(0, alPrio);
+		
+		////////////////////////////////////////
+		// Only play if prio is higher than curr
+		if (alPrio <= mlCurrentPrio)
+		{
+			//cLux_AddDebugMessage("[EmotionHandler] Failed to play emotion sound " + asSoundFile + ". Its prio is not higher than the current emotion sound prio!");
+			return -1;
+		}
+		
+		///////////////////////
+		// Create emotion sound
+		mlLastEmotionSoundID++;
+		tString sSoundName = "EmotionSound_" + mlID + "_" + aType + "_" + mlLastEmotionSoundID;
+		cEmotionSoundInstance@ pEmotionSound = cEmotionSoundInstance(aType, alPrio, mlLastEmotionSoundID, sSoundName, asSoundFile, abIsVocal, afDuration, afFadeIn, afFadeOut);
+		
+		if (pEmotionSound==null)
+		{
+			//cLux_AddDebugMessage("[EmotionHandler] Failed to play emotion sound " + asSoundFile + ". The sound is 'null'!");
+			mlLastEmotionSoundID = cMath_Max(-1, mlLastEmotionSoundID - 1);
+			return -1;
+		}
+		
+		//cLux_AddDebugMessage("[Emotion Handler] Playing sound = " + sSoundName);
+		
+		////////////////////////////////////////////
+		// Add to the playlist & update current prio
+		mlCurrentPrio = pEmotionSound.mlPrio;
+		mvPlaylist.push_back(pEmotionSound);
+		
+		//////////////////
+		// Reset IDs count
+		if(mlLastEmotionSoundID > 9999999)
+			mlLastEmotionSoundID=0;
+		
+		return pEmotionSound.mlID;
+	}
+	
+	//------------------------------------------------------------
+	
+	cEmotionSoundInstance@ GetEmotionSoundByID(int alID)
+	{
+		if (mvPlaylist.length()<=0) return null;
+		
+		for(int i=0; i<mvPlaylist.length(); ++i)
+		{
+			cEmotionSoundInstance@ pCurrInst = mvPlaylist[i];
+			if (pCurrInst==null) continue;
+			if(pCurrInst.mlID != alID) continue;
+			
+			return pCurrInst;
+			break;
+		}
+		
+		return null;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetEmotionSoundParam(const int alID, float afParam)
+	{
+		cEmotionSoundInstance@ pCurrInst = GetEmotionSoundByID(alID);
+		if (pCurrInst==null) return;
+		pCurrInst.SetSoundParam(afParam);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetEmotionSoundVolume(const int alID, const float afVolume)
+	{
+		cEmotionSoundInstance@ pCurrInst = GetEmotionSoundByID(alID);
+		if (pCurrInst==null) return;
+		pCurrInst.SetVolume(afVolume);
+	}
+	
+	//------------------------------------------------------------
+	
+	void StopEmotionSound(const int alID, float afFadeOut=-1)
+	{
+		cEmotionSoundInstance@ pCurrInst = GetEmotionSoundByID(alID);
+		if (pCurrInst==null) return;
+		pCurrInst.mfFadeOut = pCurrInst.TimeToSoundFade(afFadeOut);
+		pCurrInst.mbActive = false;
+	}
+	
+	//------------------------------------------------------------
+	
+	void PauseEmotionSound(const int alID, bool abPause)
+	{
+		cEmotionSoundInstance@ pCurrInst = GetEmotionSoundByID(alID);
+		if (pCurrInst==null) return;
+		pCurrInst.mbSilenced = abPause;
+	}
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep)
+	{
+		//cLux_AddDebugMessage("mvPlaylist.length() "+ mvPlaylist.length());
+		//cLux_AddDebugMessage("mlCurrentPrio "+ mlCurrentPrio);
+		
+		//////////////////////////////
+		// reset prio if list is empty
+		if (mvPlaylist.length()<=0)
+		{
+			mlCurrentPrio=-1;
+			return;
+		}
+		
+		//////////////////
+		// Update elements
+		for(int i=0; i<mvPlaylist.length();)
+		{
+			cEmotionSoundInstance@ pCurrInst = mvPlaylist[i];
+			if (pCurrInst==null) continue;
+			
+			pCurrInst.Update(afTimeStep);
+			
+			if (pCurrInst.mlPrio < mlCurrentPrio)
+			{
+				if (pCurrInst.mlType != eEmotionSoundType_OneShotEvent)
+					pCurrInst.mbSilenced=true;
+				else 
+					pCurrInst.mbActive=false; // Don't resume one shot sounds
+			}
+			
+			///////////////////////////
+			// Remove inactive elements
+			if (pCurrInst.mbIsPlaying==false)
+			{
+				mvPlaylist.pop_back();
+				
+				// Play the next higher prio from the existing list and update curr prio
+				mlCurrentPrio = ResumeNextPrioFromPlaylist();
+				continue;
+			}
+			
+			i++;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	int ResumeNextPrioFromPlaylist()
+	{
+		if (mvPlaylist.length()<=0) return -1;
+		
+		int lNextHigherPrio = -1;
+		
+		for(int i=0; i<mvPlaylist.length(); i++)
+		{
+			if (mvPlaylist[i]==null) continue;
+			if (mvPlaylist[i].mlPrio <= lNextHigherPrio) continue;
+			
+			//////////////
+			// update prio
+			lNextHigherPrio = mvPlaylist[i].mlPrio;
+			
+			///////////////
+			// resume sound
+			mvPlaylist[i].mbSilenced = false;
+		}
+		
+		return lNextHigherPrio;
+	}
+	
+	//------------------------------------------------------------
+	
+	[volatile] array<cEmotionSoundInstance@> mvPlaylist;
+	int mlCurrentPrio=-1;
+	int mlLastEmotionSoundID=-1;
+	int mlID=-1;
+}
+
+//----------------------------------------------------------------------------------------
+
+class cScrPlayerEmotionHandler : iScrUserModule, iScrUserModule_Interface, iScrPlayerEmotionHandler_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		
+	}
+		
+	//------------------------------------------------------------
+	
+	void LoadUserConfig()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void SaveUserConfig()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INTERFACE
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetActive(const bool abActive)
+	{
+		mbActive = abActive;
+		
+		if (abActive==false)
+			Clear();
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetIsActive()
+	{
+		return mbActive;
+	}
+	
+	//------------------------------------------------------------
+	
+	int StartEmotionSoundInst(eEmotionPlaylistType aPlaylistType, eEmotionSoundType aEmotionSoundType, const int alPrio, const tString&in asSoundFile, const float afDuration, const float afFadeIn, const float afFadeOut)
+	{
+		cEmotionSoundPlaylist@ pPlaylist = GetEmotionPlaylist(aPlaylistType);
+		if (pPlaylist==null) return -1;
+		
+		bool bIsVocal = aPlaylistType == eEmotionPlaylistType_Vocal;
+		
+		return pPlaylist.StartEmotionSound(aEmotionSoundType, alPrio, asSoundFile, bIsVocal, afDuration, afFadeIn, afFadeOut);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetEmotionSoundInstParam(eEmotionPlaylistType aPlaylistType, const int alID, float afParam)
+	{
+		cEmotionSoundPlaylist@ pPlaylist = GetEmotionPlaylist(aPlaylistType);
+		if (pPlaylist==null) return;
+		
+		pPlaylist.SetEmotionSoundParam(alID, afParam);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetEmotionSoundInstVolume(eEmotionPlaylistType aPlaylistType, const int alID, const float afVolume)
+	{
+		cEmotionSoundPlaylist@ pPlaylist = GetEmotionPlaylist(aPlaylistType);
+		if (pPlaylist==null) return;
+		
+		pPlaylist.SetEmotionSoundVolume(alID, afVolume);
+	}
+	
+	//------------------------------------------------------------
+	
+	int GetHigherEmotionSoundPrio(eEmotionPlaylistType aPlaylistType)
+	{
+		cEmotionSoundPlaylist@ pPlaylist = GetEmotionPlaylist(aPlaylistType);
+		if (pPlaylist==null) return -1;
+			
+		return pPlaylist.mlCurrentPrio;
+	}
+	
+	//------------------------------------------------------------
+	
+	void StopEmotionSoundInst(eEmotionPlaylistType aPlaylistType, const int alID, float afFadeOut)
+	{
+		cEmotionSoundPlaylist@ pPlaylist = GetEmotionPlaylist(aPlaylistType);
+		if (pPlaylist==null) return;
+		
+		pPlaylist.StopEmotionSound(alID, afFadeOut);
+	}
+	
+	//------------------------------------------------------------
+	
+	void PauseEmotionSoundInst(eEmotionPlaylistType aPlaylistType, const int alID, bool abPause)
+	{
+		cEmotionSoundPlaylist@ pPlaylist = GetEmotionPlaylist(aPlaylistType);
+		if (pPlaylist==null) return;
+		
+		pPlaylist.PauseEmotionSound(alID, abPause);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// MAP LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+		
+	}
+
+	//------------------------------------------------------------
+
+	void OnMapLeave(cLuxMap @apMap)
+	{
+		Reset();
+	}
+	
+	//------------------------------------------------------------
+	
+	void PreloadData(cLuxMap @apMap)
+	{
+
+	}
+	
+	//------------------------------------------------------------
+
+	void CreateWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void DestroyWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnEnterContainer(const tString&in asOldContainer)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnLeaveContainer(const tString&in asNewContainer)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep)
+	{
+		if (mbActive==false) return;
+		
+		///////////////////
+		// Update breathing
+		if (mpVocal==null)
+			@mpVocal = cEmotionSoundPlaylist(0);
+		else
+			mpVocal.Update(afTimeStep);
+		
+		////////////////////
+		// Update heartbeats
+		if (mpHeartbeat==null)
+			@mpHeartbeat = cEmotionSoundPlaylist(1);
+		else
+			mpHeartbeat.Update(afTimeStep);
+	}
+	
+	//------------------------------------------------------------
+	
+	void VariableUpdate(float afDeltaTime)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void PostUpdate(float afTimeStep)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+		Clear();
+	}
+	
+	//------------------------------------------------------------
+	
+	void Clear()
+	{
+		if (mpVocal!=null)
+		{
+			mpVocal.Clear();
+			@mpVocal = null;
+		}
+		
+		if (mpHeartbeat!=null)
+		{
+			mpHeartbeat.Clear();
+			@mpHeartbeat = null;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	cEmotionSoundPlaylist@ GetEmotionPlaylist(eEmotionPlaylistType aPlaylistType)
+	{
+		if (aPlaylistType==eEmotionPlaylistType_Vocal && mpVocal!=null)
+			return mpVocal;
+		else if (aPlaylistType==eEmotionPlaylistType_Heartbeat && mpHeartbeat!=null)
+			return mpHeartbeat;
+		else
+			return null;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnAction(int alAction, bool abPressed){}
+	
+	//------------------------------------------------------------
+
+	void OnAnalogInput(int alAnalogId, const cVector3f &in avAmount){}
+	
+	//------------------------------------------------------------
+	
+	void OnExitPressed(){}
+	
+	//------------------------------------------------------------
+	
+	void AppGotInputFocus(){}
+	
+	//------------------------------------------------------------
+	
+	void AppLostInputFocus(){}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GUI
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnGui(float afTimeStep){}
+	
+	//-------------------------------------------------------
+	
+	void OnDraw(float afFrameTime){}
+	
+	//------------------------------------------------------------
+	
+	void OnPostRender(float afFrameTime){}
+	
+	//------------------------------------------------------------
+	
+	bool mbActive=true;
+	[volatile] cEmotionSoundPlaylist@ mpVocal;
+	[volatile] cEmotionSoundPlaylist@ mpHeartbeat;
+	
+	//------------------------------------------------------------
+}

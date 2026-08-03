@@ -1,0 +1,1139 @@
+#include "interfaces/PlayerState_Interface.hps"
+#include "helpers/helper_player.hps"
+#include "helpers/helper_modules.hps"
+#include "utilities/Utility_PickBasics.hps"
+#include "custom/helpers/helper_player_custom.hps"
+#include "custom/helpers/helper_items.hps"
+#include "helpers/helper_imgui.hps"
+#include "custom/helpers/helper_props_custom.hps"
+
+//------------------------------------------------------------
+
+const tString gsUsingItemBase_RightHandBone = "j_R_Arm_3";
+const tString gsUsingItemBase_LeftHandBone = "j_L_Arm_3";
+const tString gsUsingItemBase_RightWristBone = "j_R_Arm_6";
+const tString gsUsingItemBase_LeftWristBone = "j_L_Arm_6";
+
+const tString gsUsingItemBase_Lighter = "lighter_hand_new.ent";
+
+const tString gsUsingItemBase_FocusIntroAnim_Lighter = "lighter_molotov_focus_start";
+const tString gsUsingItemBase_FocusLoopAnim_Lighter = "lighter_molotov_focus_idle";
+const tString gsUsingItemBase_FocusOutroAnim_Lighter = "lighter_molotov_focus_end";
+
+const float gfUsingItemBase_AlignYawTime = 0.3f;
+
+const float gfUsingItemBase_ZoomAmount = 0.9f;
+const float gfUsingItemBase_ZoomSpeed = 5.f;
+
+enum eUsingItemAnimState
+{
+	eUsingItemAnimState_Intro,
+	eUsingItemAnimState_Loop,
+	eUsingItemAnimState_Use,
+	eUsingItemAnimState_Outro,
+	
+	eUsingItemAnimState_LastEnum
+}
+
+//------------------------------------------------------------
+
+class iScrPlayerState_UsingItem_Base : iScrPlayerState
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL
+	/////////////////////////////////////////
+
+	//------------------------------------------------------------
+
+	void OnAttachBodyToStickyArea() {}
+	
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		LoadUserConfig();
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// USER SETTINGS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void LoadUserConfig()
+	{
+		mlUseItemMode = cLux_GetUserConfig().GetInt("Accessibility", "UseItemMode", 0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SaveUserConfig() {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ENTER MAP
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap@ apMap) 
+	{
+		Entity_Preload(gsUsingItemBase_Lighter);
+	}
+
+	void OnMapLeave(cLuxMap@ apMap) 
+	{
+		Player_ShowCrossHairIcons(true, true);
+	}
+	
+	//------------------------------------------------------------
+	
+	void CreateWorldEntities(cLuxMap@ apMap) {}
+	void DestroyWorldEntities(cLuxMap@ apMap) {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnEnterState(int alPrevStateId)
+	{		
+		////////////////
+		// Setup state
+		mbLeaveState = false;
+		mlAnimState = -1;
+		mlPrevAnimState = -1;
+		mlUseAction = eAction_UseItem;
+		mbCanInteractWithWorld = false;
+		mbEquipLighterInLeftHand = false;
+		mbWaitForUnequip = false;
+		mWaitForUnequipHand = eItemHandlerHand_Right;
+		msWaitForUnequipItem = "";
+		m_setInteractableEntityClasses.Clear();
+		mfIntroTimer = 0;
+		mfIntroRelTime = 0;
+		mfAlignYawCount = 0.f;
+		
+		////////////////
+		// Setup item entity
+		msItemEntity = Item_GetHeldEntity(mItemHand);
+		msItemType = Item_GetEntityItemType(msItemEntity);
+		iLuxEntity@ pItemEntity = cLux_GetCurrentMap().GetEntityByName(msItemEntity, eLuxEntityType_Prop);
+		m_idItemEntity = pItemEntity !is null ? pItemEntity.GetID() : tID_Invalid;
+
+		////////////////
+		// Setup player
+		Player_SetIsUsingItem(true);
+		Player_SetCanRun(false);
+		
+		////////////////////////
+		// Set relative time pos of the intro animations to make them less jarring
+		mfIntroRelTime = GetAnimStateRelTime(eUsingItemAnimState_Intro, eUsingItemAnimState_Outro);
+		
+		ChangeAnimState(eUsingItemAnimState_Intro);
+		if (mbUsesOtherHandAnims)
+		{
+			WaitForUnequip(mItemHand == eItemHandlerHand_Left ? eItemHandlerHand_Right : eItemHandlerHand_Left, msOnEnterUnequipException);
+			PlayerBody_SetShoulderBobActive(false);
+		}
+		
+		////////////////
+		// Zoom
+		if (mbDoZoom)
+		{
+			mBaseObj.mpPlayer.FadeCameraFOVMulTo(ePlayerFOVMul_UseItem, gfUsingItemBase_ZoomAmount, gfUsingItemBase_ZoomSpeed);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnLeaveState(int alNextStateId)
+	{
+		///////////////
+		// Reset vars
+		mfMinPitch = 0.f;
+		mfMaxPitch = 0.f;
+		mfGoalPitch = 0.f;
+		mfStartPitch = 0.f;
+		mfPitchFadeTime = 0.f;
+		mfPitchFadeCount = 0.f;
+		
+		mbCustomBonePosActiveL = false;
+		mbCustomBonePosActiveR = false;
+		
+		////////////////
+		// Reset player
+		Player_SetIsUsingItem(false);		
+		Player_ShowCrossHairIcons(true, true);
+		Player_SetCanRun(true);
+		
+		////////////////
+		// Reset player body
+		PlayerBody_SetRightArmYawOffset(0.f);
+		PlayerBody_SetRightArmPitchOffset(0.f);
+		PlayerBody_SetCrouchArmRotationOffsetActive(true);
+		PlayerBody_SetShoulderBobActive(true);
+				
+		/////////////////////////
+		// Autoequip the next item of the same type?
+		if (mbAutoEquipNextItem && ItemType_GetCountInInventory(msItemType) > 0)
+		{
+			Item_Equip(ItemType_GetFirstInInventory(msItemType));
+		}
+		
+		////////////////
+		// Equip item that was unequipped when entering state?
+		if (msWaitForUnequipItem != "")
+		{
+			if (mfEquipLastItemOnLeaveDelay > 0.f)
+			{
+				cLuxMap@ pMap = cLux_GetCurrentMap();
+				if (pMap !is null)
+					pMap.AddTimer(msWaitForUnequipItem, mfEquipLastItemOnLeaveDelay, "$_UsingItem_OnTimer_EquipLastItem");
+			}
+			else
+			{
+				Item_TakeOut(msWaitForUnequipItem);
+			}
+		}
+		
+		/////////////////
+		// Reset zoom
+		if (mbDoZoom && mBaseObj.mpPlayer.GetCameraFOVMul() != 1.f)
+		{
+			mBaseObj.mpPlayer.FadeCameraFOVMulTo(ePlayerFOVMul_UseItem, 1.f, gfUsingItemBase_ZoomSpeed * 0.75f);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+		mPickBasics.Reset();
+	}
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep)
+	{
+		////////////////
+		// Setup vars
+		cCamera@ pCam = mBaseObj.mpPlayer.GetCamera();
+		
+		////////////////
+		// Align yaw
+		if (mbUsesOtherHandAnims)
+		{
+			mfAlignYawCount = cMath_IncreaseTo(mfAlignYawCount, afTimeStep, gfUsingItemBase_AlignYawTime);
+			float fAlignYawT = mfAlignYawCount / gfUsingItemBase_AlignYawTime;			
+			
+			if (fAlignYawT < 1.f)
+			{
+				float fYaw = PlayerBody_GetYaw() * (1.f - fAlignYawT) + pCam.GetYaw() * fAlignYawT;			
+				PlayerBody_SetYaw(fYaw);
+			}
+			else
+			{
+				PlayerBody_ResetYaw();
+			}
+		}	
+		
+		////////////////
+		// Fade pitch
+		if (mbFadePitch)
+		{
+			mfPitchFadeCount -= afTimeStep;
+			if (mfPitchFadeCount <= 0.f)
+			{
+				mfPitchFadeCount = 0.f;
+			}
+			
+			float fPitchT = cMath_Easing(eEasing_SineInOut, 1.f - (mfPitchFadeCount / mfPitchFadeTime));
+			float fNewPitch = cMath_InterpolateLinear(mfStartPitch, mfGoalPitch, fPitchT);
+			
+			pCam.SetPitch(fNewPitch);
+			
+			if (fPitchT >= 1.f)
+			{
+				mbFadePitch = false;
+			}
+		}
+		
+		////////////////
+		// Update pick check
+		int lCrossHairState = mlDefaultCrossHairState;		
+		if (mbCanInteractWithWorld && mPickBasics.UpdatePickCheck(pCam, mbCheckCanInteractOnWorldInteract, -1.f, false) && CheckCanUse())
+		{
+			if (GetCanInteractWithFocusedEntity())
+			{
+				lCrossHairState = mlUseCrossHairState;
+			}
+		}
+		
+		////////////////
+		// Update crosshair
+		bool bCrossHairVisible = Player_GetCrossHairVisible();
+		bool bShowCrossHair = lCrossHairState >= 0;
+		
+		if (mbLeaveState && bCrossHairVisible)
+		{
+			Player_ShowCrossHairIcons(false, true);
+		}
+		
+		if (mbLeaveState == false)
+		{
+			if (bShowCrossHair && bCrossHairVisible == false)
+			{
+				Player_ShowCrossHairIcons(true, true);
+			}
+			else if (bShowCrossHair == false && bCrossHairVisible)		
+			{
+				Player_ShowCrossHairIcons(false, true);
+			}
+		}
+		
+		if (bShowCrossHair)
+			Player_SetCrossHairState(eCrossHairState(lCrossHairState));
+		
+		/////////////////
+		// Update wait for unequip
+		if (mbWaitForUnequip)
+		{
+			int lHeldState = Item_GetHandHeldState(mWaitForUnequipHand);
+			if (lHeldState == 0)
+			{
+				mbWaitForUnequip = false;
+				
+				if (mbEquipLighterInLeftHand)
+				{
+					CreateAndEquipLighterItem();
+				}
+			}
+			
+			//////////////
+			// Unequip if somehow still equipped
+			else if (lHeldState == 3)
+			{
+				WaitForUnequip(mWaitForUnequipHand, msOnEnterUnequipException);
+			}
+		}
+		
+		////////////////
+		// Leave if no longer holding down use button
+		bool bUnderwater = Player_GetUnderwater();
+		if (mbLeaveState == false && (mlUseAction != -1 || bUnderwater))
+		{
+			bool bLeaving =  bUnderwater ||
+							 (mlUseItemMode == eUseItemMode_Hold &&
+							  cInput_IsTriggered(mlUseAction) == false && 
+							  mbAllowLeavingState);
+			
+			mbLeaveState = bLeaving;
+			Player_SetCanRun(mbLeaveState);
+		}
+		
+		//////////////////
+		// Adjust left arm?
+		//if (mbUsesOtherHandAnims)
+		{
+			bool bAdjustOtherArm = Item_GetHandHeldState(mItemHand == eItemHandlerHand_Left ? eItemHandlerHand_Right : eItemHandlerHand_Left) == 0;
+			PlayerBody_SetArmAnimationPitch(true, mItemHand == eItemHandlerHand_Left && bAdjustOtherArm, mItemHand == eItemHandlerHand_Right && bAdjustOtherArm);
+			PlayerBody_SetArmAnimationYaw(true, mItemHand == eItemHandlerHand_Left && bAdjustOtherArm, mItemHand == eItemHandlerHand_Right && bAdjustOtherArm);
+		}
+		
+		UpdateAnimationStates(afTimeStep);
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateAnimationStates(float afTimeStep)
+	{
+		////////////////
+		// Intro
+		if (mlAnimState == eUsingItemAnimState_Intro)
+		{
+			///////////////
+			// Update state
+			float fFadeTime = GetIntroFadeTime();
+			int lState = UpdateStateAnims(msFocusIntroAnim_R, msFocusIntroAnim_L, msFocusIntroAnim_Item, false, false, fFadeTime);
+			mfIntroTimer += afTimeStep;
+			
+			if (lState == 1 && mfIntroRelTime > 0)
+			{
+				////////////////////////
+				// Set relative time pos of the animations to make them less jarring
+				cAnimationState@ pPlayerIntroAnimR = PlayerBody_GetAnimationState(msFocusIntroAnim_R);
+				cAnimationState@ pPlayerIntroAnimL = PlayerBody_GetAnimationState(msFocusIntroAnim_L);
+				iLuxEntity@ pItem = cLux_ID_Entity(m_idItemEntity);
+				cAnimationState@ pItemAnim = pItem !is null ? pItem.GetMeshEntity().GetAnimationStateFromName(msFocusIntroAnim_Item) : null;
+				
+				if (pPlayerIntroAnimR !is null) pPlayerIntroAnimR.SetRelativeTimePosition(mfIntroRelTime);
+				if (pPlayerIntroAnimL !is null) pPlayerIntroAnimL.SetRelativeTimePosition(mfIntroRelTime);
+				if (pItemAnim !is null) pItemAnim.SetRelativeTimePosition(mfIntroRelTime);
+				
+				mfIntroRelTime = 0;
+			}
+			
+			////////////////
+			// State over
+			if (lState == -1)
+				ChangeAnimState(eUsingItemAnimState_Loop);
+				
+			////////////////
+			// Leave state?
+			if (mbLeaveState && mfIntroTimer >= mfIntroDelayTime)
+				ChangeAnimState(eUsingItemAnimState_Outro);
+		}
+		
+		////////////////
+		// Loop
+		else if (mlAnimState == eUsingItemAnimState_Loop)
+		{
+			float fFadeTime = 0.1f;			
+			if (mlPrevAnimState == eUsingItemAnimState_Intro || 
+				mlPrevAnimState == eUsingItemAnimState_Use)
+			{
+				fFadeTime = 0.f;
+			}
+			
+			///////////////
+			// Update state
+			int lState = UpdateStateAnims(msFocusLoopAnim_R, msFocusLoopAnim_L, msFocusLoopAnim_Item, true, false, fFadeTime);
+			
+			if (lState == 1 && mbEquipLighterInLeftHand)
+			{
+				tString sLighter = Item_GetTempRTUItemEntity();
+				Entity_PlayAnimation(sLighter, gsUsingItemBase_FocusLoopAnim_Lighter, 0.1, true);
+			}
+			
+			////////////////
+			// Leave state?
+			if (mbLeaveState)
+			{
+				ChangeAnimState(eUsingItemAnimState_Outro);
+				ResetZoom();
+			}
+		}
+
+		////////////////
+		// Outro
+		else if (mlAnimState == eUsingItemAnimState_Outro)
+		{			
+			PlayOutroAndLeaveState();
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	float GetIntroFadeTime()
+	{
+		return mfIntroRelTime > 0 ? 0.3f : 0.1f;
+	}
+	
+	//------------------------------------------------------------
+	
+	void PlayOutroAndLeaveState()
+	{
+		float fFadeTime = 0.1f;
+		float fRelTime = 0;
+		if (mlPrevAnimState == eUsingItemAnimState_Intro)
+		{
+			fRelTime = GetAnimStateRelTime(eUsingItemAnimState_Outro, eUsingItemAnimState_Intro);
+			//fFadeTime = 1;
+		}
+		
+		if (msFocusOutroAnim_R != "") PlayerBody_PlayAnimation(msFocusOutroAnim_R, ePlayerBodyAnimationLayer_RightArm, false, false, mItemHand != eItemHandlerHand_Right, fFadeTime, 1, fRelTime);
+		if (msFocusOutroAnim_L != "") PlayerBody_PlayAnimation(msFocusOutroAnim_L, ePlayerBodyAnimationLayer_LeftArm, false, false, mItemHand != eItemHandlerHand_Left, fFadeTime, 1, fRelTime);
+		
+		if (mbEquipLighterInLeftHand)
+		{
+			cLuxMap@ pMap = cLux_GetCurrentMap();
+			if (pMap !is null)
+			{
+				tString sLighter = Item_GetTempRTUItemEntity();
+				pMap.AddTimer(sLighter, 0.15f, "$_UsingItem_OnTimer_CloseLighter");
+				pMap.SetTimerUserVarString(sLighter, gsUsingItemBase_FocusOutroAnim_Lighter);
+			}
+		}
+		
+		Item_RemoveTempRTUItem(msFocusOutroAnim_L);
+		
+		if (msFocusOutroAnim_Item != "")
+		{
+			iLuxEntity@ pItem = cLux_ID_Entity(m_idItemEntity);
+			pItem.PlayAnimation(msFocusOutroAnim_Item, fFadeTime, false);
+			
+			cAnimationState@ pItemAnim = pItem.GetMeshEntity().GetAnimationStateFromName(msFocusOutroAnim_Item);
+			pItemAnim.SetRelativeTimePosition(fRelTime);
+		}
+		
+		tString sFocusOutroAnim = msFocusOutroAnim_R == "" ? msFocusOutroAnim_L : msFocusOutroAnim_R;
+		Item_SetFocusOutroAnimation(sFocusOutroAnim);
+		
+		mBaseObj.mpPlayer.ChangeState(ePlayerState_Normal);
+	}
+	
+	//------------------------------------------------------------
+	
+	void PostUpdate(float afTimeStep) {}	
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool OnAction(int alAction, bool abPressed)
+	{
+		if (alAction == eAction_Jump) return false;
+		if (alAction == eAction_Crouch) return true;
+		
+		////////////////
+		// Interact
+		if (alAction == eAction_Interact && abPressed)
+		{
+			////////////////
+			// Mark use hint as given
+			if (msItemType != "Gun" && msItemType != "DynamoLantern")
+			{
+				tString sHint = Hint_GetCurrentEntry();
+				if (sHint == "HintUseItem" || sHint == "HintUseItem_Toggle")
+					Hint_StopHint();
+				
+				Hint_AddAsGiven("Hints", "HintUseItem");
+				Hint_AddAsGiven("Hints", "HintUseItem_Toggle");
+			}
+		
+			//////////////////
+			// Use
+			if (!mbLeaveState)
+			{
+				//////////////////
+				// State check
+				if (!CheckCanUse())
+				{
+					return false;
+				}
+				
+				OnUse();
+				return false;
+			}
+		}
+		
+		////////////////
+		// Stop using?
+		else if (alAction == mlUseAction &&
+				 mlUseItemMode == eUseItemMode_Toggle &&
+				 abPressed &&
+				 mfIntroTimer > 0.1f &&
+				 mbAllowLeavingState)
+		{
+			mbLeaveState = true;
+			Player_SetCanRun(true);
+			return false;
+		}
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool CheckCanUse() 
+	{
+		return mlAnimState == eUsingItemAnimState_Loop || (mlAnimState == eUsingItemAnimState_Intro && mfIntroTimer >= mfIntroDelayTime);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnUse() 
+	{
+		iScrItemHandler_Interface @pHandler = cast<iScrItemHandler_Interface>( cLux_GetUserModuleFromID(eModuleType_Custom_ItemHandler) );
+		
+		///////////////////////////////////////////////
+		// If the item can be used on things in the map
+		cCamera @pCam = mBaseObj.mpPlayer.GetCamera();
+		if(mPickBasics.UpdatePickCheck(pCam, false))
+		{
+			if (pHandler.CanUseHeldItemOnWorld(eItemHandlerHand_Right, mPickBasics.GetFocusedEntity().GetName()))
+			{
+				Item_UseHeldOnWorld(eItemHandlerHand_Right, mPickBasics.GetFocusedEntity().GetName());
+				return;
+			}
+		}
+		
+		//////////////////////////////////////////////
+		// If the item can be used on you
+		if (pHandler.CanUseHeldItemOnSelf(eItemHandlerHand_Right))
+		{
+			Item_UseHeldOnSelf(eItemHandlerHand_Right);
+			return;
+		}
+	}
+	
+	//------------------------------------------------------------
+
+	bool OnAnalogInput(int alAnalogId, const cVector3f &in avAmount)
+	{				
+		////////////////
+		// Disable lean
+		if (alAnalogId == eAnalogType_Lean)
+		{
+			return false;
+		}
+		
+		////////////////
+		// Look around!
+		if (alAnalogId == eAnalogType_Look)
+		{			
+			////////////////
+			// Setup vars
+			iCharacterBody@ pCharBody = mBaseObj.mpPlayer.GetCharacterBody();
+			cCamera@ pCam = mBaseObj.mpPlayer.GetCamera();
+			float fMul = Player_GetLookSpeedMul();
+			
+			////////////////
+			// Add yaw
+			pCharBody.AddYaw(avAmount.x * -1.f * fMul);
+			
+			////////////////
+			// Set pitch
+			if (mbFadePitch == false)
+			{
+				float fPitch = pCam.GetPitch();			
+				fPitch += avAmount.y * -1.f * fMul;
+				
+				bool bCustomPitchLimits = mfMinPitch != 0.f || mfMaxPitch != 0.f;
+				bool bClampPitch = mbLeaveState == false || (mbLeaveState && mbClampPitchDuringOutro);
+				
+				if (bCustomPitchLimits && bClampPitch)
+				{
+					fPitch = cMath_Clamp(fPitch, mfMinPitch, mfMaxPitch);
+				}
+					
+				pCam.SetPitch(fPitch);
+			}
+			
+			return false;
+		}
+		if ((alAnalogId == eAnalogType_Move || alAnalogId == eAnalogType_GamepadMove) && Player_GetCrawling())
+		{
+			return false;
+		}
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnExitPressed()
+	{
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// BODY CALLBACKS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool AllowBuoyancy(iPhysicsBody @apBody) { return true; }
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// CHARACTER CALLBACK
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void CharBody_GravityCollide(iCharacterBody@ apCharBody, iPhysicsBody@ apBody, cCollideData @apCollideData) {}	
+	void CharBody_HitGround(iCharacterBody@ apCharBody,const cVector3f &in avVel) {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPERS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void ChangeAnimState(int alNewState)
+	{
+		if (mlAnimState == alNewState) return;
+		
+		OnAnimStateLeave(mlAnimState, alNewState);
+		
+		mlPrevAnimState = mlAnimState;
+		mlAnimState = alNewState;
+		
+		OnAnimStateEnter(mlAnimState, mlPrevAnimState);
+	}
+	
+	void OnAnimStateLeave(int alState, int alNewState) {}
+	void OnAnimStateEnter(int alState, int alPrevState) {}
+	
+	//------------------------------------------------------------
+	
+	void SetupPitchFade(float afMinPitch, float afMaxPitch, float afPitchFadeTime, bool abClampPitchDuringOutro)
+	{
+		mfMinPitch = afMinPitch;
+		mfMaxPitch = afMaxPitch;
+		
+		mfPitchFadeTime = afPitchFadeTime;
+		mfPitchFadeCount = afPitchFadeTime;
+		
+		mfStartPitch = mBaseObj.mpPlayer.GetCamera().GetPitch();
+		mfGoalPitch = cMath_Clamp(mfStartPitch, mfMinPitch, mfMaxPitch);		
+		
+		mbClampPitchDuringOutro = abClampPitchDuringOutro;
+		mbFadePitch = mfStartPitch != mfGoalPitch;
+	}
+	
+	//------------------------------------------------------------
+	
+	int UpdateStateAnims(const tString &in asAnimR, const tString &in asItemAnim, bool abLoop, bool abReturnToIdleAfterAnim, float afFadeTime)
+	{
+		////////////////
+		// Waiting for unequip? Escape!	
+		if (mbWaitForUnequip)
+			return 0;
+		
+		////////////////
+		// Setup vars		
+		iLuxEntity@ pItem = cLux_ID_Entity(m_idItemEntity);
+		cAnimationState@ pPlayerAnimR = PlayerBody_GetAnimationState(asAnimR);
+		cAnimationState@ pItemAnim = pItem !is null ? pItem.GetMeshEntity().GetAnimationStateFromName(asItemAnim) : null;
+		
+		bool bAnimStarted = pPlayerAnimR !is null && pPlayerAnimR.IsActive() == false;
+		bool bAnimOver = pPlayerAnimR !is null && pPlayerAnimR.IsActive() && pPlayerAnimR.IsOver();
+				
+		////////////////
+		// Play anims
+		if (pPlayerAnimR !is null && pPlayerAnimR.IsActive() == false)
+		{
+			PlayerBody_PlayAnimation(asAnimR, ePlayerBodyAnimationLayer_RightArm, abLoop, false, abReturnToIdleAfterAnim, afFadeTime);
+		}
+		
+		if (pItemAnim !is null && pItemAnim.IsActive() == false)
+		{
+			pItem.PlayAnimation(asItemAnim, afFadeTime, abLoop);
+		}
+		
+		////////////////
+		// Return value
+		int lRet = 0;		
+		if (bAnimStarted)
+		{
+			lRet = 1;
+		}
+		else if (bAnimOver)
+		{
+			lRet = -1; 
+		}
+		
+		return lRet;
+	}
+	
+	//------------------------------------------------------------
+	
+	int UpdateStateAnims(const tString &in asAnimR, const tString &in asAnimL, const tString &in asItemAnim, 
+						 bool abLoop, bool abReturnToIdleAfterAnim, float afFadeTime)
+	{
+		////////////////
+		// Waiting for unequip? Escape!	
+		if (mbWaitForUnequip)
+			return 0;
+		
+		if (mbUsesOtherHandAnims)
+		{
+			////////////////
+			// Play left hand anim
+			cAnimationState@ pPlayerAnimL = PlayerBody_GetAnimationState(asAnimL);
+			
+			if (pPlayerAnimL !is null && pPlayerAnimL.IsActive() == false)
+			{
+				PlayerBody_PlayAnimation(asAnimL, ePlayerBodyAnimationLayer_LeftArm, abLoop, false, abReturnToIdleAfterAnim, afFadeTime);		
+			}
+		}
+
+		////////////////
+		// Play the other anims
+		return UpdateStateAnims(asAnimR, asItemAnim, abLoop, abReturnToIdleAfterAnim, afFadeTime);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_OnAfterAnimationUpdate()
+	{
+		////////////////
+		// Setup vars
+		float fTimeStep = cScript_GetGlobalArgFloat(0);
+		float fFadeTime = 0.3f;
+		bool bFadeDoneL = false;
+		bool bFadeDoneR = false;
+		
+		////////////////
+		// Position right hand
+		{
+			float fWeightGoal = mbCustomBonePosActiveR ? 1.f : 0.f;
+			mfCustomBoneWeightR = cMath_IncreaseTo(mfCustomBoneWeightR, (1.f / fFadeTime) * fTimeStep, fWeightGoal);
+			float fT = cMath_Easing(eEasing_SineInOut, mfCustomBoneWeightR);		
+			
+			ApplyBoneOffsetFromCamera(msHandBone_R, msWristBone_R, mvHandBonePosRelativeToCamR, mfWristBonePitchOffset, mfWristBoneYawOffset, fT);
+									  
+			bFadeDoneL = cMath_Abs(fWeightGoal - mfCustomBoneWeightR) < 0.001f;
+		}
+			
+		////////////////
+		// Position left hand
+		{
+			float fWeightGoal = mbCustomBonePosActiveL ? 1.f : 0.f;
+			mfCustomBoneWeightL = cMath_IncreaseTo(mfCustomBoneWeightL, (1.f / fFadeTime) * fTimeStep, fWeightGoal);
+			float fT = cMath_Easing(eEasing_SineInOut, mfCustomBoneWeightL);		
+
+			ApplyBoneOffsetFromCamera(msHandBone_L, msWristBone_L, mvHandBonePosRelativeToCamL, mfWristBonePitchOffset, mfWristBoneYawOffset, fT);
+									  
+			bFadeDoneR = cMath_Abs(fWeightGoal - mfCustomBoneWeightR) < 0.001f;
+		}
+		
+		////////////////
+		// Return
+		if (mBaseObj.mpPlayer.GetCurrentStateId() != mBaseObj.GetId() &&
+			bFadeDoneL && 
+			bFadeDoneR)
+		{
+			cScript_SetGlobalReturnBool(false);
+		}
+		else
+		{
+			cScript_SetGlobalReturnBool(true);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void ApplyBoneOffsetFromCamera(const tString &in asHandBone, const tString &in asWristBone, 
+								   const cVector3f &in avPosOffset, float afPitchOffset, float afYawOffset, float afWeight)
+	{
+		////////////////////
+		// Setup vars
+		cCamera@ pCam = mBaseObj.mpPlayer.GetCamera();		
+		iLuxEntity@ pEnt = cLux_ID_Entity(PlayerBody_GetEntityID());
+		cMeshEntity@ pMeshEnt = pEnt !is null ? pEnt.GetMeshEntity() : null;		
+		cBoneState@ pHandBone = pMeshEnt !is null ? pMeshEnt.GetBoneStateFromName(asHandBone) : null;
+		cBoneState@ pWristBone = pMeshEnt !is null ? pMeshEnt.GetBoneStateFromName(asWristBone) : null;		
+		cNode3D@ pCameraSocket = pEnt !is null ? pMeshEnt.GetSocket("CameraSocket") : null;
+			
+		if (pCam is null) return;
+		if (pHandBone is null) return;
+		if (pWristBone is null) return;
+		if (pCameraSocket is null) return;
+			
+		////////////////////
+		// Apply pos offset to hand	
+		cVector3f vPosOffset = avPosOffset + cLux_GetPlayer().GetCameraPosAddSum();	
+		cVector3f vGoalPos = pCameraSocket.GetWorldPosition() + (pCam.GetRight() * vPosOffset.x) +
+																(pCam.GetUp() * vPosOffset.y) +
+																(pCam.GetForward() * vPosOffset.z);
+																
+		cMatrixf mtxNew = pHandBone.GetWorldMatrix();
+		cVector3f vNewPos = mtxNew.GetTranslation() * (1.f - afWeight) + vGoalPos * afWeight;
+		mtxNew.SetTranslation(vNewPos);
+		pHandBone.SetWorldMatrix(mtxNew);
+		
+		////////////////////
+		// Apply angle offset to wrist
+		cQuaternion qRotPitch;
+		qRotPitch.FromAngleAxis(afPitchOffset * afWeight, pCam.GetRight());
+		
+		cQuaternion qRotYaw;
+		qRotYaw.FromAngleAxis(afYawOffset, pCam.GetUp());
+		
+		cMatrixf mtxWrist = pWristBone.GetWorldMatrix();
+		cVector3f vWristPos = mtxWrist.GetTranslation();
+		
+		mtxWrist = cMath_MatrixMul(cMath_MatrixQuaternion(qRotYaw * qRotPitch), mtxWrist);
+		mtxWrist.SetTranslation(vWristPos);
+		
+		pWristBone.SetWorldMatrix(mtxWrist);
+	}
+	
+	//------------------------------------------------------------
+	
+	void AddInteractableEntityClass(const tString &in asClass)
+	{
+		if (asClass == "") return;
+		
+		m_setInteractableEntityClasses.Add(asClass);
+		mbCanInteractWithWorld = true;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetCanInteractWithFocusedEntity()
+	{
+		/////////////////
+		// Setup vars
+		iLuxEntity@ pPickedEnt = mPickBasics.GetFocusedEntity();
+		bool bCanInteractWithEnt = false;
+		
+		/////////////////
+		// Is ent of interactable type?
+		if (pPickedEnt !is null && m_setInteractableEntityClasses.Exists(pPickedEnt.GetClassName()))
+		{
+			bCanInteractWithEnt = true;
+		}
+		
+		return bCanInteractWithEnt;
+	}
+	
+	//------------------------------------------------------------
+	
+	void EquipLighterInLeftHand()
+	{
+		mbEquipLighterInLeftHand = true;
+		
+		if (mbWaitForUnequip == false)
+		{
+			CreateAndEquipLighterItem();
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void CreateAndEquipLighterItem()
+	{
+		Item_EquipTempRTUItem(ItemType_GetFirstInInventory("Lighter"), eItemHandlerHand_Left);
+		PlayerBody_SetArmAnimationPitch(true, false, true);
+		
+		tString sLighter = Item_GetTempRTUItemEntity();
+		cScript_RunGlobalFunc(sLighter, "cScrPropLighter", "_Global_OnItemTakenOut");
+		Entity_PlayAnimation(sLighter, gsUsingItemBase_FocusIntroAnim_Lighter);
+	}
+	
+	//------------------------------------------------------------
+	
+	void WaitForUnequip(eItemHandlerHand aHand, const tString &in asSkipItemType = "")
+	{
+		if (Item_GetHeldType(mWaitForUnequipHand) != asSkipItemType)
+		{
+			mbWaitForUnequip = true;
+			mWaitForUnequipHand = aHand;
+
+			msWaitForUnequipItem = Item_GetHeld(mWaitForUnequipHand);
+			Item_Unequip(msWaitForUnequipItem);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	float GetAnimStateRelTime(eUsingItemAnimState aState, eUsingItemAnimState aBlendState)
+	{
+		float fBlendTime = _GetAnimStateRelTime_GetBlendTime(aBlendState);
+		if (fBlendTime >= 1.0f) return 0.0f;
+		
+		// clamp and ease for the best possible look when blending the animations, this is all a bit magic numbery
+		float fRel = cMath_Max(fBlendTime, 0.2f);
+		return cMath_Easing(eEasing_ExpoIn, 1.0f - fRel);
+	}
+	
+	//------------------------------------------------------------
+	
+	float _GetAnimStateRelTime_GetBlendTime(eUsingItemAnimState aState)
+	{
+		tString sAnimName = "";
+		switch (aState)
+		{
+			case eUsingItemAnimState_Intro: sAnimName = msFocusIntroAnim_R != "" ? msFocusIntroAnim_R : msFocusIntroAnim_L; break;
+			case eUsingItemAnimState_Outro: sAnimName = msFocusOutroAnim_R != "" ? msFocusOutroAnim_R : msFocusOutroAnim_L; break;
+		}
+		
+		if (sAnimName == "") return 1.0f;
+		
+		cAnimationState@ pAnim = PlayerBody_GetAnimationState(sAnimName);
+		
+		if (pAnim is null || pAnim.IsActive()==false) return 1.0f;
+		
+		return pAnim.GetRelativeTimePosition();
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetShowItemPrompt()
+	{
+		return CheckCanUse();
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetZoom()
+	{
+		if (mbDoZoom == false) return;
+		mBaseObj.mpPlayer.FadeCameraFOVMulTo(ePlayerFOVMul_UseItem, 1.f, gfUsingItemBase_ZoomSpeed * 0.75f);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetItemPrompt()
+	{
+		tString sPrompt = msItemPrompt;
+		
+		if (GetCanInteractWithFocusedEntity())
+		{
+			sPrompt = "UseItem";
+		}
+		else
+		{
+			iScrItemHandler_Interface@ pHandler = cast<iScrItemHandler_Interface>( cLux_GetUserModuleFromID(eModuleType_Custom_ItemHandler) );
+			if (mPickBasics.UpdatePickCheck(mBaseObj.mpPlayer.GetCamera(), false))
+			{
+				if (pHandler !is null &&
+					pHandler.CanUseHeldItemOnWorld(eItemHandlerHand_Right, mPickBasics.GetFocusedEntity().GetName()))
+				{
+					sPrompt = "UseItem";
+				}
+			}
+		}
+		
+		cScript_SetGlobalReturnString(sPrompt);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetShowUseItemPrompt()
+	{
+		cScript_SetGlobalReturnBool(GetShowItemPrompt());
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetCanUse()
+	{
+		cScript_SetGlobalReturnBool(CheckCanUse());
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{			
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	float mfPitchFadeCount = 0.f;
+	float mfPitchFadeTime = 0.f;
+	float mfStartPitch = 0.f;
+	float mfGoalPitch = 0.f;
+	float mfMinPitch = 0.f;
+	float mfMaxPitch = 0.f;
+	
+	float mfAlignYawCount = 0.f;
+	
+	float mfCustomBoneWeightL = 0.f;
+	float mfCustomBoneWeightR = 0.f;
+	bool mbCustomBonePosActiveR = false;	
+	bool mbCustomBonePosActiveL = false;	
+	
+	int mlUseAction = eAction_UseItem;
+	int mlAnimState = -1;
+	int mlPrevAnimState = -1;
+	
+	bool mbLeaveState = false;
+	bool mbAllowLeavingState = true;
+	bool mbFadePitch = false;
+	bool mbClampPitchDuringOutro = true;
+	bool mbCanInteractWithWorld = false;
+	bool mbCheckCanInteractOnWorldInteract = false;
+	bool mbEquipLighterInLeftHand = false;
+	bool mbAutoEquipNextItem = false;
+	bool mbWaitForUnequip = false;
+	bool mbDoZoom = true;
+	
+	bool mbUsesOtherHandAnims = false;
+	tString msOnEnterUnequipException = "";
+	
+	tString msFocusIntroAnim_R;
+	tString msFocusIntroAnim_L;
+	tString msFocusIntroAnim_Item;
+	tString msFocusLoopAnim_R;
+	tString msFocusLoopAnim_L;
+	tString msFocusLoopAnim_Item;
+	tString msFocusOutroAnim_R;
+	tString msFocusOutroAnim_L;
+	tString msFocusOutroAnim_Item;
+	
+	float mfIntroTimer = 0;
+	float mfIntroDelayTime = 0.3f;
+	float mfIntroRelTime = 0;
+	
+	float mfWristBonePitchOffset = 0.f;
+	float mfWristBoneYawOffset = 0.f;
+	cVector3f mvHandBonePosRelativeToCamL = cVector3f(0.f);
+	cVector3f mvHandBonePosRelativeToCamR = cVector3f(0.f);
+	
+	tString msHandBone_R = gsUsingItemBase_RightHandBone;
+	tString msHandBone_L = gsUsingItemBase_LeftHandBone;
+	tString msWristBone_R = gsUsingItemBase_RightWristBone;
+	tString msWristBone_L = gsUsingItemBase_LeftWristBone;
+	
+	eItemHandlerHand mItemHand = eItemHandlerHand_Right;
+	eItemHandlerHand mWaitForUnequipHand = eItemHandlerHand_Right;	
+	
+	tString msWaitForUnequipItem = "";
+	float mfEquipLastItemOnLeaveDelay = 0.f;
+	
+	tString msItemEntity = "";
+	tString msItemType = "";
+	
+	tString msItemPrompt = "";
+	
+	tID m_idItemEntity = tID_Invalid;
+	
+	cScriptStringSet m_setInteractableEntityClasses;
+	
+	cUtility_PickBasics mPickBasics;
+	
+	int mlUseCrossHairState = eCrossHairState_Default;
+	int mlDefaultCrossHairState = eCrossHairState_Aim;
+	
+	[nosave] int mlUseItemMode = eUseItemMode_Hold;
+	
+	//------------------------------------------------------------
+}

@@ -1,0 +1,510 @@
+#include "custom/props/Prop_Pickup.hps"
+#include "helpers/helper_player.hps"
+#include "helpers/helper_game.hps"
+#include "custom/helpers/helper_player_custom.hps"
+
+//------------------------------------------------------------
+
+const float gfTorch_DefaultBrightness = 1.8f;
+const float gfTorch_DefaultRadius = 4.5f;
+const float gfTorch_AimBrightnessMultiplier = 1.75f;
+const float gfTorch_MinFlameAngle = cMath_ToRad(-40.f);
+const float gfTorch_MaxFlameAngle = cMath_ToRad(40.f);
+
+const tString gsTorch_FireStartBone = "fire_up_01";
+const tString gsTorch_FireEndBone = "fire_up_02";
+
+//------------------------------------------------------------
+
+class cScrPropTorch : cScrPropPickup
+{
+	//------------------------------------------------------------
+	
+
+	void _Global_OnMapLeave()
+	{
+		//MapTransfer_LoadState_Torch(mfHealth);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_OnMapEnter()
+	{
+		//MapTransfer_LoadState_Torch(fTempHealth);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_CopyFromItemEntity() override
+	{
+		cScrPropPickup::_Global_CopyFromItemEntity();
+		
+		Entity_SetVarFloat(mBaseObj.GetName(), "Item_Health", mfHealth);
+		
+		tString sSource = cScript_GetGlobalArgString(0);
+		
+		////////////////////////
+		// Save ent data to item
+        cScript_SetGlobalArgFloat(0, mfHealth);
+        cScript_SetGlobalArgBool(1, mbLitOnceBefore);
+		
+		cScript_RunGlobalFunc(sSource, "cScrPropTorch", "_Global_CopyValues");
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_CopyValues()
+	{
+		/////////////////////
+		// Get data from item
+		//if (Item_GetHeldEntity(eItemHandlerHand_Right) == mBaseObj.GetName())
+		//	return;
+		
+        mfHealth = cScript_GetGlobalArgFloat(0);
+        mbLitOnceBefore = cScript_GetGlobalArgBool(1);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetAnimationNameSpecific()
+	{
+		const float fBurnDuration = GameDifficulty_GetSettingValueByID_Float(eGameDifficultySetting_TorchBurnDuration);
+		tString sType = cScript_GetGlobalArgString(1);
+		tString sReturn = "";
+		if (sType == "draw")
+		{
+			if ((mfHealth >= 1.0f && mbLitOnceBefore==false) || mbIsBeingLit)
+				sReturn = "tool_torch_draw_unlit";
+		}
+		
+		cScript_SetGlobalReturnString(sReturn);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_OnItemTakenOut()
+	{
+		mbIsBeingPutAway = false;
+		mbIsBeingLit = false;
+		
+		cLux_AddDebugMessage("mbLitOnceBefore " + mbLitOnceBefore);
+		cLux_AddDebugMessage("mfHealth " + mfHealth);
+		
+		mBaseObj.GetSoundEntity(1).Stop(false);
+		
+		mfHealth = Entity_GetVarFloat(mBaseObj.GetName(), "Item_Health");
+		
+		if (GetIsBurned()==false)
+		{
+			iLight@ pLight = mBaseObj.GetLight(0);
+			if (pLight !is null)
+			{
+				pLight.SetBrightness(0.f);
+				pLight.FadeBrightnessTo(gfTorch_DefaultBrightness, 1.f);
+			}
+			
+			if (mfHealth >= 1.0f && mbLitOnceBefore==false)
+			{
+				// Delay the state change as _Global_OnItemTakenOut gets called inside of a OnStateLeave call
+				mBaseObj.Timer_Add("ChangePlayerState", 0.001f, "OnTimer_ChangePlayerState");
+				
+				mBaseObj.SetEffectsActive(false, false);
+				cSubMeshEntity@ pMesh_X = mBaseObj.GetMeshEntity().GetSubMeshEntityName("m_flame_X");
+				if (pMesh_X !is null) pMesh_X.SetVisible(false);
+				cSubMeshEntity@ pMesh_Z = mBaseObj.GetMeshEntity().GetSubMeshEntityName("m_flame_Z");
+				if (pMesh_Z !is null) pMesh_Z.SetVisible(false);
+				
+				mBaseObj.PlayAnimation("torch_idle", 0.f, true);
+				mBaseObj.SetAnimationCallbackActive(true);
+				
+				mBaseObj.Timer_Add("EnableEffects", 1.5f, "OnTimer_EnableEffects");
+				
+				////////////////
+				// Equip the lighter as well
+				Item_Unequip(ItemType_GetFirstInInventory("DynamoLantern"), true);
+				
+				cLuxMap@ pMap = mBaseObj.GetMap();
+				if (pMap !is null)
+				{
+					Item_EquipTempRTUItem(ItemType_GetFirstInInventory("Lighter"), eItemHandlerHand_Left);
+					PlayerBody_SetArmAnimationPitch(true, false, true);
+								
+					PlayerBody_PlayAnimation("tool_torch_draw_larm", ePlayerBodyAnimationLayer_LeftArm, false, false, true);
+					Item_RemoveTempRTUItem("tool_torch_draw_larm");
+					
+					pMap.AddTimer(Item_GetTempRTUItemEntity(), 0.4f, "$_IgniteTorch_OnTimer_IgniteLighter");
+				}
+				
+				mbIsBeingLit = true;
+				mbLitOnceBefore = true;
+				cLux_AddDebugMessage("mbLitOnceBefore #2 " + mbLitOnceBefore);
+			}
+			
+			else if (mBaseObj.GetEffectsActive()==false)
+			{
+				LightFire();
+			}
+			else
+			{
+				Sound_CreateAtEntity("TorchBurningSoundStart", "player/tools/torch/start", mBaseObj.GetName());
+			}
+		}
+	}
+	
+	void OnTimer_ChangePlayerState(uint64 alId)
+	{
+		cLux_GetPlayer().ChangeState(ePlayerState_Custom_LightingTorch);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_OnItemStartPutAway()
+	{
+		Entity_SetVarFloat(mBaseObj.GetName(), "Item_Health", mfHealth);
+		Sound_CreateAtEntity("TorchBurningSoundEnd", "player/tools/torch/end", mBaseObj.GetName());
+		mbIsBeingPutAway = true;
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_OnItemPutAway()
+	{
+		
+	}
+	
+	//------------------------------------------------------- 
+	
+	void _Global_GetIsBurned()
+	{
+		cScript_SetGlobalReturnBool(GetIsBurned());
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetHealth()
+	{
+		cScript_SetGlobalReturnFloat(mfHealth);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetTorchAimAttributes()
+	{
+		iLight@ pLight = mBaseObj.GetLight(0);
+		if (pLight is null) return;
+				
+		mbPlayerIsAiming = cScript_GetGlobalArgBool(0);
+		
+		tString sSound = mbPlayerIsAiming ? "player/tools/torch/brandish_start" : "player/tools/torch/brandish_end";
+		Sound_CreateAtEntity("TorchBurningSoundAim", sSound, mBaseObj.GetName());
+		
+		if (mbPlayerIsAiming)
+		{
+			mBaseObj.GetSoundEntity(0).FadeOut(0.5);
+			mBaseObj.GetSoundEntity(1).FadeIn(0.5);
+		}
+		else
+		{
+			mBaseObj.GetSoundEntity(1).FadeOut(0.5);
+			mBaseObj.GetSoundEntity(0).FadeIn(0.5);
+		}
+		
+		float fAimBrightnessMul = mbPlayerIsAiming ? gfTorch_AimBrightnessMultiplier : 1.f;
+		pLight.FadeBrightnessTo(gfTorch_DefaultBrightness * fAimBrightnessMul, 0.25f);
+		
+		float fAimRadiusMul = mbPlayerIsAiming ? gfTorch_AimBrightnessMultiplier : 1.f;
+		cColor vColor = pLight.GetDiffuseColor();
+		pLight.FadeTo(vColor, gfTorch_DefaultRadius * fAimRadiusMul, 0.25f);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetBurnSpeedMul()
+	{
+		mfBurnSpeedMul = cScript_GetGlobalArgFloat(0);
+		mfBurnSpeedMul = cMath_Max(0.f, mfBurnSpeedMul);
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetCanBurn()
+	{
+		return Sketchbook_IsOpen() == false;
+	}
+	
+	//------------------------------------------------------------
+	
+	// TODO: Remove this. No longer a potential case since we introduced the new inventory.
+	// Called only when the item is held and dropped
+	void _Global_OnHeldItemDrop()
+	{
+		mBaseObj.SetInteractionDisabled(true);
+		mBaseObj.SetEffectsActive(false, false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+		mfHealth = 1.f;
+		mfBurnSpeedMul = 1.f;
+		mbPlayerIsAiming = false;
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnUpdate(float afTimeStep)
+	{
+		cScrPropPickup::OnUpdate(afTimeStep);
+		
+		if (mbIsBeingPutAway && mBaseObj.GetEffectsActive())
+		{
+			cAnimationState@ pAnim = PlayerBody_GetAnimationState("tool_torch_holster");
+			if (pAnim is null || pAnim.GetRelativeTimePosition() >= 0.5)
+			{
+				PutFireOff();
+			}
+		}
+		
+		//////////
+		// Burning
+		if (GetIsBurned()==false)
+		{
+			if (mfLightT < 1.0f)
+			{
+				mfLightT = cMath_Min(mfLightT+afTimeStep*3.0f, 1.0f);
+				
+				cSubMeshEntity@ pMesh_X = mBaseObj.GetMeshEntity().GetSubMeshEntityName("m_flame_X");
+				cSubMeshEntity@ pMesh_Z = mBaseObj.GetMeshEntity().GetSubMeshEntityName("m_flame_Z");
+				
+				if (pMesh_X !is null) pMesh_X.SetCoverageAmount(mfLightT);
+				if (pMesh_Z !is null) pMesh_Z.SetCoverageAmount(mfLightT);
+			}
+			
+			if (GetCanBurn())
+			{
+				float fBurningSpeed = mfBurnSpeedMul;
+				
+				////////////////
+				// player moving
+				if (Player_GetSpeed() > 1.f)
+				{
+					///////////////
+					// Running? 
+					if (Player_GetRunning())
+					{
+						fBurningSpeed *= 1.5f;
+					}
+					
+					///////////////////
+					// Aiming the torch?
+					else
+					{
+						float fAimMoveMul = mbPlayerIsAiming ? 1.5f : 1.25f;
+						fBurningSpeed *= fAimMoveMul;
+					}
+				}
+				
+				////////////////////
+				// player stationary
+				else
+				{
+					if (mbPlayerIsAiming)
+						fBurningSpeed *= 1.5f;
+				}
+				
+				///////////////////////////////
+				// Burning
+				const float fBurnDuration = GameDifficulty_GetSettingValueByID_Float(eGameDifficultySetting_TorchBurnDuration);
+
+				if (mfHealth > 0.f && fBurnDuration > 0.f && fBurnDuration < 1000.f)
+				{
+					float fBurnSpeed = 1.f / fBurnDuration * (afTimeStep * fBurningSpeed);
+					mfHealth -= fBurnSpeed;
+				}
+			}
+		}
+		
+		/////////////
+		// Burned out
+		else
+		{
+			///////////////
+			// Drop if held
+			if (Item_GetHeldEntity(eItemHandlerHand_Right)==mBaseObj.GetName())
+				Item_DropAsEntity(Item_GetHeld(eItemHandlerHand_Right));
+			else
+				PutFireOff();
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnPostUpdate(float afTimeStep)
+	{	
+		//////////////
+		// Update shadow casting
+		bool bShadowsActive = cLux_GetUserConfig().GetBool("Graphics", "LanternShadowsActive", true);
+		if(Platform_IsXboxOne() || Platform_IsPS4()) bShadowsActive = false;
+
+		/////////////////
+		// Align spotlight with cam
+		cLightSpot@ pSpot = cast<cLightSpot>(mBaseObj.GetLightFromName("Light_Spot_1"));
+		if (pSpot !is null)
+		{
+			cMatrixf mtxCam = cLux_GetPlayer().GetCamera().GetMatrix();	
+			cMatrixf mtxNew = pSpot.GetWorldMatrix();
+			mtxNew.SetRotation(mtxCam);
+			pSpot.SetWorldMatrix(mtxNew);	
+			pSpot.SetCastShadows(bShadowsActive);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnAfterAnimationUpdate(cMeshEntity@ apFunctions, float afTimeStep)
+	{
+		///////////////////////
+		// Setup vars
+		cCamera@ pCam = cLux_GetPlayer().GetCamera();
+		cBoneState@ pStartBone = apFunctions.GetBoneStateFromName(gsTorch_FireStartBone);
+		cBoneState@ pEndBone = apFunctions.GetBoneStateFromName(gsTorch_FireEndBone);
+		
+		if (pCam is null) return;
+		if (pStartBone is null) return;
+		if (pEndBone is null) return;
+		
+		///////////////////////
+		// Keep flame pointing upwards
+		{
+			//////////////////
+			// Start bone
+			cMatrixf mtxStartBone = pStartBone.GetLocalMatrix();
+			mtxStartBone = cMath_MatrixMul(cMath_MatrixRotateY(cMath_ToRad(-90.f)), mtxStartBone);
+			pStartBone.SetMatrix(mtxStartBone, true);
+			
+			//////////////////
+			// End bone
+			cMatrixf mtxEndBone = pEndBone.GetWorldMatrix();	
+					
+			cVector3f vFwd = mtxEndBone.GetTranspose().GetForward();
+			vFwd.y = 0.f;
+			vFwd.Normalize();
+			
+			cVector3f vRight = cVector3f_Up;
+			cVector3f vUp = cMath_Vector3Normalize(cMath_Vector3Cross(vFwd, vRight));
+			
+			cMatrixf mtxEndBoneNew = cMath_MatrixUnitVectors(vRight, vUp, vFwd, cVector3f(0.f));
+			mtxEndBoneNew = cMath_MatrixMul(cMath_MatrixScale(0.01f), mtxEndBoneNew);
+			mtxEndBoneNew.SetTranslation(mtxEndBone.GetTranslation());
+			
+			pEndBone.SetWorldMatrix(mtxEndBoneNew);
+		}
+		
+		///////////////////////
+		// Apply sway		
+		float fCamYaw = pCam.GetYaw();			
+		float fYawDiff = fCamYaw - mfPrevCamYaw;
+		mfPrevCamYaw = fCamYaw;
+		
+		float fAngleGoal = cMath_Clamp(fYawDiff * 30.f, gfTorch_MinFlameAngle, gfTorch_MaxFlameAngle);		
+		float fAngleAdd = cMath_Abs(cMath_Sign(fAngleGoal - mfSwayAngle)) * 3.f * afTimeStep;
+		mfSwayAngle = cMath_IncreaseTo(mfSwayAngle, fAngleAdd, fAngleGoal);
+		
+		cMatrixf mtxLocal = pEndBone.GetLocalMatrix();
+		cMatrixf mtxSway = cMath_MatrixRotateX(mfSwayAngle);
+		mtxLocal = cMath_MatrixMul(mtxSway, mtxLocal);
+		
+		pEndBone.SetMatrix(mtxLocal, true);
+	}
+	
+	//------------------------------------------------------------
+	
+	float DrawDebugOutput(cGuiSet@ apSet, iFontData@ apFont,float afY)
+	{
+		cAnimationState@ pState = mBaseObj.GetCurrentAnimationState();
+		tString sAnim = pState !is null ? pState.GetName() : "";
+		float fT = pState !is null  ? pState.GetRelativeTimePosition() : 0.f;
+		
+		afY = cLux_DrawDebugText("------------ TORCH ------------", afY);
+		afY = cLux_DrawDebugText("Health: " + mfHealth, afY);
+		afY = cLux_DrawDebugText("Anim: " + sAnim + ", T: " + fT, afY);
+		
+		return afY;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetIsBurned()
+	{
+		return mfHealth <= 0.f;
+	}
+	
+	//------------------------------------------------------------
+	
+	void PutFireOff()
+	{
+		mBaseObj.SetEffectsActive(false,true);
+		
+		cSubMeshEntity@ pMesh_X = mBaseObj.GetMeshEntity().GetSubMeshEntityName("m_flame_X");
+		cSubMeshEntity@ pMesh_Z = mBaseObj.GetMeshEntity().GetSubMeshEntityName("m_flame_Z");
+		
+		if (pMesh_X !is null) pMesh_X.SetVisible(false);
+		if (pMesh_Z !is null) pMesh_Z.SetVisible(false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void LightFire()
+	{
+		Sound_CreateAtEntity("TorchBurningSoundStart", "player/tools/torch/start", mBaseObj.GetName());
+
+		mBaseObj.SetEffectsActive(true, true);
+		cSubMeshEntity@ pMesh_X = mBaseObj.GetMeshEntity().GetSubMeshEntityName("m_flame_X");
+		cSubMeshEntity@ pMesh_Z = mBaseObj.GetMeshEntity().GetSubMeshEntityName("m_flame_Z");
+		
+		if (pMesh_X !is null)
+		{
+			pMesh_X.SetVisible(true);
+			pMesh_X.SetCoverageAmount(0);
+		}
+		if (pMesh_Z !is null)
+		{
+			pMesh_Z.SetVisible(true);
+			pMesh_Z.SetCoverageAmount(0);
+		}
+		
+		mfLightT = 0;
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnTimer_EnableEffects(uint64 alId)
+	{
+		LightFire();
+	}
+	
+	//------------------------------------------------------------
+    
+    /////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+    
+    //------------------------------------------------------------
+	
+	float mfBurnSpeedMul = 1.f;
+	bool mbPlayerIsAiming = false;
+	float mfHealth = 1.f;	
+	float mfSwayAngle = 0.f;
+	float mfPrevCamYaw = 0.f;
+	
+	float mfLightT = 10000;
+	
+	bool mbIsBeingPutAway = false;
+	bool mbIsBeingLit = false;
+	bool mbLitOnceBefore = false;
+	
+    //------------------------------------------------------------
+}
+
+//------------------------------------------------------------

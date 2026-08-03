@@ -1,0 +1,289 @@
+#include "effect/Effects.hps"
+
+/////////////////////////////////////////
+// SETTINGS - BLUR
+/////////////////////////////////////////
+
+const float gfBlurMul = 0.25f;
+
+class cFadeVariable
+{
+	cFadeVariable()
+	{
+		mfFadeSpeed = 0;
+	}
+
+	void Reset(float afDefault)
+	{
+		mfGoal = mfValue = afDefault;
+		mfFadeSpeed = 0;
+	}
+
+	void StartFade(float afGoal, float afTime)
+	{
+		mfGoal = afGoal;
+		mfFadeSpeed = (mfGoal - mfValue) / cMath_Max(0.000001f, afTime);
+	}
+
+	void Update(float afTimeStep)
+	{
+		mfValue += mfFadeSpeed * afTimeStep;
+
+		if(mfFadeSpeed < 0 && mfValue <= mfGoal || 
+		   mfFadeSpeed > 0 && mfValue >= mfGoal)
+		{
+			mfValue = mfGoal;
+			mfFadeSpeed = 0;
+		}
+	}
+
+	bool IsActive()
+	{
+		return mfFadeSpeed != 0;
+	}
+
+	float mfValue;
+	float mfFadeSpeed;
+	float mfGoal;
+}
+
+class cBlurInstance
+{
+	cBlurInstance()
+	{
+		mAmount.Reset(0.0f);
+	}
+
+	cBlurInstance(int alID)
+	{
+		mlID = alID;
+		mAmount.Reset(0.0f);
+	}
+
+	void Start(float afAmount, float afTime)
+	{
+		mAmount.Reset(0);
+		mAmount.StartFade(afAmount, afTime);
+	}
+
+	void FadeAmount(float afAmount, float afTime)
+	{
+		mAmount.StartFade(afAmount, afTime);
+	}
+
+	void Update(float afTimeStep)
+	{
+		mAmount.Update(afTimeStep);
+	}
+
+	bool IsActive()
+	{
+		return mAmount.mfValue > 0;
+	}
+
+	cFadeVariable mAmount;
+
+	int mlID;
+}
+
+//------------------------------------------------------------
+
+class cScrEffect_Blur : iScrEffect, iScrEffect_Interface, iScrEffect_Blur
+{
+
+	//----------------------------------
+	
+	void Init()
+	{
+		mlIDPool = 1;
+	}
+
+	//----------------------------------
+	
+	void OnDestroy()
+	{
+		cLux_GetViewport().GetPostEffectComposite().RemovePostEffect(mpEffect);
+		cGraphics_DestroyPostEffect(mpEffect);
+		@mpEffect = null;
+		mbEffectLoaded = false;
+	}
+	
+	void CreatePostEffect()
+	{
+		if(mbEffectLoaded == false)
+		{
+			//////////////////
+			// Create the post effect if null
+			@mpEffect = cast<cPostEffect_Blur@>(cLux_GetViewport().GetPostEffectComposite().GetPostEffectFromType("Blur"));
+
+			if(mpEffect is null)
+			{
+				@mpEffect = cGraphics_CreatePostEffect_Blur();
+				cLux_GetViewport().GetPostEffectComposite().AddPostEffect(mpEffect, 200);
+			}
+
+			mbEffectLoaded = true;
+		}
+	}
+
+	//----------------------------------
+	
+	/////////////////////////////////////////
+	// PULBIC METHODS
+	/////////////////////////////////////////
+	
+	//----------------------------------
+
+	int Start(float afAmount, float afTime)
+	{
+		CreatePostEffect();
+
+		cBlurInstance instance = cBlurInstance(mlIDPool);
+
+		instance.Start(afAmount, afTime);
+		mvInstances.push_back(instance);
+		
+		mBaseObj.SetActive(true);
+
+		return mlIDPool++;		
+	}
+	
+	//----------------------------------
+
+	void FadeAmount(int alID, float afAmount, float afTime)
+	{
+		CreatePostEffect();
+
+		for(int i = 0; i < mvInstances.size(); ++i)
+		{
+			if(mvInstances[i].mlID == alID) 
+			{
+				mvInstances[i].FadeAmount(afAmount, afTime);
+				return;
+			}
+		}
+	}
+	
+	//----------------------------------
+
+	void FadeOut(int alID, float afTime)
+	{
+		CreatePostEffect();
+
+		for(int i = 0; i < mvInstances.size(); ++i)
+		{
+			if(mvInstances[i].mlID == alID) 
+			{
+				mvInstances[i].FadeAmount(0, afTime);
+				return;
+			}
+		}
+	}
+
+	//----------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL CALLBACKS
+	/////////////////////////////////////////
+	
+	
+	//----------------------------------
+	
+	void OnStart()
+	{
+	}
+
+	//----------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+		mBaseObj.SetActive(true);
+	}
+	
+	//----------------------------------
+	
+	void OnMapLeave(cLuxMap @apMap)
+	{
+		mvInstances.resize(0);
+	}
+
+	//----------------------------------
+	
+	void Reset()
+	{
+		mvInstances.resize(0);
+			
+		if(mpEffect !is null)
+			mpEffect.SetParams(0);
+	}
+
+	//----------------------------------
+	
+	
+	void Update(float afTimeStep)
+	{
+		CreatePostEffect();
+
+		///////////////
+		// Update and remove completed
+		for(int i = 0; i < mvInstances.size(); ++i)
+		{
+			mvInstances[i].Update(afTimeStep);
+		}
+
+		for(int i = 0; i < mvInstances.size(); ++i)
+		{
+			if(mvInstances[i].IsActive() == false)
+			{
+				//Is no longer active, remove
+				mvInstances[i--] = mvInstances[mvInstances.size() - 1];
+				mvInstances.pop_back();
+			}
+		}
+
+		if(mvInstances.size() > 0)
+		{
+			////////////////////
+			// Calculate blur values by combining the instances
+			float fAmount = 0;
+
+			for(int i = 0; i < mvInstances.size(); ++i)
+			{
+				fAmount = cMath_Max(fAmount, mvInstances[i].mAmount.mfValue);
+			}
+
+			/////////////
+			// Set value and set active		
+			mpEffect.SetParams(fAmount * gfBlurMul);
+			mBaseObj.SetActive(true);
+		}
+		else
+		{
+			//No instances, disable blur
+			mpEffect.SetParams(0);
+			mBaseObj.SetActive(false);
+		}
+	}
+	
+	//----------------------------------
+	
+	void OnDraw(float afFrameTime)
+	{
+		
+	}
+	
+	//----------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//----------------------------------
+	
+	[nosave] bool mbEffectLoaded = false;
+	[nosave] cPostEffect_Blur@ mpEffect = null;
+	array<cBlurInstance> mvInstances;
+	int mlIDPool = 1;
+
+	//----------------------------------
+}

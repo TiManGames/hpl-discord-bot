@@ -1,0 +1,932 @@
+//----------------------------------------------------------------------
+//----------------------------------------------------------------------
+
+////////////////////////////////
+// FOG SILHOUETTE             //
+////////////////////////////////
+
+//----------------------------------------------------------------------
+
+#include "agents/Agent_Humanoid.hps"
+#include "helper/helper_audio.hps"
+#include "helpers/helper_game.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_player.hps"
+#include "custom/helpers/helper_player_custom.hps"
+#include "helpers/helper_effects.hps"
+#include "custom/player/PlayerTypes_Custom.hps"
+#include "base/Base_Types.hps"
+#include "custom/agents/agent_types_custom.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+
+//----------------------------------------------------------------------
+
+/////////////////////////////////////////
+// ANIMATION
+//{//////////////////////////////////////
+
+//----------------------------------------------------------------------
+
+const tString gsFogSilhouetteAnim_LookAround = "look_around";
+
+//----------------------------------------------------------------------
+
+//} END ANIMATION
+
+//----------------------------------------------------------------------
+
+/////////////////////////////////////////
+// SETTINGS
+//{//////////////////////////////////////
+
+//----------------------------------------------------------------------
+
+const float gfFogSilhouette_FadeEffectsMinDistToPlayer = 4.f;
+const float gfFogSilhouette_FadeEffectsMaxDistToPlayer = 7.f;
+const float gfFogSilhouette_MinDistToDoorBeforeFade = 2.5f;
+const float gfFogSilhouette_MinCoverageFadeSpeed = 0.125f;
+const float gfFogSilhouette_MaxCoverageFadeSpeed = 0.5f;
+const float gfFogSilhouette_SpawnAtShotgunnerCount = 5.f;
+
+const int glFogSilhouette_ShellShockedAchievementCount = 3;
+
+//----------------------------------------------------------------------
+
+//} END SETTINGS
+
+//----------------------------------------------------------------------
+
+/////////////////////////////////////////
+// TYPES
+//{//////////////////////////////////////
+
+//----------------------------------------------------------------------
+
+enum eFogSilhouetteState
+{
+	eFogSilhouetteState_Patrol
+}
+
+//----------------------------------------------------------------------
+
+//} END TYPES
+
+//----------------------------------------------------------------------
+
+class cScrAgentFogSilhouette : cScrAgentHumanoid
+{
+	//===========================================================
+
+	/////////////////////////////////////////
+	//=======================================
+	// MAIN FUNCTIONS
+	//=======================================
+	//{//////////////////////////////////////
+	
+	//===========================================================
+
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// INIT
+	//{//////////////////////////////////////
+
+	//------------------------------------------------------------
+
+	void Init()
+	{
+		mBaseObj.SetUpdatePlayerDetection(false);
+		mBaseObj.SetCheckForDoors(false);
+	}
+	
+	//------------------------------------------------------------
+
+	//} END INIT
+
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// LOADING
+	//{//////////////////////////////////////
+
+	//------------------------------------------------------------
+
+	void SetupCharBody()
+	{
+		cScrAgentHumanoid::SetupCharBody();
+		
+		iCharacterBody@ pCharBody = mBaseObj.GetCharBody();
+		pCharBody.SetMass(80.f);
+		pCharBody.SetMaxPositiveMoveSpeed(eCharDir_Forward, 1.f);
+		pCharBody.SetMoveSpeedMul(eCharDir_Forward,1.f);
+		pCharBody.SetMoveAcc(eCharDir_Forward, 4.f);
+		pCharBody.SetMoveDeacc(eCharDir_Forward, 8.f);
+		pCharBody.SetMaxPushMass(20.f);
+		pCharBody.SetMaxPushForce(300.f);
+		pCharBody.SetAccurateClimbing(false);
+		pCharBody.SetCollideCharacter(false);
+		pCharBody.SetCollideDynamic(false);
+		pCharBody.SetPhysicsBodyActive(true);
+		pCharBody.SetupSafePositions(0.25f, 5.f);
+		pCharBody.SetMaxCollisionPoints(4);
+		pCharBody.SetGravityActive(false);
+		pCharBody.SetTestCollision(false);
+
+		iPhysicsBody@ pPhysicsBody = pCharBody.GetCurrentBody();
+		pPhysicsBody.SetCollideRagDoll(false);
+	}
+
+	//------------------------------------------------------------
+
+	void SetupAfterLoad(cWorld@ apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		cScrAgentHumanoid::SetupAfterLoad(apWorld, apVars, apInstanceVars);
+		
+		//////////////////////
+		// General		
+		mBaseObj.SetAlignEntityWithGroundRay(false);
+		mBaseObj.SetFOV(cMath_ToRad(0.f));
+		mBaseObj.SetSightRange(0.f);
+		mBaseObj.SetSightRangeMul(0.f);
+		mBaseObj.SetRelativeEyeHeight(0.8f);
+		
+		//////////////////////
+		// Pathfinder
+		mpPathfinder.SetNodeContainerName("FogSilhouette");
+		mpPathfinder.SetMaxHeight(0.8f);
+		mpPathfinder.SetDirectPathMaxDistanceMul(1.f);
+		mpPathfinder.SetMaxEdgeDistance(3.f);
+		mpPathfinder.SetMaxGoalsPerIsland(1);
+		mpPathfinder.SetFreePathRayNum(1);
+		mpPathfinder.SetPathNodeReachedDistMul(0.25f);
+
+		///////////////////////
+		// Shotgunner
+		array<iLuxEntity@> vEnts;
+		mBaseObj.GetMap().GetEntityArray("*", eLuxEntityType_Agent, "cScrAgentShotgunner", vEnts);
+		
+		if (vEnts.size() > 0)
+			m_idShotgunner = vEnts[0].GetID();
+		
+		//////////////////////
+		// Components
+		SetupComponents(apWorld, apVars, apInstanceVars);
+	}
+
+	//------------------------------------------------------------
+
+	void SetupComponents(cWorld@ apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		//////////////////////
+		// State machine
+		@mpStateMachine = cLux_CreateEntityComponent_StateMachine(mBaseObj);
+		
+		mpStateMachine.AddState("Patrol", eFogSilhouetteState_Patrol);
+		
+		//////////////////////
+		// Head tracker
+		@mpHeadTracker = cLux_CreateEntityComponent_HeadTracker(mBaseObj);
+		mpHeadTracker.LoadFromVariables(apVars);
+		
+		//////////////////////
+		// Foot placement
+		@mpFootPlacement = cLux_CreateEntityComponent_FootPlacement(mBaseObj);
+		mpFootPlacement.LoadFromVariables(apVars);
+
+		//////////////////////
+		// Char mover
+		mpMover.SetupWallAvoidance(0.9f, 5.f, 4);
+		mpMover.SetWallAvoidanceActive(false);
+		mpMover.SetupDynamicObjectAvoidance(2.5f, 20.f, 5);
+		mpMover.SetDynamicObjectAvoidanceActive(false);		
+		mpMover.SetDynamicObjectPlayerAvoidanceActive(false);
+		mpMover.SetupDynamicObjectPlayerAvoidance(4.f, 3);
+		mpMover.SetRunToWalkSpeed(1.6f);
+		mpMover.SetWalkToRunSpeed(3.f);
+		mpMover.SetStoppedToWalkSpeed(0.05f);
+		mpMover.SetWalkToStoppedSpeed(0.1f);
+		mpMover.SetStoppedToWalkTurnAnimSpeed(1.f);
+		mpMover.SetTurnMinBreakAngle(cMath_ToRad(40.f));
+		mpMover.SetMoveVerticalSpeed(0.5f);
+		mpMover.SetMoveVerticalOffset(0.225f);
+			
+		mpMover.AddSpeedState(eFogSilhouetteSpeed_Walk);
+			mpMover.SetSpeedState_Forward(1.f);
+			mpMover.SetSpeedState_Backward(1.f);
+			mpMover.SetSpeedState_ForwardAcc(10.f);
+			mpMover.SetSpeedState_ForwardDeacc(10.f);
+			mpMover.SetSpeedState_TurnMaxSpeed(20.f);
+			mpMover.SetSpeedState_TurnSpeedMul(4.f);
+			mpMover.SetSpeedState_TurnSpeedAcc(10.f);
+			mpMover.SetSpeedState_TurnSpeedDeacc(12.f);
+			mpMover.SetSpeedState_TurnBreakMul(0.25f);
+		
+		mpMover.AddSpeedState(eFogSilhouetteSpeed_Run);
+			mpMover.SetSpeedState_Forward(4.f);
+			mpMover.SetSpeedState_ForwardAcc(10.f);
+			mpMover.SetSpeedState_ForwardDeacc(10.f);
+			mpMover.SetSpeedState_TurnMaxSpeed(20.f);
+			mpMover.SetSpeedState_TurnSpeedMul(4.f);
+			mpMover.SetSpeedState_TurnSpeedAcc(10.f);
+			mpMover.SetSpeedState_TurnSpeedDeacc(12.f);
+			mpMover.SetSpeedState_TurnBreakMul(0.25f);
+	}
+
+	//------------------------------------------------------------
+
+	void OnAfterWorldLoad()
+	{
+		cScrAgentHumanoid::OnAfterWorldLoad();
+	}
+
+	//------------------------------------------------------------
+	
+	void BeforeEntityDestruction()
+	{
+	}
+	
+	//------------------------------------------------------------
+
+	//} END LOADING
+
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// GENERAL
+	//{///////////////////////////////////////
+
+	//------------------------------------------------------------
+	
+	void OnUpdate(float afTimeStep)
+	{
+		cScrAgentHumanoid::OnUpdate(afTimeStep);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnVariableUpdate(float afDeltaTime)
+	{	
+		UpdateEffects(afDeltaTime);
+	}
+	
+	//------------------------------------------------------------
+
+	void ResetProperties()
+	{
+		cScrAgentHumanoid::ResetProperties();
+	}
+
+	//------------------------------------------------------------
+
+	void OnSetActive(bool abX)
+	{
+		cScrAgentHumanoid::OnSetActive(abX);
+		
+		///////////////////
+		// Effects		
+		if (abX)
+		{
+			mfEffectMul = 0.f;
+			mfEffectMulGoal = 1.f;
+			mfEffectMulSpeed = 1.f;
+			mfCoverageCount = 0.f;
+		}
+		else
+		{
+			mfEffectMul = 0.f;
+			mfEffectMulGoal = 0.f;
+			mfEffectMulSpeed = 1.f;
+			mfCoverageCount = 0.f;
+		}
+		
+		cMeshEntity@ pMeshEnt = mBaseObj.GetMeshEntity();
+		if (pMeshEnt !is null)
+		{
+			pMeshEnt.SetCoverageAmount(0.f);
+		}
+	}
+	
+	//------------------------------------------------------------
+
+	//} END GENERAL
+
+	//------------------------------------------------------------
+
+	//} END MAIN FUNCTIONS
+
+	//===========================================================
+
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// HELPERS
+	//{//////////////////////////////////////
+
+	//------------------------------------------------------------
+	
+	tString SpeedStateToString(int alState)
+	{
+		switch (alState)
+		{
+			case eFogSilhouetteSpeed_Walk: return "Walk";
+		}
+		
+		return "";
+	}
+	
+	//------------------------------------------------------------
+	
+	tString StateToString(int alState)
+	{
+		switch (alState)
+		{
+			case eFogSilhouetteState_Patrol: return "Patrol";
+		}
+		
+		return "";
+	}
+
+	//------------------------------------------------------------
+
+	//} END HELPERS
+
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// GLOBAL FUNCS
+	//{//////////////////////////////////////
+
+	//------------------------------------------------------------
+	
+	void _Global_AddPatrolNode()
+	{
+		tString sNode = cScript_GetGlobalArgString(0);
+		
+		int lId = mvPatrol_Nodes.find(sNode);
+		if (lId == -1)
+			mvPatrol_Nodes.push_back(sNode);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetActive()
+	{
+		bool bActive = cScript_GetGlobalArgBool(0);
+		
+		if (mBaseObj.IsActive() == bActive)
+			return;
+		
+		if (bActive)
+		{
+			mfEffectMulGoal = 1.f;
+			mfEffectMulSpeed = 1.f;
+			mBaseObj.SetActive(true);
+		}
+		else
+		{
+			mfEffectMulGoal = 0.f;
+			mfEffectMulSpeed = 1.f;
+			mbDeactivateWhenInvisible = true;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetFadeDistMul()
+	{
+		mfFadeDistMul = cScript_GetGlobalArgFloat(0);
+	}
+		
+	//------------------------------------------------------------
+	
+	void _Global_SpawnAtShotgunner()
+	{
+		mfEffectMulGoal = 0.f;
+		mfEffectMulSpeed = 2.f;
+		mfCoverageCount = cMath_PiDiv4;
+		mfSpawnAtShotgunnerCount = gfFogSilhouette_SpawnAtShotgunnerCount;
+	}
+		
+	//------------------------------------------------------------
+
+	//} END GLOBAL
+
+	//===========================================================
+
+	/////////////////////////////////////////
+	//=======================================
+	// FOG SILHOUETTE SPECIFIC CODE
+	//=======================================
+	//{//////////////////////////////////////
+
+	//===========================================================
+	
+	//------------------------------------------------------------
+	
+	void OnRecieveMessage(int alMessageId, cLuxEntityMessageData@ apData)
+	{		
+		////////////////////////
+		// Handle footsteps
+		if (alMessageId == eLuxEntityMessage_AnimationFootStep)
+		{						
+			tString sSoundPath = "creatures/ghost/walk";
+			tString sSoundCategory = "";
+			tString sSoundName = "";
+			
+			////////////////////////////
+			// Play sound!
+			tString sSound = sSoundPath + sSoundCategory + sSoundName;
+			cSoundEntity@ pSound = mBaseObj.GetMap().GetWorld().CreateSoundEntity("Sound_Footstep_" + mBaseObj.GetName(), sSound, true);
+			
+			if (pSound !is null)
+			{
+				///////////////////
+				// Play at socket?
+				tString sSocket = apData.msX;			
+				cNode3D@ pSocket = mBaseObj.GetMeshEntity().GetSocket(apData.msX);
+				
+				if (pSocket !is null)
+				{
+					pSocket.AddEntity(pSound);
+				}
+				else
+				{
+					pSound.SetWorldPosition(mBaseObj.GetCharBody().GetFeetPosition());
+				}
+				
+				pSound.SetScriptableIsSaved(false);
+				pSound.SetUseCustomProperties(true);
+				pSound.SetCustomMinDistance(1.f);
+				pSound.SetCustomMaxDistance(17.5f);
+				
+				float fVolumeMul = cScript_GetGlobalVarFloat("FogSilhouetteFootstepSoundVolumeMul");
+				pSound.FadeVolumeMul(fVolumeMul, 0.f);
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void GiveDamage(iPhysicsBody@ apBody, const cVector3f &in avOrigin, const cVector3f &in avHitPos, cLuxDamageProperties@ apDamageProps)
+	{	
+		/////////////////
+		// Achievement
+		if (apDamageProps.mDamageType == eDamageType_Gun)
+		{
+			int lTotalSilhouettesShot = cScript_GetGlobalVarInt("SilhouettesShot") + 1;
+			if (lTotalSilhouettesShot >= glFogSilhouette_ShellShockedAchievementCount)
+				Achievement_Unlock(eAchievement_ShellShocked);
+				
+			cScript_SetGlobalVarInt("SilhouettesShot", lTotalSilhouettesShot);
+		}
+		
+		/////////////////
+		// Hurt
+		if (apDamageProps.mDamageType == eDamageType_Gun ||
+			apDamageProps.mDamageType == eDamageType_Grenade ||
+			apDamageProps.mDamageType == eDamageType_Gas ||
+			apDamageProps.mDamageType == eDamageType_Fire)
+		{
+			mfEffectMulGoal = 0.f;
+			mfEffectMulSpeed = 2.f;
+			
+			cLux_AddAIDebugMessage("(" + mBaseObj.GetName() + ") Damaged!");
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////////
+	// FOG SILHOUETTE UPDATES
+	//{////////////////////////////////
+	
+	//------------------------------------------------------------
+
+	void UpdateEffects(float afDeltaTime)
+	{
+		/////////////////////
+		// Effects
+		cMeshEntity@ pMeshEnt = mBaseObj.GetMeshEntity();		
+		if (pMeshEnt is null) return;		
+		
+		////////////////////
+		// Spawn at shotgunner
+		float fPrevSpawnAtShotgunnerCount = mfSpawnAtShotgunnerCount;
+		mfSpawnAtShotgunnerCount -= afDeltaTime;
+		
+		if (mfSpawnAtShotgunnerCount <= 0.f)
+		{
+			mfSpawnAtShotgunnerCount = 0.f;
+			
+			///////////////////
+			// Fade out to stop running
+			if (fPrevSpawnAtShotgunnerCount > 0.f)
+			{
+				mfEffectMulGoal = 0.f;
+				mfEffectMulSpeed = 2.f;
+			}
+		}
+			
+		float fSpawnAtShotgunnerT = mfSpawnAtShotgunnerCount / gfFogSilhouette_SpawnAtShotgunnerCount;
+		
+		////////////////////
+		// Effect mul
+		mfEffectMul = cMath_IncreaseTo(mfEffectMul, mfEffectMulSpeed * afDeltaTime, mfEffectMulGoal);
+		
+		////////////////////
+		// Distance mul
+		float fSpawnAtShotgunnerDistMul = 0.1f * fSpawnAtShotgunnerT + 1.f * (1.f - fSpawnAtShotgunnerT);		
+		float fMinDist = gfFogSilhouette_FadeEffectsMinDistToPlayer * fSpawnAtShotgunnerDistMul * mfFadeDistMul;
+		float fMaxDist = gfFogSilhouette_FadeEffectsMaxDistToPlayer * fSpawnAtShotgunnerDistMul * mfFadeDistMul;		
+		float fDistRange = fMaxDist - fMinDist;
+		
+		float fDistMul = (mBaseObj.GetDistanceToPlayer() - fMinDist) / fDistRange;
+		fDistMul = cMath_Clamp(fDistMul, 0.f, 1.f);
+		
+		////////////////////
+		// Door mul
+		mfDoorCheckCount -= afDeltaTime;
+		if (mfDoorCheckCount <= 0.f)
+		{			
+			mfDoorMulGoal = 1.f;
+			mfDoorCheckCount = cMath_RandRectf(0.3f, 0.6f);			
+			
+			array<iLuxEntity@> vDoors;
+			mBaseObj.GetMap().GetEntityArray("*", eLuxEntityType_Prop, "cScrPropSwingDoor", vDoors);
+			
+			for (int i = 0; i < vDoors.size(); ++i)
+			{
+				iLuxEntity@ pDoor = vDoors[i];
+				if (pDoor is null) continue;
+				
+				float fDistToDoorSqr = (vDoors[i].GetPosition() - mBaseObj.GetPosition()).SqrLength();
+				if (fDistToDoorSqr < gfFogSilhouette_MinDistToDoorBeforeFade * gfFogSilhouette_MinDistToDoorBeforeFade)
+				{
+					mfDoorMulGoal = 0.f;
+					break;
+				}
+			}
+		}
+		
+		mfDoorMul = cMath_IncreaseTo(mfDoorMul, afDeltaTime, mfDoorMulGoal);
+		
+		////////////////////
+		// Coverage
+		{
+			////////////////////
+			// Pulse mul
+			mfCoverageCount += afDeltaTime * mfCoverageFadeSpeed;
+			if (mfCoverageCount > cMath_PiMul2)
+				mfCoverageCount -= cMath_PiMul2;
+					
+			float fNormalPulseMul = cMath_Max(cMath_Sin(mfCoverageCount), 0.f);
+			float fCoveragePulseMul = 1.f * fSpawnAtShotgunnerT + fNormalPulseMul * (1.f - fSpawnAtShotgunnerT);
+			
+			////////////////////
+			// Update coverage			
+			float fPrevCoverage = pMeshEnt.GetCoverageAmount();
+			float fCoverage = fCoveragePulseMul * fDistMul * mfDoorMul * mfEffectMul;	
+			
+			pMeshEnt.SetCoverageAmount(fCoverage);
+			
+			////////////////////
+			// Just disappeared - teleport!
+			if (fPrevCoverage >= 0.f && fCoverage <= 0.f)
+			{
+				mfCoverageCount = 0.f;
+				Teleport();
+			}
+		}
+		
+		////////////////////
+		// Deactivate?
+		if (mbDeactivateWhenInvisible)
+		{
+			if (pMeshEnt.GetCoverageAmount() <= 0.f)
+			{
+				mbDeactivateWhenInvisible = false;
+				mBaseObj.SetActive(false);
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////////
+	// FOG SILHOUETTE HELPERS
+	//{////////////////////////////////
+
+	//------------------------------------------------------------
+	
+	void Teleport()
+	{
+		//////////////////////
+		// Setup vars
+		iPhysicsWorld@ pPhysicsWorld = mBaseObj.GetMap().GetPhysicsWorld();
+		iLuxEntity@ pShotgunner = cLux_ID_Entity(m_idShotgunner);
+		
+		if (pPhysicsWorld is null) return;
+		if (pShotgunner is null) return;
+		
+		int lCount = 10;
+		float fMinDist = 0.f;
+		float fMaxDist = 0.f;
+		
+		cVector3f vSpawnPos = cVector3f(0.f);		
+		cVector3f vTeleportPos = cVector3f(0.f);		
+		iCollideShape@ pCollideShape = pPhysicsWorld.CreateSphereShape(1.5f, cMatrixf_Identity);
+		
+		///////////////////////
+		// Get spawn pos
+		if (mfSpawnAtShotgunnerCount > 0.f)
+		{			
+			fMinDist = 0.f;
+			fMaxDist = 3.f;
+			vSpawnPos = pShotgunner.GetPosition();
+		}
+		else
+		{
+			fMinDist = 9.f;
+			fMaxDist = 20.f;
+			vSpawnPos = mBaseObj.GetPlayerPos();
+		}
+		
+		//////////////////////
+		// Find free position!
+		while (vTeleportPos.SqrLength() <= 0.f && lCount > 0)
+		{
+			///////////////////
+			// Count
+			--lCount;
+			
+			///////////////////
+			// Get node			
+			cAINode@ pNode = mpPathfinder.GetNodeInCircularSectorAroundPos(vSpawnPos, fMinDist, fMaxDist, cVector3f(0.f), 0.f, false, false, false, null);
+			if (pNode is null)
+			{
+				continue;
+			}
+			
+			if (mfSpawnAtShotgunnerCount <= 0.f)
+			{
+				///////////////////
+				// Check if node is free!
+				cVector3f vPush;
+				cMatrixf mtxTransform = cMath_MatrixTranslate(pNode.GetPosition());			
+				
+				if (pPhysicsWorld.CheckShapeWorldCollision(vPush, pCollideShape, mtxTransform, null, true, false, false, true))
+				{
+					continue;
+				}
+			}
+			
+			///////////////////
+			// Get ground pos!
+			float fDist;
+			cVector3f vNrm;
+			if (cLux_GetClosestBody(pNode.GetPosition(), cVector3f_Down, 2.f, fDist, vNrm) is null)
+			{
+				continue;
+			}
+			
+			///////////////////
+			// Found our pos!
+			vTeleportPos = pNode.GetPosition() + cVector3f_Down * fDist;
+			break;
+		} 
+		
+		///////////////////
+		// Destroy shape
+		pPhysicsWorld.DestroyShape(pCollideShape);
+		
+		///////////////////
+		// Place at pos!
+		if (vTeleportPos.SqrLength() > 0.f)
+		{
+			mBaseObj.GetCharBody().SetFeetPosition(vTeleportPos, false);
+		}
+		
+		///////////////////
+		// Fade back in
+		mfDoorMulGoal = 1.f;
+		mfEffectMulGoal = 1.f;
+		mfEffectMulSpeed = 1.f;
+		
+		///////////////////
+		// Patrol
+		Patrol_Reset();
+		
+		int lSpeedState = mfSpawnAtShotgunnerCount > 0.f ? eFogSilhouetteSpeed_Run : eFogSilhouetteSpeed_Walk;
+		SetSpeedState(lSpeedState);
+		
+		mBaseObj.GetCharBody().StopMovement();
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetSpeedState(int alState)
+	{
+		mpMover.SetSpeedState(eFogSilhouetteSpeed(alState));
+		
+		float fPathNodeReachedDistMul = 0.25f;
+		float fMoveVerticalSpeed = 0.5f;
+		
+		if (alState == eFogSilhouetteSpeed_Run)
+		{
+			fPathNodeReachedDistMul = 1.3f;
+			fMoveVerticalSpeed = 2.f;
+		}
+		
+		mpPathfinder.SetPathNodeReachedDistMul(fPathNodeReachedDistMul);
+		mpMover.SetMoveVerticalSpeed(fMoveVerticalSpeed);
+	}
+	
+	//------------------------------------------------------------
+	
+	//} END FOG SILHOUETTE HELPERS
+
+	//===========================================================
+
+	/////////////////////////////////////////
+	//=======================================
+	// STATES
+	//=======================================
+	/////////////////////////////////////////
+
+	//===========================================================
+
+	//------------------------------------------------------------
+
+	///////////////////////////////////
+	// STATE: DEFAULT
+	//{////////////////////////////////
+	
+	//------------------------------------------------------------
+
+	void State_Default_Enter()
+	{
+		cLux_AddAIDebugMessage("(" + mBaseObj.GetName() + ") ------ ENTER STATE: Default ------");
+	}
+	
+	//------------------------------------------------------------
+	
+	void State_Default_Leave()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void State_Default_Update(float afTimeStep) {}
+
+	//------------------------------------------------------------
+
+	bool State_Default_Message(int alMessageId)
+	{
+		/////////////////////
+		// Stuck counter high
+		if (alMessageId == eCustomEntityMessage_StuckCounterHigh)
+		{
+			mfEffectMulGoal = 0.f;
+			mfEffectMulSpeed = 2.f;
+			return true;
+		}
+
+		return false;
+	}
+	
+	//------------------------------------------------------------
+
+	//} END DEFAULT
+
+	//------------------------------------------------------------
+	
+	///////////////////////////////////
+	// STATE: PATROL
+	//{////////////////////////////////
+	
+	//-----------------------------------------------------------
+	
+	array<tString> mvPatrol_Nodes;
+	
+	//-----------------------------------------------------------
+	
+	void State_Patrol_Enter()
+	{
+		cLux_AddAIDebugMessage("(" + mBaseObj.GetName() + ") ------ ENTER STATE: Patrol ------");
+		
+		//////////////////////
+		// Setup state
+		SetSpeedState(eFogSilhouetteSpeed_Walk);
+		
+		//////////////////////
+		// Setup track		
+		for (int i = 0; i < mvPatrol_Nodes.size(); ++i)
+		{
+			mpPathfinder.AddTrackNode(mvPatrol_Nodes[i], 0.f, 0.f, "", true);
+		}
+		
+		//////////////////////
+		// Start track
+		mpPathfinder.StartTrack(true, cMath_RandRectf(1/5.0f, 1/10.0f), "", true);
+	}
+
+	//------------------------------------------------------------
+
+	void State_Patrol_Leave()
+	{
+		mpPathfinder.StopTrack();
+		mpPathfinder.ClearTrackNodes();
+	}
+	
+	//------------------------------------------------------------
+	
+	void State_Patrol_Update(float afTimeStep)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	bool State_Patrol_Message(int alMessageId)
+	{
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	void State_Patrol_TimerUp(uint64 alId)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void Patrol_Reset()
+	{
+		mpPathfinder.StopTrack();
+		mpPathfinder.StartTrack(true, cMath_RandRectf(1/5.0f, 1/10.0f), "", true);
+	}
+    
+	//------------------------------------------------------------
+
+	//} END STATE: PATROL
+	
+	//------------------------------------------------------------
+	
+	//} END FOG SILHOUETTE SPECIFIC CODE
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	//{//////////////////////////////////////
+
+	//------------------------------------------------------------
+	
+	cLuxStateMachine@ mpStateMachine;
+	cLuxHeadTracker@ mpHeadTracker;
+	cLuxFootPlacement@ mpFootPlacement;
+	
+	float mfFadeDistMul = 1.f;
+	
+	float mfEffectMul = 0.f;
+	float mfEffectMulGoal = 1.f;
+	float mfEffectMulSpeed = 1.f;
+	float mfDoorMul = 1.f;
+	float mfDoorMulGoal = 1.f;
+	float mfDoorCheckCount = 0.f;
+	float mfCoverageCount = 0.f;
+	float mfCoverageFadeSpeed = cMath_RandRectf(gfFogSilhouette_MinCoverageFadeSpeed, gfFogSilhouette_MaxCoverageFadeSpeed);
+	float mfSpawnAtShotgunnerCount = 0.f;
+	
+	bool mbDeactivateWhenInvisible = false;
+	
+	tID m_idShotgunner = tID_Invalid;
+	
+	//------------------------------------------------------------
+
+	//} END PROPERTIES
+
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// DEBUG
+	//{//////////////////////////////////////
+
+	//------------------------------------------------------------
+
+	float DrawDebugOutput(cGuiSet@ apSet, iFontData@ apFont, float afStartY)
+	{
+		return afStartY;
+	}
+
+	//------------------------------------------------------------	
+	
+	void OnRenderSolid(cRendererCallbackFunctions@ apFunctions)
+	{
+		apFunctions.GetLowLevelGfx().DrawSphere(mBaseObj.GetPosition(), 0.5f, cColor_White);
+	}
+	
+	//------------------------------------------------------------
+
+	//} END DEBUG
+}

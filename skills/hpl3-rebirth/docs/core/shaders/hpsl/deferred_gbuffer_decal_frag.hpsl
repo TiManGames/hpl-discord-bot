@@ -1,0 +1,174 @@
+////////////////////////////////////////////////////////
+// Deferred Diffuse Decal - Fragment Shader
+//
+// A decal shader where light is applied
+////////////////////////////////////////////////////////
+
+@ifdef UseNormalMapping
+	@include helper_normal_packing.hpsl
+@endif
+
+@ifdef UseParallax
+	@include helper_parallax.hpsl
+@endif
+
+///////////////////////
+// Variables
+///////////////////////
+
+//--------------------------------------------
+
+
+// This contains all constant buffers and chooses the correct one based on MaterialType
+@include helper_type_arguments.hpsl
+
+//--------------------------------------------
+
+
+///////////////////////
+// samplers
+///////////////////////
+
+uniform cTexture2D aDiffuseMap : 0;
+
+@ifdef UseNormalMapping
+	uniform cTexture2D aNormalMap : 1;
+@endif
+
+@ifdef UseSpecular
+	uniform cTexture2D aSpecularMap : 2;
+@endif
+
+@ifdef UseParallax
+	uniform cTexture2D aHeightMap : 3;
+@endif
+
+@ifdef UseDetailMap
+	uniform cTexture2D aDetailMap : 4;
+@endif
+	
+@ifdef UseDepth
+	uniform cTexture2D aDepthMap : 14;
+@endif
+
+void main(in cVector4f px_vPosition,
+		  in cVector4f px_vTexCoord0,
+@ifdef UseNormalMapping
+		  in cVector3f px_vNormal,
+		  in cVector3f px_vTangent,
+		  in cVector3f px_vBinormal,
+@endif
+		  in cVector4f px_vColor,
+@ifdef UseDetailMap || UseLinearDepth
+		  in float px_fLinearDepth,
+@endif
+@ifdef UseParallax
+		  in cVector3f px_vTangentEyePos,
+@endif
+		  out cVector4f out_vDiffuse : 0,		//diffuse rgb, translucency a
+		  out cVector4f out_vNormal : 1,		//normal xyz
+		  out cVector4f out_vSpecular : 2,		//spec color rgb, spec power a
+		  out cVector4f out_vDepth : 3)			//depth x	
+{
+	//////////////////////////////////
+	// Get UV coords
+	@ifdef UseParallax		
+		cVector2f vTexCoord = GetParallaxUV(aHeightMap,3, px_vTexCoord0.xy, px_vTangentEyePos, avHeightMapScaleAndBias);
+		
+		cVector2f vUVDx = dFdx(px_vTexCoord0.xy);
+		cVector2f vUVDy = dFdy(px_vTexCoord0.xy);
+
+		//The height should drop off at the edges!
+		//Not totally accurate, but it works!
+		float fHeightAlpha = sampleGrad(aDiffuseMap, vTexCoord, vUVDx, vUVDy).w;
+		vTexCoord = mix(px_vTexCoord0.xy,vTexCoord,fHeightAlpha); 
+		
+	@else
+		cVector2f vTexCoord = px_vTexCoord0.xy;
+
+		cVector2f vUVDx = dFdx(px_vTexCoord0.xy);
+		cVector2f vUVDy = dFdy(px_vTexCoord0.xy);
+	@endif
+
+	
+	////////////////////
+	//Diffuse 
+	cVector4f vDiffuse = sampleGrad(aDiffuseMap, vTexCoord, vUVDx, vUVDy);
+	
+	////////////////////
+	//Detail
+	@ifdef UseDetailMap
+		float afDetailMul = afDetailWeight * clamp(1 - (px_fLinearDepth * afFarPlane-avDetailProperties.x) / avDetailProperties.y, 0.0, 1.0);
+		
+		if(afDetailMul > 0.0)
+		{
+			cVector4f vDetailColor = sampleGrad(aDetailMap, vTexCoord*avDetailProperties.zw, vUVDx*avDetailProperties.zw, vUVDy*avDetailProperties.zw);
+			vDiffuse.xyz *= mix(cVector3f(1.0, 1.0, 1.0), vDetailColor.xyz*2, afDetailMul);
+		}
+	@endif
+		
+	float fAlpha = vDiffuse.w * px_vColor.w;
+	
+	@ifdef UseDepth
+		///////////////
+		// Apply a S-curve to the alpha, based on distance to scene depth
+		// If the depth is close it uses a linear fade, and then moves to a 0,1 step
+		cVector2f vMapCoords = px_vPosition.xy * avInvScreenSize;
+		float fSceneDepth = sample(aDepthMap, vMapCoords).x;
+		float fDepthScale = 1.0 + (fSceneDepth - px_fLinearDepth) * afDepthFade;
+
+		if(fDepthScale > 128.0) 
+		{
+			// 1 bit alpha if the scale is too big
+			fAlpha = fAlpha < 0.5 ? 0.0 : 1.0;
+		}
+		else
+		{
+			// Apply S-curve
+			cVector2f vAlphaPow = pow(cVector2f(fAlpha, 1.0 - fAlpha), cVector2f(fDepthScale, fDepthScale));
+			fAlpha = vAlphaPow.x / (vAlphaPow.x + vAlphaPow.y);
+		}
+	@endif
+	
+	if(fAlpha <= 0.01) 	discard;
+	
+	out_vDiffuse = vDiffuse * px_vColor;
+	
+	@ifdef UseFullBuffer
+	
+		//////////////////////////////////
+		//Normal
+		@ifdef UseNormalMapping
+			cVector3f vNormal = UnpackNormalmapYW(sampleGrad(aNormalMap,vTexCoord, vUVDx, vUVDy));
+					
+			cVector3f vScreenNormal = normalize(vNormal.x * px_vTangent + vNormal.y * px_vBinormal + vNormal.z * px_vNormal);
+			out_vNormal.xyz = vScreenNormal * fAlpha;
+			out_vNormal.w = fAlpha;
+		@else
+			out_vNormal = avClearColor;
+		@endif
+		
+		/////////////////////////////////
+		//Specular
+		@ifdef UseSpecular
+			out_vSpecular.xyz = sampleGrad(aSpecularMap, vTexCoord, vUVDx, vUVDy).xyz;
+			out_vSpecular.w = fAlpha;
+		@else
+			out_vSpecular = avClearColor;
+		@endif
+
+		///////////////////////////////
+		// Depth
+		@ifdef UseDepth
+			out_vDepth.x = px_fLinearDepth;
+			out_vDepth.w = fAlpha;
+		@else
+			out_vDepth = avClearColor;
+		@endif
+		
+	@else
+		out_vNormal = avClearColor;
+		out_vSpecular = avClearColor;
+		out_vDepth = avClearColor;
+	@endif
+}

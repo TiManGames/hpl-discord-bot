@@ -1,0 +1,1000 @@
+#include "player/PlayerState_Interact.hps"
+#include "helpers/helper_player.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_audio.hps"
+#include "helpers/helper_menu.hps"
+#include "helpers/helper_modules.hps"
+#include "utilities/utility_readables.hps"
+#include "player_types.hps"
+
+//------------------------------------------------------------
+	
+/////////////////////////////////////////
+// SETTINGS
+/////////////////////////////////////////
+
+//------------------------------------------------------------
+
+const float gfReadablePropHideAcc = 4;
+const float gfReadablePropShowSpeed = 2;
+const float gfReadablePropHideTime= 0.35f;
+const float gfReadablePropSlowDownDist = 0.4;
+const float gfReadableTargetRotation = 1.3;
+const float gfMoveFractionToStartRotation = 0;
+const float gfMoveFractionToStopRotation = 1;
+const float gfWorldSoundFadeVolume = 0.3f;
+
+const float gfDpadRotateSpeed = 5.0f;
+const float gfLookRotateSpeed = 100.0f;
+
+const float gfAllowedYRotation = cMath_Pi/8.0f;
+
+const float gfReadableDissolveTime = 0.2f;
+
+const float gfReadableDistScale = 0.25f;
+const cVector3f gvReadableScale = cVector3f(0.25,0.25,0.25);
+
+const float gfReadableNearClipPlane = 0.01f;
+
+//------------------------------------------------------------
+
+class cScrPlayerState_Interact_ReadDogTag : iScrPlayerState_Interact, iScrPlayerState_Interface
+{
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		mlDepthOfFieldID = -1;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// USER SETTINGS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void LoadUserConfig()
+	{
+	
+	}
+	void SaveUserConfig()
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ENTER MAP
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+	
+	}
+	void OnMapLeave(cLuxMap @apMap)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void CreateWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	void DestroyWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL FUNCTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupReading()
+	{
+		////////////////////////////////
+		// Reset variables
+		mbLeavingState = false;
+		mbTextActivated = false;
+		mReadable.SetupPrompts(true, true, true);
+		
+		////////////////////////////////
+		// Get basic params
+		mPropID = cScript_GetGlobalArgID(0);
+		cLuxProp@ pProp = cLux_ID_Prop(mPropID);
+		pProp.SetIsInteractedWith(true);
+		
+		////////////////////////////////
+		// Get specific params
+		mOpenPropID = cScript_GetGlobalArgID(3);
+		
+		// 4-7 are handled by the readable...
+		tString sCategory = cScript_GetGlobalArgString(4);
+		tString sFront = cScript_GetGlobalArgString(5);
+		tString sBack = cScript_GetGlobalArgString(6);
+		mReadable.SetupReading(sCategory, sFront, sBack, cScript_GetGlobalArgString(7), pProp.GetFileName(), cScript_GetGlobalArgString(8) );
+		
+		mfDistanceFromCamera = cScript_GetGlobalArgFloat(9);
+		mfYStartOffset = cScript_GetGlobalArgFloat(10);
+		tString sOpenSound = cScript_GetGlobalArgString(11);
+		msCloseSound = cScript_GetGlobalArgString(12);
+		msCloseCallback = cScript_GetGlobalArgString(13);
+		msVoiceSubject = cScript_GetGlobalArgString(14);
+		msCustomMaterial = cScript_GetGlobalArgString(15);
+		mfNoteScale = cScript_GetGlobalArgFloat(16); // Allow tweaking of pop-up version
+		mfNoteYOffs = cScript_GetGlobalArgFloat(17); // Allow tweaking of pop-up version
+		
+		////////////////////////////////
+		// Start DOF effect and get current camera rotation
+		SetupCamera();
+		
+		////////////////////////////////
+		// Fade out mesh
+		pProp.GetMeshEntity().SetVisible(false);
+		cLux_GetCurrentMap().AddDissolveEntity(pProp.GetMeshEntity(), gfReadableDissolveTime);
+		
+		cScript_RunGlobalFunc(pProp.GetName(), "cScrPropReadableDogTag", "OnReadableOpened");
+		
+		////////////////////////////////
+		// Get open version of prop and set its initial orientation
+		cLuxProp @pOpenProp = cLux_ID_Prop(mOpenPropID);
+		pOpenProp.SetActive(true);
+		m_mtxOriginOrientation = GetInitialMatrix();
+		pOpenProp.SetMatrix(m_mtxOriginOrientation);
+		pOpenProp.SetMeshScaleMul(gvReadableScale*mfNoteScale);
+		pOpenProp.GetMeshEntity().SetRenderFlagBit(eRenderableFlag_ShadowCaster,false);
+		//pOpenProp.GetMeshEntity().SetRenderLayer(2);
+
+		if(msCustomMaterial != "")
+			pOpenProp.SetCustomMaterial(msCustomMaterial, "", false);
+		
+		mvCamRelativeStart = pOpenProp.GetPosition() - cLux_GetPlayer().GetCamera().GetPosition();
+				
+		////////////////////////////////
+		// Turn on effects, which means any illumination set up in the .mat file takes effect
+		pOpenProp.SetEffectsActive(false,false);
+	
+		////////////////////////////////
+		// Play sound
+		if (sOpenSound.length() > 0)
+			Sound_PlayGui(sOpenSound, 1.0f);
+				
+		////////////////////////////////
+		//Stop character body
+		cLux_GetPlayer().GetCharacterBody().StopMovement();
+		
+		////////////////////////////////
+		// Rotation
+		mfRotX = 0.0f;
+		mfRotInputX = 0.0f;
+		mfRotY = 0.0f;
+		mfRotInputY = 0.0f;
+		
+		if (Entity_GetVarBool(pOpenProp.GetName(), "SuppressText"))
+			mReadable.SetTextAvailable(eTextSide_None);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupCamera()
+	{
+		////////////////////////////////
+		// Depth of field. 
+		cWorld@ pWorld = cLux_GetCurrentMap().GetWorld();
+		
+		// Fade out previous 
+		Effect_DoF_FadeOut(mlDepthOfFieldID, 1);
+		mlDepthOfFieldID = Effect_DoF_Start(0, mfDistanceFromCamera * gfReadableDistScale + 0.075f, 1, 1);
+		
+		////////////////////////////////
+		// Get the camera rotation with inverted z axis
+		cCamera@ pCamera = cLux_GetPlayer().GetCamera();
+		m_mtxCameraCenteredRotation = pCamera.GetViewMatrix().GetRotation();
+		m_mtxCameraCenteredRotation.SetForward(pCamera.GetForward());
+	}
+	
+	//------------------------------------------------------------
+	
+	cMatrixf GetInitialMatrix()
+	{
+		cCamera@ pCamera = cLux_GetPlayer().GetCamera();
+									
+		cVector3f vFwd = m_mtxCameraCenteredRotation.GetUp();
+		cVector3f vUp = m_mtxCameraCenteredRotation.GetForward();
+		cVector3f vRight = cMath_Vector3Cross(vFwd, vUp);
+		cVector3f vPos = pCamera.GetPosition() + 
+						 m_mtxCameraCenteredRotation.GetForward() * mfDistanceFromCamera*gfReadableDistScale + 
+						 m_mtxCameraCenteredRotation.GetUp() * mfYStartOffset;
+		
+		return cMath_MatrixUnitVectors(vRight, vFwd, vUp, vPos);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	float mfSaveNearClipPlane = 0.0f;
+		
+	void OnEnterState(int alPrevStateId)
+	{
+		EnterInteractState(alPrevStateId);
+			
+		mReadable.Reset();
+		mbEnteringState = true;
+		mbTextActivated = false;
+		
+		msPausedAnim = "";
+		mbPausedAnims = false;
+		
+		Effect_Shake_EnableAll(false);
+		mfSaveHeadBob = Player_GetHeadBobMul();
+		Player_FadeHeadBobMul(0.0f, 0.2f);
+		
+		////////////////////////////////
+		// Create reading light
+		cVector3f vTargetPos = cLux_GetPlayer().GetCamera().GetPosition() + m_mtxCameraCenteredRotation.GetForward() * (mfDistanceFromCamera*gfReadableDistScale-0.1f);
+		cLightPoint@ pLight=cLux_GetCurrentMap().GetWorld().CreateLightPoint("ReadableLight","",false);
+		
+		pLight.SetDiffuseColor(cColor(1,1,1,0));
+		pLight.SetRadius(0.25f);
+		pLight.SetPosition(vTargetPos);
+		pLight.SetBrightness(1.f);
+		
+		m_idLight = pLight.GetID();
+		
+		////////////////////////////////
+		// Setup voice
+		mfPlayVoiceCount = -1.f;
+		if (msVoiceSubject != "" && m_setVoiceSubjectsPlayed.Exists(msVoiceSubject) == false)
+		{
+			mfPlayVoiceCount = 1.5f;
+			Voice_StopAll();
+			Sound_FadeGlobalVolume(gfWorldSoundFadeVolume, 0.5f, eSoundEntryType_World);
+		}
+		
+		/////////////////////////////////
+		// Clip Plane
+		cCamera@ pCamera = cLux_GetPlayer().GetCamera();
+		mfSaveNearClipPlane = pCamera.GetNearClipPlane();
+		pCamera.SetNearClipPlane(gfReadableNearClipPlane);
+		
+		PauseMenu_Enabled(false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnLeaveState(int alNextStateId)
+	{	
+		LeaveInteractState();
+		
+		//////////////////////////////
+		// Fade out DOF effect - if we haven't already
+		if (mlDepthOfFieldID!=-1)
+		{
+			Effect_DoF_FadeOut(mlDepthOfFieldID, 0.5f);
+			Player_FadeFOVToDefault(4.0f);
+			mlDepthOfFieldID = -1;
+		}
+		
+		cLuxProp@ pProp = cLux_ID_Prop(mPropID);
+		cLuxProp@ pOpenProp = cLux_ID_Prop(mOpenPropID);
+		
+		////////////////////////////////
+		// Fade in mesh
+		cScript_RunGlobalFunc(pProp.GetName(), "cScrPropReadableDogTag", "_Global_GetItemRead");
+		bool bRead = cScript_GetGlobalReturnBool();
+		if (bRead == false)
+		{
+			pProp.GetMeshEntity().SetVisible(true);
+			pProp.FadeInMeshEntity(gfReadableDissolveTime);
+			pProp.SetMeshScaleMul(cVector3f(1,1,1));
+		}
+		
+		pOpenProp.SetActive(false);
+		
+		////////////////////////////////
+		// Turn off effects to cancel any illumination
+		pOpenProp.SetEffectsActive(false,false);
+		pOpenProp.GetMeshEntity().SetRenderFlagBit(eRenderableFlag_ShadowCaster,true);
+		pOpenProp.GetMeshEntity().SetRenderLayer(0);
+
+		if(msCustomMaterial != "")
+			pOpenProp.SetCustomMaterial("", "", false);
+		msCustomMaterial = "";
+
+		////////////////////////////////
+		// Destroy reading light
+		iLight@ pLight=cLux_GetCurrentMap().GetWorld().GetLight("ReadableLight");
+		if (pLight!=null)
+			cLux_GetCurrentMap().GetWorld().DestroyLight(pLight);
+		
+		////////////////////////////////
+		// Reset general stuff
+		if (pProp !is null)
+			ResetPropInteractVars();
+		mbTextActivated = false;
+		
+		Effect_Shake_EnableAll(true);
+		
+		Player_FadeHeadBobMul(mfSaveHeadBob,1.0f);
+
+		cCamera@ pCamera = cLux_GetPlayer().GetCamera();
+		pCamera.SetNearClipPlane(mfSaveNearClipPlane);
+		
+		//////////////////////////
+		// Report back to entity
+		iLuxEntity@ pEntity = cLux_ID_Entity(mPropID);
+		cScript_RunGlobalFunc(pEntity.GetName(), "cScrPropReadableDogTag", "OnReadableClosed");
+		
+		////////////////////////////////
+		// Stop voice
+		Voice_Stop("Readable");
+		if (msVoiceSubject!="")
+		{
+			Sound_FadeGlobalVolume(1.0f, 0.5f, eSoundEntryType_World);
+		}
+		
+		////////////////////////////////
+		// Subtitles
+		cLux_GetVoiceHandler().SetForceHideSubtitles(false);
+		
+		////////////////////
+		// Resume anims
+		if (mbPausedAnims && PlayerBody_IsActive())
+		{
+			cAnimationState@ pState = PlayerBody_GetAnimationState(msPausedAnim);
+			if (pState !is null)
+				pState.SetPaused(false);
+		}
+		
+		////////////////////////////////
+		// Runs close callback if it exists.
+		cLuxMap@ pMap = cLux_GetCurrentMap();
+		if(msCloseCallback != "" && pMap.ScriptPrepare("void " + msCloseCallback + "(const tString &in asEntity)"))
+		{
+			tString entityName = pProp.GetName();
+			pMap.SetArgString(0, entityName);
+			pMap.ScriptExecute();
+		}
+		
+		PauseMenu_Enabled(true);
+		
+		//////////////////////////////
+		// Code hint
+		cScript_RunGlobalFunc(pProp.GetName(), "cScrPropReadableDogTag", "_Global_GetHasCode");
+		bool bHasCode = cScript_GetGlobalReturnBool();
+		
+		if (bRead == false && bHasCode && Hint_GetCurrentEntry() != "HintDogTag")
+		{
+			Hint_StopHint();
+			Hint_ShowHint_Hold("Hints", "HintDogTag", false, 1.5f, true, 10.f);
+		}		
+	}
+		
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep)
+	{		
+		if(CheckShouldUpdate()==false) return;
+		
+		UpdateRotation(afTimeStep);
+		
+		if (mbEnteringState)
+		{
+			UpdateEnterState(afTimeStep);
+		}
+		else if (mbLeavingState)
+		{
+			UpdateLeaveState(afTimeStep);
+		}
+		else
+		{
+			float fDist;
+			SetPosition(afTimeStep, fDist);
+			SetRotation(1.0f);
+		}
+		
+		
+		//Show no crosshair!
+		Player_SetCrossHairState(eCrossHairState_None);
+		
+		mReadable.Update(afTimeStep);
+		
+		////////////////////
+		// Pause anims
+		if (mbPausedAnims == false && PlayerBody_IsActive())
+		{
+			msPausedAnim = Player_GetCrouching() ? "crouch_idle" : "idle_stand";
+			cAnimationState@ pState = PlayerBody_GetAnimationState(msPausedAnim);
+			
+			if (pState !is null && pState.IsActive())
+			{
+				mbPausedAnims = true;
+				pState.SetPaused(true);
+			}
+		}
+		
+		////////////////////
+		// Voice
+		if (msVoiceSubject != "")
+		{
+			if (mfPlayVoiceCount > 0.f)
+			{
+				mfPlayVoiceCount -= afTimeStep;
+				if (mfPlayVoiceCount <= 0.f)
+				{
+					Voice_StopAll();
+					Voice_Play(msVoiceSubject);
+				}
+			}
+			else if (mbLeavingState == false && Voice_SubjectIsPlaying(msVoiceSubject) == false)
+			{
+				// Voice over, mark as played!
+				if (m_setVoiceSubjectsPlayed.Exists(msVoiceSubject) == false)
+					m_setVoiceSubjectsPlayed.Add(msVoiceSubject);
+			}
+			
+			////////////////////
+			// Subtitles
+			if (mbLeavingState == false)
+				cLux_GetVoiceHandler().SetForceHideSubtitles(mReadable.IsShowingText());
+		}
+	}
+	
+	//------------------------------------------------------------
+
+	void UpdateEnterState(float afTimeStep)
+	{
+		cCamera@ pCamera = cLux_GetPlayer().GetCamera();
+		
+		float fDist;
+		SetPosition(afTimeStep, fDist);
+	
+		////////////////////////////////////////////////
+		// Rotate prop according to how far it has moved
+		SetRotation(1.0f-(fDist/cMath_Abs(mfYStartOffset)));
+		
+		////////////////////////////////////////////////
+		// If close enough, movement is done
+		if (fDist < 0.001f)
+		{
+			mbEnteringState = false;
+
+			// Auto pop up text if not English
+			tString sLang = cString_SetFileExt(cLux_GetCurrentLanguage(), "");
+			if (sLang!="english")
+			{
+				mbTextActivated = true;
+				if (!mReadable.IsShowingText())
+					mReadable.ShowText();
+			}
+		}
+		
+		/////////////////////////////////////////
+		// Position light
+		iLight@ pLight = cLux_ID_Light(m_idLight);
+		if (pLight !is null)
+		{
+			cVector3f vLightPos = pCamera.GetPosition() + m_mtxCameraCenteredRotation.GetForward() * (mfDistanceFromCamera*gfReadableDistScale-0.1f);
+			pLight.SetPosition(vLightPos);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateLeaveState(float afTimeStep)
+	{
+		mfStateTimer+=afTimeStep;
+		float fStateProgress = mfStateTimer/gfReadablePropHideTime;
+		
+		////////////////////////////////////////////////
+		// Check if state is finished
+		if (fStateProgress >= 1.0f)
+		{
+			mBaseObj.mpPlayer.ChangeState(mlPreviousState);
+			return;
+		}
+		
+		////////////////////////////////////////////////
+		// Move prop away
+		cCamera@ pCamera = cLux_GetPlayer().GetCamera();
+		cVector3f vEndPosition = pCamera.GetPosition()+mvCamRelativeStart;
+		cVector3f vMove =(vEndPosition-mvStartMovePos);
+		cVector3f vPos=mvStartMovePos+vMove*fStateProgress;
+		cLuxProp@ pOpenProp = cLux_ID_Prop(mOpenPropID);
+		pOpenProp.SetPosition(vPos);
+		
+		////////////////////////////////////////////////
+		// Rotate prop according to how far it has moved
+		SetRotation(1.0f-fStateProgress);
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateRotation(float afTimeStep)
+	{
+		if (mfRotInputX!=0.0f)
+		{
+			mfRotX+=mfRotInputX*afTimeStep;
+			if (mfRotX>cMath_Pi)
+				mfRotX-=cMath_PiMul2;
+			if (mfRotX<-cMath_Pi)
+				mfRotX+=cMath_PiMul2;
+			mfRotInputX=0.0f;
+		}
+			
+		bool bTextSuppressed = false;
+		cLuxProp@ pOpenProp = cLux_ID_Prop(mOpenPropID);
+		if (Entity_GetVarBool(pOpenProp.GetName(), "SuppressText"))
+			bTextSuppressed = true;
+			
+		float fTempX = cMath_ToDeg(mfRotX);
+		if (bTextSuppressed)
+		{
+			mReadable.SetTextAvailable(eTextSide_None);
+		}
+		else if ((fTempX>-60.0f)&&(fTempX<60.0f))
+		{
+			mReadable.SetTextAvailable(eTextSide_Front);
+			if (mbTextActivated)
+			{
+				if (!mReadable.IsShowingText())
+					mReadable.ShowText();
+			}
+		}
+		else if ((fTempX>120.0f)||(fTempX<-120.0f))
+		{
+			mReadable.SetTextAvailable(eTextSide_Back);
+			
+			iLuxEntity@ pEntity = cLux_ID_Entity(mPropID);
+			cScript_RunGlobalFunc(pEntity.GetName(), "cScrPropReadableDogTag", "_Global_OnItemRead");
+
+			if (mbTextActivated)
+			{
+				if (!mReadable.IsShowingText())
+				{
+					mReadable.ShowText();
+				}
+			}
+		}
+		else
+		{
+			mReadable.SetTextAvailable(eTextSide_None);
+		}
+			
+		if (mfRotInputY!=0.0f)
+		{
+			mfRotY+=mfRotInputY*afTimeStep;
+			mfRotY = cMath_Clamp(mfRotY, -gfAllowedYRotation, gfAllowedYRotation);
+			mfRotInputY=0.0f;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetRotation(float afMoveFraction)
+	{
+		////////////////////////////////////////////////
+		// Calculate rotation fraction from move fraction and clamp between 0 and 1
+		float fRotFraction = (afMoveFraction - gfMoveFractionToStartRotation) / 
+						   (gfMoveFractionToStopRotation - gfMoveFractionToStartRotation);
+		fRotFraction = cMath_Clamp(fRotFraction, 0.0f, 1.0f);
+
+		////////////////////////////////////////////////
+		// Create rotation matrix based on rotation fraction
+		cMatrixf mtxRotateX = cMath_MatrixRotateX(mfRotY-(fRotFraction * gfReadableTargetRotation));
+		cMatrixf mtxRotateY = cMath_MatrixRotateZ(fRotFraction * mfRotX);
+		cMatrixf mtxRotate = cMath_MatrixMul(mtxRotateX, mtxRotateY);
+		
+		//////////////////
+		// Set rotation
+		cLuxProp@ pOpenProp = cLux_ID_Prop(mOpenPropID);
+		cVector3f vTrans = pOpenProp.GetPosition();
+		cMatrixf mtxToSet = cMatrixf_Identity;
+		mtxToSet.SetRotation(cMath_MatrixMul(m_mtxOriginOrientation, mtxRotate));
+		mtxToSet.SetTranslation(vTrans);
+		pOpenProp.SetMatrix(mtxToSet);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetPosition(float afTimeStep, float &out afDist)
+	{
+		////////////////////////////////////////////////
+		// Calculate vector to target position
+		cCamera@ pCamera = cLux_GetPlayer().GetCamera();
+		cLuxProp@ pOpenProp = cLux_ID_Prop(mOpenPropID);
+		cVector3f vCurrPos = pOpenProp.GetPosition();
+		cVector3f vTargetPos = pCamera.GetPosition() + m_mtxCameraCenteredRotation.GetForward() * mfDistanceFromCamera*gfReadableDistScale + m_mtxCameraCenteredRotation.GetUp()*mfNoteYOffs;
+		cVector3f vToTarget = vTargetPos - vCurrPos;
+		
+		afDist = vToTarget.Length();
+		
+		////////////////////////////////////////////////
+		// Calculate speed to move prop with
+		float fSpeedMultiplier = cMath_Min(1.0f, (afDist/gfReadablePropSlowDownDist));
+		float fMoveSpeed = gfReadablePropShowSpeed * fSpeedMultiplier;
+		
+		////////////////////////////////////////////////
+		// Calculate speed to move prop at
+		cVector3f vDeltaMovement = vToTarget;
+		vDeltaMovement.Normalize();
+		vDeltaMovement = vDeltaMovement * fMoveSpeed * afTimeStep;
+		
+		pOpenProp.SetPosition(vCurrPos + vDeltaMovement);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnGui(float afTimeStep)
+	{
+		mReadable.DrawGui(afTimeStep);
+	}
+	
+	//------------------------------------------------------------
+	
+	void PostUpdate(float afTimeStep)
+	{
+	}	
+	
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool OnAction(int alAction, bool abPressed)
+	{
+		bool bShowText = alAction == eAction_ShowText || alAction == eAction_Interact;
+		
+		// If gbReadablesHoldInteract is set, allow releasing the interact
+		// button to cancel. So the player needs to hold.
+		if (gbReadablesHoldInteract && !abPressed && bShowText)
+		{
+			LeaveState();
+			return false;
+		}
+		
+		///////////////////////////////
+		// Disable jump and crouch
+		if (alAction == eAction_Crouch || alAction == eAction_Jump)
+			return false;
+			
+		if (!mbLeavingState)
+		{
+			if (abPressed)
+			{
+				///////////////////////////////
+				// Space / A
+				if ((!mReadable.IsFading())&&(bShowText || (!mbEnteringState && bShowText) ))
+				{
+					if (!mbTextActivated)
+					{
+				
+						mbTextActivated = true;
+						if (!mReadable.IsShowingText())
+							mReadable.ShowText();
+					}
+					else
+					{
+						if (mReadable.GetPage()<mReadable.GetPageNum())
+						{
+							mReadable.NextPage();
+						}
+						else
+						{
+							mbTextActivated = false;
+							if (mReadable.IsShowingText())
+								mReadable.HideText();
+						}
+					}
+					
+					return false;
+				}
+				
+				///////////////////////////////
+				// Right click
+				if(alAction == eAction_InteractCancel || alAction == eAction_OpenMenu)
+				{
+					LeaveState();
+					return false;
+				}
+			
+			}
+			
+			////////////////////////////////
+			// Text scrolling
+			if (mReadable.IsShowingText())
+			{
+				return false;
+			}
+		}
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+
+	bool OnAnalogInput(int alAnalogId, const cVector3f &in avAmount)
+	{
+		// Allow movement when the readable is being put away
+		if (mbLeavingState)
+			return true;
+			
+		////////////////////////////////////////////////////
+		// Rotation
+		if(alAnalogId == eAnalogType_GamepadRotate || alAnalogId == eAnalogType_Look || alAnalogId == eAnalogType_Move || alAnalogId == eAnalogType_GamepadMove)
+		{	
+			// Don't rotate if we're trying to scroll
+			if (!mReadable.TextNeedsScrolling()||alAnalogId!=eAnalogType_Look)
+			{
+				float fX = avAmount.x;
+				float fY = -avAmount.y;
+			
+				if (cLux_GetInputHandler().IsYAxisInverted() && (alAnalogId == eAnalogType_Look) )
+					fY*=-1.0f;
+				
+				if (alAnalogId == eAnalogType_GamepadRotate || alAnalogId == eAnalogType_GamepadMove || alAnalogId == eAnalogType_Move)
+				{
+					if (alAnalogId==eAnalogType_GamepadMove||alAnalogId==eAnalogType_Move)
+						fY=-fY;
+					fX*=gfDpadRotateSpeed;
+					fY*=gfDpadRotateSpeed;
+				}
+				else
+				{
+					fX*=gfLookRotateSpeed;
+					fY*=gfLookRotateSpeed;
+				}
+				
+				if (cLux_GetInputHandler().WasAnalogueInputFromPad())
+				{
+					// Deadzoning
+					if (cMath_Abs(fX)<0.5f)
+						fX=0.0f;
+					if (cMath_Abs(fY)<0.5f)
+						fY=0.0f;
+				}
+					
+				mfRotInputX=fX;
+				mfRotInputY=fY;
+			}
+
+			return false;
+		}
+		
+		///////////////////////////////////
+		// Disable move
+		if(alAnalogId == eAnalogType_GamepadMove || alAnalogId == eAnalogType_Move)
+		{			
+			return false;
+		}
+		
+		///////////////////////////////////
+		// Disable lean
+		if(alAnalogId == eAnalogType_Lean)
+		{			
+			return false;
+		}
+		
+		////////////////////////////////////////////////////
+		// Text scrolling
+		if (alAnalogId == eAnalogType_Scroll)
+		{
+			if (mReadable.IsShowingText())
+			{
+				return false;
+			}
+		}
+		
+		///////////////////////////////////
+		// Override look
+		if(alAnalogId == eAnalogType_Look)
+		{
+			return false;
+		}
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnExitPressed()
+	{
+		return true;
+	} 
+	
+	//------------------------------------------------------------
+	
+	void LeaveState()
+	{			
+		///////////////////////////////
+		// Play sound
+		if (msCloseSound.length() > 0)
+			Sound_PlayGui(msCloseSound, 1.0f);
+				
+		//////////////////////////////
+		// Start leaving state and cancel entering state
+		mbEnteringState = false;
+		mbLeavingState = true;
+		
+		mfStateTimer = 0.0f;
+		mvStartMovePos = cLux_ID_Prop(mOpenPropID).GetPosition();
+							   
+		//////////////////////////////
+		// Fade out text
+		mReadable.HideText();
+		mReadable.StopReading();
+		
+		//////////////////////////////
+		// Fade out DOF effect - if we haven't already
+		if (mlDepthOfFieldID!=-1)
+		{
+			Effect_DoF_FadeOut(mlDepthOfFieldID, 0.5f);
+			Player_FadeFOVToDefault(4.0f);
+			mlDepthOfFieldID = -1;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// BODY CALLBACKS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool AllowBuoyancy(iPhysicsBody @apBody)
+	{
+		return false;
+	}
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// CHARACTER CALLBACK
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void CharBody_GravityCollide(iCharacterBody@ apCharBody, iPhysicsBody@ apBody, cCollideData @apCollideData)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void CharBody_HitGround(iCharacterBody@ apCharBody,const cVector3f &in avVel)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPER METHODS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	void SaveBodyProperties(iPhysicsBody @apBody)
+	{
+		
+	}
+
+	//-----------------------------------------------------------------------
+
+
+	bool BodyIsAdded(iPhysicsBody @apBody)
+	{
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// MEMBER VARIABLES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	tID mOpenPropID;
+	
+	bool mbEnteringState;
+	bool mbLeavingState;
+	bool mbTextActivated;
+	
+	bool mbPausedAnims = false;
+	tString msPausedAnim = "";
+	
+	int mlDepthOfFieldID = -1;
+	
+	cUtility_Readable mReadable;
+	tString msCustomMaterial;
+	float mfNoteScale=1.0f;
+	float mfNoteYOffs=0.0f;
+	
+	//////////////////////////////////////
+	// Prop movement
+	cMatrixf m_mtxOriginOrientation;
+	float mfDistanceFromCamera;
+	float mfYStartOffset;
+	float mfStateTimer;
+	cVector3f mvStartMovePos;
+	cVector3f mvCamRelativeStart;
+	
+	//////////////////////////////////////
+	// Sounds
+	tString msCloseSound;
+	
+	//////////////////////////////////////
+	// Light
+	tID m_idLight;
+	
+	//////////////////////////////////////
+	// Voice
+	tString msVoiceSubject;
+	float mfPlayVoiceCount = 1.5f;
+	cScriptStringSet m_setVoiceSubjectsPlayed;
+		
+	//////////////////////////////////////
+	// Rotation
+	float mfRotX = 0.0f;
+	float mfRotInputX = 0.0f;
+	float mfRotY = 0.0f;
+	float mfRotInputY = 0.0f;
+	float mfSaveHeadBob = 1.0f;
+	
+	//////////////////////////////////////
+	// Camera control
+	cMatrixf m_mtxCameraCenteredRotation;
+	
+	//////////////////////////////////////
+	// Callbacks
+	tString msCloseCallback;
+	
+	//------------------------------------------------------------
+		
+}

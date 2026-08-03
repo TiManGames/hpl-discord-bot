@@ -1,0 +1,1667 @@
+//----------------------------------------------------------------------------------------
+
+#include "interfaces/UserModule_Interface.hps"
+#include "custom/modules/ModuleInterfaces_Custom.hps"
+#include "base/Player_Types.hps"
+#include "base/InputHandler_Types.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_map.hps"
+#include "helpers/helper_imgui.hps"
+#include "custom/helpers/helper_agent.hps";
+#include "custom/helpers/helper_modules_custom.hps";
+#include "custom/agents/agent_types_custom.hps"
+#include "helpers/helper_player.hps";
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_game.hps"
+#include "helpers/helper_ai.hps"
+
+//----------------------------------------------------------------------------------------
+
+bool gbDebug = false;
+
+const float gfBlackboard_MinPathBlockerBodyMass = 15.f;
+const tString gsBlackboard_BlockBodyEnt = "path_area_blocker.ent";
+
+//----------------------------------------------------------------------------------------
+
+class cAgentInfo
+{
+	tID m_idAgent;
+	bool mbHunting;
+	bool mbInsideLiquidArea;
+}
+
+class cGhoulHoleNetwork
+{
+	tString msName = "";
+	array<cGhoulHoleInfo> mvGhoulHoles;
+}
+
+class cGhoulHoleInfo
+{
+	tID m_idHole;
+	tID m_idAgent;
+}
+
+class cStalkerMapTransferData
+{
+	float mfTransferAreaAgentYawDiff = 0.f;
+	bool mbInsideTransferArea = false;
+	bool mbActive = false;
+	int mlState = -1;
+	int mlMode = -1;
+	float mfPresence = -1.f;
+	float mfTenacity = -1.f;
+	bool mbEmergeAllowed = false;
+	bool mbRecentlyHurt = false;
+	bool mbRetreatActive = false;
+	bool mbEmerging = false;
+	float mfPathDistToPlayer = -1.f;
+	int mlAlertState = -1;
+	bool mbInterest_Alert = false; 
+	float mfInterest_AreaRadius = -1.f;
+	float mfInterest_IncreaseCount = 0.f;
+	float mfInterest_PauseEmergeCount = 0.f;
+	float mfInterest_EmergeCount = 0.f;
+	float mfInterest_EmergeTime = 1.f;
+	cVector3f mvInterest_AreaPos(0.f);
+	tString msTransferArea = "";
+	cMatrixf m_mtxTransferArea = cMatrixf_Identity;
+	cMatrixf m_mtxStalkerTransform = cMatrixf_Identity;	
+}
+
+//----------------------------------------------------------------------------------------
+
+class cScrAgentBlackboardModule : iScrUserModule, iScrUserModule_Interface, iScrAgentBlackboardModule_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		LoadUserConfig();
+	}
+		
+	//------------------------------------------------------------
+	
+	void LoadUserConfig()
+	{
+		cConfigFile@ pConfig = cLux_GetUserConfig();
+		
+		////////////////
+		// Reduced enemy perception
+		bool bPrevReducedEnemyPerception = mbReducedEnemyPerception;
+		mbReducedEnemyPerception = pConfig.GetBool("Accessibility", "ReducedEnemyPerception", false);
+		
+		if (mbReducedEnemyPerception != bPrevReducedEnemyPerception)
+		{
+			UpdateReducedEnemyPerception();
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void SaveUserConfig()
+	{
+	}
+	
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// MAP LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap@ apMap)
+	{
+		cLux_AddDebugMessage("[Blackboard] Agent Blackboard is live");
+		
+		/////////////////////////
+		// Liquid areas
+		apMap.GetEntityArrayID("*", eLuxEntityType_LiquidArea, "", mvLiquidAreas);
+		
+		/////////////////////////
+		// Path blocker arrays
+		mvPathBlockerBodyIds_Physical.resize(0);
+		mvPathBlockerBodyIds_DamageArea.resize(0);
+		
+		array<iLuxEntity@> vPotentialPathBlockers;
+		apMap.GetEntityArray("*", eLuxEntityType_Prop, "", vPotentialPathBlockers);
+		
+		for (int i = 0; i < vPotentialPathBlockers.size(); ++i)
+		{
+			cLuxProp@ pProp = cLux_ToProp(vPotentialPathBlockers[i]);
+			iPhysicsBody@ pBody = pProp !is null ? pProp.GetMainBody() : null;
+			
+			if (pBody is null) continue;
+			
+			if (GetCanBodyBlockPath(pBody))
+			{
+				if (GetIsBodyDamageArea(pBody))
+				{
+					mvPathBlockerBodyIds_DamageArea.push_back(pBody.GetID());
+				}
+				else
+				{
+					mvPathBlockerBodyIds_Physical.push_back(pBody.GetID());
+				}
+			}
+		}
+		
+		/////////////////////////
+		// Player path blocker
+		m_idPlayerPathBlockerBodyId = tID_Invalid;
+		mlPlayerPathBlockerBodyUserCount = 0;
+		mlPathBlockerCounter++;
+	}
+
+	//------------------------------------------------------------
+
+	void OnMapLeave(cLuxMap @apMap)
+	{
+		mvAgents.resize(0);
+		mvLiquidAreas.resize(0);
+		mlHuntingAgentCount = 0;
+		mlInvestigatingAgentCount = 0;
+	}
+	
+	//------------------------------------------------------------
+	
+	void PreloadData(cLuxMap @apMap)
+	{
+		Entity_Preload(gsBlackboard_BlockBodyEnt);
+	}
+	
+	//------------------------------------------------------------
+
+	void CreateWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void DestroyWorldEntities(cLuxMap @apMap)
+	{
+		/////////////////////////
+		// Destroy player path blocker
+		iLuxEntity@ pEnt = cLux_GetBodyEntity(cLux_ID_Body(m_idPlayerPathBlockerBodyId));
+		if (pEnt !is null)
+		{
+			apMap.DestroyEntity(pEnt);
+			
+			m_idPlayerPathBlockerBodyId = tID_Invalid;
+			mlPlayerPathBlockerBodyUserCount = 0;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnEnterContainer(const tString&in asOldContainer)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnLeaveContainer(const tString&in asNewContainer)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnRenderSolid(cRendererCallbackFunctions@ apFunctions)
+	{
+		if (cLux_ScriptDebugOn() == false) return;
+		if (gbDebug == false) return;
+				
+		for (int i = 0; i < mvGhoulHoleNetworks.size(); ++i)
+		{
+			cGhoulHoleNetwork@ pNetwork = mvGhoulHoleNetworks[i];
+			
+			for (int j = 0; j < pNetwork.mvGhoulHoles.size(); ++j)
+			{
+				cGhoulHoleInfo@ pHole = pNetwork.mvGhoulHoles[j];
+				apFunctions.GetLowLevelGfx().DrawSphere(cLux_ID_Entity(pHole.m_idHole).GetPosition(), 0.2f, cColor(5, 5, 0));
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void VariableUpdate(float afDeltaTime)
+	{
+		///////////////////
+		// Other updates
+		UpdateIsInLiquidArea(afDeltaTime);
+		UpdateStalkerCooldowns(afDeltaTime);
+	}
+	
+	//------------------------------------------------------------
+	
+	void PostUpdate(float afTimeStep)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnAction(int alAction, bool abPressed)
+	{
+	}
+	
+	//------------------------------------------------------------
+
+	void OnAnalogInput(int alAnalogId, const cVector3f &in avAmount)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnExitPressed()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void AppGotInputFocus()
+	{
+	
+	}
+	void AppLostInputFocus()
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INTERFACE
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetDebugMode(bool abActive)
+	{
+		gbDebug = abActive;
+	}
+	
+	//------------------------------------------------------------
+	
+	void AddAgent(tID aEnemy)
+	{
+		// Sanity check - make sure enemy isn't already in here
+		for	(uint i=0; i<mvAgents.length();++i)
+		{
+			if (mvAgents[i].m_idAgent == aEnemy) return;
+		}
+		
+		cAgentInfo agent;
+		agent.m_idAgent = aEnemy;
+		agent.mbHunting = false;
+		
+		mvAgents.push_back(agent);
+		
+		cLux_AddDebugMessage("[Blackboard] Enemy Count : " + mvAgents.length());
+	}
+	
+	//------------------------------------------------------------
+	
+	void RemoveAgent(tID aEnemy)
+	{
+		for (uint i=0; i<mvAgents.length();++i)
+		{
+			cAgentInfo@ pAgent = mvAgents[i];
+			if (pAgent.m_idAgent == aEnemy)
+			{
+				if (pAgent.mbHunting) --mlHuntingAgentCount;
+				mvAgents.removeAt(i);
+				break;
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetAgentHunt(tID aEnemy, bool abHunt)
+	{
+		for (uint i=0; i<mvAgents.length();++i)
+		{
+			cAgentInfo@ pAgent = mvAgents[i];
+			if (pAgent.m_idAgent == aEnemy)
+			{
+				if (pAgent.mbHunting && abHunt == false)
+				{
+					--mlHuntingAgentCount;
+				}
+				else if (pAgent.mbHunting == false && abHunt)
+				{
+					++mlHuntingAgentCount;
+				}
+				pAgent.mbHunting = abHunt;
+				break;
+			}		
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	int GetAgentCount()
+	{
+		return mvAgents.size();
+	}
+	
+	//------------------------------------------------------------
+	
+	int GetHuntingAgentCount()
+	{
+		return mlHuntingAgentCount;
+	}
+	
+	//------------------------------------------------------------
+	
+	int GetHuntingAgentCountInRadius(const cVector3f &in avPos, float afRadius)
+	{
+		int lCount = 0;
+		for (uint i=0; i<mvAgents.length();++i)
+		{
+			cAgentInfo@ pAgentInfo = mvAgents[i];
+			if (pAgentInfo.mbHunting == false) continue;
+			cLuxAgent@ pAgent = cLux_ID_Agent(pAgentInfo.m_idAgent);
+			float fDistSqr = cMath_Vector3DistSqr(avPos, pAgent.GetCharBody().GetFeetPosition());
+			if (fDistSqr > afRadius * fDistSqr) continue;
+			++lCount;
+		}
+		return lCount;
+	}
+	
+	//------------------------------------------------------------
+	
+	int RegisterGhoulHoleNetwork(cLuxMap@ apMap, const tString &in asNetworkName)
+	{
+		if (asNetworkName == "") return -1;
+		if (apMap is null) return -1;
+		
+		tString sMapName = apMap.GetName();
+		for (int i = 0; i < mvGhoulHoleNetworks.size(); ++i)
+		{
+			cGhoulHoleNetwork@ pNetwork = mvGhoulHoleNetworks[i];
+			if (pNetwork.msName == (sMapName + asNetworkName))
+			{
+				return i;
+			}
+		}
+		
+		cGhoulHoleNetwork newNetwork;
+		newNetwork.msName = apMap.GetName() + asNetworkName;
+
+		array<tString> vNetworks;
+		cString_GetStringVec(asNetworkName, vNetworks, " ");
+		for (int i = 0; i < vNetworks.size(); ++i)
+		{
+			array<iLuxEntity@> vGhoulHoles;
+			if (apMap.GetEntityArray(vNetworks[i], eLuxEntityType_Area, "", vGhoulHoles) == false) continue;
+			for (int j = 0; j < vGhoulHoles.size(); ++j)
+			{
+				iLuxEntity@ pHole = vGhoulHoles[j];
+				
+				cGhoulHoleInfo newHole;
+				newHole.m_idHole = pHole.GetID();
+				newHole.m_idAgent = tID_Invalid;
+						
+				newNetwork.mvGhoulHoles.push_back(newHole);
+			}
+		}
+		
+		mvGhoulHoleNetworks.push_back(newNetwork);
+		return mvGhoulHoleNetworks.size() - 1;
+	}
+	
+	//------------------------------------------------------------
+	
+	array<tID> GetGhoulHoleNetwork(int mlId)
+	{
+		array<tID> vGhoulHoles;
+		if (IsGhoulNetworkdIdValid(mlId) == false) return vGhoulHoles;
+		
+		cGhoulHoleNetwork@ pNetwork = mvGhoulHoleNetworks[mlId];
+		for (int i = 0; i < pNetwork.mvGhoulHoles.size(); ++i)
+		{
+			cGhoulHoleInfo@ pGhoulHole = pNetwork.mvGhoulHoles[i];
+			vGhoulHoles.push_back(pGhoulHole.m_idHole);
+		}
+
+		return vGhoulHoles;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetGhoulHoleUsed(tID a_idHole, tID a_idAgent)
+	{
+		if (a_idHole == tID_Invalid) return;
+		
+		for (int i = 0; i < mvGhoulHoleNetworks.size(); ++i)
+		{
+			cGhoulHoleNetwork@ pNetwork = mvGhoulHoleNetworks[i];
+			for (int j = 0; j < pNetwork.mvGhoulHoles.size(); ++j)
+			{
+				cGhoulHoleInfo@ pGhoulHole = pNetwork.mvGhoulHoles[j];
+				if (pGhoulHole.m_idHole == a_idHole)
+				{
+					pGhoulHole.m_idAgent = a_idAgent;
+					mlUsedHoleCount += a_idAgent == tID_Invalid ? -1 : 1;
+					break;
+				}
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void RemoveGhoulHoleUsed(tID a_idHole)
+	{
+		if (a_idHole == tID_Invalid) return;
+		
+		for (int i = 0; i < mvGhoulHoleNetworks.size(); ++i)
+		{
+			cGhoulHoleNetwork@ pNetwork = mvGhoulHoleNetworks[i];
+			for (int j = 0; j < pNetwork.mvGhoulHoles.size(); ++j)
+			{
+				cGhoulHoleInfo@ pGhoulHole = pNetwork.mvGhoulHoles[j];
+				if (pGhoulHole.m_idHole == a_idHole)
+				{
+					pGhoulHole.m_idAgent = tID_Invalid;
+					--mlUsedHoleCount;
+					break;
+				}
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void RemoveGhoulHolesUsedBy(tID a_idAgent)
+	{
+		if (a_idAgent == tID_Invalid) return;
+		
+		for (int i = 0; i < mvGhoulHoleNetworks.size(); ++i)
+		{
+			cGhoulHoleNetwork@ pNetwork = mvGhoulHoleNetworks[i];
+			for (int j = 0; j < pNetwork.mvGhoulHoles.size(); ++j)
+			{
+				cGhoulHoleInfo@ pGhoulHole = pNetwork.mvGhoulHoles[j];
+				if (pGhoulHole.m_idAgent == a_idAgent)
+				{
+					pGhoulHole.m_idAgent = tID_Invalid;
+					--mlUsedHoleCount;
+				}
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetGhoulHoleUsed(tID a_idHole)
+	{
+		if (a_idHole == tID_Invalid) return true;
+		
+		for (int i = 0; i < mvGhoulHoleNetworks.size(); ++i)
+		{
+			cGhoulHoleNetwork@ pNetwork = mvGhoulHoleNetworks[i];
+			for (int j = 0; j < pNetwork.mvGhoulHoles.size(); ++j)
+			{
+				cGhoulHoleInfo@ pGhoulHole = pNetwork.mvGhoulHoles[j];
+				if (pGhoulHole.m_idHole == a_idHole && pGhoulHole.m_idAgent != tID_Invalid)
+				{
+					return true;
+				}
+			}
+		}
+		
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	tID GetGhoulHoleUsedBy(tID a_idHole)
+	{
+		if (a_idHole == tID_Invalid) return tID_Invalid;
+		
+		for (int i = 0; i < mvGhoulHoleNetworks.size(); ++i)
+		{
+			cGhoulHoleNetwork@ pNetwork = mvGhoulHoleNetworks[i];
+			for (int j = 0; j < pNetwork.mvGhoulHoles.size(); ++j)
+			{
+				cGhoulHoleInfo@ pGhoulHole = pNetwork.mvGhoulHoles[j];
+				if (pGhoulHole.m_idHole == a_idHole && pGhoulHole.m_idAgent != tID_Invalid)
+				{
+					return pGhoulHole.m_idAgent;
+				}
+			}
+		}
+
+		return tID_Invalid;
+	}
+	
+	//------------------------------------------------------------
+	
+	int GetFreeGhoulHoleCount(int alNetworkId)
+	{
+		int lCount = 0;
+		
+		cGhoulHoleNetwork@ pNetwork = mvGhoulHoleNetworks[alNetworkId];
+		for (int j = 0; j < pNetwork.mvGhoulHoles.size(); ++j)
+		{
+			cGhoulHoleInfo@ pGhoulHole = pNetwork.mvGhoulHoles[j];
+			if (pGhoulHole.m_idAgent != tID_Invalid) continue;
+			iLuxEntity@ pEntity = cLux_ID_Entity(pGhoulHole.m_idHole);
+			if (pEntity is null || pEntity.IsActive() == false) continue;
+			++lCount;
+		}
+		
+		return lCount;
+	}
+
+	//------------------------------------------------------------
+	
+	tID GetClosestGhoulHole(int alNetworkId, const cVector3f &in avPos, float afMinRadius = -1.0f, float afMaxRadius = -1.0f, bool abOnlyFree = false, bool abOnlyOutOfPlayerSight = false, array<tID>@ avExcludeHoles = null)
+	{
+		array<tID>@ vHoles = FilterGhoulHoles(alNetworkId, avPos, true, false, afMinRadius, afMaxRadius, abOnlyFree, abOnlyOutOfPlayerSight, avExcludeHoles);
+		if (vHoles.size() == 0) return tID_Invalid;
+		
+		return vHoles[0];
+	}
+	
+	tID GetFarthestGhoulHole(int alNetworkId, const cVector3f &in avPos, float afMinRadius = -1.0f, float afMaxRadius = -1.0f, bool abOnlyFree = false, bool abOnlyOutOfPlayerSight = false, array<tID>@ avExcludeHoles = null)
+	{
+		array<tID>@ vHoles = FilterGhoulHoles(alNetworkId, avPos, false, true, afMinRadius, afMaxRadius, abOnlyFree, abOnlyOutOfPlayerSight, avExcludeHoles);
+		if (vHoles.size() == 0) return tID_Invalid;
+		
+		return vHoles[0];
+	}
+	
+	tID GetRandomGhoulHole(int alNetworkId, const cVector3f &in avPos, float afMinRadius = -1.0f, float afMaxRadius = -1.0f, bool abOnlyFree = false, bool abOnlyOutOfPlayerSight = false, array<tID>@ avExcludeHoles = null)
+	{
+		array<tID>@ vHoles = FilterGhoulHoles(alNetworkId, avPos, false, false, afMinRadius, afMaxRadius, abOnlyFree, abOnlyOutOfPlayerSight, avExcludeHoles);
+		if (vHoles.size() == 0) return tID_Invalid;
+		
+		tID idRandomHole = vHoles[cMath_RandRectl(0, vHoles.size() - 1)];
+		return idRandomHole;
+	}
+	
+	tID GetGhoulHoleInPosDir(int alNetworkId, const cVector3f &in avPos, const cVector3f &in avDir, float afMinRadius = -1.0f, float afMaxRadius = -1.0f, bool abClosest = false, bool abOnlyFree = true, bool abOnlyOutOfPlayerSight = false, array<tID>@ avExcludeHoles = null)
+	{				
+		array<tID>@ vHoles = FilterGhoulHoles(alNetworkId, avPos, false, false, afMinRadius, afMaxRadius, true, abOnlyOutOfPlayerSight, avExcludeHoles);
+		if (vHoles.size() == 0) return tID_Invalid;
+		
+		array<tID> vHolesInDir;
+		tID idClosestHole = tID_Invalid;
+		float fMinDistSqr = 10000.f * 10000.f;
+		
+		for (int i = 0; i < vHoles.size(); ++i)
+		{
+			cLuxArea@ pHole = cLux_ID_Area(vHoles[i]);
+			if (pHole is null) continue;
+			
+			cVector3f vToHole = pHole.GetPosition() - avPos;	
+		
+			if (cMath_Vector3Dot(cMath_Vector3Normalize(vToHole), avDir) > 0.5f)
+			{				
+				if (abClosest)
+				{					
+					float fSqrLength = vToHole.SqrLength();
+					if (fSqrLength < fMinDistSqr)
+					{
+						fMinDistSqr = fSqrLength;
+						idClosestHole = pHole.GetID();
+					}
+				}
+				else
+				{
+					vHolesInDir.push_back(vHoles[i]);
+				}
+			}
+		}
+		
+		if (idClosestHole != tID_Invalid)
+			vHolesInDir.push_back(idClosestHole);
+		
+		if (vHolesInDir.size() == 0) 
+		{
+			return tID_Invalid;		
+		}
+		else
+		{
+			return vHolesInDir[cMath_RandRectl(0, vHolesInDir.size() - 1)];
+		}
+		
+		return tID_Invalid;
+	}
+	
+	array<tID>@ FilterGhoulHoles(int alNetworkId, const cVector3f &in avPos, bool abClosest, bool abFarthest, float afMinRadius, 
+								 float afMaxRadius, bool abOnlyFree, bool abOnlyOutOfPlayerSight, array<tID>@ avExcludeHoles)
+	{		
+		array<tID> vValidHoles;
+		float fMinDist = -1.0f;
+		float fMaxDist = -1.0f;
+		tID idClosest = tID_Invalid;
+		tID idFarthest = tID_Invalid;
+		
+		if (IsGhoulNetworkdIdValid(alNetworkId) == false) return vValidHoles;
+
+		cGhoulHoleNetwork@ pNetwork = mvGhoulHoleNetworks[alNetworkId];
+				
+		for (int i = 0; i < pNetwork.mvGhoulHoles.size(); ++i)
+		{
+			cGhoulHoleInfo@ pGhoulHole = pNetwork.mvGhoulHoles[i];
+			iLuxEntity@ pEntity = cLux_ID_Entity(pGhoulHole.m_idHole);
+			
+			if (pEntity is null || pEntity.IsActive() == false) continue;
+			if (abOnlyFree && pGhoulHole.m_idAgent != tID_Invalid) continue;
+						
+			//////////////
+			// Exclude specified holes
+			bool bExcludeHole = false;
+			if (avExcludeHoles !is null)
+			{
+				for (int j = 0; j < avExcludeHoles.size(); ++j)
+				{
+					if (pGhoulHole.m_idHole == avExcludeHoles[j])
+					{
+						bExcludeHole = true;
+						break;
+					}
+				}
+			}
+			
+			if (bExcludeHole) continue;
+						
+			//////////////
+			// Check if hole is within radiuses
+			float fDist = cMath_Vector3Dist(avPos, pEntity.GetPosition());
+			if (afMinRadius >= 0.0f && fDist < afMinRadius) continue;
+			if (afMaxRadius >= 0.0f && fDist > afMaxRadius) continue;
+			
+			//////////////
+			// Check if hole is out of player sight
+			if (abOnlyOutOfPlayerSight)
+			{
+				if (cLux_CheckLineOfSight(pEntity.GetPosition(), Player_GetPosition(), true, false)) continue;
+			}
+			
+			vValidHoles.push_back(pGhoulHole.m_idHole);
+						
+			//////////////
+			// Select closest hole
+			if (fMinDist < 0 || fDist < fMinDist)
+			{
+				fMinDist = fDist;
+				idClosest = pGhoulHole.m_idHole;
+			}
+			
+			//////////////
+			// Select farthest hole
+			if (fMaxDist < 0 || fDist > fMaxDist)
+			{
+				fMaxDist = fDist;
+				idFarthest = pGhoulHole.m_idHole;
+			}
+		}
+		
+		if (abClosest == false && abFarthest == false) return vValidHoles;
+		
+		vValidHoles.resize(0);
+	
+		if (abClosest && idClosest != tID_Invalid)
+			vValidHoles.push_back(idClosest);
+		else if (abFarthest && idFarthest != tID_Invalid)
+			vValidHoles.push_back(idFarthest);
+		
+		return vValidHoles;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupStalkerMapTransfer(const tString &in asStalker)
+	{
+		//////////////////
+		// Setup vars
+		cLuxMap@ pMap = cLux_GetCurrentMap();		
+		cLuxAgent@ pAgent = pMap !is null ? cLux_ToAgent(pMap.GetEntityByName(asStalker, eLuxEntityType_Agent)) : null;
+		cLuxArea@ pArea = GetCurrentMapTransferArea();	
+		cLuxCharMover@ pCharMover = pAgent !is null ? cast<cLuxCharMover@>(pAgent.GetComponentByType(eLuxEntityComponentType_CharMover)) : null;
+		cLuxPathfinder@ pPathfinder = pAgent !is null ? cast<cLuxPathfinder@>(pAgent.GetComponentByType(eLuxEntityComponentType_Pathfinder)) : null;
+		cMeshEntity@ pMeshEnt = pAgent !is null ? pAgent.GetMeshEntity() : null;
+		
+		if (pMap is null) return;
+		if (pAgent is null) return;
+		if (pArea is null) return;
+		if (pCharMover is null) return;
+		if (pPathfinder is null) return;
+		if (pMeshEnt is null) return;
+		
+		//////////////////
+		// Save data
+		mStalkerMapTransferData.msTransferArea = pArea.GetName();
+		mStalkerMapTransferData.mbActive = pAgent.IsActive();
+		
+		Stalker_GetMapTransferData(asStalker,
+								   mStalkerMapTransferData.mlState,
+								   mStalkerMapTransferData.mlMode,
+								   mStalkerMapTransferData.mfPresence,
+								   mStalkerMapTransferData.mfTenacity,
+								   mStalkerMapTransferData.mbEmergeAllowed,
+								   mStalkerMapTransferData.mbRecentlyHurt,
+								   mStalkerMapTransferData.mbRetreatActive,
+								   mStalkerMapTransferData.mlAlertState,
+								   mStalkerMapTransferData.mbInterest_Alert, 
+								   mStalkerMapTransferData.mfInterest_AreaRadius, 
+								   mStalkerMapTransferData.mfInterest_IncreaseCount, 
+								   mStalkerMapTransferData.mfInterest_PauseEmergeCount,
+								   mStalkerMapTransferData.mfInterest_EmergeCount, 
+								   mStalkerMapTransferData.mfInterest_EmergeTime, 
+								   mStalkerMapTransferData.mvInterest_AreaPos,
+								   mStalkerMapTransferData.mbEmerging,
+								   mStalkerMapTransferData.mfPathDistToPlayer);		
+		
+		if (Stalker_GetSaveRoomBehaviorActive(asStalker))
+		{
+			mStalkerMapTransferData.mlMode = eStalkerMode_Active;
+		}
+		
+		mStalkerMapTransferData.m_mtxTransferArea = pArea.GetMatrix();
+		mStalkerMapTransferData.mbInsideTransferArea = pAgent.CheckBodyCollision(pArea.GetAreaBody(), pMap);
+		mStalkerMapTransferData.m_mtxStalkerTransform = pAgent.GetMatrix();
+		
+		float fAreaYaw = cMath_GetAngleFromPoints3D(0.f, mStalkerMapTransferData.m_mtxTransferArea.GetTranspose().GetForward()).y;
+		float fAgentYaw = pAgent.GetCharBody().GetYaw();
+		mStalkerMapTransferData.mfTransferAreaAgentYawDiff = cMath_GetAngleDistanceRad(fAreaYaw, fAgentYaw);
+	}
+	
+	//------------------------------------------------------------
+	
+	void DoStalkerMapTransfer(const tString &in asStalker)
+	{
+		//////////////////
+		// Setup vars
+		cLuxMap@ pMap = cLux_GetCurrentMap();
+		cLuxAgent@ pAgent = pMap !is null ? cLux_ToAgent(pMap.GetEntityByName(asStalker, eLuxEntityType_Agent)) : null;
+		cLuxArea@ pArea = pMap !is null ? cLux_ToArea(pMap.GetEntityByName(mStalkerMapTransferData.msTransferArea, eLuxEntityType_Area)) : null;
+		
+		if (pAgent is null) return;
+		if (pArea is null) return;
+			
+		//////////////////
+		// Set new positions
+		if (mStalkerMapTransferData.msTransferArea != "")
+		{
+			cMatrixf mtxStalkerTransform = mStalkerMapTransferData.m_mtxStalkerTransform;
+			cMatrixf mtxAreaA = mStalkerMapTransferData.m_mtxTransferArea;
+			cMatrixf mtxAreaB = pArea.GetMatrix(); 
+			cMatrixf mtxOffset = cMath_MatrixMul(mtxAreaB, cMath_MatrixInverse(mtxAreaA));
+			cMatrixf mtxNew = cMath_MatrixMul(mtxOffset, mtxStalkerTransform);
+			
+			mStalkerMapTransferData.mvInterest_AreaPos = cMath_MatrixMul(mtxOffset, mStalkerMapTransferData.mvInterest_AreaPos);
+			
+			pAgent.SetPosition(mtxNew.GetTranslation());
+			
+			float fAreaYaw = cMath_GetAngleFromPoints3D(0.f, mtxAreaB.GetTranspose().GetForward()).y;
+			float fAgentYaw = fAreaYaw + mStalkerMapTransferData.mfTransferAreaAgentYawDiff;
+			pAgent.GetCharBody().SetYaw(fAgentYaw);
+		}
+		
+		//////////////////
+		// Set behaviour
+		if (mStalkerMapTransferData.mbActive)
+		{
+			pAgent.SetActive(true);
+			Stalker_ApplyMapTransferData(asStalker,
+										 mStalkerMapTransferData.mbInsideTransferArea,
+										 mStalkerMapTransferData.mlState,
+										 mStalkerMapTransferData.mlMode,
+										 mStalkerMapTransferData.mfPresence,
+										 mStalkerMapTransferData.mfTenacity,
+										 mStalkerMapTransferData.mbEmergeAllowed,
+										 mStalkerMapTransferData.mbRecentlyHurt,
+										 mStalkerMapTransferData.mbRetreatActive,
+										 mStalkerMapTransferData.mlAlertState,
+										 mStalkerMapTransferData.mbInterest_Alert,
+										 mStalkerMapTransferData.mfInterest_AreaRadius,
+										 mStalkerMapTransferData.mfInterest_IncreaseCount,
+										 mStalkerMapTransferData.mfInterest_PauseEmergeCount,
+										 mStalkerMapTransferData.mfInterest_EmergeCount,
+										 mStalkerMapTransferData.mfInterest_EmergeTime,
+										 mStalkerMapTransferData.mvInterest_AreaPos,
+										 mStalkerMapTransferData.mbEmerging,
+										 mStalkerMapTransferData.mfPathDistToPlayer);
+		}
+		
+		//////////////////
+		// Reset data
+		mStalkerMapTransferData.msTransferArea = "";
+		mStalkerMapTransferData.mfTransferAreaAgentYawDiff = 0.f;
+		mStalkerMapTransferData.mbInsideTransferArea = false;
+		mStalkerMapTransferData.mbActive = false;
+		mStalkerMapTransferData.mlState = -1;
+		mStalkerMapTransferData.mlMode = -1;
+		mStalkerMapTransferData.mfPresence = -1.f;
+		mStalkerMapTransferData.mfTenacity = -1.f;
+		mStalkerMapTransferData.mbEmergeAllowed = false;
+		mStalkerMapTransferData.mbEmerging = false;
+		mStalkerMapTransferData.mfPathDistToPlayer = -1.f;
+		mStalkerMapTransferData.mbRecentlyHurt = false;
+		mStalkerMapTransferData.mbRetreatActive = false;
+		mStalkerMapTransferData.mlAlertState = -1;
+		mStalkerMapTransferData.mbInterest_Alert = false;
+		mStalkerMapTransferData.mfInterest_AreaRadius = -1.f;
+		mStalkerMapTransferData.mfInterest_IncreaseCount = 0.f;
+		mStalkerMapTransferData.mfInterest_PauseEmergeCount = 0.f;
+		mStalkerMapTransferData.mfInterest_EmergeCount = 0.f;
+		mStalkerMapTransferData.mfInterest_EmergeTime = 1.f;
+		mStalkerMapTransferData.mvInterest_AreaPos = cVector3f(0.f);
+		mStalkerMapTransferData.m_mtxTransferArea = cMatrixf_Identity;
+		mStalkerMapTransferData.m_mtxStalkerTransform = cMatrixf_Identity;
+		
+		/////////////////
+		// Increase Hub transfer count?
+		tString sTimer = "Timer_IncreaseStalkerHubTransferCountCooldown";
+		
+		if (pMap.GetName() == "officer_hub" && 
+			mBaseObj.Timer_Exists(sTimer) == false)
+		{
+			++mlStalkerHubTransferCount;
+			mBaseObj.Timer_Add(sTimer, 20.f);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void IncStalkerRetreatByShotCount()
+	{
+		switch (GameDifficulty_GetSettingValueByID_Int(eGameDifficultySetting_StalkerBulletResistance))
+		{
+			case eDifficultySettingValue_StalkerBulletResistance_Low:
+			{
+				break;
+			}
+			default:
+			{
+				++mlStalkerRetreatByShotCount;
+				break;
+			}
+		}
+		
+		mlStalkerShotCount = 0;
+	}
+	
+	//------------------------------------------------------------
+	
+	int GetStalkerRetreatByShotCount()
+	{
+		return mlStalkerRetreatByShotCount;
+	}
+	
+	//------------------------------------------------------------
+	
+	void IncStalkerShotCount()
+	{
+		++mlStalkerShotCount;
+	}
+	
+	//------------------------------------------------------------
+	
+	int GetStalkerShotCount()
+	{
+		return mlStalkerShotCount;
+	}
+	
+	//------------------------------------------------------------
+	
+	int GetStalkerHubTransferCount()
+	{
+		return mlStalkerHubTransferCount;
+	}
+	
+	//------------------------------------------------------------
+	
+	eStalkerInterestIncreaseBehaviour GetStalkerInterestIncreaseBehaviour()
+	{
+		///////////////////
+		// Fill array with 150 values, a small amount alert or emerge
+		if (mvStalkerInterestIncreaseBehaviour.size() == 0)
+		{
+			int lBehaviourNum = 150;
+			mvStalkerInterestIncreaseBehaviour = array<eStalkerInterestIncreaseBehaviour>(lBehaviourNum, eStalkerInterestIncreaseBehaviour_Normal);	
+				
+			int lAlertNum;
+			int lEmergeNum;
+			GetStalkerInterestIncreaseBehaviourNum(mStalkerEscalation, lAlertNum, lEmergeNum);
+		
+			for (int i = 0; i < lAlertNum; ++i)
+				AddStalkerInterestIncreaseBehaviour(eStalkerInterestIncreaseBehaviour_Alert);			
+			for (int i = 0; i < lEmergeNum; ++i)
+				AddStalkerInterestIncreaseBehaviour(eStalkerInterestIncreaseBehaviour_Emerge);
+		}
+		
+		int lId = cMath_RandRectl(0, mvStalkerInterestIncreaseBehaviour.size() - 1);
+		eStalkerInterestIncreaseBehaviour behaviour = mvStalkerInterestIncreaseBehaviour[lId];
+		mvStalkerInterestIncreaseBehaviour.removeAt(lId);
+		
+		return behaviour;
+	}
+	
+	//------------------------------------------------------------
+	
+	void AddStalkerInterestIncreaseBehaviour(eStalkerInterestIncreaseBehaviour aBehaviour)
+	{
+		int lSize = mvStalkerInterestIncreaseBehaviour.size();
+		if (lSize == 0) return;		
+		
+		int lCount = 0;
+		int lId = cMath_RandRectl(0, lSize - 1);
+		
+		while (mvStalkerInterestIncreaseBehaviour[lId] != eStalkerInterestIncreaseBehaviour_Normal &&
+			   lCount < lSize)
+		{
+			++lCount;
+			lId = (lId + cMath_RandRectl(1, lSize - 1)) % lSize;
+		}
+		
+		mvStalkerInterestIncreaseBehaviour[lId] = aBehaviour;
+	}
+	
+	//------------------------------------------------------------
+	
+	void GetStalkerInterestIncreaseBehaviourNum(eStalkerEscalation aEscalation, int &out alAlertNum, int &out alEmergeNum)
+	{
+		switch (aEscalation)
+		{
+			case eStalkerEscalation_None:
+			case eStalkerEscalation_Stage1:
+			{
+				alAlertNum = 1;
+				alEmergeNum = 1;
+				break;
+			}
+			case eStalkerEscalation_Stage2:
+			{
+				alAlertNum = 2;
+				alEmergeNum = 1;
+				break;
+			}
+			case eStalkerEscalation_Stage3:
+			{
+				alAlertNum = 2;
+				alEmergeNum = 2;
+				break;
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetStalkerReachOutHoleCooldown(float afTime)
+	{
+		mfStalkerReachOutHoleCooldown = afTime;
+	}
+	
+	//------------------------------------------------------------
+	
+	float GetStalkerReachOutHoleCooldown()
+	{
+		return mfStalkerReachOutHoleCooldown;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetStalkerSitAndWaitCooldown(float afTime)
+	{
+		mfStalkerSitAndWaitCooldown = afTime;
+	}
+	
+	//------------------------------------------------------------
+	
+	float GetStalkerSitAndWaitCooldown()
+	{
+		return mfStalkerSitAndWaitCooldown;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetStalkerRandomEmergeCooldown(float afTime)
+	{
+		mfStalkerRandomEmergeCooldown = afTime;
+	}
+	
+	//------------------------------------------------------------
+	
+	float GetStalkerRandomEmergeCooldown()
+	{
+		return mfStalkerRandomEmergeCooldown;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetStalkerWaitByAdminCooldown(float afTime)
+	{
+		mfStalkerWaitByAdminCooldown = afTime;
+	}
+	
+	//------------------------------------------------------------
+	
+	float GetStalkerWaitByAdminCooldown()
+	{
+		return mfStalkerWaitByAdminCooldown;
+	}
+	
+	//------------------------------------------------------------
+	
+	eStalkerEscalation GetStalkerEscalation()
+	{
+		return mStalkerEscalation;
+	}
+	
+	//------------------------------------------------------------
+	
+	void IncreaseStalkerEscalation(bool abFullStep)
+	{
+		bool bIncrease = abFullStep;
+		
+		////////////////
+		// Half step?
+		if (abFullStep == false)
+		{
+			mfStalkerEscalationProgress += 0.5f;
+			if (mfStalkerEscalationProgress >= 1.f)
+			{
+				bIncrease = true;
+				mfStalkerEscalationProgress = 0.f;
+			}
+		}
+		
+		////////////////
+		// Increase?
+		if (bIncrease)
+		{
+			eStalkerEscalation ePrevEscalation = mStalkerEscalation;
+			mStalkerEscalation = eStalkerEscalation(cMath_Min(int(mStalkerEscalation) + 1, int(eStalkerEscalation_Stage3)));
+			
+			cLux_AddDebugMessage("[Blackboard] Increasing stalker escalation to stage " + int(mStalkerEscalation));
+			
+			////////////////
+			// Reset interest increase
+			if (mStalkerEscalation != ePrevEscalation)
+			{
+				mvStalkerInterestIncreaseBehaviour.resize(0);
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void AddDamageAreaBody(tID a_idBody)
+	{
+		if (mvPathBlockerBodyIds_DamageArea.find(a_idBody) == -1)
+		{
+			mvPathBlockerBodyIds_DamageArea.push_back(a_idBody);
+			mlPathBlockerCounter++;
+		}
+	}
+
+	//------------------------------------------------------------
+
+	int GetPathBlockerCounter()
+	{
+		return mlPathBlockerCounter;
+	}
+
+	//------------------------------------------------------------
+	
+	array<tID>@ GetPathBlockerBodyIds(bool abPhysical, bool abDamageArea)
+	{
+		array<tID> vOut;
+		
+		if (abPhysical)
+		{
+			for (int i = 0; i < mvPathBlockerBodyIds_Physical.size(); ++i)
+				vOut.push_back(mvPathBlockerBodyIds_Physical[i]);
+		}
+		
+		if (abDamageArea)
+		{
+			for (int i = 0; i < mvPathBlockerBodyIds_DamageArea.size(); ++i)
+				vOut.push_back(mvPathBlockerBodyIds_DamageArea[i]);
+		}
+		
+		for (int i = 0; i < vOut.size(); ++i)
+		{
+			iPhysicsBody@ pBody = cLux_ID_Body(vOut[i]);
+			
+			if (pBody is null)
+			{
+				vOut.removeAt(i);
+				--i;
+			}
+		}
+		
+		return vOut;
+	}
+	
+	//------------------------------------------------------------
+	
+	array<tID>@ GetPathBlockerBodyCluster(tID a_idBody)
+	{
+		///////////////////
+		// Setup vars
+		array<tID> vOut;
+		iPhysicsBody@ pStartBody = cLux_ID_Body(a_idBody);
+		
+		if (pStartBody is null)
+			return vOut;
+			
+		vOut.push_back(pStartBody.GetID());
+		
+		bool bIsDamageArea = GetIsBodyDamageArea(pStartBody);
+		
+		///////////////////
+		// Get array of all blocker bodies
+		array<iPhysicsBody@> vBodies;
+		array<tID> vBodyIds = GetPathBlockerBodyIds(bIsDamageArea == false, bIsDamageArea);
+		
+		for (int i = 0; i < vBodyIds.size(); ++i)
+		{
+			iPhysicsBody@ pBody = cLux_ID_Body(vBodyIds[i]);
+			if (pBody is null) continue;
+			if (pBody is pStartBody) continue;
+			
+			vBodies.push_back(pBody);
+		}		
+		
+		///////////////////
+		// Get chain of intersected bodies
+		array<iPhysicsBody@> vIntersecting = GetIntersectingBodiesInArray(pStartBody, vBodies, true);
+		for (int i = 0; i < vIntersecting.size(); ++i)
+		{
+			array<iPhysicsBody@> vOtherIntersecting = GetIntersectingBodiesInArray(vIntersecting[i], vBodies, true);
+			for (int j = 0; j < vOtherIntersecting.size(); ++j)
+				vIntersecting.push_back(vOtherIntersecting[j]);
+		}
+		
+		///////////////////
+		// Add intersecting body ids to array
+		for (int i = 0; i < vIntersecting.size(); ++i)
+		{
+			iPhysicsBody@ pBody = vIntersecting[i];
+			vOut.push_back(pBody.GetID());
+		}
+		
+		return vOut;
+	}
+	
+	//------------------------------------------------------------
+	
+	array<iPhysicsBody@>@ GetIntersectingBodiesInArray(iPhysicsBody@ apBody, array<iPhysicsBody@>@ apBodies, bool abRemoveWhenFound)
+	{
+		///////////////////
+		// Setup vars
+		array<iPhysicsBody@> vIntersectingBodies;
+		cBoundingVolume@ pBoundsA = apBody.GetBoundingVolume();
+		
+		if (apBody is null || apBodies is null) 
+			return vIntersectingBodies;
+		
+		///////////////////
+		// Iterate bodies
+		for (int i = 0; i < apBodies.size(); ++i)
+		{
+			///////////////////
+			// Get body
+			iPhysicsBody@ pBody = apBodies[i];
+			cBoundingVolume@ pBoundsB = pBody !is null ? pBody.GetBoundingVolume() : null;
+			
+			if (pBoundsB is null) continue;
+			if (pBody is apBody) continue;
+			
+			///////////////////
+			// Intersects?
+			if (cMath_CheckAABBIntersection(pBoundsA.GetMin(), pBoundsA.GetMax(), pBoundsB.GetMin(), pBoundsB.GetMax()))
+			{
+				vIntersectingBodies.push_back(apBodies[i]);
+				
+				if (abRemoveWhenFound)
+				{
+					apBodies.removeAt(i);
+					--i;
+				}
+			}
+		}
+		
+		return vIntersectingBodies;
+	}	
+	
+	//------------------------------------------------------------
+	
+	bool GetCanBodyBlockPath(iPhysicsBody@ apBody)
+	{
+		///////////////////
+		// Is it a large, dynamic prop?
+		cLuxProp@ pProp = cLux_ToProp(cLux_GetBodyEntity(apBody));
+		
+		if (pProp is null)  return false;
+		if (apBody is null) return false;
+		
+		bool bIsDamageArea = GetIsBodyDamageArea(apBody);
+		
+		if (pProp.IsActive() == false) return false;
+		if (pProp.GetStaticPhysics() && bIsDamageArea == false) return false;
+		if (pProp.GetIsDoor()) return false;
+		if (apBody.IsCharacter()) return false;
+		if (apBody.GetMass() < gfBlackboard_MinPathBlockerBodyMass && bIsDamageArea == false) return false;	
+		
+		if (pProp.GetClassName() == "cScrPropFuelSpill") return false;
+				
+		cVector3f vPropSize = apBody.GetBoundingVolume().GetSize();
+		float fPropSize = cMath_Max(vPropSize.x, cMath_Max(vPropSize.y, vPropSize.z));
+		if (fPropSize < 1.f) return false;
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetIsBodyDamageArea(iPhysicsBody@ apBody)
+	{
+		if (apBody is null) return false;
+		return apBody.GetCollide() == false && apBody.GetCollideCharacter() == false;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetIsBodyPlayerPathBlocker(iPhysicsBody@ apBody)
+	{
+		if (apBody is null) return false;
+		return apBody.GetID() == m_idPlayerPathBlockerBodyId;
+	}
+	
+	//------------------------------------------------------------
+	
+	tID GetPlayerPathBlockerBodyId()
+	{
+		return m_idPlayerPathBlockerBodyId;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetPlayerBlocksPath(cLuxAgent@ apAgent, bool abX)
+	{
+		///////////////////
+		// Setup vars
+		cLuxMap@ pMap = cLux_GetCurrentMap();
+		
+		if (pMap is null) return;
+		if (apAgent is null) return;
+
+		cLuxPathfinder@ pPathfinder =  cast<cLuxPathfinder@>(apAgent.GetComponentByType(eLuxEntityComponentType_Pathfinder));
+		iLuxEntity@ pPlayerEnt = pMap.GetPlayerEntity();
+		
+		if (pPathfinder is null) return;
+		if (pPlayerEnt is null) return;
+		
+		bool bIsStalker = apAgent.GetClassName() == "cScrAgentStalker";
+		iLuxEntity@ pEnt = cLux_GetBodyEntity(cLux_ID_Body(m_idPlayerPathBlockerBodyId));
+		
+		///////////////////
+		// Block path
+		if (abX)
+		{
+			///////////////////
+			// Create and attach blocker if needed
+			if (pEnt is null)
+			{
+				pMap.CreateEntity("PlayerPathBlocker", gsBlackboard_BlockBodyEnt, cMatrixf_Identity, cVector3f(3.f, 2.f, 3.f));
+				@pEnt = pMap.GetLatestEntity();
+			
+				if (pEnt !is null)
+				{
+					pEnt.SetPosition(pPlayerEnt.GetPosition());
+					pEnt.AttachToEntity(pPlayerEnt, pPlayerEnt.GetMainBody(), false, true);
+					
+					m_idPlayerPathBlockerBodyId = pEnt.GetMainBody().GetID();
+				}
+			}
+			
+			///////////////////
+			// Add as blocker
+			if (pEnt !is null)
+			{
+				if (bIsStalker)
+				{
+					Stalker_AddPathBlockerBody(apAgent.GetName(), m_idPlayerPathBlockerBodyId, false);
+				}
+				else
+				{
+					pPathfinder.AddPathBlockerBody(m_idPlayerPathBlockerBodyId);
+				}
+				
+				++mlPlayerPathBlockerBodyUserCount;
+			}
+		}
+		
+		///////////////////
+		// Stop blocking path
+		else
+		{
+			if (pEnt !is null)
+			{
+				if (bIsStalker)
+				{
+					Stalker_RemovePathBlockerBody(apAgent.GetName(), m_idPlayerPathBlockerBodyId);
+				}
+				else
+				{
+					pPathfinder.RemovePathBlockerBody(m_idPlayerPathBlockerBodyId);
+				}
+				
+				///////////////////
+				// Destroy blocker if no users
+				--mlPlayerPathBlockerBodyUserCount;
+				if (mlPlayerPathBlockerBodyUserCount <= 0)
+				{
+					pMap.DestroyEntity(pEnt);
+					
+					m_idPlayerPathBlockerBodyId = tID_Invalid;
+					mlPlayerPathBlockerBodyUserCount = 0;
+				}
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetReducedEnemyPerceptionActive()
+	{
+		return mbReducedEnemyPerception;
+	}
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// BLACKBOARD
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	tID GetClosestAgent(const cVector3f &in avPos)
+	{
+		tID idClosest = tID_Invalid;
+		float fMinDist = -1.0f;
+		for (int i = 0; i < mvAgents.size(); ++i)
+		{
+			cLuxAgent@ pAgent = cLux_ID_Agent(mvAgents[i].m_idAgent);
+			float fDist = cMath_Vector3DistSqr(avPos, pAgent.GetPosition());
+			if (fDist < fMinDist || fMinDist < 0.0f)
+			{
+				fMinDist = fMinDist;
+				idClosest = pAgent.GetID();
+			}
+		}
+		return idClosest;
+	}
+	
+	//------------------------------------------------------------
+
+	void UpdateIsInLiquidArea(float afTimeStep)
+	{
+		if (mvAgents.size() == 0) return;
+		
+		mlLiquidAreaCheck_AgentId++;
+		if (mlLiquidAreaCheck_AgentId >= mvAgents.size())
+			mlLiquidAreaCheck_AgentId = 0;
+			
+		cAgentInfo@ pAgentInfo = mvAgents[mlLiquidAreaCheck_AgentId];
+		cLuxAgent@ pAgent = cLux_ID_Agent(pAgentInfo.m_idAgent);
+		cLuxLiquidArea@ pArea = null;		
+		bool bColl = false;
+		
+		for (int i = 0; i < mvLiquidAreas.size(); i++)
+		{
+			@pArea = cLux_ID_LiquidArea(mvLiquidAreas[i]);			
+			if (pArea.CheckCharacterCollision(pAgent.GetCharBody(), cLux_GetCurrentMap()))
+			{
+				bColl = true;
+				break;
+			}
+		}
+		
+		if (bColl && pAgentInfo.mbInsideLiquidArea == false)
+		{
+			pAgentInfo.mbInsideLiquidArea = true;
+			cScript_RunGlobalFunc(pAgent.GetName(), "", "_Global_EnterLiquidArea");			
+		}
+		else if (bColl == false && pAgentInfo.mbInsideLiquidArea)
+		{
+			pAgentInfo.mbInsideLiquidArea = false;
+			cScript_RunGlobalFunc(pAgent.GetName(), "", "_Global_ExitLiquidArea");
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateStalkerCooldowns(float afDeltaTime)
+	{
+		mfStalkerReachOutHoleCooldown -= afDeltaTime;
+		if (mfStalkerReachOutHoleCooldown < 0.f)
+			mfStalkerReachOutHoleCooldown = 0.f;
+			
+		mfStalkerSitAndWaitCooldown -= afDeltaTime;
+		if (mfStalkerSitAndWaitCooldown < 0.f)
+			mfStalkerSitAndWaitCooldown = 0.f;
+			
+		mfStalkerRandomEmergeCooldown -= afDeltaTime;
+		if (mfStalkerRandomEmergeCooldown < 0.f)
+			mfStalkerRandomEmergeCooldown = 0.f;
+			
+		mfStalkerWaitByAdminCooldown -= afDeltaTime;
+		if (mfStalkerWaitByAdminCooldown < 0.f)
+			mfStalkerWaitByAdminCooldown = 0.f;
+	}
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPERS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool IsGhoulNetworkdIdValid(int alId)
+	{
+		if (alId < 0) return false;
+		if (alId >= mvGhoulHoleNetworks.size()) return false;
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	cLuxArea@ GetCurrentMapTransferArea()
+	{
+		cLuxArea@ pTransferArea = null;
+		cLuxMap@ pMap = cLux_GetCurrentMap();
+		
+		if (pMap is null) return pTransferArea;
+		
+		///////////////////////
+		// Return transfer area player is in
+		array<iLuxEntity@> vTransferAreas;
+		pMap.GetEntityArray("*", eLuxEntityType_Area, "cScrAreaMapTransfer", vTransferAreas);
+		
+		for (int i = 0; i < vTransferAreas.size(); ++i)
+		{
+			cLuxArea@ pArea = cLux_ToArea(vTransferAreas[i]);
+			if (pArea.CollidesWithPlayer())
+			{
+				@pTransferArea = pArea;
+				break;
+			}
+		}
+		
+		return pTransferArea;
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateReducedEnemyPerception()
+	{
+		cLuxMap@ pMap = cLux_GetCurrentMap();
+		if (pMap is null) return;
+		
+		array<iLuxEntity@> vAgents;
+		pMap.GetEntityArray("*", eLuxEntityType_Agent, "", vAgents);
+		
+		for (int i = 0; i < vAgents.size(); ++i)
+		{
+			cLuxAgent@ pAgent = cLux_ToAgent(vAgents[i]);
+			if (pAgent is null) continue;
+				
+			tString sClass = pAgent.GetClassName();
+			if (sClass == "cScrAgentStalker" ||
+				sClass == "cScrAgentShotgunner")
+			{
+				cScript_SetGlobalArgBool(0, mbReducedEnemyPerception);
+				cScript_RunGlobalFunc(pAgent.GetName(), sClass, "_Global_SetReducedPerceptionActive");
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// GUI
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool mbDrawDebug = false;
+	
+	//------------------------------------------------------------
+	
+	void ShowDebug(bool abX)
+	{
+		mbDrawDebug = abX;
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnGui(float afTimeStep)
+	{
+		if (!mbDrawDebug) return;
+		
+		cVector3f vPos;
+		vPos.x = 0;
+		vPos.y = 0;
+		vPos.z = 0;
+		vPos.z = 0;
+		
+		ImGui_SetTransCategory("");
+		
+		ImGui_GroupBegin(cVector3f(-cLux_GetHudVirtualOffset().x + ImGui_GetSize().x - 200.0f,15,1));
+			
+		cImGuiLabelData labelData;
+		labelData.mColorBase = cColor(1.0f,1.0f,1.0f);
+		labelData.mFont.mvSize = 12;
+		
+		float fY = 0.0f;
+		float fYStep = 12.0f;
+		
+		ImGui_DoLabelExt("Agents (" + mvAgents.size() + ")", labelData, cVector3f(0, fY, 1.0f));
+		fY += fYStep;
+		
+		ImGui_DoLabelExt("--------------------------------", labelData, cVector3f(0, fY, 1.0f));
+		fY += fYStep;		
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnDraw(float afFrameTime)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnPostRender(float afFrameTime)
+	{
+	}
+	
+	//------------------------------------------------------------
+		
+	//////////////
+	// Agents
+	array<cAgentInfo> mvAgents;
+	array<tID> mvInvestigateSoundSlots;
+	int mlHuntingAgentCount;
+	int mlInvestigatingAgentCount = 0;
+	
+	[nosave] bool mbReducedEnemyPerception = false;
+	
+	//////////////
+	// Ghoul Holes
+	[nosave] array<cGhoulHoleNetwork> mvGhoulHoleNetworks;
+	int mlUsedHoleCount;
+	
+	//////////////
+	// Liquid areas
+	int mlLiquidAreaCheck_AgentId = 0;
+	array<tID> mvLiquidAreas;
+	
+	/////////////
+	// Stalker
+	float mfStalkerRandomEmergeCooldown = 0.f;
+	float mfStalkerSitAndWaitCooldown = 0.f;
+	float mfStalkerReachOutHoleCooldown = 0.f;
+	float mfStalkerWaitByAdminCooldown = 0.f;
+	int mlStalkerShotCount = 0;
+	int mlStalkerRetreatByShotCount = 0;
+	int mlStalkerHubTransferCount = 0;
+	float mfStalkerEscalationProgress = 0.f;
+	eStalkerEscalation mStalkerEscalation = eStalkerEscalation_None;
+	cStalkerMapTransferData mStalkerMapTransferData;
+	array<eStalkerInterestIncreaseBehaviour> mvStalkerInterestIncreaseBehaviour;
+	
+	/////////////
+	// Path blocking
+	array<tID> mvPathBlockerBodyIds_Physical;
+	array<tID> mvPathBlockerBodyIds_DamageArea;
+	int mlPathBlockerCounter = 0;
+	tID m_idPlayerPathBlockerBodyId = tID_Invalid;
+	int mlPlayerPathBlockerBodyUserCount = 0;
+	
+	//------------------------------------------------------------
+}

@@ -1,0 +1,292 @@
+/*
+    Real-time DXT1 & YCoCg DXT5 compression (Cg 2.0)
+    Copyright (c) NVIDIA Corporation.
+    Written by Ignacio Castano <icastano [at] nvidia.com>
+
+    Thanks to JMP van Waveren, Simon Green, Eric Werness, Simon Brown
+
+    Permission is hereby granted, free of charge, to any person
+    obtaining a copy of this software and associated documentation
+    files (the "Software"), to deal in the Software without
+    restriction, including without limitation the rights to use,
+    copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following
+    conditions
+    
+    The above copyright notice and this permission notice shall be
+    included in all copies or substantial portions of the Software.
+    
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+    EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+    OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+    NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+    HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+    WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+    OTHER DEALINGS IN THE SOFTWARE.
+*/
+
+////////////
+// INPUT
+uniform cVector3f avTextureSizeMip;
+uniform cTexture2D aSourceMap : 0;
+
+float clamp01(float x) 
+{
+	return max(0.0, min(1.0, x));
+}
+
+cVector2f clamp01(cVector2f x) 
+{
+	return max(cVector2f(0.0, 0.0), min(cVector2f(1.0, 1.0), x));
+}
+
+cVector3f clamp01(cVector3f x) 
+{
+	return max(cVector3f(0.0, 0.0, 0.0), min(cVector3f(1.0, 1.0, 1.0), x));
+}
+
+cVector3f ToYCoCg(cVector3f avColor)
+{	
+	const float kfOffset = 128.0 / 255.0;
+	cVector3f YCoCg;
+	YCoCg.r = dot(avColor, cVector3f(0.25, 0.5, 0.25));
+	YCoCg.g = dot(avColor, cVector3f(0.5, 0, -0.5));
+	YCoCg.b = dot(avColor, cVector3f(-0.25, 0.5, -0.25));
+
+    return YCoCg + cVector3f(0, kfOffset, kfOffset);
+}
+
+cVector3f ToNormal(cVector3f avColor)
+{
+	cVector3f vNormal;
+
+	vNormal.x = avColor.r;
+	vNormal.y = 0;
+	vNormal.z = avColor.g;
+
+	return vNormal;
+}
+
+void ExtractColorBlockYCoCg(out cVector3f avColor[16], cVector2f avTexcoord, cVector2f avImageSize, float afMip)
+{
+    cVector2f vTexelSize = cVector2f(1.0, 1.0) / avImageSize;
+    avTexcoord = (floor(avTexcoord * avImageSize) - 2.0) * vTexelSize;
+
+    for (int i = 0; i < 4; i++) 
+	{
+        for (int j = 0; j < 4; j++) 
+		{
+			@ifdef UseNMap
+				avColor[i*4+j] = ToNormal(sampleLod(aSourceMap, avTexcoord + cVector2f(j, i) * vTexelSize, afMip).rgb);
+			@elseif UsesRGB
+				avColor[i*4+j] = ToYCoCg(sqrt(sampleLod(aSourceMap, avTexcoord + cVector2f(j, i) * vTexelSize, afMip).rgb));
+			@else
+				avColor[i*4+j] = ToYCoCg(sampleLod(aSourceMap, avTexcoord + cVector2f(j, i) * vTexelSize, afMip).rgb);
+			@endif
+        }
+    }
+}
+
+// find minimum and maximum colors based on bounding box in color space
+void FindMinMaxColorsBox(cVector3f avBlock[16], out cVector3f avMin, out cVector3f avMax)
+{
+    avMin = avBlock[0];
+    avMax = avBlock[0];
+    
+    for (int i = 1; i < 16; i++) {
+        avMin = min(avMin, avBlock[i]);
+        avMax = max(avMax, avBlock[i]);
+    }
+}
+
+void InsetYBBox(inout float afMin, inout float afMax)
+{
+    float fInset = (afMax - afMin) / 32.0 - (16.0 / 255.0) / 32.0;
+    afMin = clamp01(afMin + fInset);
+    afMax = clamp01(afMax - fInset);
+}
+
+void InsetCoCgBBox(inout cVector2f avMin, inout cVector2f avMax)
+{
+    cVector2f vInset = (avMax - avMin) / 16.0 - (8.0 / 255.0) / 16.0;
+    avMin = clamp01(avMin + vInset);
+    avMax = clamp01(avMax - vInset);
+}
+
+int ScaleYCoCg(cVector2f vMin, cVector2f vMax)
+{
+	const float kfOffset = 128.0 / 255.0;
+    cVector2f vM0 = abs(vMin - kfOffset);
+    cVector2f vM1 = abs(vMax - kfOffset);
+
+    float fM = max(max(vM0.x, vM0.y), max(vM1.x, vM1.y));
+
+    const float kfScale0 = 64.0 / 255.0;
+    const float kfScale1 = 32.0 / 255.0;
+
+    int lScale = 1;
+    if (fM < kfScale0) lScale = 2;
+    if (fM < kfScale1) lScale = 4;
+
+    return lScale;
+}
+
+void SelectYCoCgDiagonal(const cVector3f avBlock[16], inout cVector2f avMin, inout cVector2f avMax)
+{
+    cVector2f vCenter = (avMax + avMin) * 0.5;
+
+    float fCov = 0;
+    for (int i = 0; i < 16; i++)
+    {
+        cVector2f vDelta = avBlock[i].yz - vCenter;
+        fCov += vDelta.x * vDelta.y;
+    }
+
+    if (fCov < 0) 
+	{
+        float fTmp = avMax.y;
+        avMax.y = avMin.y;
+        avMin.y = fTmp;
+    }
+}
+
+
+uint EmitEndPointsYCoCgDXT5(inout cVector2f avMin, inout cVector2f avMax, int alScale)
+{
+	const float kfOffset = 128.0 / 255.0;
+    avMax = (avMax - kfOffset) * alScale + kfOffset;
+    avMin = (avMin - kfOffset) * alScale + kfOffset;
+
+    InsetCoCgBBox(avMin, avMax);
+
+    avMax = round(avMax * cVector2f(31, 63));
+    avMin = round(avMin * cVector2f(31, 63));
+
+    cVector2l vMax = cVector2l(avMax);
+    cVector2l vMin = cVector2l(avMin);
+
+    cVector2u vOutput;
+    vOutput.x = uint((vMax.r << 11) | (vMax.g << 5) | (alScale - 1));
+    vOutput.y = uint((vMin.r << 11) | (vMin.g << 5) | (alScale - 1));
+
+    vMax.r = (vMax.r << 3) | (vMax.r >> 2);
+    vMax.g = (vMax.g << 2) | (vMax.g >> 4);
+    vMin.r = (vMin.r << 3) | (vMin.r >> 2);
+    vMin.g = (vMin.g << 2) | (vMin.g >> 4);
+
+    avMax = vMax * (1.0 / 255.0);
+    avMin = vMin * (1.0 / 255.0);
+
+    avMax = (avMax - kfOffset) / alScale + kfOffset;
+    avMin = (avMin - kfOffset) / alScale + kfOffset;
+
+    return vOutput.x | (vOutput.y << 16u);
+}
+
+uint EmitIndicesYCoCgDXT5(cVector3f avBlock[16], cVector2f avMin, cVector2f avMax)
+{
+    const float kfCoCg_Range = 3;
+
+    cVector2f vDir = (avMax - avMin);
+    cVector2f vOrigin = avMax + vDir / (2.0 * kfCoCg_Range);
+    vDir /= dot(vDir, vDir);
+
+    // Compute indices
+    uint lIndices = 0u;
+    for (uint i = 0u; i < 16u; i++)
+    {
+		float fIndex = clamp01(dot(vOrigin - avBlock[int(i)].yz, vDir)) * kfCoCg_Range;
+        uint lIndex = uint(fIndex);
+        lIndices |= lIndex << (i * 2u);
+    }
+
+    uint l0 = (lIndices & 0x55555555u);
+    uint l1 = (lIndices & 0xAAAAAAAAu) >> 1u;
+    lIndices = ((l0 ^ l1) << 1u) | l1;
+
+    return lIndices;
+}
+
+uint EmitAlphaEndPointsYCoCgDXT5(float afMin, float afMax)
+{
+    uint lC0 = uint(round(afMin * 255));
+    uint lC1 = uint(round(afMax * 255));
+
+    return (lC0 << 8u) | lC1;
+}
+
+// Optimized index selection.
+cVector2u EmitAlphaIndicesYCoCgDXT5(cVector3f avBlock[16], float fMinAlpha, float fMaxAlpha)
+{
+    const float klAlpha_Range = 7;
+
+    float fBias = fMaxAlpha + (fMaxAlpha - fMinAlpha) / (2.0 * klAlpha_Range);
+    float fScale = 1.0f / (fMaxAlpha - fMinAlpha);
+
+    cVector2u vIndices = cVector2u(0, 0);
+
+    for (uint i = 0u; i < 6u; i++)
+    {
+		float fIndex = float(clamp01((fBias - avBlock[int(i)].x) * fScale) * klAlpha_Range);
+        uint lIndex = uint(fIndex);
+        vIndices.x |= lIndex << (3u * i);
+    }
+
+    for (uint i = 6u; i < 16u; i++)
+    {
+		float fIndex = clamp01((fBias - avBlock[int(i)].x) * fScale) * klAlpha_Range;
+        uint lIndex = uint(fIndex);
+        vIndices.y |= lIndex << (3u * i - 18u);
+    }
+
+    cVector2u v0 = (vIndices >> 0u) & 0x09249249u;
+    cVector2u v1 = (vIndices >> 1u) & 0x09249249u;
+    cVector2u v2 = (vIndices >> 2u) & 0x09249249u;
+
+    v2 ^= v0 & v1;
+    v1 ^= v0;
+    v0 ^= (v1 | v2);
+
+    vIndices.x = (v2.x << 2u) | (v1.x << 1u) | v0.x;
+    vIndices.y = (((v2.y << 2u) | (v1.y << 1u) | v0.y) << 2u) | (vIndices.x >> 16u);
+    vIndices.x <<= 16u;
+
+    return vIndices;
+}
+
+// compress a 4x4 block to YCoCg DXT5 format
+// integer version, renders to 4 x ingter buffer
+void main(in cVector4f px_vPosition,
+		  in cVector4f px_vTexCoord0,
+		  out cVector4u out_vCompressed : 0)
+{
+    // read block
+    cVector3f vBlock[16];
+    ExtractColorBlockYCoCg(vBlock, px_vTexCoord0.xy, avTextureSizeMip.xy, avTextureSizeMip.z);
+
+    // find min and max colors
+    cVector3f vMin, vMax;
+    FindMinMaxColorsBox(vBlock, vMin, vMax);
+
+    SelectYCoCgDiagonal(vBlock, vMin.yz, vMax.yz);
+
+    int lScale = ScaleYCoCg(vMin.yz, vMax.yz);
+
+    // Output CoCg in DXT1 block.
+    cVector4u vOutput;
+    vOutput.z = EmitEndPointsYCoCgDXT5(vMin.yz, vMax.yz, lScale);
+    vOutput.w = EmitIndicesYCoCgDXT5(vBlock, vMin.yz, vMax.yz);
+
+    InsetYBBox(vMin.x, vMax.x);
+
+    // Output Y in DXT5 alpha block.
+    vOutput.x = EmitAlphaEndPointsYCoCgDXT5(vMin.x, vMax.x);
+
+    cVector2u vIndices = EmitAlphaIndicesYCoCgDXT5(vBlock, vMin.x, vMax.x);
+    vOutput.x |= vIndices.x;
+    vOutput.y = vIndices.y;
+
+    out_vCompressed = vOutput;
+}

@@ -1,0 +1,2576 @@
+#include "helper_components_custom.hps"
+#include "interfaces/Map_Interface.hps"
+#include "base/Inputhandler_Types.hps"
+#include "player/PlayerState_Struggle.hps"
+#include "helpers/helper_map.hps"
+#include "helpers/helper_menu.hps"
+#include "helpers/helper_props.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_audio.hps"
+#include "helpers/helper_imgui.hps"
+#include "helpers/helper_sequences.hps"
+#include "helpers/helper_game.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_ai.hps"
+#include "helpers/helper_player.hps"
+#include "helpers/helper_components.hps"
+#include "custom/helpers/helper_player_custom.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+#include "custom/helpers/helper_items.hps"
+#include "custom/helpers/helper_areas.hps"
+#include "custom/helpers/helper_areas_custom.hps"
+#include "custom/helpers/helper_agent.hps"
+#include "custom/helpers/helper_menu.hps"
+#include "custom/player/Player_Custom.hps"
+#include "custom/player/PlayerTypes_Custom.hps"
+#include "base/AchievementHandler_Types.hps"
+
+//--------------------------------------------------
+ 
+/*Place any global values here. These must be const variables as they will not be saved*/
+/*This is also the place for enums and classes, but these should be avoided whenever possible*/
+
+enum eCavesPermaFail
+{
+	eCavesBPermaFail_Entrance,
+	eCavesBPermaFail_AfterRift,
+	eCavesBPermaFail_FallPrettyCave,
+};
+ 
+//--------------------------------------------------
+ 
+class cScrMap : iScrMap
+{
+	//--------------------------------------------
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN CALLBACKS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+ 
+	////////////////////////////
+	// Set up map environment
+	void Setup()
+	{
+		// Put display name entry in english.lang / Levels
+		GetBase().SetDisplayNameEntry("01-02-caves-b");
+		
+		// Set up color grading etc.
+		Pregnancy_SetStage(ePregStage_Unknown);
+		Pregnancy_SetBarksActive(true);
+		Pregnancy_SetBabyKicksEnabled(false);
+		Pregnancy_SetBabyTalkStage(eBabyTalkStage_Unknown);
+		GhoulProgression_SetBarkStage(eGhoulBarkStage_Ill);
+		Player_SetAllowCheckBaby(false);
+		FearHandler_SetWhisperStage(eFearWhisperStage_StartToSalim);
+		
+		StruggleFlashHandler_SetActive(true);
+		StruggleFlashHandler_PreloadFlashGroupTextures(0);
+		StruggleFlashHandler_SetProgression(0);
+		
+		Player_SetAutoTeleportWhenBelowAltitude(-10.f);
+	}
+	
+	//-------------------------------------------------------
+		
+	void PreloadData()
+	{
+		/////////////////
+		// Preload gui
+		//ImGui_PreloadImage("some_image");
+
+		///////////////
+		// Preload particles
+		//ParticleSystem_Preload("some_particle.ps");
+
+		//////////////
+		// Preload screen effects
+		//Material_Preload("some_material.mat");
+
+		Sound_PreloadGroup("level_entity_shared/portal", true);
+		Sound_PreloadEvent("level_entity_shared/fire/fire_ignite/campfire_ignite");
+		Sound_PreloadEvent("level_entity_shared/fire/fire_ignite/wall_torch_ignite");
+		Sound_PreloadGhost();
+	}
+	
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run first time starting map
+	void OnStart()
+	{
+		//Set GhoulProgresison limit
+		GhoulProgression_SetLimit(2);
+		
+		// Any general setup of script / entities
+		
+		Player_SetMapDeepShadow(mfDeepShadowLevel);
+		
+		// Any general setup of script / entities
+		Player_Teleport("Start_Begin");
+		
+		ParticleSystem_SetActive("PS_Dust_*",false);
+		ParticleSystem_SetActive("PS_Collapse_*",false);
+		ParticleSystem_SetActive("PS_RiftCollapse_*",false);
+		
+		Entity_PlayAnimation("Fairchild_rigid_1","salim_encounter_pose_1");
+		Entity_PlayAnimation("Salim_Ring","ring_salim_encounter_pose_1");
+		
+		Entity_PlayAnimation("doll_monkey_2", "monkey_pickup_doll_start", 0);
+		Entity_SetAnimationPaused("doll_monkey_2", "monkey_pickup_doll_start", true);
+		
+		Entity_AttachToSocket("Trigger_SalimRing", "Fairchild_rigid_1", "RingSocket", false, true);
+		
+		Hint_RemoveFromGiven("Hints","HintDarkness");
+		Hint_RemoveFromGiven("Hints","HintFear");
+		Hint_RemoveFromGiven("Hints","HintDarknessReminder");
+		
+		Billboard_SetVisible("Billboard_LanternObscured",false);
+		
+		if (Matches_GetCount() > 3)
+			Entity_SetActive("Matches_Start", false);
+		
+		/////////////////////////
+		// Debug
+		if(cLux_ScriptDebugOn())
+		{			
+			Prop_SetStaticPhysics("Prop_Grab_*",false);
+			Entity_SetInteractionDisabled("Prop_Grab_*",false);
+			//Entity_SetActive("Blocker_1_*",false);
+			Item_AddToInventory("ModernOilFixed");
+			Item_AddToInventory("Matchbook");
+			//Item_AddToInventory("Lantern");
+			//Item_SetContent(ItemType_GetFirstInInventory("Lantern"), "Oil", 10);
+			Item_SetAmount("Matchbook",3);
+		}
+		else
+		{
+			Effect_Fade_Out(0);
+			Map_AddTimer("Timer_WakeUp",0.2f,"OnTimer_WakeUp");
+		}
+		
+		Effect_FearTentacles_SetVignetteMul(0.55f);
+		
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when entering map
+	void OnEnter()
+	{	
+		cLux_ClearAllMapSaveData();
+		Game_AutoSave();
+		
+		Achievement_Unlock(eAchievement_Dreamer);
+		
+		PlayerBody_SetActive(true);
+		FearHandler_SetUpdateInterval(0.4f);
+		FearHandler_SetPermaFailEnabled(true);
+        Heat_SetActive(false);
+		Music_PlayExt("A2_01_02_CavesAmbience2.ogg", true, 0.1f, 1.0f, 18.0f, 1.0f, eMusicPrio_BgAmb, true);
+		PlayerBody_SetModel("player4.ent");
+		Entity_SetEffectsActive(PlayerBody_GetEntityName(),false,false);
+		//Player_SetNightVisionBrightness(2.8f);
+		
+		// Updated 200403
+		//Player_SetNightVisionBrightness(2.3f);
+		//Player_SetNightVisionRadius(5.5f);
+		//Player_SetNightVisionStrength(1.f);
+		
+		Light_FadeBrightnessTo("lantern_collapse_light_*",0.f,0.5);
+		
+		// Used for checking if we should display run hint
+		Map_AddTimer("Timer_UpdatePlayerRunCount", 0.1f, "OnTimer_UpdatePlayerRunCount");
+	}
+
+	//-------------------------------------------------------
+	
+	float mfTime = 0;
+	
+	void Update(float afTimeStep) 
+	{	
+		
+		//cLux_AddDebugMessage("COLLIDE: "+Entity_GetCollide("player","Fear_Salim")+" - FOV: "+Entity_IsInPlayerFOV("PosArea_SalimFaceLookAt")+" - COLLAPSE: "+mbCaveCollapse+" - COMMENTS: "+mbProximityComments);
+		float fNewTime = mfTime+afTimeStep;
+		
+		UpdateLightLevelBarks(afTimeStep);
+		
+		if (Entity_Exists("yth_light"))
+		{
+			cMatrixf mtxYTH = Map_GetEntity("yth_light").GetMatrix();
+			mtxYTH = cMath_MatrixMul(mtxYTH, cMath_MatrixRotateXYZ(cVector3f(cMath_Sin(fNewTime)/100-cMath_Sin(mfTime)/100,cMath_Sin(fNewTime)/10-cMath_Sin(mfTime)/10,0)));
+			Map_GetEntity("yth_light").SetMatrix(mtxYTH);
+		}
+		mfTime = fNewTime;
+		
+		// Ugly way of making the final fade-out of the lantern a bit less smooth
+		if (mfFadeOutLanternBrightness > 0)
+		{
+			mfFadeOutLanternT += afTimeStep/3.62f;
+			if (mfFadeOutLanternT > 1.0f)
+				mfFadeOutLanternT = 1.0f;
+
+			float fNewBrightness = cMath_Easing(eEasing_Linear, mfFadeOutLanternT, mfFadeOutLanternBrightness, 0);
+			
+			if (mfFadeOutLanternT == 1.0f)
+			{
+				mfFadeOutLanternBrightness = -1;
+			}
+			
+			// Apply noise
+			else
+			{
+				float fNoise = cGenerate_GetNoisePerlin1D(cEngine_GetGameTime()*12.5f);
+				fNoise *= cMath_Easing(eEasing_ExpoIn, mfFadeOutLanternT, 1.0f, 0);
+				fNewBrightness += fNoise*0.6f;
+			}
+			
+			Light_SetBrightness("lantern_collapse_light_*",fNewBrightness);
+		}
+	}
+	
+	//------------------------------------------------------- 
+
+	////////////////////////////
+	// Run when leaving map
+	void OnLeave()
+	{
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// The player has died.
+	void OnPlayerKilled(int alRecentDeaths, const tString&in asSource)
+	{
+	}
+	
+	//-------------------------------------------------------
+	
+	int mlPermaFailStage = eCavesBPermaFail_Entrance;
+	
+	bool OnPermaFail()
+	{	
+		Debug_Log("Permafail Stage: "+mlPermaFailStage);
+		if (mlPermaFailStage == eCavesBPermaFail_Entrance)			{PermaFail_Default("Entrance_*");	return true;}
+		else if (mlPermaFailStage == eCavesBPermaFail_AfterRift)			{PermaFail_Default("AfterRift");		return true;}	
+		else if (mlPermaFailStage == eCavesBPermaFail_FallPrettyCave)	{PermaFail_Default("PrettyCave_*");	return true;}
+		else return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	void PermaFail_Default(const tString &in asArea)
+	{
+		Debug_Log("Permafail Default at: "+"PermaFail_"+asArea);
+		FearHandler_SetPermaFailRespawnArea("PermaFail_"+asArea);
+	}
+		
+	//-------------------------------------------------------
+	
+	void PermaFail_PrettyCave()
+	{
+		FearHandler_SetPermaFailRespawnArea("PermaFail_PrettyCave_*");
+	}
+	
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// To get when player makes input (mostly used for debug)
+	void OnAction(int alAction, bool abPressed) 
+	{
+		if(abPressed==false) return;
+		
+		/////////////////////////
+		// Don't show hint if player has crouched
+		if (alAction == eAction_Crouch && cLux_GetPlayer().GetCurrentStateId() == ePlayerState_Normal)
+		{
+			mbShowCrouchHint = false;
+		}
+		
+		if(alAction == eAction_Test1)
+		{
+			Effect_Fade_Out(0);
+			Player_Teleport("Start_Begin");
+			//Player_WakeUpFromDream();
+			Seq_WakeUpFromDream("");
+		}
+		if(alAction == eAction_Test2)
+		{
+			Item_AddToInventory("AlysDoll", false);
+		}
+		if(alAction == eAction_Test3)
+		{
+			Entity_StopAnimation("doll_monkey_2");
+		}
+		if(alAction == eAction_Test4)
+		{
+			PlayerBody_PlayCutsceneAtEntity("player_pickup_doll_end","PosArea_DollCutscene",false,0.1,"",1,0, 0, 0, true, false, false);
+			Entity_PlayAnimation("doll_monkey_2", "monkey_pickup_doll_end", 0.1, false);
+		}
+		if(alAction == eAction_Test5)
+		{
+			Entity_CallEntityInteract("Readable_SalimsLastNote");return;
+			Voice_Play("Scene_SalimsCorpse1"); return;
+			//iLuxEntity@ pDoll = Map_GetEntity("doll_monkey_1");
+			//pDoll.AttachToSocket(Map_GetEntity(PlayerBody_GetEntityName()),"R_Hand",true,true);
+			
+			iLuxEntity@ pDoll = Map_GetEntity("doll_monkey_1");
+		//	pDoll.SetMeshScaleMul(0.5f);
+			pDoll.AttachToSocket(Map_GetEntity(PlayerBody_GetEntityName()),"R_Hand",true,true);
+			
+			
+		}
+		if(alAction == eAction_Test6)
+		{
+			PlayerBody_SetInteractiveAnimationOver();return;
+			Prop_SetRenderLayer("doll_monkey_1",1);
+			PlayerBody_PlayAnimation("look_at_doll_rarm_loop",ePlayerBodyAnimationLayer_RightArm,true,false,false,1,1,0);
+			iLuxEntity@ pDoll = Map_GetEntity("doll_monkey_1");
+		}
+		if (alAction == eAction_Test7)
+		{
+			OnInteract_GetLantern("lantern_new_1");
+			Player_Teleport("Start_Caves_Collapse");
+		}
+		if (alAction == eAction_Test8)
+		{
+			//Prop_SetActiveAndFade("",false,2);
+			cLux_AddDebugMessage("UNPAUSE");
+			Map_SetTimerPaused("Timer_TasiAndSalim",false); return;
+			Entity_SetActive("yth_light",true);
+			Light_FadeBrightnessTo("Light_Exit_Spot",0,0);
+			Entity_SetEffectsActive("yth_light",true,true);
+		}
+		if (alAction == eAction_Test9)
+		{
+			cLux_AddDebugMessage("CREATE TIMER");
+			Map_AddTimer("Timer_TasiAndSalim",0,"OnTimer_TasiAndSalim"); return;
+			Effect_FearTentacles_SetVignetteMul(0.5f);
+			//Item_SetContent(ItemType_GetFirstInInventory("Lantern"), "Oil", 0);
+			//Effect_FearTentacles_SetVignetteMul(0.75f);
+			//Effect_FearTentacles_SetVignetteStrengthMul(0.75f);
+			
+		}
+		if (alAction == eAction_Test0)
+		{
+			Lamp_SetLit("torch_pilgrim_wood_5",false,true);
+			Light_FadeBrightnessTo("torch_salim_light_*",0,1);
+		}
+		if (alAction == eAction_TestPlus)
+		{
+			SetArmsVisible(true);
+		}
+		if (alAction == eAction_TestMinus)
+		{
+			SetArmsVisible(false);
+		}
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// This only used for pure debug purposes when info needs to printed.
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afY)
+	{
+		//afY = cLux_DrawDebugText("My Debug value:"+..., afY);
+		return afY;
+	}
+ 
+	//-------------------------------------------------------
+ 
+	//} END MAIN CALLBACKS
+ 
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN FUNCTIONS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+ 
+	/*Put any variables that are used in more than one scene here.*/
+	
+	int m_idQuakeShake = -1;
+	float mfPlayerRunCount = 0.f;
+	bool mbLightLevelBarkAllowed = true;
+	float mfDeepShadowLevel = 0.35f;
+	bool mbInLight = true;
+	
+	bool mbLightLevelBarksDelay = true;
+ 
+	//-------------------------------------------------------
+ 
+	/*Put any functions that are used in more than one scene here.*/
+	
+	void OnTimer_LightLevelBarksDelay(const tString &in asTimer)
+	{
+		mbLightLevelBarksDelay = false;
+	}
+	
+	void UpdateLightLevelBarks(float afTimeStep)
+	{			
+		if (Entity_GetCollide("Fear_Entrance","player") == false)
+				return;
+				
+		if (Voice_CharacterIsSpeaking("Player")) return;
+		
+		float fLightLevel = Player_GetLightLevel();
+		if (mbInLight)
+		{	
+			if (fLightLevel <= mfDeepShadowLevel)
+			{
+				if (mbLightLevelBarksDelay) return;
+				mbInLight = false;
+				
+				cLux_AddDebugMessage("HERE");
+				
+				if (mbLightLevelBarkAllowed) 
+					Map_AddTimer("Timer_LeaveLightBarkDelay",9,"OnTimer_LeaveLightBarkDelay");
+				
+				if (Map_TimerExists("Timer_EnterLightBarkDelay"))
+				{
+					mbLightLevelBarkAllowed = false;
+					Map_RemoveTimer("Timer_EnterLightBarkDelay");
+					Map_AddTimer("Timer_ResetLightBarks",5,"OnTimer_ResetLightBarks");
+				}
+			}
+		}
+		else
+		{
+			if (fLightLevel > mfDeepShadowLevel)
+			{
+				mbInLight = true;
+				
+				if (mbLightLevelBarkAllowed)
+					Map_AddTimer("Timer_EnterLightBarkDelay",2,"OnTimer_EnterLightBarkDelay");
+				
+				if (Map_TimerExists("Timer_LeaveLightBarkDelay"))
+				{
+					mbLightLevelBarkAllowed = false;
+					Map_RemoveTimer("Timer_LeaveLightBarkDelay");
+					Map_AddTimer("Timer_ResetLightBarks",5,"OnTimer_ResetLightBarks");
+				}
+			}
+		}
+	}
+	
+	void OnTimer_EnterLightBarkDelay(const tString &in asTimer)
+	{
+		if (mbLightLevelBarkAllowed == false) return;
+		
+		if (Map_TimeHasPassed("LightBark",30))
+		{
+			float fLightLevel = Player_GetLightLevel();
+			if ((fLightLevel>mfDeepShadowLevel)&&(FearHandler_GetRate()<0.1f)&&(!Voice_AnySceneIsActive()))
+				Voice_Play("Dialogue_EnteringLightBarks");
+		}
+	}
+	
+	//------------------------------------------------------- 
+	
+	void OnTimer_LeaveLightBarkDelay(const tString &in asTimer)
+	{
+		if (mbLightLevelBarkAllowed == false) return;
+		
+		if (Map_TimeHasPassed("DarknessBark",20))
+		{
+			float fLightLevel = Player_GetLightLevel();
+			if ((fLightLevel<mfDeepShadowLevel)&&(!Voice_AnySceneIsActive()))
+			{
+				if (FearHandler_GetRate()>0.2f)
+				{
+					OnTimer_HighFearBarkDelay();
+				}
+				else
+				{
+					Voice_Play("Dialogue_TooDarkBarks");
+				}
+			}
+		}
+	}
+	
+	//------------------------------------------------------- 
+	
+	void OnTimer_HighFearBarkDelay(const tString &in asTimer="")
+	{
+		if (!mbLightLevelBarkAllowed)
+			return;
+			
+		if (Voice_AnySceneIsActive())
+			return;
+			
+		float fLightLevel = Player_GetLightLevel();
+		if (fLightLevel>=mfDeepShadowLevel)
+			return;
+			
+		if (FearHandler_GetRate()<0.2f)
+			return;
+			
+		Voice_Play("Dialogue_HighFearBarks");
+		Map_AddTimer("Timer_HighFearBarkDelay",cMath_RandRectf(15.0f,25.0f),"OnTimer_HighFearBarkDelay");
+	}
+	
+	//------------------------------------------------------- 
+	
+	void OnTimer_ResetLightBarks(const tString &in asTimer)
+	{
+		mbLightLevelBarkAllowed = true;
+	}
+	
+	//------------------------------------------------------- 
+	
+	void SuppressLightLevelBarks()
+	{
+		mbLightLevelBarkAllowed = false;
+		Map_AddTimer("Timer_ResetLightBarks",10,"OnTimer_ResetLightBarks");
+		Map_RemoveTimer("Timer_EnterLightBarkDelay");
+		Map_RemoveTimer("Timer_LeaveLightBarkDelay");
+	}
+	
+	
+	bool OnCollide_Player_SetPermafailStage(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		if (asParent == "Trigger_SetPermafail_AfterRift")			mlPermaFailStage = eCavesBPermaFail_AfterRift;
+		else if (asParent == "Trigger_SetPermafail_PrettyCaves")	mlPermaFailStage = eCavesBPermaFail_FallPrettyCave;
+		else 														mlPermaFailStage = eCavesBPermaFail_Entrance;
+			
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_UpdatePlayerRunCount(const tString &in asTimer)
+	{
+		if (Player_GetRunning())
+			mfPlayerRunCount += 0.1f;
+		
+		if (mfPlayerRunCount >= 2.f)
+			return;
+		
+		Map_AddTimer("Timer_UpdatePlayerRunCount", 0.1f, "OnTimer_UpdatePlayerRunCount");
+	}
+ 
+	//-------------------------------------------------------
+	
+	bool OnCollide_ToggleNightVision(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		if (alState==1) Player_SetNightVisionEnabled(false);
+		else if (alState==-1) Player_SetNightVisionEnabled(true);
+		return true;
+	}
+	
+	//-------------------------------------------------------
+ 
+	//} END MAIN FUNCTIONS
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 4 *PLAYER FINDS A WAY OUT OF THE RUBBLE*
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+ 
+		 /////////////////////////////////////////
+		 // General
+		 //{//////////////////////////////////////
+		 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are used by many events in Scene X here.*/
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are used in more than one event in Scene X here.*/
+	 
+		//-------------------------------------------------------
+		
+		//} END General	
+	 
+		 /////////////////////////////////////////
+		 // Event A *Player crosses rift*
+		 //{//////////////////////////////////////
+	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any variables that are only used in Scene 4, Event A here.*/
+		 
+		 bool mbCollapsed = false;
+		 bool mbShowCrouchHint = true;
+	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any functions that are only used in Scene 4, Event A here.*/
+		 
+		//-------------------------------------------------------
+		
+		void OnTimer_WakeUp(const tString &in asTimer)
+		{
+			Player_Teleport("Start_Begin");
+			Seq_WakeUpFromDream("");
+		}
+		
+		//-------------------------------------------------------
+
+		cSequenceStatesData mSequenceWakeUpFromDream;
+			
+		void Seq_WakeUpFromDream(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_WakeUpFromDream", mSequenceWakeUpFromDream);
+			if (Sequence_DoStepAndWait(4.6f))
+			{
+				PlayerBody_PlayCutsceneAnimation("wake_up_from_death_1c",false,0.2f,"",0.55f);
+				Sound_CreateAtEntity("Sound_PlayerStand", "new_sounds/animations/caves_b_wake", "player");
+				Effect_Fade_In(2);
+				Player_SetMoveSpeedMul(0.6f);
+			}
+			else if (Sequence_DoStepAndContinue())
+			{
+				Voice_Play("Dialogue_BackFromTheDream");
+			}
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Heavy(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Voice_Play("Dialogue_BackFromTheDream_Moving");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_GetUsedToIt(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Player_FadeMoveSpeedMulTo(1.0f, 10.f);	
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_FirstRockScare(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Voice_StopAll();
+			Prop_SetStaticPhysics("rock_dropscare_*",false);
+			Entity_AddImpulse("rock_dropscare_*",cVector3f(0.5f,0.5f,0),true,true);			
+			Sound_CreateAtEntity("Sound_RockImpactFirstScare","01_02_caves/quake/quake_3/rock_impact",asParent);
+			FearHandler_SetForcedAddFearRate(0.5f,-1,true,-1,-1,0.3f);
+			return false;
+		}
+		
+		//------------------------------------------------------- 
+		
+		bool OnCollide_Player_CrouchHint(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState == 1)
+			{
+				Map_AddTimer("Timer_LightLevelBarksDelay",12.f,"OnTimer_LightLevelBarksDelay");
+				if (mbShowCrouchHint)
+					Map_AddTimer("Timer_ShowCrouchHint", 10.f, "OnTimer_ShowCrouchHint");
+			}
+			else
+				Hint_StopHint();
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_DarknessHint(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (Player_IsInShadow())
+			{
+				Hint_StopHint();
+				Hint_ShowHint("Hints","HintDarkness");
+			}
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ShowCrouchHint(const tString &in asTimer)
+		{
+			cLux_AddDebugMessage("CROUCH HINT");
+			if (Entity_GetCollide("Trigger_CrouchHint", "player") && mbShowCrouchHint)
+			{
+				Hint_StopHint();
+				Hint_ShowHint_Hold("Hints", "HintCrouch", true, 100.f, true, 10.f);
+			}
+		}
+		
+		//------------------------------------------------------- 
+		
+		bool OnCollide_Player_Fall(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState == -1) return true;
+			
+			//Player_GiveDamage(0,0.1f,eDamageType_Fall,asParent);
+			FearHandler_TriggerPermaFail_Fall();
+			//FearHandler_TriggerPermaFail();
+			return true;
+		}
+		
+		//------------------------------------------------------- 
+		
+		bool OnCollide_CallSalim(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Entity_SetActive("Trigger_CallSalim*",false);
+			//Voice_Play("Dialogue_AnybodyHere");
+			return false;
+		}
+		
+		 //-------------------------------------------------------
+	 
+		 //} END Event A *Player crosses rift*
+	 
+	 //} END SCENE 4
+	 
+	 	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 5 *PLAYER FOLLOWS SALIM'S PATH AND FINDS HIM*
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+ 
+		/////////////////////////////////////////
+		// General
+		//{//////////////////////////////////////
+		 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are used by many events in Scene 5 here.*/
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are used in more than one event in Scene 5 here.*/
+		
+		//-------------------------------------------------------
+		
+		//} END General
+		
+		/////////////////////////////////////////
+		// Event A *Player digs through the rubble to reach the Pretty Cave*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 5, Event A here.*/
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 5, Event A here.*/
+		
+		bool OnCollide_Player_DWWhispers(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			(alState == 1) ? DarkWorldWhispers_Play(1) : DarkWorldWhispers_Stop();
+			return true;
+		}
+
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_ActivateAmulet(const tString &in asParent, const tString &in asChild, int alState)
+		{			
+			if (alState == 1)
+				Amulet_StartTracking(true, "", -1.f);
+			else
+				Amulet_StopTracking();
+				
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnRiftStage_CaveRift(const tString &in asRift, int alStage, bool abOpening, float afOpenAmount)
+		{
+			Debug_Log("RIFT: "+alStage+" "+afOpenAmount+" "+abOpening);
+			
+			if (alStage == 0)
+			{
+				if (!abOpening)
+				{
+					//Prop_SetActiveAndFade("rift_1_entrance_*",true,1);
+					//Prop_SetActiveAndFade("rift_1_exit_*",true,1);
+				}
+			}
+			else if (alStage == 1)
+			{
+				if (abOpening)
+				{
+					Rift_CavesShake();
+					//Prop_SetActiveAndFade("rift_1_entrance_*",false,1);
+					//Prop_SetActiveAndFade("rift_1_exit_*",false,1);
+					Prop_SetStaticPhysics("riftrock_irratic_*", false);
+					Entity_AddImpulse("riftrock_irratic_*", cVector3f_Down * 0.25, true, true);
+					
+					Voice_PlayDelayed("Dialogue_OpenRift",2.0f,-1,"OnEndOfVoice_Rift");
+				}
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnEndOfVoice_Rift(const tString& in asScene, const tString& in asSubject)
+		{
+			if (cScript_GetGlobalVarBool("DWL_ReadHerbertsNote"))
+				Voice_PlayDelayed("Dialogue_OpenRift_Herbert",2.0f);
+			else
+				Voice_PlayDelayed("Dialogue_OpenRift_NoHerbert",2.0f);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool mbRiftShake = false;
+
+		void Rift_CavesShake()
+		{
+			if (mbRiftShake) return;
+			
+			Effect_Shake_Start(0.015f,5,0.6f,1.5f);
+			
+			Sound_CreateAtEntity("Sound_RiftQuake","01_02_caves/quake/quake_3/loop","player");
+			Map_AddTimer("Timer_StopRiftShakeLoop",3,"OnTimer_StopRiftShakeLoop");
+			
+			Map_AddTimer("Timer_RiftRocksCollapse",0.8f,"OnTimer_RiftRocksCollapse");
+			
+			mbRiftShake = true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_StopRiftShakeLoop(const tString &in asTimer)
+		{
+			Sound_Stop("Sound_RiftQuake",5.f);
+		}
+		
+		//------------------------------------------------------- 
+		
+		void OnTimer_RiftRocksCollapse(const tString &in asTimer)
+		{
+			Prop_SetStaticPhysics("rock_riftcollapse_*",false);
+			Entity_AddImpulse("rock_riftcollapse_*",cVector3f(1,1,0),true,true);
+		}
+		
+		//------------------------------------------------------- 
+		
+		bool OnCollide_Player_RiftShakeLayerB_1(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Sound_Play("Sound_Quake1_A", 0.0f);
+			Sound_CreateAtEntity("Sound_RiftShakeLayerB_1","01_02_caves/quake/quake_1/layer_B","player");
+			Effect_Shake_Start(0.015f,2.0f,4.0f,5.0f);
+			return false;
+		}
+		
+		bool OnCollide_Player_RiftShakeLayerB_2(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Sound_Play("Sound_Quake1_A_1", 0.0f);
+			Sound_CreateAtEntity("Sound_RiftShakeLayerB_2","01_02_caves/quake/quake_1/layer_B","player");
+			Effect_Shake_Start(0.015f,2.0f,4.0f,5.0f);
+			return false;
+		}
+		
+		bool OnTrigger_PlayPrettyCavesQuakeWarning(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Sound_Play("Sound_PrettyCavesQuakeWarning", 0.0f);
+			return false;
+		}
+		
+		//------------------------------------------------------- 
+		
+		bool OnCollide_Player_RiftBigRocksCollapse(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Sound_CreateAtEntity("Sound_BigRockLoop","01_02_caves/quake/quake_3/loop","player");
+			Map_AddTimer("Timer_StopBigRockLoop",6,"OnTimer_StopBigRockLoop");
+			Sound_CreateAtEntity("Sound_BigRockCollapse","01_02_caves/quake/rock_fall","SoundArea_BigRockCollapse");
+			Effect_Shake_Start(0.025f,2,2.f,4.f);
+			Map_AddTimer("Timer_RiftBigRocksCollapse",0.5f,"OnTimer_RiftBigRocksCollapse");
+		
+			Sound_Stop("Sound_PrettyCavesQuakeWarning", 4.0f);
+			
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_StopBigRockLoop(const tString &in asTimer)
+		{
+			Sound_Stop("Sound_BigRockLoop",5.f);
+		}
+		
+		//------------------------------------------------------- 
+		
+		void OnTimer_RiftBigRocksCollapse(const tString &in asTimer)
+		{
+			Prop_SetStaticPhysics("bigrock_riftcollapse_*",false);
+			Entity_AddImpulse("bigrock_riftcollapse_*",cVector3f(1,1,0),true,true);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_PlayGhoulSweet(const tString &in asParent, const tString &in asChild, int alState)
+		{	
+			Sound_Play("Sound_GhoulSweet", 0.0f);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_ShowLeanHint(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event A *Player digs through the rubble to reach the Pretty Cave*
+		
+		/////////////////////////////////////////
+		// Event B *Player follows Salim’s trail until the broken bridge*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 5, Event B here.*/
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 5, Event B here.*/
+		
+		void OnLookAt_SeeCavesLight(const tString &in asEntity, int alState)
+		{
+			Voice_Play("Dialogue_IntoLight");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnLookAt_HotInHere(const tString &in asEntity, int alState)
+		{
+			Voice_Play("Dialogue_Hot");
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_SlowWalk(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState == 1)
+			{
+				Player_FadeRunSpeedMulTo(0.5f,1.0f);
+				Player_FadeMoveSpeedMulTo(0.5f,1.0f);
+				Player_SetJumpForceMul(0.6f);
+			}
+			else
+			{
+				Player_FadeRunSpeedMulTo(1.0f,3.0f);
+				Player_FadeMoveSpeedMulTo(1.0f,3.0f);
+				Player_SetJumpForceMul(1);
+			}
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_PlayBehindScare(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Sound_Play("Sound_BehindScare", 0.0f);
+			return false;
+		}
+		//-------------------------------------------------------
+		
+		//} END Event B *Player follows Salim’s trail until the broken bridge*
+		
+		/////////////////////////////////////////
+		// Event C *Player finds Alys' doll and learns about pregnancy*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 5, Event C here.*/
+		
+		bool mbFlashback = false;
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 5, Event C here.*/
+		
+		void OnInteract_Bridge(const tString &in asEntity)
+		{
+			Debug_Log("ENTER");
+			Entity_PlayAnimation("bridge_ladder_1","stop");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnExit_Bridge(int alState)
+		{
+			Debug_Log("Position: "+alState);
+			Entity_PlayAnimation("bridge_ladder_1","sway",0.1f,true);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_PlayRumbleSweet(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Sound_Play("Sound_LadderRumble", 0.0f);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_DeactivateLadder(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Entity_SetActive("Ladder_Bridge",false);
+			Player_SetAmbientLight(0,0,0);
+			//Player_SetNightVisionStrength(0.23f);
+			
+			// Kill rumble sounds
+			// We have a bug where some rumble sound seems to constantly play beyond this point
+			// so killing everything I can find here - IT
+			Sound_Stop("Sound_BigRockLoop",3.0f);
+			Sound_Stop("Sound_BigRockCollapse",3.0f);
+			Sound_Stop("Sound_PrettyCavesQuakeWarning",3.0f);
+			Sound_Stop("Sound_RiftShakeLayerB_1",3.0f);
+			Sound_Stop("Sound_RiftShakeLayerB_2",3.0f);
+			Sound_Stop("Sound_RiftQuake",3.0f);
+			Sound_Stop("Sound_RockImpactFirstScare",3.0f);
+			
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_RemoveDollLookAt(const tString &in asTimer)
+		{
+			Player_StopLookAt(0.02f);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_GetMonkey(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Voice_StopAll();
+			Player_FadeMoveSpeedMulTo(0.1,3);
+			Voice_Play("Memory_TheDoll_Prelude");
+			Map_AddTimer("Timer_DollMemory",3.6,"OnTimer_DollMemory");
+			PlayerBody_PlayCutsceneAtEntity("player_pickup_doll_start","PosArea_DollCutscene",false,0.5,"OnEndOfAnim_DollLoop",1,0);
+			PlayerBody_SetCutsceneMaxPitch(15);
+			PlayerBody_SetCutsceneMaxYaw(15);
+			Entity_SetAnimationPaused("doll_monkey_2", "monkey_pickup_doll_start", false);
+			MainMenu_SetPhase_Items(eMainMenuPhase_Items_Doll);
+			mbFlashback = true;
+			
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void Trigger_MusicDoll_OnPlayerLookAt(const tString &in asEntity, int alState)
+		{
+			Voice_Play("Dialogue_SpotDoll");
+			
+			Music_PlayExt("A2_01_02_Discover_Doll_C_Alt.ogg", false, 0.21f, 1, 5.0f, 0, eMusicPrio_MinorEvent, false);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_DollMemory(const tString &in asTimer)
+		{
+			Sketchbook_UnlockMemory("TheDoll", true, "OnEndOfVoice_DollMemory");
+			cScript_SetGlobalVarBool("Caves_KnowPregnant", true);
+			FearHandler_FadeLevelTo(0,3);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnEndOfAnim_DollLoop(const tString &in asAnim)
+		{
+			PlayerBody_PlayCutsceneAtEntity("player_pickup_doll_loop","PosArea_DollCutscene",true,0,"",1,0, 0, 0, true, false, true);
+			Entity_PlayAnimation("doll_monkey_2", "monkey_pickup_doll_loop", 0, true);
+			Player_SetCrouching(false,true,true);
+		}
+		
+		void OnEndOfVoice_DollMemory(const tString &in asScene, const tString &in asSubject)
+		{
+			Map_AddTimer("Timer_TasiDoll",1.0f,"OnTimer_TasiDollPutAway");
+		}
+		
+		void OnTimer_TasiDollPutAway(const tString &in asTimer)
+		{
+			PlayerBody_PlayCutsceneAtEntity("player_pickup_doll_end","PosArea_DollCutscene",false,0.1,"OnEndOfAnim_DollKill",1,0, 0, 0, true, false, true);
+			Entity_PlayAnimation("doll_monkey_2", "monkey_pickup_doll_end", 0.1, false);
+			Map_AddTimer("Timer_TasiDollAfter",3.f,"OnTimer_TasiDollAfter");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnEndOfAnim_DollKill(const tString &in asAnim)
+		{
+			Item_AddToInventory("AlysDoll", false);
+			Entity_SetActive("doll_monkey_2", false);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_TasiDollAfter(const tString &in asTimer)
+		{
+			Map_AddTimer("Timer_SlowPlayerDown",6,"OnTimer_SlowPlayerDown");
+			Voice_StopAll();
+			Voice_Play("Memory_TheDoll_After",-1,"OnEndOfVoice_MemoryBarks");
+			Player_FadeMoveSpeedMulTo(0.5f, 1);
+			Player_FadeRunSpeedMulTo(0.7f, 1);
+			Player_FadeLookSpeedMulTo(0.8f, 1);
+			Music_Play("A2_01_02_Baby_Memory.ogg", 0.2f, false, eMusicPrio_MinorEvent);
+			Map_AddTimer("Timer_MusicBaby", 16.0f, "OnTimer_MusicPlayBabyAmb");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnEndOfAnim_PregnancyBellyCheck(const tString &in asAnim)
+		{
+			PlayerBody_ResetCutscenePitchYawLimits();
+			cLux_AddDebugMessage("Reset the limits");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_SlowPlayerDown(const tString &in asTimer)
+		{
+			Player_FadeMoveSpeedMulTo(0.7f, 1);
+			Player_FadeRunSpeedMulTo(0.5f, 1);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnEndOfVoice_MemoryBarks(const tString &in asScene, const tString &in asSubject)
+		{
+			Map_AddTimer("Timer_MemoryBark",cMath_RandRectf(1.2f,2),"OnTimer_MemoryBark");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_MemoryBark(const tString &in asTimer)
+		{
+			if (Voice_SubjectHasUnplayedLines("Dialogue_MemoryReturning"))
+				Voice_Play("Dialogue_MemoryReturning",-1,"OnEndOfVoice_MemoryBarks");
+			else
+			{
+				Player_FadeMoveSpeedMulTo(1.f, 5);
+				Player_FadeRunSpeedMulTo(1.f, 5);
+			}
+				
+		}
+		
+		//-------------------------------------------------------
+		
+		bool mbHasSeenLight = false;
+		
+		void OnLookAt_SeeLight(const tString &in asEntity, int alState)
+		{
+			//Voice_PlayWhenPossible("Dialogue_TheLantern");
+			mbHasSeenLight = true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_MusicPlayBabyAmb(const tString &in asTimer)
+		{
+			Music_Stop(4.0f, eMusicPrio_MinorEvent);
+			//Music_PlayExt("A2_01_02_Doll_Ambience_B.ogg", true, 0.4f, 1.0f, 6.0f, 1.0f, eMusicPrio_BgAmb, false);
+		}
+		
+		//-------------------------------------------------------
+		 
+		void OnInteract_GetDoll(const tString &in asEntity)
+		{
+			if (mbFlashback) return;
+
+			Voice_Play("Memory_TheDoll_Prelude");
+			Map_AddTimer("Timer_DollMemory",2,"OnTimer_DollMemory");
+			mbFlashback = true;
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event C *Player finds Alys' Doll and learns about pregnancy*
+		
+		/////////////////////////////////////////
+		// Event D *Player follows the light looking for Salim*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 5, Event D here.*/
+		
+		int mlGlimpses = 0;
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 5, Event D here.*/
+		
+		void OnLookAt_SalimGlimpse(const tString &in asEntity, int alState)
+		{
+			Debug_Log("Glimpse");
+			Voice_StopAll();
+			Voice_Play("Tasi_SalimGlimpse");
+			mlGlimpses++;
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event D *Player follows the light looking for Salim*
+		
+		/////////////////////////////////////////
+		// Event E *Player goes through the crack and finds Salim's body*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 5, Event E here.*/
+		
+		bool mbSalimRevealed = false;
+		bool mbProximityComments = false;
+		bool mbShimmyLanternOut = false;
+		bool mbLeftSalim = false;
+		
+		bool mbCaveCollapse = false;
+		int mlShocks = 0;
+		float mfShockDelay = 4;
+		
+		bool mbHasUsedLantern = false;
+		
+		float mfKneelFadeTime = 1.0f;
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 5, Event E here.*/
+		
+		void OnTimer_ManageShimmy(const tString &in asTimer)
+		{
+			if (Entity_GetCollide("player",asTimer))
+			{
+				Map_RestartCurrentTimer(0.1f);
+				Debug_Log("PLAYER COLLIDING WITH "+asTimer);
+			}
+			else
+			{
+				Debug_Log("ACTIVATED: "+asTimer);
+				Entity_SetActive(asTimer,true);
+				if (asTimer == "Trigger_ShimmyExit")
+					Entity_SetActive("Trigger_ShimmyEnter",false);
+				else
+					Entity_SetActive("Trigger_ShimmyExit",false);
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_ShimmyEnter(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState != 1) return true;
+						
+			if (!mbSalimRevealed)
+			{
+				Voice_StopAll();
+				Voice_PlayDelayed("Scene_SalimsCorpse0",1);
+				Music_Stop(2.0f, eMusicPrio_BgAmb);
+				//Music_Play("A2_01_02_Discover_Lantern.ogg", 0.2f, false, eMusicPrio_MinorEvent);
+			}
+
+			PlayerBody_PlayInteractiveAnimationAtEntity("player_shimmy_in_salim_encounter_slow","PosArea_Shimmy",0.4f,"OnAnimEnd_ShimmyEnter",false);
+			PlayerBody_SetCutsceneMaxPitch(20);
+			PlayerBody_SetCutsceneMaxYaw(20);
+			
+			if (mbShimmyLanternOut)
+				Item_PutAway(eItemHandlerHand_Left);
+				
+			cLux_AddDebugMessage("ENTER");
+			Player_FadeNightVisionStrength(0,2);
+			
+			return true;
+		}
+
+		//-------------------------------------------------------		
+		
+		void OnAnimEnd_ShimmyEnter(const tString &in asAnimName, float afT)
+		{
+			if (!mbSalimRevealed)
+			{
+				cLux_AddDebugMessage("REVEAL");
+				Voice_PlayWhenPossible("Scene_SalimsCorpse1","",30,0);
+				Sound_CreateAtEntity("Sound_DiscoverSalim", "01_02_caves/anim/salim_discover", "player");
+				PlayerBody_PlayCutsceneAtEntity("player_salim_encounter","PosArea_Shimmy",false,0,"OnAnimEnd_SalimReveal");
+				PlayerBody_FadeCutsceneMaxPitch(10, 3);
+				PlayerBody_FadeCutsceneMaxYaw(10, 3);
+				Entity_SetActive("Trigger_ShimmyExit",false);
+				Entity_PlayAnimation("Fairchild_rigid_1","salim_encounter");
+				Entity_PlayAnimation("Salim_Ring","ring_salim_encounter");
+				Player_SetCrouching(true,true,true);
+				Player_SetRunSpeedMul(0.3f);
+				Player_SetMoveSpeedMul(0.7f);
+					
+				Music_PlayExt("A2_01_02_Discover_Salim.ogg", false, 0.2f, 1, 1.0f, 0, eMusicPrio_BigEvent, false);
+				Voice_PlayDelayed("Scene_SalimsCorpse2",5.f);
+				Voice_PlayDelayed("Scene_SalimsCorpse3",20.f,-1, "",10);
+			}
+			else
+			{
+				if (mbShimmyLanternOut)
+					Item_Equip("Lantern");
+					
+				//Map_AddTimer("Trigger_ShimmyExit",0,"OnTimer_ManageShimmy");
+			}
+		}
+
+		//-------------------------------------------------------
+		
+		bool OnCollide_ShimmyExit(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState != 1) return true;
+			
+			cLux_AddDebugMessage("EXIT");
+			PlayerBody_PlayInteractiveAnimationAtEntity("player_shimmy_out_salim_encounter","PosArea_Shimmy",0.2f,"OnAnimEnd_ShimmyExit",false);
+			PlayerBody_SetCutsceneMaxPitch(20);
+			PlayerBody_SetCutsceneMaxYaw(20);
+			Player_FadeNightVisionStrength(1,2);
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnAnimEnd_ShimmyExit(const tString &in asAnimName, float afT)
+		{
+			//Map_AddTimer("Trigger_ShimmyEnter",0,"OnTimer_ManageShimmy");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnAnimEnd_SalimReveal(const tString &in asAnimName)
+		{
+			mfKneelFadeTime = 1.0f;
+			//Map_AddTimer("Timer_Kneel",0,"OnTimer_Kneel");
+			Player_SetMoveSpeedMul(0);
+			Player_SetStandDisabled(true);
+			Entity_SetActive("InteractAux_1",true);
+			Player_StartLookAt("PosArea_SalimFaceLookAt",1,1,1);
+			Map_AddTimer("Timer_RemoveLanternLookAt",0.5f,"OnTimer_RemoveLanternLookAt");
+			Entity_PlayAnimation("Fairchild_rigid_1","salim_encounter_pose_2");
+			Entity_PlayAnimation("Salim_Ring","ring_salim_encounter_pose_2");
+			mbSalimRevealed = true;
+			mbProximityComments = true;
+			Sketchbook_CompleteIdea("find_salim");
+			Sketchbook_NewIdeasPage();
+			cScript_SetGlobalVarBool("Caves_FoundSalim", true);
+
+			Map_AddTimer("Timer_ActivateSalimInteractions",1,"OnTimer_ActivateSalimInteractions");
+			Map_AddTimer("Timer_TasiAndSalim",8,"OnTimer_TasiAndSalim");
+			
+			FearHandler_SetWhisperStage(eFearWhisperStage_SalimToRadio);
+			
+			OnTimer_Kneel("");
+			PlayerBody_SetInteractiveAnimationAllowHint(false);
+			Map_AddTimer("Timer_AllowInteractionHint",10,"OnTimer_AllowInteractionHint");
+			
+			FearHandler_SetPermaFailEnabled(false);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_AllowInteractionHint(const tString &in asTimer)
+		{
+			PlayerBody_SetInteractiveAnimationAllowHint(true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_RemoveLanternLookAt(const tString &in asTimer)
+		{
+			Player_StopLookAt(0.02f);
+		}
+		
+		//------------------------------------------------------- 
+		
+		void OnTimer_ActivateSalimInteractions(const tString &in asTimer)
+		{
+			//Entity_SetActive("Trigger_SalimEyes",true);
+			Entity_SetActive("Trigger_SalimRing",true);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_WalkAway(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState != 1) return true;
+			if (ItemType_GetCountInInventory("Lantern") == 0) return true;
+			if (!mbCaveCollapse) return true;
+			
+			Entity_SetActive("Blocker_4*",true);
+			
+			if (mbHasUsedLantern == false)
+			{
+				Map_RemoveTimer("Timer_CheckLantern");
+				Hint_ShowHint("Hints", "HintFlashlight", true, 1.5f, true);
+			}
+			
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnEndAnim_CheckBelly(const tString &in asEntity, int alDirection)
+		{
+			Map_AddTimer("Timer_belly",0.2f,"OnTimer_Belly");
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_Belly(const tString &in asTimer)
+		{
+			PlayerBody_PlayCutsceneAnimation("react_to_baby_kick",false,1,"");
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_SalimArea(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (!mbSalimRevealed) return true;
+			
+			if (alState == -1)
+			{
+				Map_RemoveTimer("Timer_TasiAndSalim");
+				//Music_Stop(4,eMusicPrio_BigEvent);
+				return true;
+			}
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_SalimProximity(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (!mbProximityComments) return true;
+			if (!mbSalimRevealed) return true;
+			if (alState != 1) return true;
+			
+			if (!Map_TimerExists("Timer_TasiAndSalim"))
+			{
+				Map_AddTimer("Timer_TasiAndSalim",1.f,"OnTimer_TasiAndSalim");
+			}
+			return true;
+
+		}
+		
+		//------------------------------------------------
+		
+		void OnTimer_UnpauseTimer(const tString &in asTimer)
+		{
+			Map_AddTimer("Timer_TasiAndSalim",1.f,"OnTimer_TasiAndSalim");
+		}
+		
+		//------------------------------------------------
+		
+		void OnTimer_TasiAndSalim(const tString &in asTimer)
+		{	
+				
+			if ((mbLeftSalim == false || Entity_GetCollide("player","Fear_Salim")) && Entity_IsInPlayerFOV("PosArea_SalimFaceLookAt") && !mbCaveCollapse && mbProximityComments)
+			{
+				Voice_PlayDelayed("Dialogue_TasiSalimProximity",1);
+				float fTime = cMath_RandRectf(8,12);
+				Map_RestartCurrentTimer(fTime);
+			}
+			else
+			{
+				Map_RestartCurrentTimer(0.1f);
+			}
+		}	
+		
+		//-------------------------------------------------------
+		
+		bool mbSalimEyesClosed = false;
+		
+		void OnInteract_TakeSalimRing(const tString &in asEntity)
+		{
+			Entity_SetActive("Trigger_Shimmy*", false);
+			Entity_PlayAnimation("Fairchild_rigid_1","salim_encounter_take_ring");
+			Entity_PlayAnimation("Salim_Ring","ring_salim_encounter_take_ring");
+			
+			
+			Sound_CreateAtEntity("Sound_TakeRing", "01_02_caves/anim/salim_ring", "player");
+			
+			bool bPlayerStateNormal = cLux_GetPlayer().GetCurrentStateId() == ePlayerState_Normal;
+			PlayerBody_PlayCutsceneAtEntity("player_salim_encounter_take_ring","PosArea_Shimmy",false, bPlayerStateNormal ? 0.5f : 0.2f,"OnEndAnim_RingTaken", 1, 0, 0, 0, true, false, !bPlayerStateNormal);
+			PlayerBody_SetCutsceneAutoResetCamera(true);
+			PlayerBody_FadeCutsceneMaxPitch(10, 1);
+			PlayerBody_FadeCutsceneMaxYaw(10, 1);
+			
+			MainMenu_SetPhase_Items(eMainMenuPhase_Items_DollRing);
+			
+			tString sTimer = "Timer_TasiAndSalim";
+			if (Map_TimerExists("Timer_TasiAndSalim"))
+			{
+				Map_RemoveTimer("Timer_TasiAndSalim");
+				Map_AddTimer("Timer_UnpauseTimer",10,"OnTimer_UnpauseTimer");
+			}
+			
+			Map_AddTimer("Timer_RemoveRing",10,"OnTimer_RemoveRing");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_RemoveRing(const tString &in asTimer)
+		{	
+			Entity_SetActive("Salim_Ring",false);
+			Item_AddToInventory("SalimRing");
+			Voice_Play("Scene_SalimsCorpse_Ring");
+			
+			cScript_SetGlobalVarBool("SalimsRingVisible", true);
+			
+			iLuxEntity@ pRing = Map_GetEntity("SalimsRing_Accessory", eLuxEntityType_Prop);
+			if (pRing !is null)
+				pRing.GetMeshEntity().SetVisible(true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_CloseSalimEyes(const tString &in asEntity)
+		{
+			Entity_SetActive("Trigger_ShimmyExit",false);
+
+			tString sTimer = "Timer_TasiAndSalim";
+			if (Map_TimerExists(sTimer))
+			{
+				Map_SetTimerPaused(sTimer,true);
+				Map_AddTimer("Timer_UnpauseTimer",5,"OnTimer_UnpauseTimer");
+			}
+			
+			mbSalimEyesClosed = true;
+				
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnEndAnim_EyesClosed(const tString &in asAnim)
+		{		
+			mfKneelFadeTime = 0;
+			Map_AddTimer("Timer_Kneel",0.1f,"OnTimer_Kneel");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnEndOfAnim_LeaveSalim(const tString &in asAnim, float afT)
+		{
+			LeaveSalim(true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void LeaveSalim(bool abUnCrouch)
+		{
+			Hint_StopHint(0);
+			Player_FadeMoveSpeedMulTo(1,3);
+			Player_SetStandDisabled(false);
+			if (abUnCrouch) Player_SetCrouching(false,true,true);
+			
+			FootPlacement_SetActive(PlayerBody_GetEntityName(),true);
+			Player_ResetCameraLimits();
+			
+			Entity_SetActive("Blocker_Backtrack",true);
+			
+			mbLeftSalim = true;
+			
+			//Map_AddTimer("Trigger_ShimmyExit",10,"OnTimer_ManageShimmy");
+			//Shimmy_ResetTrigger();
+		}
+		
+		//-------------------------------------------------------
+		
+		bool mbLanternHintBlocked = false;
+		
+		void OnTimer_ShowLanternHint(const tString &in asTimer)
+		{
+			if (Entity_GetCollide("Player","Trigger_SalimProximity") || (mbLeftSalim == false || cLux_GetPlayer().GetCurrentStateId() != ePlayerState_Normal))
+			{
+				mbLanternHintBlocked = true;
+				Map_RestartCurrentTimer(0.25f);
+				return;
+			}
+			
+			// Delay again to ensure a bit of a gap with whatever was blockng the hint before and the hint appearing
+			if (mbLanternHintBlocked)
+			{
+				mbLanternHintBlocked = false;
+				Map_RestartCurrentTimer(3.0f);
+				return;
+			}
+			
+			Hint_ShowHint("Hints", "HintFlashlight", true, 1.5f, false);
+			Map_AddTimer("Timer_CheckLantern", 0.5, "OnTimer_CheckLantern");
+		}
+		
+		//------------------------------------------------------- 
+		
+		void OnTimer_CheckLantern(const tString &in asTimer)
+		{
+			if (Item_GetHeldType(eItemHandlerHand_Left) != "Lantern")
+			{
+				Map_RestartCurrentTimer(0.5);
+				return;
+			}
+			
+			mbHasUsedLantern = true;
+		}
+		
+		//------------------------------------------------------- 
+		
+		void OnEndAnim_RingTaken(const tString &in asAnim)
+		{
+			Entity_PlayAnimation("Fairchild_rigid_1","ring_salim_encounter_pose_2");
+			mfKneelFadeTime = 0.3f;
+			Entity_SetActive("Trigger_ShimmyExit",false);
+			OnTimer_Kneel("");
+			//Map_AddTimer("Trigger_ShimmyExit",2,"OnTimer_ManageShimmy");
+		}
+		
+		void Shimmy_ResetTrigger()
+		{
+			//Entity_SetActive("Trigger_ShimmyExit",true);
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event E *Player goes through the crack and finds Salim's body*
+		
+		/////////////////////////////////////////
+		// Event F *Player reads Salim's death note*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 5, Event F here.*/
+		
+		bool mbNoteRead = false;
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 5, Event F here.*/
+		
+		void OnInteract_SalimLastNote(const tString &in asEntity)
+		{
+			Voice_StopAll();
+			mbProximityComments = false;
+		}
+
+		//------------------------------------------------------- 
+		
+		void OnRead_SalimLastNote(const tString &in asEntity)
+		{
+			mbNoteRead = true;
+			cScript_SetGlobalVarBool("Caves_ReadSalimsLastNote",true);
+			Voice_StopAll();
+			
+			if (!mbCaveCollapse)
+				Map_AddTimer("Timer_NoteDelay",0.8f,"OnTimer_NoteDelay");
+				
+			Entity_SetActive("Readable_SalimsLastNote",false);
+			
+			LeaveSalim(false);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_KneelIdle(const tString &in asTimer)
+		{
+			
+			PlayerBody_SetInteractiveAnimationInteractCallback("OnInteract_Stuff");
+			PlayerBody_PlayInteractiveAnimationAtEntity("player_salim_encounter_kneel_loop","PosArea_Shimmy",1,"",false,true,true,1,false,true,false);
+			
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_Kneel(const tString &in asTimer)
+		{
+			PlayerBody_SetInteractiveAnimationInteractCallback("OnInteract_Stuff");
+			PlayerBody_AddInteractiveAnimationCheckpoint(0.1f);
+			PlayerBody_AddInteractiveAnimationCheckpoint(3.5f);
+			PlayerBody_SetInteractiveAnimationRange(0,1,"");
+			PlayerBody_PlayInteractiveAnimationAtEntity("player_salim_encounter_tr_idle","PosArea_Shimmy",mfKneelFadeTime,"OnEndOfAnim_LeaveSalim",false,true,true,1,false,false,true,true);				
+			PlayerBody_FadeCutsceneMaxPitch(-1, 1);
+			PlayerBody_FadeCutsceneMaxYaw(-1, 1);
+			Player_SetCrouching(false,true,true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_NoteDelay(const tString &in asTimer)
+		{
+			Voice_Play("Dialogue_AfterSalimsLastNote");
+			mbProximityComments = true;
+		}
+		
+		bool mbCanExit = false;
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_Stuff(const tString &in asEntity)
+		{
+			if (asEntity == "lantern_new_1" || asEntity == "InteractAux_1")
+			{
+				Entity_CallEntityInteract("lantern_new_1");
+			}
+			else if (asEntity == "Trigger_SalimRing")
+			{
+				Entity_CallEntityInteract("Trigger_SalimRing");
+			}
+			else
+			{
+				Prop_SetActiveAndFade(asEntity, false, 0.2f);
+				//PlayerBody_SetInteractiveAnimationOver();
+
+				PlayerBody_PlayCutsceneAtEntity("crouch_idle", "Trigger_1", false, 0.3f, "OnEndOfAnim_Read", 2);
+				Player_SetCrouching(true,true,true);
+				//FootPlacement_SetActive(PlayerBody_GetEntityName(),false);
+				
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_Read(const tString &in asTimer)
+		{
+			Entity_CallEntityInteract("Readable_SalimsLastNote");
+			//PlayerBody_PlayCutsceneAtEntity("kneel_loop", "Trigger_1", true, 0.f, "", 1.f);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnEndOfAnim_Read(const tString &in asAnimName)
+		{
+			Map_AddTimer("Timer_Read",0.1f,"OnTimer_Read");
+		}
+		
+		//------------------------------------------------------- 
+		
+		bool OnCamAnim_Test(const tString &in asEntity, int alDirection)
+		{
+			Debug_Log("Node 1: Speed: "+CameraAnimationNode_GetBackSpeed("CameraAnimation_1")+", Time: "+CameraAnimationNode_GetBackTime("CameraAnimation_1"));
+			CameraAnimationNode_SetBackwardTime("CameraAnimation_1",0);
+			if (mbCanExit)
+			{
+				CameraAnimation_End();
+				return true;
+			}
+			return true;
+		}
+		
+		bool OnCamAnim_Test2(const tString &in asEntity, int alDirection)
+		{
+			Debug_Log("Node 2: Speed: "+CameraAnimationNode_GetBackSpeed("CameraAnimation_1")+", Time: "+CameraAnimationNode_GetBackTime("CameraAnimation_1"));
+			CameraAnimationNode_SetBackwardTime("CameraAnimation_1",2);
+			mbCanExit = true;
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event F *Player reads Salim's death note*
+		
+	//} END SCENE 5
+	
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 6 *PLAYER FINDS THEIR WAY OUT OF THE CAVES*
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+ 
+		/////////////////////////////////////////
+		// General
+		//{//////////////////////////////////////
+		 
+		//-------------------------------------------------------
+	 
+		float mfFadeOutLanternBrightness = 0;
+		float mfFadeOutLanternT = 0;
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are used in more than one event in Scene 6 here.*/
+		
+		void OnTimer_TasiIncreaseSpeed_Start(const tString &in asTimer)
+		{
+			Player_FadeRunSpeedMulTo(0.6f,10);
+			Player_SetMoveSpeedMul(0.9f);
+			Player_FadeMoveSpeedMulTo(0.6f,10);
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END General
+		
+		/////////////////////////////////////////
+		// Event A *Player picks up Salim's lantern and opens their way through the dark chamber*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 6, Event A here.*/
+		
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 6, Event A here.*/
+		
+		void OnInteract_GetLantern(const tString &in asEntity)
+		{
+			
+			if (ItemType_GetCountInInventory("Lantern") > 0)
+			{
+				Item_RemoveFromInventory(ItemType_GetFirstInInventory("Lantern"));
+			}
+			
+			Entity_SetActive("Blocker_1_*",false);
+			Entity_SetActive("BlockerSmall_*",true);			
+			Entity_SetInteractionDisabled("Readable_SalimsLastNote",false);
+			
+			Prop_SetStaticPhysics("Prop_Grab_*",false);
+			Entity_SetInteractionDisabled("Prop_Grab_*",false);
+			//Entity_SetActive("LensFlare_1",false);
+			//Billboard_SetVisible("Billboard_Lantern_*",false);
+			//LensFlare_SetVisible("LensFlare_1",false);
+			
+			Hint_StopHint();
+			Map_AddTimer("Timer_LanternAmount",0.1f,"OnTimer_LanternAmount");
+			
+			Map_AddTimer("Timer_ShowLanternHint", 3.f, "OnTimer_ShowLanternHint");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_LanternAmount(const tString &in asTimer)
+		{
+			Item_SetContent(ItemType_GetFirstInInventory("Lantern"), "Oil", 5);
+			Map_AddTimer("Timer_RefillOil",1,"OnTimer_RefillOil");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_RefillOil(const tString &in asTimer)
+		{
+			if (Item_GetFullness(ItemType_GetFirstInInventory("Lantern")) <= .2f)
+			{
+				Lantern_ForceFlicker(1);
+				Lantern_SetAmount(2);
+			}
+			Map_RestartCurrentTimer();
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ForceCaveCollapse(const tString &in asTimer)
+		{
+			if (mbCaveCollapse) return;
+			if (Entity_GetCollide("player","Trigger_SalimArea")) 
+			{
+				Map_RestartCurrentTimer(2);
+				return;
+			}
+			
+			Voice_StopAll();
+			Entity_SetActive("Trigger_CaveCollapse_*",false);
+			Seq_CavesCollapse("");
+		}
+		
+		//------------------------------------------------------- 
+		
+		bool OnCollide_Player_CaveWarningCollapse(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Sound_CreateAtEntity("Sound_WarningQuake1","01_02_caves/quake/quake_3/loop","player");
+			Effect_Shake_Start(0.015f,1.7f,0.6f,1.2f);
+			Map_AddTimer("Timer_CaveWarningCollapseStop",1,"OnTimer_CaveWarningCollapseStop");
+			Entity_SetActive("Soundscape_Salim",false);
+			return false;
+		}
+		
+		//------------------------------------------------------- 
+				
+		bool OnCollide_Player_CaveWarningCollapse_2(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Sound_CreateAtEntity("Sound_WarningQuake2","01_02_caves/quake/quake_3/loop","player");
+			Sound_Play("Sound_Quake2_A", 0.0f);
+			Sound_CreateAtEntity("Sound_WarningQuake3","01_02_caves/quake/quake_2/layer_B","player");
+			Effect_Shake_Start(0.015f,1.8f,0.6f,1.2f);
+			Map_AddTimer("Timer_CaveWarningCollapseStop",1,"OnTimer_CaveWarningCollapseStop");
+			Entity_SetActive("Soundscape_Salim",false);
+			return false;
+		}
+		
+		//------------------------------------------------------- 
+		
+		void OnTimer_CaveWarningCollapseStop(const tString &in asTimer)
+		{
+			Sound_Stop("Sound_WarningQuake1",5);
+			Sound_Stop("Sound_WarningQuake2",5);
+			Sound_Stop("Sound_WarningQuake3",5);
+		}
+				
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_CaveCollapse(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (ItemType_GetCountInInventory("Lantern") == 0) return true;
+			if (mbCaveCollapse) return true;
+			
+/*			Player_SetMoveSpeedMul(0.f);
+			cLux_GetPlayer().AutomoveCharBodyTo(100000.f, 10.f, 3.f, Map_GetEntity("PosArea_WalkBack_1").GetPosition());
+			Map_AddTimer("Timer_StopAutomove",1,"OnTimer_StopAutomove");*/
+			Seq_CavesCollapse("");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_StopAutomove(const tString &in asTimer)
+		{
+			cLux_GetPlayer().StopAutomoveCharBody();
+			Player_FadeMoveSpeedMulTo(1,4);
+		}
+		
+		//-------------------------------------------------------
+		
+		int m_idTrail = -1;
+		
+		cSequenceStatesData mSequenceCavesCollapse;
+		void Seq_CavesCollapse(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_CavesCollapse", mSequenceCavesCollapse);
+			if (Sequence_DoStepAndWait(0.4))
+			{	
+				//Player_FadeNightVisionStrength(1.f,1);
+				Player_FadeNightVisionStrength(0,0.3f);
+				FearArea_SetSafe("Fear_Salim",false);
+				Entity_SetActive("Fear_Salim",false);
+				
+				//Light_FadeBrightnessTo("Light_Spot_10",0,1);
+				//Light_FadeBrightnessTo("lantern_light_sh_7",0,3);
+				//Light_FadeBrightnessTo("lantern_light_sh_16",0,3);
+				Entity_SetActive("DummyFlesh*",false);
+				Entity_SetActive("Blocker_2",true);
+				Entity_SetActive("Blocker_Backtrack",true);
+				Entity_SetActive("Trigger_Shimmy*",false);
+				Prop_SetStaticPhysics("Prop_Collapse_*",false);
+				Entity_AddImpulse("Prop_Collapse_*",cVector3f(1,1,0),true,true);
+
+				ShadowFlesh_Spawn("DummyFlesh_*","",1,3,true);
+
+				Sound_Play("Sound_ShadowDebris", 1.0f);
+				Sound_Play("Sound_Roar_1", 1.0f);
+				Sound_Play("Sound_Roar_2", 1.0f);
+				Sound_CreateAtEntity("Sound_RoarDebris1", "01_02_caves/events/shadow_roar/shadow_roar_debris_02", "player");
+				Sound_CreateAtEntity("Sound_RoarDebris2", "01_02_caves/events/collapse/first_impact", "player");
+				Music_Play("A2_1_2_ShadowRoar.ogg", 0.6f, false, eMusicPrio_MinorEvent);
+				
+				Map_AddTimer("Timer_MoreShadowFlesh",2.6f,"OnTimer_MoreShadowFlesh");
+				Map_AddTimer("Timer_MusicCaveQuake", 9.0f, "OnTimer_MusicPlayCaveQuake");
+				
+				Lamp_SetLit("torch_pilgrim_wood_5",false,true);
+				Light_FadeBrightnessTo("torch_salim_light_*",0,3);
+				//Light_FadeBrightnessTo("Light_EscapeSupport",0.2f,1);
+				//Entity_SetActive("torch_pilgrim_wood_dummy",true);
+				//Lamp_SetLit("torch_pilgrim_wood_5",false,true);
+				//Light_FadeBrightnessTo("SalimTorch_*",0,2);
+				
+				mbCaveCollapse = true;
+			}
+			else if (Sequence_DoStepAndWait(5.6f))
+			{
+				Debug_Log("2");
+				FearHandler_SetForcedAddFearRate(0.2f,12);
+				ParticleSystem_SetActive("PS_Collapse_*",true);
+				Voice_StopAll();
+				Voice_PlayDelayed("Dialogue_TasiGetsHerShitTogether",0.8f);
+				
+			}
+			else if (Sequence_DoStepAndWait(0.3f))
+			{
+				m_idTrail = Effect_ImageTrail_Start(1,5,9000,100);
+				m_idQuakeShake = Effect_Shake_Start(0.008f,100000,0.6f,100);
+				Map_AddTimer("Timer_ExtraShake",3,"OnTimer_ExtraShake");
+				Sound_Play("Sound_QuakeStartDebris_1", 1.0f);
+				Sound_Play("Sound_QuakeStartDebris_2", 1.0f);
+				Sound_CreateAtEntity("Sound_CaveCollapseQuakeLoop", "01_02_caves/quake/quake_3/loop", "player");
+				Sound_CreateAtEntity("Sound_CaveCollapseQuakeDebris", "01_02_caves/quake/quake_3/rock_sweet", "player");
+				
+			}
+			Sequence_End();
+		}
+			
+		//-------------------------------------------------------
+		
+		void OnTimer_MoreShadowFlesh(const tString &in asTimer)
+		{
+			Lantern_ForceFlicker(9);
+			ShadowFlesh_Spawn("DummyFlesh2_*","",1,3,true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ExtraShake(const tString &in asTimer)
+		{
+			float fRand = cMath_RandRectf(0,1);
+			Effect_Shake_Start(0.06f,cMath_RandRectf(0.6f,2),0.4f,1);
+			Map_RestartCurrentTimer(cMath_RandRectf(8,15));
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_MusicPlayCaveQuake(const tString &in asTimer)
+		{
+			Music_Stop(3.0f, eMusicPrio_MinorEvent);
+			Music_PlayExt("A2_1_2_CaveRumble.ogg", true, 0.6f, 1.0f, 3.0f, 1.0f, eMusicPrio_BigEvent, false);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_NoMoreOil(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState != 1) return true;
+			if (ItemType_GetCountInInventory("Lantern") == 0) return true;
+			if (!mbCaveCollapse) return true;
+			
+			
+			Sound_CreateAtEntity("Sound_NoOilCollapse","01_02_caves/events/collapse/rock_collapse",asParent);
+			Sound_CreateAtEntity("Sound_NoOilRumble","01_02_caves/events/collapse/quake_rumble",asParent);
+			Effect_Shake_Start(0.09f,1,0.4f,1);
+			Entity_SetActive("Blocker_3_*",true);
+			Lantern_ForceFlicker(2);
+			//Sound_CreateAtEntity("Sound_LanternOff","player/tools/lantern/lantern_burn","player");
+			return false;
+		}
+		
+		//------------------------------------------------------- 
+		
+		bool OnCollide_Player_InTunnel(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Entity_SetActive("Blocker_5*",true);
+			Sound_CreateAtEntity("Sound_InTunnelCollapse","01_02_caves/events/collapse/rock_collapse",asParent);
+			Sound_CreateAtEntity("Sound_InTunnelRumble","01_02_caves/events/collapse/quake_rumble",asParent);
+			Effect_Shake_Start(0.09f,1,0.4f,1);
+			return false;
+		}
+		
+		//------------------------------------------------------- 
+		
+		bool OnCollide_Player_OutTunnel(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Lantern_ForceFlicker(6);
+			Sound_CreateAtEntity("Sound_OutTunnelCollapse","01_02_caves/events/collapse/rock_collapse",asParent);
+			Sound_CreateAtEntity("Sound_OutTunnelRumble","01_02_caves/events/collapse/quake_rumble",asParent);
+			Effect_Shake_Start(0.09f,1,0.4f,1);
+
+			Prop_SetStaticPhysics("Prop_FinalCollapse_1*",false);
+			Entity_AddImpulse("Prop_FinalCollapse_1*",cVector3f(1,1,0),true,true);
+			return false;
+		}
+		
+		//------------------------------------------------------- 
+		
+		bool OnCollide_Player_CaveIn(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Seq_CavesCaveIn("");
+			
+			if (mfPlayerRunCount < 2.f)
+			{
+				Hint_StopHint();
+				Hint_ShowHint_Hold("Hints", "HintRun", true, 1.5f, false, 10.f);
+			}
+			
+			return false;
+		}
+		
+		//------------------------------------------------------- 
+		
+		cSequenceStatesData mSequenceCavesCaveIn;
+		void Seq_CavesCaveIn(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_CavesCaveIn", mSequenceCavesCaveIn);
+			if (Sequence_DoStepAndWait(1))
+			{	
+				Sound_CreateAtEntity("Sound_BoulderShift1","01_02_caves/events/collapse/boulder_slide","Prop_CaveIn_1");
+				Effect_Shake_Start(0.09f,1,0.4f,1);
+				Prop_AlignRotation("Prop_CaveIn_1","Prop_CaveInTarget_1",1,1,0.3f,false);
+				Prop_MoveLinearTo("Prop_CaveIn_1","Prop_CaveInTarget_1",3,2,0.1f,false);
+				ParticleSystem_CreateAtEntity("rock_collapse", "rock_collapse_light.ps", "rock_collapse_light_origin_1", false);
+			}
+			if (Sequence_DoStepAndWait(1.1))
+			{	
+				Prop_AlignRotation("Prop_CaveIn_2","Prop_CaveInTarget_2",2,1,0.1f,false);
+				Prop_MoveLinearTo("Prop_CaveIn_2","Prop_CaveInTarget_2",4,2,0.1f,false);
+				Sound_CreateAtEntity("Sound_BoulderShift2","01_02_caves/events/collapse/boulder_slide","Prop_CaveIn_2");
+			}
+			if (Sequence_DoStepAndWait(0.1))
+			{	
+				Prop_AlignRotation("Prop_CaveIn_3","Prop_CaveInTarget_3",2,1,0.1f,false);
+				Prop_MoveLinearTo("Prop_CaveIn_3","Prop_CaveInTarget_3",4,2,0.1f,false);
+				Sound_CreateAtEntity("Sound_BoulderShift3","01_02_caves/events/collapse/boulder_slide","Prop_CaveIn_3");
+			}
+			if (Sequence_DoStepAndWait(1))
+			{	
+				Prop_AlignRotation("Prop_CaveIn_4","Prop_CaveInTarget_4",2,1,0.1f,false);
+				Prop_MoveLinearTo("Prop_CaveIn_4","Prop_CaveInTarget_4",4,2,0.1f,false);
+				ParticleSystem_CreateAtEntity("rock_collapse", "rock_collapse_light.ps", "rock_collapse_light_origin_2", false);
+				Sound_CreateAtEntity("Sound_BoulderShift4","01_02_caves/events/collapse/boulder_slide","Prop_CaveIn_4");
+			}
+			Sequence_End();
+		}
+		
+		//------------------------------------------------------- 
+		
+		bool OnCollide_Player_LanternShimmer(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Lantern_ForceFlicker(2);
+
+			Effect_Shake_Start(0.09f,1,0.4f,1);
+			Prop_SetStaticPhysics("Prop_UltimateCollapse_*",false);
+			Entity_AddImpulse("Prop_UltimateCollapse_*",cVector3f(1,1,0),true,true);
+			
+			Light_FadeBrightnessTo("Light_Exit_*",0,1);
+			
+		    ParticleSystem_CreateAtEntity("rock_collapse", "rock_collapse.ps", "rock_collapse_final_origin", false);
+			
+			//Prop_SetActiveAndFade("bigrock_3",true,1);
+			cFogArea@ pFogArea = cLux_GetCurrentMap().GetWorld().GetFogArea("FogArea_8");
+			pFogArea.SetVisible(false);
+			
+			return false;
+		}
+		
+		//------------------------------------------------------- 
+		
+		bool OnCollide_Player_Trapped(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Seq_PlayerTrappedInCaves("");
+			return false;
+		}
+		
+		//------------------------------------------------------- 
+		
+		cSequenceStatesData mSequencePlayerTrappedInCaves;
+			
+		void Seq_PlayerTrappedInCaves(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_PlayerTrappedInCaves", mSequencePlayerTrappedInCaves);
+			if (Sequence_DoStepAndWait(0.1f))
+			{
+				Quake_Stop();
+				//Sound_CreateAtEntity("Sound_Damage","player/foley/damage/player_hit","player");
+				Seq_HitByDebris("");
+				//Player_GiveDamage(0.1,0.9,eDamageType_Fall,"");	
+			}
+			else if (Sequence_DoStepAndWait(1))
+			{
+				Player_SetMoveSpeedMul(0);
+				Player_SetRunSpeedMul(0.3f);
+				Player_SetCrouching(true,true,true);
+				Player_SetStandDisabled(true);
+				Player_SetJumpDisabled(true);
+				Player_FadeNightVisionStrength(0.01f,2);
+				
+				Lantern_SetAmount(0);
+				Map_RemoveTimer("Timer_RefillOil");
+				//Item_Unequip(ItemType_GetFirstInInventory("Lantern"),true);
+				//PlayerBody_PlayCutsceneAtEntity("knocked_out_by_debris_in_place","PosArea_Fall",false,1);
+				Billboard_SetVisible("Billboard_LanternObscured", true);
+				
+				//Sound_Play("Sound_Roar_3", 0.0f);
+				Player_FadeNightVisionStrength(0.075f,1);	
+				
+				Sound_CreateAtEntity("Sound_LanternOff","player/tools/lantern/lantern_ignite","player");
+				ParticleSystem_CreateAtEntity("rock_collapse", "rock_collapse.ps", "rock_collapse_final_origin_2", false);
+				ParticleSystem_CreateAtEntityExt("rock_collapse", "sand_falling_after_collapse.ps", "collapse_scene_dust_origin", false, cColor(0.717,0.677,0.588,1), 0.3f, false, 1, 2, 100, 110);
+
+				Prop_SetActiveAndFade("Blocker_7*",true,1);
+				Prop_SetActiveAndFade("Blocker_9*",true,1);
+				Entity_SetActive("Prop_FinalCollapse_1*",false);
+				Entity_SetActive("Lantern_Collapse",true);
+				//Entity_SetEffectsActiveExt("",false,true,1,2);
+				Light_FadeBrightnessTo("lantern_collapse_light_*",6.0f,0.5);
+				//Light_SetFlickerActive("lantern_collapse_light_spot",true);
+			}
+			else if (Sequence_DoStepAndWait(11.0f))
+			{
+				Seq_CollapseLantern("");
+				Effect_Shake_Start(0.015f,0.6f,0.4f,1);
+				
+				PlayerBody_GetAnimationState("die_fall").SetPaused(true);
+			}
+			else if (Sequence_DoStepAndWait(28.6))
+			{
+				Map_RemoveTimer("Timer_ExtraShake");
+				// LOW POINT
+				Prop_SetActiveAndFade("Blocker_SmallRocks*",true,1);
+				Voice_StopAll();
+				Voice_Play("Dialogue_TasiLowPoint");
+			}
+			else if (Sequence_DoStepAndWait(2))
+			{
+				// HIGH POINT
+				Entity_SetActive("Lantern_Collapse",false);
+				Billboard_SetVisible("Billboard_LanternObscured", false);
+				
+				// Show arms and bracelet again
+				SetArmsVisible(true);
+	
+				PlayerBody_PlayCutsceneAtEntity("wake_up_from_death_4_crouch","PosArea_GetUp",false,0.3f);
+				Voice_StopAll();
+				Voice_Play("Dialogue_TasiTurningPoint", -1, "OnTurningPointPart1Played");
+				Light_FadeBrightnessTo("Light_Exit_*",0,1);
+				Effect_ImageTrail_FadeOut(m_idTrail,3);
+			}
+			else if (Sequence_DoStepAndWait(12))
+			{
+				Player_SetMoveSpeedMul(0.3f);
+				Player_FadeMoveSpeedMulTo(0.5f,6);
+				Player_FadeNightVisionStrength(0.3f,4);	
+				Player_SetStandDisabled(false);
+				Map_AddTimer("Timer_CheckTriesLantern",0.1,"OnTimer_CheckTriesLantern");
+			}
+			else if (Sequence_DoStepAndWait(2))
+			{
+				Map_AddTimer("Timer_DisableBlocker",0,"OnTimer_DisableBlocker");
+			}
+			Sequence_End();
+		}
+		
+		cSequenceStatesData mSequenceCollapseLantern;
+			
+		void Seq_CollapseLantern(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_CollapseLantern", mSequenceCollapseLantern);
+			if (Sequence_DoStepAndWait(1.0f))
+			{
+			}
+			if (Sequence_DoStepAndWait(3.62f))
+			{
+				mfFadeOutLanternBrightness = 6.0f;
+			}
+			else if (Sequence_DoStepAndWait(1.0f))
+			{
+				Player_FadeNightVisionStrength(0.0f,3);	
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		// Hack to hide arms during fall anim
+		void SetArmsVisible(bool abVisible)
+		{
+			GhoulProgression_SetArmsVisible(abVisible);
+			Entity_SetActive("Amulet_Bracelet", abVisible);
+			Entity_SetActive("CurseMedallion_*_Accessory", abVisible);
+		}
+		
+		//-------------------------------------------------------
+		
+		int mlBlurID = -1;
+		
+		cSequenceStatesData mSequenceHitByDebris;
+			
+		void Seq_HitByDebris(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_HitByDebris", mSequenceHitByDebris);
+			if (Sequence_DoStepAndWait(0.3f))
+			{
+				Light_FadeBrightnessTo("Light_Point_DebrisSupport",0.5f,0.3);
+				Player_FadeLookSpeedMulTo(0.f, 0.3f);
+			 
+				Entity_PlaceAtEntity("PosArea_HitByDebris", "player", cVector3f(0.f, 1.8f, 0.f) + Player_GetForward() * 5.f, false);
+				Player_StartLookAt("PosArea_HitByDebris", 10.f, 5.f, 5.f);
+			}
+			else if (Sequence_DoStepAndWait(0.4f))
+			{
+				Item_PutAway(eItemHandlerHand_Left);
+				Item_PutAway(eItemHandlerHand_Right);
+		 
+				Player_StopLookAt(1.f);
+				
+				PlayerBody_PlayCutsceneAtEntity("die_fall","PosArea_Fall",false,1);
+				//PlayerBody_PlayCutsceneAnimation("die_fall", false, 0.3f); //die_fall
+				
+				Entity_SetActive("HeadDebris", true);
+				Entity_SetCollide("HeadDebris", false);
+				Entity_SetCollideCharacter("HeadDebris", false);
+				
+				Entity_PlaceAtEntity("HeadDebris", "player", cVector3f(0.f, 1.5f, 0.f) + Player_GetForward() * 0.75f, false);
+				Entity_LookAtEntity("HeadDebris", "player");
+				
+				Body_AddImpulse("HeadDebris_Body_1", cVector3f(0.f, -2.f, 0.f), false);
+				
+				Sound_CreateAtEntity("SoundAnteRoofDebris1", "03_03_herberts_hq/level_complete_events/vitae_complete/vitae_complete_debris_roof", "player");
+				Sound_CreateAtEntity("SoundAnteDustDebris2", "03_03_herberts_hq/level_complete_events/vitae_complete/vitae_complete_debris", "player");
+            }
+			else if (Sequence_DoStepAndWait(0.2f))
+			{
+				mlBlurID = Effect_Blur_Start(1,0.1f);
+				
+				// Hide arms and amulet
+				SetArmsVisible(false);
+			
+				//Player_GiveDamage(0.1,0.9,eDamageType_Default,"");
+				FearHandler_SetForcedAddFearRate(0.f, 0.f, false, -1.f, 10.f);
+				Effect_Fade_Out(0.2f);
+				Item_SetContent(ItemType_GetFirstInInventory("Lantern"), "Oil", 0);
+				Sound_CreateAtEntity("Sound_KnockedOut", "player/foley/damage/player_fall_death", "player");
+			}
+            else if (Sequence_DoStepAndWait(1.5f))
+            {				 
+				//cLux_GetPlayer().SetActive(false);
+				//FearHandler_SetPaused(true);
+				Light_FadeBrightnessTo("Light_Point_DebrisSupport",0,0);
+				//Entity_SetActive("SlabChamberRoo*", false);
+				Entity_SetActive("HeadDebris", false);
+				
+				
+				//Entity_SetActive("FearScaryObject_ShadowFlesh_AnteChamber_*", false);
+				//Entity_SetActive("FearScaryObject_ShadowFlesh_Collapsed_*", true);
+				
+				//Sound_FadeGlobalVolume(0.f, 1.f, eSoundEntryType_World);
+				//Music_StopAll(1.f);
+            }
+			else if (Sequence_DoStepAndWait(0))
+			{
+				Effect_Blur_FadeOut(mlBlurID,5);
+				Effect_Fade_In(1.2f);
+				Player_FadeLookSpeedMulTo(1.f, 0.6f);
+				//Player_SetCrouching(true, true, true);				 
+				//Player_SetMoveSpeedMul(1.f);
+				//Player_SetLookSpeedMul(1.f);
+				//Player_SetStandDisabled(false);
+			}
+			Sequence_End();
+		}
+		
+		//------------------------------------------------------- 
+		
+		void OnTurningPointPart1Played(const tString&in asScene, const tString&in asSubject)
+		{
+			if (cScript_GetGlobalVarBool("Caves_ReadSalimsLastNote"))
+				Voice_Play("Dialogue_TasiTurningPoint_ReadLetter", -1, "OnTurningPointMidPlayed");
+			else
+				Voice_Play("Dialogue_TasiTurningPoint_Part2");
+		}
+		
+		//------------------------------------------------------- 
+		
+		void OnTurningPointMidPlayed(const tString&in asScene, const tString&in asSubject)
+		{
+			Voice_Play("Dialogue_TasiTurningPoint_Part2");
+		}
+			
+		//------------------------------------------------------- 
+		
+		bool mbWaitingForReEquip = false;
+		void OnTimer_CheckTriesLantern(const tString &in asTimer)
+		{
+			if (mbWaitingForReEquip == false && Voice_AnySceneIsActive() == false && 
+				Item_GetHeldType(eItemHandlerHand_Left) == "Lantern")
+			{
+				Voice_PlayDelayed("Dialogue_TasiTriesDeadLantern", 2.0f);
+				return;
+			}
+			
+			if (Voice_AnySceneIsActive() && Item_GetHeldType(eItemHandlerHand_Left) == "Lantern")
+				mbWaitingForReEquip = true;
+			else if (mbWaitingForReEquip && Item_GetHeldType(eItemHandlerHand_Left) != "Lantern")
+				mbWaitingForReEquip = false;
+				
+			Map_RestartCurrentTimer(0.2f);
+		}
+			
+		//------------------------------------------------------- 
+		
+		bool mbAllowBlockerRemoval = false;
+		void OnTimer_DisableBlocker(const tString &in asTimer)
+		{
+			if (Entity_IsInPlayerFOV("Blocker_SmallRocks") || 
+				Voice_SubjectIsPlaying("Dialogue_TasiTurningPoint") || 
+				Voice_SubjectIsPlaying("Dialogue_TasiTurningPoint_ReadLetter") || 
+				Voice_SubjectIsPlaying("Dialogue_TasiTurningPoint_Part2") || 
+				Entity_GetCollide("Player", "Trigger_DisableBlockerRemoval"))
+			{
+				//cLux_AddDebugMessage("Restarting OnTimer_DisableBlocker");
+				Map_RestartCurrentTimer(0.1f);
+				mbAllowBlockerRemoval = false;
+				return;
+			}
+			
+			// Delay the rock removal for a bit longer to prevent it feeling like it happening the instant you look away
+			if (mbAllowBlockerRemoval == false)
+			{
+				//cLux_AddDebugMessage("Blocker Removal pending...");
+				mbAllowBlockerRemoval = true;
+				Map_RestartCurrentTimer(2.0f);
+				return;
+			}
+			
+			//cLux_AddDebugMessage("Removing blockers!");
+			Entity_SetActive("BigTest_*",true);
+			Entity_SetActive("Blocker_SmallRocks*",false);
+			Entity_SetActive("Prop_UltimateCollapse_*",false);
+			Entity_SetActive("Trigger_YTHLight",true);
+			Entity_SetActive("Trigger_YTHGoAway",true);
+			Light_FadeBrightnessTo("Light_Point_1",0.1f,1,eEasing_SineInOut);
+	
+			Entity_SetActive("yth_light", true);			 
+
+			Sound_CreateAtEntity("Sound_THAppear", "creatures/foley/creature/tin_hinan/appear", "yth_light");
+			Entity_SetEffectsActive("yth_light", true, true);
+			
+			Light_FadeBrightnessTo("Light_Exit_spot*",0,6);
+			//Sound_CreateAtEntity("Sound_Collapse","01_02_caves/quake/quake_3/rock_impact","yth_light");
+			Entity_SetInteractionDisabled("Prop_FinalRocks*",false);
+
+		}
+		
+		//------------------------------------------------------- 
+
+		void OnLookAt_YTHLight(const tString &in asEntity, int alState)
+		{
+			Prop_SetActiveAndFade("yth_light",true,1);
+			Entity_SetEffectsActiveExt("yth_light",true,true,2,4);
+			Voice_PlayDelayed("Dialogue_TasiSeesTheLight",1);
+		}
+		
+		//------------------------------------------------------- 
+		
+		bool OnCollide_YTHGoAway(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Prop_MoveLinearTo("yth_light","yth_light_target",0.3f,2,1,false,"");
+			Prop_AlignRotation("yth_light","yth_light_target",0.3f,2,1,false,"");
+			Sound_CreateAtEntity("Sound_THMovement", "creatures/foley/creature/tin_hinan/body_sound", "yth_light");
+			return false;
+		}
+		
+		//------------------------------------------------------- 
+		
+		void OnInteract_SmallRocks_StaticPhysicsOff(const tString &in asEntity)
+		{
+			Prop_SetStaticPhysics("Prop_FinalRocks*",false);
+		}
+		
+		//------------------------------------------------------- 
+		
+		bool OnCollide_Player_LightsOn(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Light_FadeBrightnessTo("Light_Exit_*",1,4);
+			Light_FadeBrightnessTo("Light_YTH",0,3);
+			Light_FadeBrightnessTo("Light_Point_1",0,3.0f);
+			Sound_Stop("Sound_THMovement", 1.f);
+			Sound_CreateAtEntity("Sound_GhostDisappear","creatures/foley/creature/tin_hinan/disappear","yth_light");
+			Entity_SetEffectsActiveExt("yth_light",false,true,2,2);
+			Player_SetJumpDisabled(false);
+			Player_FadeMoveSpeedMulTo(0.7f,3);
+			//Prop_SetActiveAndFade("bigrock_3",true,1);
+			cFogArea@ pFogArea = cLux_GetCurrentMap().GetWorld().GetFogArea("FogArea_8");
+			pFogArea.SetVisible(true);
+			return false;
+		}
+		
+		//------------------------------------------------------- 
+		
+		bool OnCollide_Player_Relief(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Voice_Play("Dialogue_TasiEscapes");
+			return false;
+		}
+		
+		//} END Event A *Player picks up Salim's lantern and opens their way through the dark chamber*
+		
+		/////////////////////////////////////////
+		// Event B *Player follows the Pilgrim’s Path and leaves the Caves*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 6, Event B here.*/
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 6, Event B here.*/
+		
+		//-------------------------------------------------------
+				
+		void Sticky_1_Detach(const tString &in asStickyArea, const tString &in asBodyName)
+        {
+		    Prop_SetHealth("Prop_Grab*", 0);
+			Entity_Destroy("sticky_blockage_2");
+        }	
+
+		//-------------------------------------------------------
+		
+		void Quake_Stop()
+		{
+			Light_FadeBrightnessTo("Light_YTH",0,1);
+			Debug_Log("LONG SHAKE STOP: "+m_idQuakeShake);
+			
+			Sound_Stop("Sound_CaveQuake", 3.0f);
+			Sound_Stop("Sound_CaveQuakeDebris", 2.0f);
+			Sound_Stop("Sound_Rumble", 4.0f);
+			
+			Sound_Stop("Sound_NoOilCollapse", 2.0f);
+			Sound_Stop("Sound_NoOilRumble", 2.0f);
+			
+			Sound_Stop("Sound_CaveCollapseQuakeLoop", 2.0f);
+			Sound_Stop("Sound_CaveCollapseQuakeDebris", 2.0f);
+			
+			Sound_Stop("Sound_RoarDebris1", 2.0f);
+			Sound_Stop("Sound_RoarDebris2", 3.0f);
+			
+			
+			
+			
+
+			Sound_CreateAtEntity("Sound_QuakeCollapseFinal1", "01_02_caves/events/collapse/final_collapse", "player");
+			Sound_CreateAtEntity("Sound_QuakeCollapseFinal2", "01_02_caves/events/cave_collapse", "player");
+			Effect_Shake_FadeOut(m_idQuakeShake,3);
+			Map_RemoveTimer("Timer_ExtraShake");
+			Music_Stop(10.0f, eMusicPrio_BigEvent);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_EndTunnelScareQuake(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Sound_CreateAtEntity("Sound_RockImpactFinalTunnel","01_02_caves/quake/quake_3/rock_impact",asParent);
+			Effect_Shake_Start(0.09f,1,0.4f,1);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event B *Player follows the Pilgrim’s Path and leaves the Caves*
+		
+	//} END SCENE 6 
+	
+	/////////////////////////////////////////
+	// ==============
+	// HANKS NOTES
+	// ==============
+	//{//////////////////////////////////////
+ 		
+		void OnInteractLeave_HanksNote(const tString &in asEntity)
+		{
+			Map_AddTimer(Entity_GetVarString(asEntity, ""), 1.f, "OnTimer_PlayDossierMicroflash");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PlayDossierMicroflash(const tString &in asTimer)
+		{
+			if (Voice_SceneInvolvingCharacterIsActive("Player") || Sketchbook_IsMicroflashActive())
+				return;
+			
+			Sketchbook_Microflash(asTimer);
+		}
+	
+	//} END HANKS NOTES
+}

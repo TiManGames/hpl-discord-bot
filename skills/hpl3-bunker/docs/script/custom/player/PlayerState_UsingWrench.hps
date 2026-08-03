@@ -1,0 +1,279 @@
+#include "interfaces/PlayerState_Interface.hps"
+#include "custom/player/PlayerState_UsingItem_Base.hps"
+#include "base/InputHandler_Types.hps"
+#include "player/Player_Types.hps"
+#include "helpers/helper_props.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+#include "helpers/helper_modules.hps"
+#include "custom/helpers/helper_items.hps"
+#include "custom/helpers/helper_props_custom.hps"
+
+//------------------------------------------------------------
+
+const float gfUsingWrench_MinPitch = cMath_ToRad(-55.f);
+const float gfUsingWrench_MaxPitch = cMath_ToRad(30.f);
+const float gfUsingWrench_PitchFadeTime = 0.25f;
+
+///////////////
+// Player anims
+const tString gsWrenchUnscrewAirAnim_PlayerL = "tool_wrench_rtu_noaction_larm";
+const tString gsWrenchUnscrewAirAnim_PlayerR = "tool_wrench_rtu_noaction_rarm";
+
+const tString gsWrenchUnscrewBoltAnim_Player_2 = "tool_wrench_unscrew_x2_bolt";
+
+/////////////
+// Tool Anims
+const tString gsWrenchUnscrewAirAnim_Wrench = "rtu_noaction";
+const tString gsWrenchUnscrewBoltAnim_Wrench_2 = "unscrew_x2_bolt";
+
+//------------------------------------------------------------
+
+class cScrPlayerState_UsingWrench : iScrPlayerState_UsingItem_Base, iScrPlayerState_Interface
+{
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		iScrPlayerState_UsingItem_Base::Init();
+		
+		msFocusIntroAnim_R = "tool_wrench_focus_start_rarm";
+		msFocusIntroAnim_L = "tool_wrench_focus_start_larm";
+		msFocusIntroAnim_Item = "focus_start";
+		
+		msFocusLoopAnim_R = "tool_wrench_focus_idle_rarm";
+		msFocusLoopAnim_L = "tool_wrench_focus_idle_larm";
+		msFocusLoopAnim_Item = "focus_idle";
+		
+		msFocusOutroAnim_R = "tool_wrench_focus_end_rarm";
+		msFocusOutroAnim_L = "tool_wrench_focus_end_larm";
+		msFocusOutroAnim_Item = "focus_end";
+		
+		mbUsesOtherHandAnims = true;
+		
+		msItemPrompt = "UseItem";
+		
+		mfEquipLastItemOnLeaveDelay = 0.55f;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnEnterState(int alPrevStateId)
+	{
+		////////////////
+		// Enter base
+		iScrPlayerState_UsingItem_Base::OnEnterState(alPrevStateId);
+		
+		AddInteractableEntityClass("cScrPropGrating");
+		mlUseCrossHairState = eCrossHairState_UseWrench;
+		
+		////////////////
+		// Setup vars
+		mbRemovingBolt = false;
+		
+		////////////////
+		// Setup body
+		SetupPitchFade(gfUsingWrench_MinPitch, gfUsingWrench_MaxPitch, gfUsingWrench_PitchFadeTime, false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnLeaveState(int alNextStateId)
+	{
+		////////////////
+		// Leave base
+		iScrPlayerState_UsingItem_Base::OnLeaveState(alNextStateId);
+		
+		//////////////
+		// Disable pitch & yaw if entering cutscene
+		if (mbRemovingBolt)
+		{
+			PlayerBody_SetArmAnimationPitch(false, true, true);
+			PlayerBody_SetArmAnimationYaw(false, true, true);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateAnimationStates(float afTimeStep) override
+	{
+		////////////////
+		// Cut
+		if (mlAnimState == eUsingItemAnimState_Use)
+		{
+			///////////////
+			// Update state
+			int lState = UpdateStateAnims(gsWrenchUnscrewAirAnim_PlayerR, gsWrenchUnscrewAirAnim_PlayerL, gsWrenchUnscrewAirAnim_Wrench, false, false, 0.1f);
+			
+			////////////////
+			// State over?
+			if (lState == -1)
+				ChangeAnimState(eUsingItemAnimState_Loop);
+		}
+		
+		else
+		{
+			iScrPlayerState_UsingItem_Base::UpdateAnimationStates(afTimeStep);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnUse() 
+	{
+		//////////
+		// Cut air
+		if (GetCanInteractWithFocusedEntity() == false)
+		{
+			ChangeAnimState(eUsingItemAnimState_Use);
+			return;
+		}
+		
+		//////////////////////////////
+		// Pick a bolt
+		cLuxMap@ pMap = cLux_GetCurrentMap();
+		if (pMap is null) return;
+		
+		iLuxEntity@ pPickedEnt = mPickBasics.GetFocusedEntity();
+		if (pPickedEnt is null)
+			return;
+		
+		tString sGratingEnt = pPickedEnt.GetName();
+		
+		tString sBoltEntLeft = Grating_GetBolt(sGratingEnt, false);
+		tString sBoltEntRight = Grating_GetBolt(sGratingEnt, true);
+		
+		iLuxEntity@ pBoltLeft = pMap.GetEntityByName(sBoltEntLeft, eLuxEntityType_Prop);
+		iLuxEntity@ pBoltRight = pMap.GetEntityByName(sBoltEntRight, eLuxEntityType_Prop);
+		iLuxEntity@ pBolt = null;
+		
+		//////////////////////////////
+		// Pick the closest bolt to player focus position on the grating
+		if (pBoltLeft !is null && pBoltRight !is null)
+		{
+			cVector3f vStartPos = mPickBasics.GetFocusPosition();
+			cVector3f vGratingBoltLeftPos = pBoltLeft.GetPosition();
+			cVector3f vGratingBoltRightPos = pBoltRight.GetPosition();
+			float fDistSqrToLeftBolt = cMath_Vector3DistSqr(vStartPos, vGratingBoltLeftPos);
+			float fDistSqrToRightBolt = cMath_Vector3DistSqr(vStartPos, vGratingBoltRightPos);
+			
+			@pBolt = (fDistSqrToLeftBolt >= fDistSqrToRightBolt) ? pBoltRight : pBoltLeft;
+		}
+		
+		///////////////////
+		// If only one bolt pick that one anyway
+		else if (pBoltLeft is null)
+		{
+			@pBolt = pBoltRight;
+		}
+		
+		else if (pBoltRight is null)
+		{
+			@pBolt = pBoltLeft;
+		}
+		
+		///////////
+		// No bolts error
+		else
+		{
+			Error("[PlayerState_UsingWrench] Grating " + sGratingEnt + "doesn't have any bolt entities assigned");
+			return;
+		}
+		
+		if (pBolt is null)
+			return;
+			
+		tString sBoltEnt = pBolt.GetName();
+		
+		////////////////////////////
+		// Player cutscene animation
+		iScrPlayerBodyHandler_Interface @pBody = cast<iScrPlayerBodyHandler_Interface>(cLux_GetUserModuleFromID(eModuleType_PlayerBodyHandler));
+		if (pBody is null)
+			return;
+		
+		PlayerBody_SetUnequipItemsOnCutscene(true, false);
+		mbRemovingBolt = true;
+		
+		cMatrixf mtxEnt = pBolt.GetMatrix();
+		cVector3f vPos = mtxEnt.GetTranslation();
+		cVector3f vFwd = mtxEnt.GetTranspose().GetForward();
+		float fYaw = -1.f * cMath_ATan2(vFwd.x, -vFwd.z);
+		pBody.PlayCutsceneAnimation(gsWrenchUnscrewBoltAnim_Player_2, false, 0.3f, "", 1.f, 0.f, true, vPos, fYaw, false, false);
+
+		Entity_PlayAnimation(msItemEntity, gsWrenchUnscrewBoltAnim_Wrench_2, 0.1f, false, true, "", false, false);
+		
+		/////////////
+		// Remove bolt
+		cAnimationState@ animState = PlayerBody_GetAnimationState(gsWrenchUnscrewBoltAnim_Player_2);
+		if (animState is null)
+		{
+			Grating_RemoveBolt(sGratingEnt);
+			Entity_Destroy(sBoltEnt);
+			return;
+		}
+			
+		float fDestroyBoltTimer = animState.GetLength();
+		pMap.AddTimer(sBoltEnt, fDestroyBoltTimer * 0.75f, "$_Wrench_OnTimer_DestroyBolt");
+		pMap.AddTimer(sGratingEnt, fDestroyBoltTimer, "$_Wrench_OnTimer_RemoveBolt");
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPERS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool GetShowItemPrompt() override
+	{
+		iScrItemHandler_Interface@ pHandler = cast<iScrItemHandler_Interface>( cLux_GetUserModuleFromID(eModuleType_Custom_ItemHandler) );
+		return CheckCanUse() &&
+			   pHandler !is null &&
+			   GetCanInteractWithFocusedEntity();
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet@ apSet, iFontData@ apFont, float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool mbRemovingBolt = false;
+	
+	//------------------------------------------------------------
+}

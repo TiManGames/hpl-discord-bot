@@ -1,0 +1,749 @@
+#include "interfaces/PlayerState_Interface.hps"
+#include "base/InputHandler_Types.hps"
+#include "player/Player_Types.hps"
+
+#include "helpers/helper_player.hps"
+#include "custom/helpers/helper_player_custom.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_modules_custom.hps"
+
+/////////////////////////////////////////
+// SETTINGS
+/////////////////////////////////////////
+
+//------------------------------------------------------------
+
+////////////////////////////
+// Damage Stage Animations
+const tString gsCheckHealth_DamageStage1_Start_LeftArm = "player_check_health_damage_first_stage_start_larm";
+const tString gsCheckHealth_DamageStage1_Start_Head = "player_check_health_damage_first_stage_start_head";
+const tString gsCheckHealth_DamageStage2_Start_LeftArm = "player_check_health_damage_second_stage_start_larm";
+const tString gsCheckHealth_DamageStage2_Start_Head = "player_check_health_damage_second_stage_start_head";
+const tString gsCheckHealth_DamageStage3_Start_LeftArm = "player_check_health_damage_last_stage_start_larm";
+const tString gsCheckHealth_DamageStage3_Start_Head = "player_check_health_damage_last_stage_start_head";
+
+////////////////////
+// Common animations
+const tString gsCheckHealth_Idle_LeftArm = "player_check_health_idle_larm";
+const tString gsCheckHealth_Idle_Head = "player_check_health_idle_head";
+const tString gsCheckHealth_End_LeftArm = "player_check_health_end_larm";
+const tString gsCheckHealth_End_Head = "player_check_health_end_head";
+const tString gsCheckHealth_FirstTimeIntroAnim = "player_check_health_damage_leg";
+
+const float gfFadeInTime = 0.5f;
+const float gfFadeOutTime = 0.5f;
+
+const float gfCameraPitch = -0.2f;
+
+const bool gbPlayAdditiveHeadAnimations = false;
+
+//------------------------------------------------------------
+
+enum eCheckHealthAnimationState
+{
+	eCheckHealthAnimationState_Intro,
+	eCheckHealthAnimationState_Loop,
+	eCheckHealthAnimationState_Outro,
+}
+
+//------------------------------------------------------------
+
+class cScrPlayerState_CheckHealth : iScrPlayerState, iScrPlayerState_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnAttachBodyToStickyArea()
+	{
+		//Do nothing!
+	}
+	
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		LoadUserConfig();
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// USER SETTINGS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void LoadUserConfig()
+	{
+		mlCheckHealthMode = cLux_GetUserConfig().GetInt("Accessibility", "CheckHealthMode", 0);
+	}
+	
+	void SaveUserConfig()
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ENTER MAP
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+	
+	}
+	void OnMapLeave(cLuxMap @apMap)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void CreateWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	void DestroyWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnEnterState(int alPrevStateId)
+	{
+		/////////////////////////////
+		// setup
+		Player_ShowCrossHairIcons(false, true);
+		mBaseObj.mpPlayer.GetCharacterBody().StopMovement();
+		
+		///////////////////////////////////////////
+		// Add playerbody to update when paused set
+		iLuxEntity @pEntity = cLux_ID_Entity(PlayerBody_GetEntityID());
+		if (pEntity !is null)
+		{
+			cMeshEntity@ pMeshEntity = pEntity.GetMeshEntity();
+			cLux_AddUpdateWhenPausedEntity(pMeshEntity);
+		}
+		
+		////////////////////
+		// Zoom in & effects
+		float fDesiredFOV = 1.019819f/cLux_GetPlayer().GetDefaultFOV(); //FOV 90=1.019819f 100=1.184201f
+		cLux_GetPlayer().FadeCameraFOVMulTo(ePlayerFOVMul_CheckHealth, fDesiredFOV, 1.f/(gfFadeInTime));
+		mlDofId = Effect_DoF_Start(0.f, 0.25f, 1.f, gfFadeInTime);
+		
+		/////////////////////
+		// Reset the camera pitch, look straight ahead
+		mfPitchFadeTime = 0.4f;
+		mfPitchStartFadeTime = 0.4f;
+		mbFadePitch = true;
+		mfStartPitch = mBaseObj.mpPlayer.GetCamera().GetPitch();
+		
+		PlayerBody_SetArmAnimationPitch(false, true, true);
+		
+		///////////////////////////////////////
+		// Fade liquid (blood) and helper light used to see hand in the dark
+		mfHealth = Player_GetHealth();
+		SetPlayerHealthLiquidAmount(mfHealth, 0.1);
+		Player_FadeCheckHealthLightBrightness(1.f, 0.5);
+		
+		/////////////////////////////////////////
+		// Store held items to re-equip once done
+		msItemToEquipLeft = Item_GetHeld(eItemHandlerHand_Left);
+		if (msItemToEquipLeft!="")
+			Item_PutAway(eItemHandlerHand_Left);
+
+		msItemToEquipRight = Item_GetHeld(eItemHandlerHand_Right);
+		if (msItemToEquipRight!="")
+			Item_PutAway(eItemHandlerHand_Right);
+			
+		////////////////////////////////////////
+		// Define animations and audio based on health stage
+		float fRuble = 0.5;
+		float fRubleTime = 1.0;
+		tString sHealthSoundSuffix = "health_low";
+		msIntroAnimation = gsCheckHealth_DamageStage3_Start_LeftArm;
+		msIntroAnimationHead = gsCheckHealth_DamageStage3_Start_Head;
+		if (mfHealth > 0.75f)
+		{
+			sHealthSoundSuffix = "health_high";
+			msIntroAnimation = gsCheckHealth_DamageStage1_Start_LeftArm;
+			msIntroAnimationHead = gsCheckHealth_DamageStage1_Start_Head;
+		}
+		else if (mfHealth > 0.5f && mfHealth < 0.75f)
+		{
+			sHealthSoundSuffix = "health_med";
+			msIntroAnimation = gsCheckHealth_DamageStage2_Start_LeftArm;
+			msIntroAnimationHead = gsCheckHealth_DamageStage2_Start_Head;
+			fRubleTime = 0.75;
+			fRuble = 0.25;
+		}
+		
+		if (mbInventoryIsOpen==false && mfHealth < 0.75f)
+			Effect_Rumble_Start(fRuble, fRubleTime);
+		
+		/////////////
+		// Start Animations
+		if (PlayerBody_GetAnimationState(gsCheckHealth_FirstTimeIntroAnim) is null)
+			mbFirstTime = false;
+			
+		if (mbFirstTime && 
+			Sketchbook_IsOpen() == false &&
+			Player_GetCrouching() == false)
+		{
+			msIntroAnimation = gsCheckHealth_FirstTimeIntroAnim;
+			PlayerBody_StartCustomAnimation(msIntroAnimation, false, 0.3f);
+			PlayerBody_SetCutsceneAutoResetCamera(false);
+		}
+		else
+		{
+			mbFirstTime = false;
+			
+			PlayerBody_PlayAnimation(msIntroAnimation, ePlayerBodyAnimationLayer_LeftArm, false, false, false);
+			
+			if (gbPlayAdditiveHeadAnimations)
+				PlayerBody_PlayAdditiveCameraAnimation(msIntroAnimationHead, false, 0.1f, 1.f);
+		}
+		
+		mbFadedOutArmOffset = false;
+		mfPrevIntroAnimRelT = 0.f;
+		mState = eCheckHealthAnimationState_Intro;
+		
+		//////////////////
+		// Crouch offset
+		if (Player_GetCrouching() && mbFirstTime == false)
+		{
+			cMatrixf mtxOffset = cMath_MatrixTranslate(cVector3f(2.f, -2.f, 3.f));
+			PlayerBody_FadeCustomBoneOffset("j_L_Arm_Assist", mtxOffset, 1.f, 0.25f, eEasing_SineInOut);
+		}
+		
+		//////////////////////
+		// Sound
+		if (mbInventoryIsOpen == false && Player_GetHealth() < 1.f)
+		{
+			tString sSubPath = Player_GetGasMaskEquipped() ? "mask/" : "world/";
+			tString sPainSoundPath = "player/vocalisations/" + sSubPath;
+			tString sSoundFile = sPainSoundPath + sHealthSoundSuffix;
+			PlayerEmotion_PlaySound(eEmotionPlaylistType_Vocal, eEmotionSoundType_OneShotEvent, 4, sSoundFile, -1);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnLeaveState(int alNextStateId)
+	{
+		//////////////////////////////////////
+		// Remove playerbody to update when paused set
+		iLuxEntity @pEntity = cLux_ID_Entity(PlayerBody_GetEntityID());
+		if (pEntity !is null)
+		{
+			cMeshEntity@ pMeshEntity = pEntity.GetMeshEntity();
+			cLux_RemoveUpdateWhenPausedEntity(pMeshEntity);
+		}
+		
+		/////////////////
+		// Reset player body
+		PlayerBody_ResetCutscenePitchYawLimits();
+		
+		///////////////////
+		// Zoom out to default fov
+		cLux_GetPlayer().FadeCameraFOVMulTo(ePlayerFOVMul_CheckHealth, 1.f, 1.f/(gfFadeOutTime));
+		Player_ShowCrossHairIcons(true, true);
+		
+		///////////////////
+		// Disable Effects
+		if (mlDofId != -1)
+		{
+			Effect_DoF_FadeOut(mlDofId, gfFadeOutTime);
+			mlDofId = -1;
+		}
+		
+		///////////////////////////////////
+		// Fade liquid (blood) & helper light
+		SetPlayerHealthLiquidAmount(1.f, 15.f);
+		Player_FadeCheckHealthLightBrightness(0.f, 5.f);
+		
+		///////////////////////////////////
+		// Re-equip previously held items or
+		if (mbInventoryIsOpen==false || msInventoryItemToEquip=="")
+		{
+			if (msItemToEquipLeft != "")
+				Item_Equip(msItemToEquipLeft);
+			
+			if (msItemToEquipRight != "")
+			{
+				////////////////////////////////
+				// If it was a gun equip the last weapon used
+				if (Item_GetIsWeapon(msItemToEquipRight))
+					Item_Equip(ItemType_GetFirstInInventory(Item_GetLastWeaponUsed()));
+				///////////////
+				// Not a gun equip stored item
+				else
+					Item_Equip(msItemToEquipRight);
+			}
+		}
+		
+		/////////////////////////////////
+		// Handle inventory equip/unequip of an item not currently held...
+		// ... (msInventoryItemToEquip is an item ID passed from the equip action in sketchbook handler).
+		else if (msInventoryItemToEquip!="")
+		{
+			if (msItemToEquipLeft != msInventoryItemToEquip && msItemToEquipRight != msInventoryItemToEquip)
+				Item_Equip(msInventoryItemToEquip);
+		}
+		
+		//////////////////
+		// Crouch offset
+		if (Player_GetCrouching())
+		{
+			PlayerBody_FadeCustomBoneOffset("j_L_Arm_Assist", cMatrixf_Identity, 1.f, 1.f, eEasing_SineInOut);
+		}
+		
+		///////////////////////////
+		// Reset
+		mbInventoryIsOpen = false;
+		msInventoryItemToEquip = "";
+		mbRequestLeave = false;
+		mbLowerArm = false;
+		mbFirstTime = false;
+	}
+		
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+
+	}
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep)
+	{
+		///////////////////////////////////////
+		// Leave state?
+		bool bActionTriggered = cInput_IsTriggered(eAction_OpenInventory);
+		bool bLeave = false;
+		
+		////////////////
+		// Hold mode
+		if (mlCheckHealthMode == eCheckHealthMode_Hold)
+		{
+			bLeave = bActionTriggered == false;
+		}		
+		
+		if (bLeave && 
+			mbRequestLeave==false && 
+			mbInventoryIsOpen==false &&
+			(mbFirstTime == false || mState != eCheckHealthAnimationState_Intro))
+		{
+			mbRequestLeave = true;
+			return;
+		}
+
+		/////////////////////
+		// Outro Anim & Leave
+		if (mbRequestLeave)
+			return;
+		
+		///////////////
+		// Check for health changes while in the state
+		float fHealth = Player_GetHealth();
+		if(fHealth < mfHealth)
+		{
+			mbLowerArm = true;
+			mfHealth = fHealth;
+		}
+		
+		////////////////
+		// Align yaw
+		PlayerBody_ResetYaw();
+		
+		////////////////
+		// Fade camera pitch
+		cCamera@ pCam = mBaseObj.mpPlayer.GetCamera();
+		if (pCam!is null && mbFadePitch)
+		{
+			mfPitchFadeTime = cMath_Max(mfPitchFadeTime - afTimeStep, 0.f);
+			float fPitchT = cMath_Easing(eEasing_SineInOut, 1.f - (mfPitchFadeTime / mfPitchStartFadeTime));
+			float fNewPitch = cMath_InterpolateLinear(mfStartPitch, gfCameraPitch, fPitchT);
+			pCam.SetPitch(fNewPitch);
+			
+			if (fPitchT >= 1.f)
+				mbFadePitch = false;
+		}
+		
+		////////////////
+		// Special behaviour during intro anim
+		cAnimationState@ pIntroAnim = PlayerBody_GetAnimationState(msIntroAnimation);
+		
+		if (pIntroAnim !is null && 
+			mbFirstTime &&
+			mbRequestLeave == false)
+		{
+			float fRelT = pIntroAnim.GetRelativeTimePosition();			
+			if (fRelT >= 0.75f && mfPrevIntroAnimRelT < 0.75f)
+			{
+				cMatrixf mtxOffset = cMath_MatrixRotateX(cMath_ToRad(-10.f));
+				mtxOffset.SetTranslation(cVector3f(0.f, 0.f, 3.f));
+				
+				PlayerBody_FadeCustomBoneOffset("j_L_Arm_Assist", mtxOffset, 1.f, 1.f, eEasing_SineInOut);
+			}
+			
+			mfPrevIntroAnimRelT = fRelT;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnDraw(float afFrameTime)
+	{
+		UpdateAnimationState(afFrameTime);
+	}
+
+	//------------------------------------------------------------
+
+	void PostUpdate(float afTimeStep)
+	{
+		if (mbInventoryIsOpen && 
+			Sketchbook_IsOpen()==false && 
+			mbRequestLeave==false &&
+			(mbFirstTime == false || mState != eCheckHealthAnimationState_Intro))
+		{
+			mbRequestLeave = true;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateAnimationState(float afTimeStep)
+	{
+		//////////////////////
+		// Start outro
+		if (mState != eCheckHealthAnimationState_Outro && mbRequestLeave || mbLowerArm)
+		{
+			cAnimationState@ pPlayerAnimOutro = PlayerBody_GetAnimationState(gsCheckHealth_End_LeftArm);
+			PlayerBody_PlayAnimation(gsCheckHealth_End_LeftArm, ePlayerBodyAnimationLayer_LeftArm, false, false, mbLowerArm == false);
+			PlayerBody_StopAnimation(gsCheckHealth_Idle_Head, 0.1f);
+			if (gbPlayAdditiveHeadAnimations)
+				PlayerBody_PlayAdditiveCameraAnimation(gsCheckHealth_End_Head, false, 0.1f, 1.f);
+			
+			mState = eCheckHealthAnimationState_Outro;
+		}
+		
+		////////////////
+		// Anim state switching
+		switch(mState)
+		{
+			case eCheckHealthAnimationState_Intro:
+			{				
+				cAnimationState@ pPlayerAnimIntro = PlayerBody_GetAnimationState(msIntroAnimation);
+				cAnimationState@ pPlayerAnimLoop = PlayerBody_GetAnimationState(gsCheckHealth_Idle_LeftArm);
+
+				if (pPlayerAnimIntro.IsOver() && pPlayerAnimLoop.IsActive()==false)
+				{
+					mState = eCheckHealthAnimationState_Loop;
+					
+					float fFadeTime = mbFirstTime ? 0.f : 0.3f;
+					PlayerBody_PlayAnimation(gsCheckHealth_Idle_LeftArm, ePlayerBodyAnimationLayer_LeftArm, true, false, false, fFadeTime);
+					
+					if (mbFirstTime)
+					{
+						PlayerBody_StopCustomAnimation(msIntroAnimation);
+						PlayerBody_PlayLayerIdleAnimation(ePlayerBodyAnimationLayer_Body, fFadeTime);
+					}
+					
+					if (gbPlayAdditiveHeadAnimations)
+					{
+						PlayerBody_PlayAdditiveCameraAnimation(gsCheckHealth_Idle_Head, true, 0.1f, 1.f);
+					}
+				}
+				
+				break;
+			}
+			case eCheckHealthAnimationState_Outro:
+			{
+				if (mbFirstTime && mbFadedOutArmOffset == false)
+				{
+					mbFadedOutArmOffset = true;
+					PlayerBody_FadeCustomBoneOffset("j_L_Arm_Assist", cMatrixf_Identity, 1.f, 1.f, eEasing_SineInOut);
+				}
+				
+				/////////////////
+				// Leave state?
+				if (mbRequestLeave)
+				{					
+					mbRequestLeave = false;
+					Player_ChangeStateToNormal();
+				}
+				
+				/////////////////
+				// Put the hand down and up again if health changed
+				else if(mbRequestLeave == false && mbLowerArm)
+				{
+					mbLowerArm = false;
+					
+					PlayerBody_PlayAnimation(msIntroAnimation, ePlayerBodyAnimationLayer_LeftArm, false, false, false);
+					if (gbPlayAdditiveHeadAnimations)
+						PlayerBody_PlayAdditiveCameraAnimation(msIntroAnimationHead, false, 0.1f, 1.f);
+					mState = eCheckHealthAnimationState_Intro;
+					
+					mfHealth = Player_GetHealth();
+					SetPlayerHealthLiquidAmount(mfHealth ,0.1);
+				}
+
+				break;
+			}
+		}
+		
+		/////////////////////
+		// Stop head anims when done
+		StopHeadAnimations();
+	}
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPERS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetPlayerHealthLiquidAmount(float afX, float afT = 0.f)
+	{
+		///////////////
+		// Fade liqiod
+		iScrPlayerBodyHandler_Interface @pBody = cast<iScrPlayerBodyHandler_Interface>(cLux_GetUserModuleFromID(eModuleType_PlayerBodyHandler));
+		if(pBody !is null)
+		{
+			if(afT > 0.f)
+				pBody.FadeLiquidAmountTo(1.0 - afX, afT);
+			else
+				pBody.SetLiquidAmount(1.0 - afX);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void StopHeadAnimations()
+	{
+		iLuxEntity@ pPlayerBody = cLux_ID_Prop(PlayerBody_GetEntityID());
+		if (pPlayerBody is null) return;
+		
+		tString[] sHeadAnims = { gsCheckHealth_DamageStage1_Start_Head,
+								 gsCheckHealth_DamageStage2_Start_Head,
+								 gsCheckHealth_DamageStage3_Start_Head,
+								 gsCheckHealth_Idle_Head,
+								 gsCheckHealth_End_Head };
+								 
+		for (int i = 0; i < sHeadAnims.size(); ++i)
+		{
+			cAnimationState@ pState = pPlayerBody.GetMeshEntity().GetAnimationStateFromName(sHeadAnims[i]);
+			
+			if (pState is null) continue;
+			if (pState.IsActive() == false) continue;
+			if (pState.IsOver() == false) continue;
+			
+			pState.FadeOut(0.3f);
+		}
+	}
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// CUSTOM
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetOpenInventory()
+	{
+		mbInventoryIsOpen = cScript_GetGlobalArgBool(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_ToggleInventoryItemOnLeave()
+	{
+		msInventoryItemToEquip = cScript_GetGlobalArgString(0);
+		cLux_AddDebugMessage("EQUIP: msInventoryItemToEquip " + msInventoryItemToEquip);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetTutorialAnimActive()
+	{
+		cScript_SetGlobalReturnBool(mbFirstTime);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool OnAction(int alAction, bool abPressed)
+	{
+		if (mbInventoryIsOpen)
+			return false;
+		
+		if (alAction == eAction_Crouch || alAction == eAction_Jump)
+			return false;
+		
+		///////////////////
+		// Leave state?
+		if (abPressed &&
+			alAction == eAction_OpenInventory &&
+			mlCheckHealthMode == eCheckHealthMode_Toggle && 
+			mbRequestLeave==false && 
+			(mbFirstTime == false || mState != eCheckHealthAnimationState_Intro))
+		{
+			mbRequestLeave = true;
+		}
+			
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnAnalogInput(int alAnalogId, const cVector3f &in avAmount)
+	{
+		if (mbInventoryIsOpen)
+			return false;
+		
+		///////////////////////////////////
+		// Override move
+		if(alAnalogId == eAnalogType_GamepadMove)
+		{
+			return false;
+		}
+		else if (alAnalogId == eAnalogType_Move)
+		{
+			return false;
+		}
+		
+		///////////////////////////////////
+		// Override look
+		else if(alAnalogId == eAnalogType_Look)
+		{		
+			float fLookSpeedMul = Player_GetLookSpeedMul();
+			
+			return false;
+		}
+		
+		///////////////////////////////////
+		// Override lean
+		else if (alAnalogId == eAnalogType_Lean)
+		{
+			return false;
+		}
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnExitPressed()
+	{
+		return true;
+	}
+	
+	/////////////////////////////////////////
+	// BODY CALLBACKS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool AllowBuoyancy(iPhysicsBody @apBody)
+	{
+		return true;
+	}
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// CHARACTER CALLBACK
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void CharBody_GravityCollide(iCharacterBody@ apCharBody, iPhysicsBody@ apBody, cCollideData @apCollideData)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void CharBody_HitGround(iCharacterBody@ apCharBody,const cVector3f &in avVel)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool mbCrouchOnExit = false;
+	tString msItemToEquipLeft = "";
+	tString msItemToEquipRight = "";
+	tString msInventoryItemToEquip = "";
+	int mlDofId = -1;
+	bool mbRequestLeave = false;
+	bool mbLowerArm = false;
+	bool mbInventoryIsOpen = false;
+	float mfHealth = 0.f;
+	tString msIntroAnimation = "";
+	tString msIntroAnimationHead = "";
+	eCheckHealthAnimationState mState = eCheckHealthAnimationState_Intro;
+	float mfPitchStartFadeTime = 0.f;
+	float mfPitchFadeTime = 0.f;
+	float mfStartPitch = 0.f;
+	float mfGoalPitch = 0.f;
+	bool mbFadePitch = false;
+	bool mbFirstTime = true;
+	bool mbFadedOutArmOffset = false;
+	float mfPrevIntroAnimRelT = 0.f;
+	
+	[nosave] int mlCheckHealthMode = eCheckHealthMode_Hold;
+
+	//------------------------------------------------------------
+}

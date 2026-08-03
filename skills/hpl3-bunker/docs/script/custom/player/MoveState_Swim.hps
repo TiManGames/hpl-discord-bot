@@ -1,0 +1,427 @@
+#include "interfaces/MoveState_Interface.hps"
+#include "base/InputHandler_Types.hps"
+#include "player/Player_Types.hps"
+
+#include "helpers/helper_player.hps"
+#include "helpers/helper_player_custom.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_items.hps"
+#include "helpers/helper_modules_custom.hps"
+#include "helpers/helper_effects.hps"
+
+/////////////////////////////////////////
+// SETTINGS
+/////////////////////////////////////////
+
+//------------------------------------------------------------
+
+const float gfSwimHeightOffset = 0.91f;
+
+//------------------------------------------------------------
+
+class cScrMoveState_Swim : iScrMoveState, iScrMoveState_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// FUNCTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+        
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+		/////////
+		// Preload
+		ParticleSystem_Preload("swim_ripples_oneshot.ps");
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnEnterState(int alPrevStateId)
+	{
+		cLux_AddDebugMessage("[Move State Swim] Swim State Enter");
+		
+		if (Sketchbook_IsOpen())
+			Sketchbook_Close();
+				
+		Player_SetDisableCrawling(true);
+		Player_SetCrouching(false);
+		Player_CancelJump();
+		Player_SetCrouchDisabled(true);
+		Player_SetCrouchActionDisabled(true);
+		Player_SetJumpDisabled(true);
+		
+		Item_PutAway(eItemHandlerHand_Left);
+		Item_PutAway(eItemHandlerHand_Right);
+	
+		iCharacterBody@ pBody = cLux_GetPlayer().GetCharacterBody();
+		if (pBody!=null)
+		{
+			pBody.SetGravityActive(false);
+			pBody.SetTestCollision(false);
+			pBody.SetPhysicsBodyActive(false);
+			pBody.StopMovement();
+			
+			mvPlayerBodyPosition = pBody.GetPosition();
+			mfTargetYaw = pBody.GetYaw();
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnLeaveState(int alNextStateId)
+	{
+		cLux_AddDebugMessage("[Move State Swim] Swim State Exit");
+		Player_SetDisableCrawling(false);
+		Player_SetCrouchDisabled(false);
+		Player_SetCrouchActionDisabled(false);
+		Player_SetJumpDisabled(false);
+
+		iCharacterBody@ pBody = cLux_GetPlayer().GetCharacterBody();
+		if (pBody!=null)
+		{
+			pBody.SetGravityActive(true);
+			pBody.SetTestCollision(true);
+			pBody.SetPhysicsBodyActive(true);
+		}
+		
+		mbFocused = false;
+		mbPositioned = false;
+	}
+	
+	//------------------------------------------------------------
+	
+	void Reset(){}
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep)
+	{
+		iCharacterBody@ pBody = cLux_GetPlayer().GetCharacterBody();
+		if (pBody==null) return;
+		
+		cCamera @pCam = cLux_GetPlayer().GetCamera();
+		if (pCam==null) return;
+        
+        iLuxEntity @pTargetEnt = cLux_GetCurrentMap().GetEntityByName(msTargetEntity);
+        if (pTargetEnt==null)
+		{
+			cLux_AddDebugMessage("ERROR: [Move State Swim] No destination target entity defined");
+			return;
+		}
+        
+        iLuxEntity @pPosEnt = cLux_GetCurrentMap().GetEntityByName(msPositionEntity);
+        if (pPosEnt==null)
+		{
+			cLux_AddDebugMessage("ERROR: [Move State Swim] No position entity defined");
+			return;
+		}
+        cMatrixf mtxEnt = pPosEnt.GetMatrix();
+        
+        /////////////////////////////
+        // Position char body's world height based on the water plane height if any.
+        cVector3f fPosEntPos = mtxEnt.GetTranslation();
+        mvStartPos = fPosEntPos;
+        cVector3f vPosDist = cMath_Vector3DistSqr(cLux_GetPlayer().GetCharacterBody().GetPosition(), fPosEntPos);
+        cVector3f vBlendSpeed = vPosDist / mfBlendInTime;
+        
+        iLuxEntity@ pWaterPlane = cLux_GetCurrentMap().GetEntityByName(msWaterEntity);
+		if (pWaterPlane==null) cLux_AddDebugMessage("WARNING: [Move State Swim] No water plane entity found!");
+		
+        float fPlayerYPos = pWaterPlane==null ? fPosEntPos.y + gfSwimHeightOffset : pWaterPlane.GetPosition().y + gfSwimHeightOffset;
+        mvPlayerBodyPosition.y = cMath_IncreaseTo(mvPlayerBodyPosition.y, afTimeStep, fPlayerYPos);
+		
+		//////////////////////////
+        // Blend to Start Position    
+        if (mbPositioned==false)
+        {
+            mvPlayerBodyPosition.x = cMath_IncreaseTo(mvPlayerBodyPosition.x, afTimeStep, fPosEntPos.x);
+            mvPlayerBodyPosition.z = cMath_IncreaseTo(mvPlayerBodyPosition.z, afTimeStep, fPosEntPos.z);
+			
+			cVector3f vCheckPos = mvStartPos;
+			vCheckPos.y += gfSwimHeightOffset;
+			float fDistToStartPos = cMath_Vector3DistSqr(cLux_GetPlayer().GetCharacterBody().GetPosition(), vCheckPos);
+			
+            mbPositioned = fDistToStartPos < 0.25f;
+			//cLux_AddDebugMessage("[Move State Swim] fDistToStartPos: "+fDistToStartPos);
+        }  
+        /////////////////
+        // move
+        else
+        {
+			//cLux_AddDebugMessage("[Move State Swim] Positioned!");
+            ////////////////
+            // Speed & Accel
+            if(mfInputMoveMul > 0)
+            {
+				///////////////
+				// Acceleration
+				const float fAccelStep=0.01f;
+				const float fMaxSpeedGoal = 0.83 * mfSwimSpeedMul;
+				mfSpeed = cMath_Min(mfSpeed + fAccelStep, fMaxSpeedGoal);
+                
+                //////////////////////////
+                // Swim towards the target
+                cVector3f vTargetDir = pTargetEnt.GetPosition() - pBody.GetPosition();
+                vTargetDir.Normalize(); 
+                mvPlayerBodyPosition += vTargetDir * (mfSpeed * afTimeStep);
+				
+				// Ripple particles
+				DoWaterRippleFx(afTimeStep, 1, 0.7, true);
+            }
+            /////////////////////////
+            // Reset speed if no input
+            else
+            {
+				DoWaterRippleFx(afTimeStep, 0.75, 4, false);
+                mfSpeed = 0.f;
+            }
+            
+        }
+		
+        /////////////////////
+        // Set final Position
+		pBody.SetPosition(mvPlayerBodyPosition, true);
+        
+        ///////////////
+        // Set Rotation
+        if (mbFocused==false)
+        {
+            ///////
+            // Yaw
+            cVector3f vRotDir = cMath_GetAngleFromPoints3D(pBody.GetPosition(), pTargetEnt.GetPosition());
+            float fCurrentYaw = pBody.GetYaw();
+            float fYawRotDist = cMath_GetAngleDistanceRad(fCurrentYaw, vRotDir.y);
+            float fDesiredYaw = fCurrentYaw + fYawRotDist;
+            float fYawRotToAdd = (fYawRotDist / mfBlendInTime) * afTimeStep;
+            mfTargetYaw = fDesiredYaw;
+            pBody.AddYaw(fYawRotToAdd);
+            
+            //////////////////////////////
+            // Rotate the body yaw accordingly
+            PlayerBody_SetSwimBodyYaw(fDesiredYaw);
+            
+            ////////
+            // Pitch
+            float fCurrentPitch = pCam.GetPitch();
+            float fPitchRotDist = cMath_GetAngleDistanceRad(fCurrentPitch, 0.f);
+            float fDesiredPitch = 0.f;
+            float fPitchRotToAdd = (fPitchRotDist / mfBlendInTime) * afTimeStep;
+            pCam.AddPitch(fPitchRotToAdd);
+			
+			/////////////////////
+            // If player is trying to break free stop pulling the camera earlier.
+            float fDestReachedDist = mbPlayerRotating ? 0.25f : 0.05f; 
+            
+            /////////////////////
+            // Is player focused?
+            mbFocused = cMath_Abs(cLux_GetPlayer().GetCharacterBody().GetYaw() - mfTargetYaw) < fDestReachedDist;
+        }
+		/*else
+		{
+			cLux_AddDebugMessage("[Move State Swim] Focused!");
+		}*/
+		
+		////////////////
+        // Check whether the player is trying to break free per frame
+        mbPlayerRotating=false;
+        
+        ///////////////////
+        // Reset Move check
+        mfInputMoveMul=0;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnAction(int alAction, bool abPressed)
+	{
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnAnalogInput(int alAnalogId, const cVector3f &in avAmount)
+	{
+		if(alAnalogId == eAnalogType_Look || alAnalogId == eAnalogType_GamepadRotate)
+		{
+			//////////////////
+			// Limited cam rot
+			iCharacterBody @pBody = cLux_GetPlayer().GetCharacterBody();
+			cCamera @pCam = cLux_GetPlayer().GetCamera();
+			if (pBody!=null && pCam!=null)
+			{
+				float fCamSpeedMul = Player_GetLookSpeedMul();
+				fCamSpeedMul*=0.83f;
+				
+				///////
+				// Yaw
+				float fYawToAdd = GetCameraMaxAngleMultiplier(avAmount.x, pBody.GetYaw(), mfTargetYaw, 60.f) * fCamSpeedMul;
+				pBody.AddYaw(fYawToAdd);
+				
+				////////
+				// Pitch
+				fCamSpeedMul*=0.5f;
+				float fPitchToAdd = GetCameraMaxAngleMultiplier(avAmount.y, pCam.GetPitch(), 0.f, 45.f) * fCamSpeedMul;
+				pCam.AddPitch(fPitchToAdd);
+			}
+            mbPlayerRotating = true;
+			return false;
+		}
+		
+		////////
+		// Move
+		if(alAnalogId == eAnalogType_Move || alAnalogId == eAnalogType_GamepadMove)
+		{
+			if (avAmount.y>0)
+				mfInputMoveMul += 1;
+			return false;	
+		}
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// CHARACTER CALLBACK
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void CharBody_GravityCollide(iCharacterBody@ apCharBody, iPhysicsBody@ apBody, cCollideData @apCollideData)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void CharBody_HitGround(iCharacterBody@ apCharBody,const cVector3f &in avVel)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void DoWaterRippleFx(const float afTimeStep, const float afAlpha=1, const float afTimeBetweenRipples=1, const bool abMoving=true)
+	{
+		mfTimeSinceNextRippleFx -= afTimeStep;
+		if (mfTimeSinceNextRippleFx > 0) return;
+		
+		mfTimeSinceNextRippleFx = cMath_RandRectf(0.35, 0.75) * afTimeBetweenRipples;
+		iLuxEntity@ pWaterPlane = cLux_GetCurrentMap().GetEntityByName("PostFlood_WaterPlane_1");
+		iCharacterBody@ pBody = cLux_GetPlayer().GetCharacterBody();
+		
+		if (pBody is null) return;
+		cParticleSystem@ pRippleFx = ParticleSystem_CreateAtEntity("RippleFx", "swim_ripples_oneshot.ps", pBody.GetName(), false);
+		pRippleFx.SetColor(cColor_White * afAlpha);
+		
+		if (pRippleFx is null) return;
+		
+		cVector3f vFxPos = cLux_GetPlayer().GetCamera().GetPosition();
+		vFxPos.y = pWaterPlane.GetPosition().y-0.02;
+		vFxPos.z += 0.15;
+		if (abMoving) vFxPos.z += 0.25;
+		pRippleFx.SetWorldPosition(vFxPos);
+		
+		//cLux_AddDebugMessage("Splash Fx");
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPER FUNCTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetupSwim()
+	{
+		msPositionEntity = cScript_GetGlobalArgString(0);
+		msTargetEntity = cScript_GetGlobalArgString(1);
+		msWaterEntity = cScript_GetGlobalArgString(2);
+        mfBlendInTime = cScript_GetGlobalArgFloat(3);
+	}
+
+	//------------------------------------------------------------
+	
+	void _Global_SetSwimSpeedMultiplier()
+	{
+		mfSwimSpeedMul = cScript_GetGlobalArgFloat(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// FUNCTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	float GetCameraMaxAngleMultiplier(float afInputAmount, const float afCurAngle, const float afAngleToTarget, float afMaxAngle)
+	{
+		afInputAmount*=-1;
+		float fDistanceFromInitAngle = cMath_GetAngleDistanceRad(afAngleToTarget, afCurAngle);
+		bool bRotatingTowardsTarget = cMath_Sign(afInputAmount) == cMath_Sign(fDistanceFromInitAngle);
+		float fAngleSpeedMul = 1;
+		
+		if (bRotatingTowardsTarget)
+		{
+			float fMaxAngle = cMath_ToRad(cMath_Max(0.f, afMaxAngle));
+			fAngleSpeedMul = 1 - cMath_Abs(fDistanceFromInitAngle / fMaxAngle);
+			fAngleSpeedMul = cMath_Clamp(fAngleSpeedMul, 0.f, 1.f);
+		}
+		
+		return afInputAmount * fAngleSpeedMul;
+	}
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+    
+	tString msWaterEntity = "";
+	tString msTargetEntity = "";
+    tString msPositionEntity = "";
+
+    bool mbPlayerRotating = false;
+    
+    float mfTargetYaw = 0.f;
+    
+    bool mbFocused = false;
+    bool mbPositioned = false;
+    cVector3f mvStartPos = cVector3f(0);
+    
+    float mfBlendInTime = 0.3f;
+
+    float mfInputMoveMul = 0.f;
+    float mfSpeed = 0.f;
+	float mfSwimSpeedMul = 1.f;
+	cVector3f mvPlayerBodyPosition;
+	bool mbIsGettingSlow = true;
+	
+	float mfTimeSinceNextRippleFx = 0;
+    
+	//------------------------------------------------------------
+}

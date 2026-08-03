@@ -1,0 +1,458 @@
+////////////////////////////////////////////////////////
+// Deferred Light Box - Fragment Shader
+//
+// Fragment program to draw a light box. 
+////////////////////////////////////////////////////////
+
+////////////////////
+//Textures
+uniform cTexture2D  aDiffuseMap : 0;
+uniform cTexture2D  aNormalMap : 1;
+uniform cTexture2D  aSpecularMap : 2;
+uniform cTexture2D  aDepthMap : 3;
+uniform cTextureBuffer aInstanceBuffer : 15;
+
+////////////////////
+//Uniform varaibles
+cBuffer cLightArguments : 0
+{
+	cMatrixf a_mtxViewProjection;
+	cMatrixf a_mtxProjection;
+	cMatrixf a_mtxView;
+	cMatrixf a_mtxInvViewProjection;
+	cMatrixf a_mtxInvProjection;
+	cMatrixf a_mtxInvView;
+		
+	float afFarPlane;
+	float afNearPlane;
+	float afNearByFarPlane;
+	float afInvFarPlane;
+
+	cVector4f avScreenToFarPlane;
+	cVector2f avInvScreenSize;
+
+	cVector2f avFogStartAndLength;
+	cVector4f avFogColor;
+
+	cVector3f avViewSpaceUp;
+	float afFogFalloffExp;
+		
+	cVector4f avShadowParams;
+	cVector2f avShadowMapSize;
+	int alInstanceOffset;
+	int alInstanceStride;
+};
+
+struct cPackedBVH
+{
+	cVector3f mvMin;
+	uint mlLeftAndLeaf;
+	cVector3f mvMax;
+	uint mlRight;
+	cVector4l mvInstanceOffset;
+};
+struct cGrid
+{
+	uint mlFirstEntry;
+	uint mlCount;
+};
+
+
+
+cBufferRW cGridBuffer : 5
+{
+	cGrid avGrid[];
+};
+
+cBufferRW cOffsetBuffer : 6
+{
+	uint avOffset[];
+};
+
+cBufferRW cPackedBVHBuffer : 7
+{
+	cPackedBVH avBVH[];
+};
+
+
+#define eBlend_Replace 0
+#define eBlend_Add 1
+#define eBlend_Blend 2
+#define eBlend_Skip 3
+
+cVector3f GetSH(cVector3f avDir, in cVector4f avBands[7])
+{  
+	cVector3f vX[3]; 
+		
+	cVector4f vA = cVector4f(avDir, 1.0);
+
+	vX[0].r = dot(avBands[0], vA); 
+	vX[0].g = dot(avBands[1], vA); 
+	vX[0].b = dot(avBands[2], vA); 
+								  
+	@ifdef Use4BandSH
+		return vX[0];
+	@endif
+					
+	cVector4f vB = avDir.xyzz * avDir.yzzx;    
+	float vC = avDir.x * avDir.x - avDir.y * avDir.y; 
+					  
+	vX[1].r = dot(avBands[3], vB); 
+	vX[1].g = dot(avBands[4], vB); 
+	vX[1].b = dot(avBands[5], vB); 
+
+	vX[2] = avBands[6].rgb * vC;  
+
+	return vX[0] + vX[1] + vX[2]; 
+}
+	
+cVector3f GetReflectedSH(cVector3f avDir, float afSpecularPow, in cVector4f avBands[7])
+{
+	cVector3f vX[3]; 
+	cVector3f vRoughness = clamp((cVector3f(0.5, 0.75, 1.0) - cVector3f(afSpecularPow, afSpecularPow, afSpecularPow)) * 4.0, cVector3f(0.0, 0.0, 0.0), cVector3f(1.0, 1.0, 1.0));
+				
+	cVector4f vA = cVector4f(avDir * vRoughness.y, vRoughness.x);
+		
+	vX[0].r = dot(avBands[0], vA); 
+	vX[0].g = dot(avBands[1], vA); 
+	vX[0].b = dot(avBands[2], vA); 
+								  
+	@ifdef Use4BandSH
+		return vX[0] * avBands[6].a;
+	@endif
+
+	cVector4f vB = avDir.xyzz * avDir.yzzx * vRoughness.z;    
+	float vC = (avDir.x * avDir.x - avDir.y * avDir.y) * vRoughness.z; 
+						  
+	vX[1].r = dot(avBands[3], vB); 
+	vX[1].g = dot(avBands[4], vB); 
+	vX[1].b = dot(avBands[5], vB); 
+
+	vX[2] = avBands[6].rgb * vC;  
+
+	return (vX[0] + vX[1] + vX[2]) * avBands[6].a; // specular amount stored in alpha
+}
+
+cVector3f Fresnel(in cVector3f avSpecColor, float afEoH)
+{
+	float fFresnel = pow(1.0 - afEoH, 5.0);
+	return avSpecColor * (1.0 - fFresnel) + fFresnel * clamp(avSpecColor.g * 50.0, 0.0, 1.0);
+}
+
+float EnvBRDF(in cVector3f avDiffuse, in cVector3f avSpec)
+{
+	/////////////
+	// Limit specular if diffuse is low
+	const cVector3f kvOne = cVector3f(1.0, 1.0, 1.0);
+	float fDiffuse = dot(avDiffuse, kvOne);
+	float fSpec = dot(avSpec, kvOne);
+
+	return fDiffuse / (fDiffuse + fSpec + 0.000001f);
+}
+
+bool InsideBox(cVector3f avPos, cVector3f avMin, cVector3f avMax)
+{
+    cVector3f vInside = step(avMin, avPos) - step(avMax, avPos);
+    return (vInside.x * vInside.y * vInside.z) == 1.0; 
+}
+
+bool IsHit(in cVector3f avPos, int alDataOffset)
+{
+	////////
+	// Load instance data from buffer
+	cVector4f vSample = load(aInstanceBuffer, alDataOffset);
+	cVector3f vCenter = vSample.xyz;
+
+	vSample = load(aInstanceBuffer, alDataOffset + 1);
+	cVector3f vExtent = vSample.xyz;
+	
+	return InsideBox(avPos, vCenter - vExtent, vCenter + vExtent);
+}
+
+cVector4f GetLightAmount(in cVector3f avPos, in cVector3f avNormal, in cVector3f avReflectedDir, float afNoE, float afUpAmount, in cVector3f avDiffuse, in cVector4f avSpec, int alDataOffset, out int alBlendMode)
+{
+	////////
+	// Load instance data from buffer
+	cVector4f vSample = load(aInstanceBuffer, alDataOffset);
+	cVector3f vCenter = vSample.xyz;
+	alBlendMode = int(vSample.w);
+
+	vSample = load(aInstanceBuffer, alDataOffset + 1);
+	cVector3f vExtent = vSample.xyz;
+	bool bUseIrradiance = vSample.w > 0.0f;
+	
+	if(InsideBox(avPos, vCenter - vExtent, vCenter + vExtent) == false)
+	{
+		alBlendMode = eBlend_Skip;
+		return cVector4f(0,0,0,0);
+	}
+
+	vSample = load(aInstanceBuffer, alDataOffset + 2);
+	float fFallofPow = vSample.x;
+	float fBevel = sqrt(mix(3.0, 1.0, vSample.y)); 
+	float fBoxWeight = vSample.z;
+		
+	//////////////
+	// Get the spherical and box falloff
+	cVector3f vOffset = (vCenter - avPos) / vExtent;
+	
+	cVector3f vBox = abs(vOffset);
+	float fSphereFalloff = length(vBox);
+
+	vBox = max(cVector3f(0.0, 0.0, 0.0), cVector3f(1.0, 1.0, 1.0) - vBox);
+	cVector3f vBoxFalloff = cVector3f(1.0, 1.0, 1.0) / vBox;
+	float fBoxFalloff = sqrt(1.0 / (vBoxFalloff.x + vBoxFalloff.y + vBoxFalloff.y));
+	float fCutoff = min(min(vBox.x, vBox.y), vBox.z);
+
+	//////////
+	// Perform smoothstep and add spherical and box togehter
+	cVector3f vFalloff = smoothstep(cVector3f(0.0, 0.0, fBevel), 
+									cVector3f(1.0, 0.125, 0.0), cVector3f(fBoxFalloff, fCutoff, fSphereFalloff));
+	vFalloff.xz *= vFalloff.xz;
+
+	float fWeight = vFalloff.x * vFalloff.y * vFalloff.z;
+	float fFalloff = pow(fWeight, fFallofPow+1e-5f) * fBoxWeight;
+		
+	if(fFalloff <= 0.0 || isnan(fFalloff))
+	{
+		alBlendMode = eBlend_Skip;
+		return cVector4f(0,0,0,0);
+	}
+
+	///////////////////////////////
+	// Calculate color
+	cVector4f vColor;
+	if(bUseIrradiance)
+	{
+		////////////
+		// Load SH from instance buffer
+		cVector4f vBands[7];
+		
+		@ifdef Use4BandSH
+			for(int i = 0; i < 4; ++i) vBands[i] = load(aInstanceBuffer, alDataOffset+i+3);
+		@else
+			for(int i = 0; i < 7; ++i) vBands[i] = load(aInstanceBuffer, alDataOffset+i+3);
+		@endif
+
+		//////////////
+		// Calculate normal SH
+		cVector3f vSH = max(cVector3f(0.0, 0.0, 0.0), GetSH(normalize(avNormal + avPos * 0.25), vBands)); //slightly skew the normal toward the edge of the box for more detail
+		cVector3f vSHSpec = max(cVector3f(0.0, 0.0, 0.0), GetReflectedSH(avReflectedDir, avSpec.a, vBands));
+		
+		cVector3f vFresnel = Fresnel(avSpec.xyz, afNoE) * (1.0 - 0.5 * avSpec.a);
+		float fEnvBrdf = EnvBRDF(vSH, vSHSpec);
+
+		vColor.xyz = (vSH * avDiffuse + vSHSpec * vFresnel * fEnvBrdf);
+	}
+	else
+	{
+		///////////
+		// Load sky and ground color from buffer
+		cVector4f vGroundColor = load(aInstanceBuffer, alDataOffset + 3);
+		cVector4f vSkyColor = load(aInstanceBuffer, alDataOffset + 4);
+
+		//////////
+		// Apply based on normal
+		cVector4f vLightColor = mix(vGroundColor, vSkyColor, afUpAmount);
+		vColor.xyz = avDiffuse * vLightColor.xyz;
+	}
+
+	if(alBlendMode == eBlend_Replace)
+	{
+		vColor.rgb *= fFalloff * fFalloff;
+		vColor.a = fFalloff;
+	}
+	else if(alBlendMode == eBlend_Add)
+	{
+		vColor.rgb *= fFalloff;
+		vColor.a = 0;
+	}
+	else if(alBlendMode == eBlend_Blend)
+	{
+		//vColor.xyz *= fFalloff * fWeight;
+		vColor.w = 1.0; //fWeight * fBoxWeight;
+	}
+	
+	return vColor;
+}
+
+uint Hash(cVector3l avX, uint alSize)
+{
+	const int klPrime = 0x01000193; //   16777619
+	const int klSeed = 0x811C9DC5; // 2166136261
+
+	int x = klSeed;
+	x = (x ^ (avX.x)) * klPrime;
+	x = (x ^ (avX.y)) * klPrime;
+	x = (x ^ (avX.z)) * klPrime;
+
+	return uint(x) % alSize;
+}
+
+void main(in cVector4f px_vPosition,
+		  out cVector4f out_vColor : 0)
+{
+	cVector2l vMapCoords = cVector2l(px_vPosition.xy);
+	float fDepth = load(aDepthMap, vMapCoords, 0).x; 
+	
+	if(fDepth == 1.0) discard;
+
+	/////////////
+	// Load gbuffer
+	cVector4f vNormalVal = load(aNormalMap, vMapCoords, 0);
+	cVector4f vSpecVal = sample(aSpecularMap, px_vPosition.xy * avInvScreenSize);
+	cVector4f vColorVal = sample(aDiffuseMap, px_vPosition.xy * avInvScreenSize);
+
+	////////////
+	// Get surface data
+	cVector3f vPos = cVector3f(px_vPosition.xy * avScreenToFarPlane.xy + avScreenToFarPlane.zw, -afFarPlane) * fDepth;
+	cVector3f vWorldView = mul(a_mtxInvView, cVector4f(vPos, 0.0)).xyz;
+	cVector3f vWorldPos = mul(a_mtxInvView, cVector4f(vPos, 1.0)).xyz;
+
+	cVector3f vViewDir = normalize(vWorldView);
+	cVector3f vNormal = mul(a_mtxInvView, cVector4f(vNormalVal.xyz * 2.0 - 1.0, 0.0)).xyz;
+	cVector3f vReflection = reflect(vViewDir, vNormal);
+
+	float fUpAmount = vNormal.y * 0.5 + 0.5;
+	float fNoE = clamp(abs(dot(vNormal.xyz, vViewDir.xyz)) + 1e-5f, 0.0, 1.0);
+
+	int lBlendMode = eBlend_Skip;
+
+	///////////
+	// Setup node iteration
+	const int klMaxStack = 16; //todo, find good value
+    uint vStack[klMaxStack];
+    int lNodeIndex = 1;
+    vStack[0] = 0;
+
+	cVector4f vColor[eBlend_Skip] = 
+	{
+		cVector4f(0,0,0,0),
+		cVector4f(0,0,0,0),
+		cVector4f(0,0,0,0),
+	};
+      
+	cVector4f vColorSum = cVector4f(0,0,0,1e-5f);
+
+	////////////
+	// Iterate BVH
+    float lHit = 0;
+	float lIterations = 0;
+	@ifdef Grid
+	const int glBVHGridSize = 24;
+	const int klTotalGridSize = glBVHGridSize * glBVHGridSize * glBVHGridSize;
+	uint lIndex = Hash(cVector3l(floor(vWorldPos * 0.25)), klTotalGridSize); 
+	cGrid grid = avGrid[lIndex];
+
+	for(int i = 0; i < grid.mlCount; ++i)
+	{
+		uint lOffset = avOffset[grid.mlFirstEntry + i];
+		lIterations++;
+			
+		if(IsHit(vWorldView, int(lOffset)))
+			lHit++;
+		
+		int lDataOffset =  int(lOffset);
+		cVector4f vCol = GetLightAmount(vWorldView, vNormal, vReflection, fNoE, fUpAmount, vColorVal.rgb, vSpecVal, lDataOffset, lBlendMode);  
+		if(lBlendMode != eBlend_Skip)
+			vColorSum += vCol;
+	}
+
+	//lHit = grid.mlCount;
+	//lHit = float(lIndex % 16u); 
+
+	@elseif BruteForce
+
+	for(int i = 0; i < alInstanceStride; ++i)
+	{
+		cPackedBVH bvh = avBVH[i];
+		
+		if(InsideBox(vWorldView, bvh.mvMin.xyz, bvh.mvMax.xyz) == false)
+			continue;
+		
+		if(IsHit(vWorldView, int(bvh.mvInstanceOffset[0])))
+			lHit++;
+		
+		int lDataOffset =  int(bvh.mvInstanceOffset[0]);
+		cVector4f vCol = GetLightAmount(vWorldView, vNormal, vReflection, fNoE, fUpAmount, vColorVal.rgb, vSpecVal, lDataOffset, lBlendMode); 
+		
+		if(lBlendMode != eBlend_Skip)
+			vColorSum += vCol;
+	}
+
+	@else
+	while(lNodeIndex > 0 && lNodeIndex < klMaxStack)
+	{
+		uint lNode = vStack[--lNodeIndex];
+		cPackedBVH bvh = avBVH[lNode];
+
+		if(InsideBox(vWorldView, bvh.mvMin.xyz, bvh.mvMax.xyz) == false)
+			continue;
+		
+		bool bIsLeaf = (bvh.mlLeftAndLeaf & (1u << 31u)) == (1u << 31u);
+
+		if(bIsLeaf == false)
+		{	
+			vStack[lNodeIndex++] = bvh.mlLeftAndLeaf;
+			vStack[lNodeIndex++] = bvh.mlRight;
+		}
+		else
+		{
+			if(IsHit(vWorldView, int(bvh.mvInstanceOffset[0])))
+				lHit++;
+				
+			int lDataOffset =  int(bvh.mvInstanceOffset[0]);
+			cVector4f vCol = GetLightAmount(vWorldView, vNormal, vReflection, fNoE, fUpAmount, vColorVal.rgb, vSpecVal, lDataOffset, lBlendMode);  
+			if(lBlendMode != eBlend_Skip)
+				vColorSum += vCol;
+
+			/*
+			for(int i = 0; i < 4; ++i)
+			{
+			}
+			*/
+			/*
+			///////////////
+			// Leaf node reach, get light amount at pixel    
+			int lDataOffset = asint(vMax.a);
+			cVector4f vCol = GetLightAmount(vWorldView, vNormal, vReflection, fNoE, fUpAmount, vColorVal.rgb, vSpecVal, lDataOffset, lBlendMode);                  
+					
+			if(lBlendMode == eBlend_Replace)
+			{
+				vColor[lBlendMode] = mix(vColor[lBlendMode], vCol, vCol.a);
+			}
+			else if(lBlendMode == eBlend_Add || lBlendMode == eBlend_Blend)
+			{
+				vColor[lBlendMode] += vCol;
+			}
+			*/
+		}
+		lIterations++;
+	}
+	@endif
+	
+	////////////
+	// Combine the replace and blend modes and normalize them
+	out_vColor = mix(vColor[1], vColor[2], min(1.0, vColor[2].a));
+	out_vColor /= max(1e-6f, out_vColor.a);
+	
+    float pi2 = 1.5707963267948966192313216916398;
+    float level = clamp(float(lHit - 1) / 16.0, 0.0, 1.0)* pi2;
+
+
+	cVector4f heatmap;
+    heatmap.r = sin(level);
+    heatmap.g = sin(level*2.);
+    heatmap.b = cos(level);
+    heatmap.a = 1.0;
+
+	if(lHit == 0)
+		heatmap.rgb *= 0;
+
+	//////////
+	// Add the additive on top
+	out_vColor = vColorSum; // / vColorSum.a; //cVector4f(lHit / 16.0, lIterations / 16.0, 0.0, 0.0);
+	out_vColor *= 8.0;
+	out_vColor.w = 1.0;
+	
+}

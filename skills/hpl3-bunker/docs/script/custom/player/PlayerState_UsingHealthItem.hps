@@ -1,0 +1,253 @@
+#include "interfaces/PlayerState_Interface.hps"
+#include "custom/player/PlayerState_UsingItem_Base.hps"
+#include "base/InputHandler_Types.hps"
+#include "player/Player_Types.hps"
+#include "helpers/helper_props.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+#include "custom/helpers/helper_player_custom.hps"
+#include "helpers/helper_modules.hps"
+#include "custom/helpers/helper_items.hps"
+#include "custom/helpers/helper_props_custom.hps"
+
+//------------------------------------------------------------
+
+const float gfUsingHealthItem_MinPitch = cMath_ToRad(-55.f);
+const float gfUsingHealthItem_MaxPitch = cMath_ToRad(30.f);
+const float gfUsingHealthItem_PitchFadeTime = 0.25f;
+
+const tString gsBandageUseEnt_Roll = "bandage_cutscene_roll.ent";
+const tString gsBandageUseAnim_Player = "tool_bandage_use";
+const tString gsBandageUseAnimCrouch_Player = "tool_bandage_use_crouch";
+const tString gsBandageUseAnim_Roll = "bandage_application_bandage";
+const tString gsBandageUseAnim_Item = "bandage_application_tin";
+
+const tString gsMedkitUseEnt_Kit = "medkit_cutscene_no_bandage.ent";
+const tString gsMedkitUseEnt_Bandage = "bandage_cutscene_roll.ent";
+const tString gsMedkitUseAnim_Player = "tool_medkit_use";
+const tString gsMedkitUseAnimCrouch_Player = "tool_medkit_use_crouch";
+const tString gsMedkitUseAnim_Kit = "medkit_usage";
+const tString gsMedkitUseAnim_Bandage = "medkit_usage_bandage";
+
+//------------------------------------------------------------
+
+class cScrPlayerState_UsingHealthItem : iScrPlayerState_UsingItem_Base, iScrPlayerState_Interface
+{
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		iScrPlayerState_UsingItem_Base::Init();
+		
+		mbUsesOtherHandAnims = true;
+		mlDefaultCrossHairState = -1;
+		
+		msItemPrompt = "UseItem";
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ENTER MAP
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap) 
+	{
+		/////////////
+		// Preload
+		Entity_Preload(gsBandageUseEnt_Roll);
+		Entity_Preload(gsMedkitUseEnt_Kit);
+		Entity_Preload(gsMedkitUseEnt_Bandage);
+	}
+
+	void OnMapLeave(cLuxMap @apMap) {}
+	
+	//------------------------------------------------------------
+	
+	void CreateWorldEntities(cLuxMap @apMap) {}	
+	void DestroyWorldEntities(cLuxMap @apMap) {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnEnterState(int alPrevStateId)
+	{
+		////////////////
+		// Enter base
+		iScrPlayerState_UsingItem_Base::OnEnterState(alPrevStateId);
+		
+		tString sType = cString_ToLowerCase(msItemType);
+		msFocusIntroAnim_R = "tool_"+sType+"_focus_start_rarm";
+		msFocusLoopAnim_R = "tool_"+sType+"_focus_idle_rarm";
+		msFocusOutroAnim_R = "tool_"+sType+"_focus_end_rarm";
+		msFocusIntroAnim_L = "tool_"+sType+"_focus_start_larm";
+		msFocusLoopAnim_L = "tool_"+sType+"_focus_idle_larm";
+		msFocusOutroAnim_L = "tool_"+sType+"_focus_end_larm";
+		
+		msFocusIntroAnim_Item = sType+"_focus_start";
+		msFocusLoopAnim_Item = sType+"_focus_idle";
+		msFocusOutroAnim_Item = sType+"_focus_end";
+		
+		////////////////
+		// Setup vars
+		mbApplyingItem = false;
+		mbUsesOtherHandAnims = true;
+		
+		mfEquipLastItemOnLeaveDelay = msItemType == "Medkit" ? 1.5f : 0.75f;
+		
+		////////////////
+		// Setup body
+		SetupPitchFade(gfUsingHealthItem_MinPitch, gfUsingHealthItem_MaxPitch, gfUsingHealthItem_PitchFadeTime, false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnLeaveState(int alNextStateId)
+	{		
+		iScrPlayerState_UsingItem_Base::OnLeaveState(alNextStateId);
+		
+		//////////////
+		// Disable pitch & yaw if entering cutscene
+		if (mbApplyingItem)
+		{
+			PlayerBody_SetArmAnimationPitch(false, true, true);
+			PlayerBody_SetArmAnimationYaw(false, true, true);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnUse() override
+	{
+		/////////////////
+		// Setup vars
+		cLuxMap@ pMap = cLux_GetCurrentMap();
+		iScrItemHandler_Interface@ pHandler = cast<iScrItemHandler_Interface>( cLux_GetUserModuleFromID(eModuleType_Custom_ItemHandler) );
+		
+		if (pMap is null) return;
+		if (pHandler is null) return;
+
+		/////////////////
+		// If the item can be used on you
+		if (!pHandler.CanUseHeldItemOnSelf(eItemHandlerHand_Right)) return;
+				
+		/////////////////
+		// Play anim		
+		mbApplyingItem = true;
+			
+		PlayerBody_SetUnequipItemsOnCutscene(true, false);
+		
+		if (msItemType == "Medkit")
+		{			
+			Entity_SetActive(msItemEntity, false);	
+			
+			pMap.CreateEntity("medkit_use_kit", gsMedkitUseEnt_Kit, cMatrixf_Identity, cVector3f(1.f));
+			iLuxEntity@ pKit = pMap.GetLatestEntity();
+				
+			pMap.CreateEntity("medkit_use_bandage", gsMedkitUseEnt_Bandage, cMatrixf_Identity, cVector3f(1.f));
+			iLuxEntity@ pBandage = pMap.GetLatestEntity();
+			
+			if (pKit is null) return;
+			if (pBandage is null) return;
+			
+			PlayerBody_AttachProp(pBandage.GetName(), "L_Hand", true, true);
+			PlayerBody_AttachProp(pKit.GetName(), "R_Hand", true, true);
+			
+			tString sAnim = Player_GetCrouching() ? gsMedkitUseAnimCrouch_Player : gsMedkitUseAnim_Player;
+			PlayerBody_PlayCutsceneAnimation(sAnim, false, 0.3f);
+			
+			pKit.PlayAnimation(gsMedkitUseAnim_Kit, 0.f, false);
+			pBandage.PlayAnimation(gsMedkitUseAnim_Bandage, 0.f, false);
+			
+			pBandage.SetMeshScaleMul(cVector3f(0.9f));
+			pBandage.FadeMeshScaleMul(cVector3f(1.f), 2.f);
+			
+			pMap.AddTimer("Timer_MedkitUsed_A", 6.2f, "$_OnTimer_MedkitUsed");
+			pMap.AddTimer("Timer_MedkitUsed_B", 10.f, "$_OnTimer_MedkitUsed");
+			pMap.SetTimerUserVarString("Timer_MedkitUsed_B", Item_GetHeld(eItemHandlerHand_Right));
+		}
+		else
+		{							
+			pMap.CreateEntity("bandage_use_roll", gsBandageUseEnt_Roll, cMatrixf_Identity, cVector3f(1.f));
+			iLuxEntity@ pRoll = pMap.GetLatestEntity();
+			
+			if (pRoll is null) return;
+		
+			PlayerBody_AttachProp(pRoll.GetName(), "L_Hand", true, true);
+			
+			tString sAnim = Player_GetCrouching() ? gsBandageUseAnimCrouch_Player : gsBandageUseAnim_Player;
+			PlayerBody_PlayCutsceneAnimation(sAnim, false, 0.3f);
+			
+			pRoll.PlayAnimation(gsBandageUseAnim_Roll, 0.f, false);
+			Entity_PlayAnimation(msItemEntity, gsBandageUseAnim_Item, 0.f, false);
+			
+			pRoll.GetMeshEntity().SetVisible(false);
+			
+			pMap.AddTimer("Timer_SetBandageRollVisible", 0.5f, "$_OnTimer_SetBandageRollVisible");			
+			pMap.AddTimer("Timer_BandageUsed", 4.f, "$_OnTimer_BandageUsed");
+			pMap.SetTimerUserVarString("Timer_BandageUsed", Item_GetHeld(eItemHandlerHand_Right));
+		}
+		
+		GameStats_IncreaseEntryAmount(eHeroStats_HealthItemsUsed);
+		PlayerBody_SetCutsceneMaxPitch(0.f);
+		PlayerBody_SetCutsceneMaxYaw(0.f);
+		PlayerBody_SetCutsceneAllowCrawlOffset(true);
+		PlayerBody_SetCrawlYOffset(-0.35f);
+		
+		if (GameDifficulty_GetSettingValueByID_Bool(eGameDifficultySetting_HardcoreHealthSystem))
+		{
+			Player_StopBleeding();
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPERS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet@ apSet, iFontData@ apFont, float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool mbApplyingItem = false;
+	
+	//------------------------------------------------------------
+}

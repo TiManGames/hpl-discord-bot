@@ -1,0 +1,3273 @@
+#include "interfaces/Map_Interface.hps"
+#include "base/Inputhandler_Types.hps"
+
+#include "helpers/helper_map.hps"
+#include "helpers/helper_menu.hps"
+#include "helpers/helper_props.hps"
+#include "helpers/helper_areas.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_audio.hps"
+#include "helpers/helper_imgui.hps"
+#include "helpers/helper_sequences.hps"
+#include "helpers/helper_game.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_ai.hps"
+#include "helpers/helper_player.hps"
+
+#include "custom/helpers/helper_player_custom.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+#include "helpers/helper_props_custom.hps"
+#include "base/AchievementHandler_Types.hps"
+
+//--------------------------------------------------
+ 
+/*Place any global values here. These must be const variables as they will not be saved*/
+/*This is also the place for enums and classes, but these should be avoided whenever possible*/
+
+enum ePillarSymbol
+{
+	ePS_M,
+	ePS_Y,
+	ePS_T,
+	ePS_U
+}
+
+ePillarSymbol[][] gvPanelArray = {{ePS_M, ePS_Y, ePS_T, ePS_Y, ePS_U},
+                                  {ePS_Y, ePS_T, ePS_Y, ePS_M, ePS_T},
+								  {ePS_U, ePS_T, ePS_Y, ePS_Y, ePS_U},
+								  {ePS_T, ePS_M, ePS_M, ePS_U, ePS_M},
+								  {ePS_Y, ePS_U, ePS_T, ePS_M, ePS_U}};
+
+ePillarSymbol[] gvPillarSolution = {ePS_T, ePS_Y, ePS_M};
+ 
+//--------------------------------------------------
+
+class cVitaePipe
+{
+	tString msEntityName;
+	tString msLiquidSubMeshName;
+	
+	float mfUvTime;
+	float mfUvTimeTarget;
+	float mfUvTimeFadeTime;
+	
+	float mfVitaeCoverage;
+	float mfVitaeCoverageTarget;
+	float mfVitaeCoverageFadeTime;
+	
+	[nosave] bool mbLoaded = false;
+	
+	cVitaePipe(){}
+	
+	cVitaePipe(const tString&in asEntityname, const tString&in asLiquidSubMeshName)
+	{
+		msEntityName = asEntityname;
+		msLiquidSubMeshName = asLiquidSubMeshName;
+		
+		mfUvTime = 0.f;
+		mfUvTimeTarget = 0.f;
+		mfUvTimeFadeTime = 0.1f;
+		
+		mfVitaeCoverage = 0.5f;
+		mfVitaeCoverageTarget = 0.5f;
+		mfVitaeCoverageFadeTime = 0.75f;
+		
+		iLuxEntity@ vPipeEnt = Map_GetEntity(msEntityName);
+		if (vPipeEnt==null) return;
+		vPipeEnt.GetMeshEntity().GetSubMeshEntityName(msLiquidSubMeshName).SetCoverageAmount(mfVitaeCoverage);
+		
+		cMaterial@ pPipeMat = vPipeEnt.GetMeshEntity().GetSubMeshEntityName(msLiquidSubMeshName).GetMaterial();
+		if (pPipeMat==null) return;
+		pPipeMat.SetUvAnimationSpeed(0, 0);
+		pPipeMat.SetUvAnimationTime(mfUvTime, 0.f);
+	}
+	
+	void OnUpdate(float afTimeStep)
+	{
+		iLuxEntity@ vPipeEnt = Map_GetEntity(msEntityName);
+		if (vPipeEnt==null) return;
+		
+		cMaterial@ pPipeMat = vPipeEnt.GetMeshEntity().GetSubMeshEntityName(msLiquidSubMeshName).GetMaterial();
+		if (pPipeMat==null) return;
+		
+		if (mbLoaded==false)
+		{
+			mbLoaded = true;
+			
+			pPipeMat.SetUvAnimationSpeed(0, 0);
+			pPipeMat.SetUvAnimationTime(0, mfUvTime);
+			vPipeEnt.GetMeshEntity().GetSubMeshEntityName(msLiquidSubMeshName).SetCoverageAmount(mfVitaeCoverage);
+		}
+		
+		if (mfUvTimeTarget != mfUvTime)
+		{
+			mfUvTime = cMath_IncreaseTo(mfUvTime, 1 / mfUvTimeFadeTime * afTimeStep, mfUvTimeTarget);
+			pPipeMat.SetUvAnimationTime(0, mfUvTime);
+		}
+		
+		if (mfVitaeCoverageTarget != mfVitaeCoverage)
+		{
+			mfVitaeCoverage = cMath_IncreaseTo(mfVitaeCoverage, 1 / mfVitaeCoverageFadeTime * afTimeStep, mfVitaeCoverageTarget);
+			vPipeEnt.GetMeshEntity().GetSubMeshEntityName(msLiquidSubMeshName).SetCoverageAmount(mfVitaeCoverage);
+		}
+	}
+	
+	void SetUvTime(const float afValue)
+	{
+		mfUvTime = afValue;
+		mfUvTimeTarget = mfUvTime;
+		
+		iLuxEntity@ vPipeEnt = Map_GetEntity(msEntityName);
+		if (vPipeEnt==null) return;
+		
+		cMaterial@ pPipeMat = vPipeEnt.GetMeshEntity().GetSubMeshEntityName(msLiquidSubMeshName).GetMaterial();
+		if (pPipeMat==null) return;
+		
+		pPipeMat.SetUvAnimationTime(0, mfUvTime);
+	}
+	
+	void FadeUvTime(const float afValue, float afTime=1.f)
+	{
+		mfUvTimeTarget = afValue;
+		if (afTime<=0) afTime = 9999999.f;
+		mfUvTimeFadeTime = afTime;
+	}
+	
+	void SetUvCoverage(float afValue)
+	{
+		iLuxEntity@ vPipeEnt = Map_GetEntity(msEntityName);
+		if (vPipeEnt==null) return;
+		
+		afValue = cMath_Max(afValue, 0.f);
+		mfVitaeCoverage = afValue;
+		mfVitaeCoverageTarget = mfVitaeCoverage;
+		
+		vPipeEnt.GetMeshEntity().GetSubMeshEntityName(msLiquidSubMeshName).SetCoverageAmount(mfVitaeCoverage);
+	}
+	
+	void FadeUvCoverage(const float afValue, float afTime=1.f)
+	{
+		mfVitaeCoverageTarget = cMath_Max(afValue, 0.f);
+		if (afTime<=0) afTime = 9999999.f;
+		mfVitaeCoverageFadeTime = afTime;
+	}
+}
+
+//--------------------------------------------------
+ 
+class cScrMap : iScrMap
+{
+	//--------------------------------------------
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN CALLBACKS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+ 
+	////////////////////////////
+	// Set up map environment
+	void Setup()
+	{
+		//Set far plane far away
+		Player_SetCameraFarPlane(8192.0f);
+		
+		// Put display name entry in english.lang / Levels
+		GetBase().SetDisplayNameEntry("02-07-alchemists-lab");
+		
+		//Limit the physics world
+		cLux_GetCurrentMap().GetPhysicsWorld().SetWorldSize(Map_GetEntity("Target_PhysicsMin").GetPosition(), Map_GetEntity("Target_PhysicsMax").GetPosition());
+		
+		Pregnancy_SetStage(ePregStage_Stage1);
+		Pregnancy_SetBarksActive(true);
+		Pregnancy_SetBabyTalkMinimumStage(eBabyTalkStage_Alchemists);
+		GhoulProgression_SetBarkStage(eGhoulBarkStage_BecomingMonster);
+		Player_SetAllowCheckBaby(true);
+		Pregnancy_SetBabyKicksEnabled(true);
+		
+		FearHandler_SetWhisperStage(eFearWhisperStage_BabyKickToHQA);
+
+		ParticleSystem_SetActive("portal_lab_teleport_IN", false);
+		ParticleSystem_SetActive("portal_lab_teleport_OUT", false);
+		
+		// Reset effects
+		Effect_Bloom_FadeBrightPass(0.75f, 3);
+        Effect_Bloom_FadeBloomWidth(128, 1);
+        Effect_Bloom_FadeBloomFalloff(0.5f, 2);
+        Effect_Bloom_FadeBloomTint(1, 1, 1, 2);
+		
+		// Setup effects
+		Map_Preset_SetupDirLight("Preset_Default", false, cColor(0.269,0.339,0.35,1), 0.f, cVector3f(-0.721, -0.597, -0.352), cColor(0.222,0.289,0.299,1), cColor(0.101,0.171,0.182,1));
+		Map_Preset_SetupColorGrading("Preset_Default", "grading_default.dds");
+		Map_Preset_SetupBloom("Preset_Default", 128.f, 0.75f, 0.5f, cColor(1.f));
+		
+		Map_Preset_SetupDirLight("Preset_LightningMin", true, cColor(1,1.5,2,1)*0.125, 2, cVector3f(-0.721, -0.597, -0.352), cColor(0.092,0.069,0.069,1), cColor(0.092,0.069,0.069,1));
+		Map_Preset_SetupColorGrading("Preset_LightningMin", "grading_default.dds");
+		Map_Preset_SetupBloom("Preset_LightningMin", 128.f, 0.75f, 0.5f, cColor(1.f));
+		
+		Map_Preset_SetupDirLight("Preset_LightningFull", true, cColor(1,1.5,2,1), 2, cVector3f(-0.721, -0.597, -0.352), cColor(0.092,0.069,0.069,1), cColor(0.092,0.069,0.069,1));
+		Map_Preset_SetupColorGrading("Preset_LightningFull", "grading_lightning_flash");
+		Map_Preset_SetupBloom("Preset_LightningFull", 4, 0.02f, 1.5f, cColor(1, 2, 2, 1));
+		
+		Map_Preset_Fade("Preset_Default", 0.0f);
+		
+		StruggleFlashHandler_SetActive(false);
+		// Set up color grading etc.
+
+		// Fixing flickering clouds objects.
+		Prop_SetRenderLayer("dw_alchemist_glass_dome",-1);
+		Prop_SetRenderLayer("Billboard_front_window",-2);
+		Prop_SetRenderLayer("dwf_vista_clouds",-3);
+		Prop_SetRenderLayer("dwf_vista_clouds_slow",-4);
+		Prop_SetRenderLayer("dwf_vista_clouds_slow_1",-5);
+		Billboard_SetRenderLayer("Searchlight_tower_15", -6);
+		Billboard_SetRenderLayer("Searchlight_tower_16", -7);
+		
+		Player_SetAutoTeleportWhenBelowAltitude(-8);
+
+	}
+	
+	//-------------------------------------------------------
+		
+	void PreloadData()
+	{
+		/////////////////
+		// Preload gui
+		//ImGui_PreloadImage("some_image");
+
+		///////////////
+		// Preload particles
+		ParticleSystem_Preload("dust_impact_large_oneshot.ps");
+		ParticleSystem_Preload("portal_lab_teleport_IN.ps");
+		ParticleSystem_Preload("portal_lab_teleport_OUT.ps");
+		ParticleSystem_Preload("grass_breaking_full.ps");
+
+		//////////////
+		// Preload screen effects
+		//Material_Preload("some_material.mat");
+		Sound_PreloadGroup("level_entity_shared/portal", true);
+		Sound_PreloadEvent("03_07_DW_theatre/canister_unplug/small/small_insert");
+	}
+	
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run first time starting map
+	void OnStart()
+	{
+		//Set GhoulProgresison limit
+		GhoulProgression_SetLimit(6);
+		
+		FearHandler_SetActive(true);
+		
+		HeadTracker_SetActive("alchemist", true);
+		
+		Entity_SetEffectsActive("Pillar_*", false, false);
+		ParticleSystem_SetActive("PS_PillarBeam_*", false);
+		ParticleSystem_SetActive("PortalLabA_Idle_PS", false);
+		
+		Light_FadeBrightnessTo("PedestalHolder_Light_1", 0, 0.1);
+		ParticleSystem_SetActive("PedestalHolder_PS", false);
+		ParticleSystem_SetVisible("PedestalHolder_PS", false);
+		
+		StickyArea_AttachBody("Area_Sticky_MaskSlot", "alchemists_pipe_Body_11");
+		
+		///////////////////////
+		// Init lights
+		Lamp_SetLit("Lamp_Entrance_Group_2*", false, true);
+		
+		Lamp_SetLit("Lamp_Corridor_*", false, true);
+		Light_FadeBrightnessTo("Corridor_light_*", 0, 0.2);
+		
+		//DarkWorldPower_AddMask("Emitter_LabB", "EmitterMask_Corridor_1");
+		
+		/////////////////////////
+		// Setup shadow entities.
+		Entity_SetActive("ShadowChase_Path_*", false);
+		ShadowFlesh_SetupDecals("Decal_ShadowChase_Path_*");
+		Light_SetBrightness("Light_ShadowChase_Path_*", 0);
+		Entity_AddCollideCallback("player", "ShadowChase_Path_*", "OnCollide_Player_ShadowFleshDamage");
+		
+		////////////////////
+		// Setup Vitae Pipes
+		mPipe01 = cVitaePipe("dwf_minitower_pipe_01", "dwf_minitower_vitae_flow_front");
+		mPipe02 = cVitaePipe("dwf_minitower_pipe_02", "dwf_minitower_vitae_flow_right");
+		mPipe03 = cVitaePipe("dwf_minitower_pipe_03", "dwf_minitower_vitae_flow_left");
+		mAlchemistsPipe = cVitaePipe("alchemists_pipe", "life_support_machine_vitae");
+		
+		if (mPipe01!=null)
+		{
+			mPipe01.SetUvTime(0.5f);
+			mPipe01.SetUvCoverage(0.5f);
+		}
+		
+		if (mPipe03!=null)
+		{
+			mPipe03.SetUvTime(0.5f);
+			mPipe03.SetUvCoverage(0.5f);
+		}
+		
+		if (mAlchemistsPipe!=null)
+		{
+			mAlchemistsPipe.SetUvTime(0.5);
+			mAlchemistsPipe.SetUvCoverage(0.5f);
+		}
+		
+		/////////////////////
+		// Orb pedestal setup
+		Entity_StopAnimation("dw_orb_holder_1");
+		
+		/////////////////////////
+		// Debug
+		if(cLux_ScriptDebugOn())
+		{
+			if (ItemType_GetCountInInventory("Lantern") < 1)
+			{
+				Item_AddToInventory("Lantern");		
+				Item_SetContent(ItemType_GetFirstInInventory("Lantern"), "Oil", 10);
+				Item_AddToInventory("HerbertOil");
+				Item_AddToInventory("HerbertOil");
+				Item_AddToInventory("HerbertOil");
+			}
+			
+			Item_AddToInventory("Matchbook");
+			Item_AddToInventory("Matchbook");
+			Item_AddToInventory("Matchbook");
+			
+			if (ItemType_GetCountInInventory("Orb") < 1)
+			{
+				Item_AddToInventory("Orb");
+			}
+		}
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when entering map
+	void OnEnter()
+	{	
+		cVector3f vRot = cVector3f(0, cMath_ToRad(52), 0); //old value 110
+		cLux_GetCurrentMap().GetWorld().SetSkyboxRotation(vRot);
+		
+		PlayerBody_SetModel("player4.ent");
+		PlayerBody_SetActive(true);
+        Heat_SetActive(false);
+		
+		Amulet_StartTracking(true, "", -1.f);
+		
+		SetAlchemistDyingState(false);
+		
+		Map_Preload("02_07_alchemists_lab_dream.hpm");
+		
+		InitPillarPuzzle();
+		InitDarkWorldLightning();
+		
+		Pregnancy_SetBabyKickRateMul(0.25f);
+		FearHandler_SetPermaFailEnabled(false);
+		
+		/////////////////
+		// Setup critters
+		Critter_SetGroupEntity("alien_worm_critters_*", "worm_flock_box");
+		
+		Achievement_Unlock(eAchievement_Nomad);
+		
+		Player_SetNightVisionEnabled(false);
+		
+		cLux_ClearAllMapSaveData();
+		Game_AutoSave();
+		
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when leaving map
+	void OnLeave()
+	{
+		//restore clip plane
+		Player_RestoreClipPlane();
+
+		Pregnancy_SetBabyKicksEnabled(true);
+		Pregnancy_SetBabyKickRateMul(1.f);
+	}
+	
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// The player has died.
+	void OnPlayerKilled(int alRecentDeaths, const tString&in asSource)
+	{
+	}
+	
+	//-------------------------------------------------------
+	
+	////////////////////////////////////
+	// Called when player HP reaches 0
+	bool OnDeath(const tString &in asSource)
+	{
+		cLux_AddTodoMessage("DEAD : SOURCE = " + asSource);
+		
+		if (asSource == "SomeReason")
+		{
+			Effect_Fade_Out(1.0f);
+			return true; // return true to completely override base behaviour
+		}
+		
+		// return false for default behaviour
+		return false;
+	}
+	
+	//-------------------------------------------------------
+	
+	////////////////////////////////////
+	// Called when player should respawn (after death)
+	bool OnRespawn(const tString &in asSource)
+	{		
+		// return false for default behaviour (fadeout and death area)
+		return false;
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// To get when player makes input (mostly used for debug)
+	void OnAction(int alAction, bool abPressed) 
+	{
+		if(abPressed==false) return;
+		
+		if(alAction == eAction_Test0)
+		{
+			Item_AddToInventory("VitaeCanister");
+			Item_AddToInventory("VitaeCanister");
+			//Item_AddToInventory("Orb");
+			//Player_Teleport("Start_PortalLab_A", true);
+		}
+		if(alAction == eAction_Test1)
+		{
+			FearHandler_SetActive(true);
+			FearHandler_SetForcedAddFearRate(eFearForcedRateType_Script, 0.5f, 6.f, true, -1.f, 0.1f);
+		}
+		if (alAction == eAction_Test2)
+		{
+			
+			//SetPortalOn(true);
+			//Entity_SetActive("EmitterMask_Corridor_1", !Entity_IsActive("EmitterMask_Corridor_1"));
+			//Entity_SetActive("EmitterMask_Corridor_2", !Entity_IsActive("EmitterMask_Corridor_2"));
+			//cLux_AddDebugMessage("Active 1" + Entity_IsActive("EmitterMask_Corridor_1"));
+			//cLux_AddDebugMessage("Active 2" + Entity_IsActive("EmitterMask_Corridor_2"));
+			
+			//ClearLabADoorArea("Area_LabADoorKeeper_Front", "Area_LabADoorPushTarget_Front");
+			//ClearLabADoorArea("Area_LabADoorKeeper_Back", "Area_LabADoorPushTarget_Back");
+			
+			//SetAlchemistDyingState(false);
+			//SetDoorActive("OfficeDoor", true);
+		}
+		if (alAction == eAction_Test3)
+		{
+			//OnTimer_EnableFakeOrbPickup("");
+			//SetAlchemistDyingState(false);
+			//Seq_TogglePillars("");
+			//FearHandler_SetActive(true);
+			//FearHandler_SetForcedAddFearRate(eFearForcedRateType_Script, 0.5f, 6.f, true, -1.f, 0.1f);
+			Player_Teleport("Start_PortalLab", true);
+			OnReceiverPower_FirstDoor(true, "");
+		}
+		if (alAction == eAction_Test4)
+		{
+			Player_Teleport("Start_VitaeLab", true);
+			OnReceiverPower_FirstDoor(true, "");
+			OnReceiverPower_Office(true, "");
+			//SetAlchemistDyingState(true);
+			//Slide_SetSlideAmount("ConfigSlider_Hor", 0.0f);
+		}
+		if (alAction == eAction_Test5)
+		{
+			Player_Teleport("Start_PortalLab", true);
+			OnReceiverPower_FirstDoor(true, "");
+			OnReceiverPower_LabB(true, "");
+			mbExtenderSent=true;
+		}
+		if (alAction==eAction_Test6)
+		{
+			Player_Teleport("Start_Rift", true);
+			OnReceiverPower_FirstDoor(true, "");
+			OnReceiverPower_LabB(true, "");
+			Seq_ShadowFleshCorridor("");
+			Seq_ShadowFleshLabB_Part1("");
+			Seq_ShadowFleshLabB_Part2("");
+			mbExtenderSent=true;
+		}
+		
+		if (alAction == eAction_Test7)
+		{
+			mfTowerBillboardScale = 0;
+			cVector3f vPlayerPos = Player_GetFeetPosition();
+			cVector3f vOrbPos = Map_GetEntity("OrbAnimPos").GetPosition();
+			vOrbPos.y = vPlayerPos.y;
+			float fAngle = cMath_GetAngleFromPoints3D(vOrbPos, vPlayerPos).y;
+			
+			PlayerBody_PlayCutsceneAtEntity("pick_up_and_look_at_orb_pedestal", "OrbAnimPos", false, 0.5, "OnAnimEnd_DisableFakeOrbPickup", 1, 0, 0, cMath_ToDeg(fAngle));
+			
+			// Delay this so it actually looks like it's been grabbed
+			Map_AddTimer("Timer_EnableFakeOrbPickup", 0.5f, "OnTimer_EnableFakeOrbPickup");
+			Voice_PlayDelayed("Dialogue_SeeOrbDestination", 3.5);
+			Map_AddTimer("Timer_AddPedestalOrbToInventory", 7.f, "OnTimer_AddOrbToInventory");
+			
+			PlayerBody_SetCutsceneMaxPitch(18);
+			PlayerBody_SetCutsceneMaxYaw(25);
+		}
+		
+		if (alAction==eAction_Test8)
+		{
+			HeadTracker_SetActive("alchemist", true);
+		}
+		
+		if (alAction==eAction_Test9)
+		{
+			HeadTracker_SetActive("alchemist", false);
+		}
+	}
+	
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// This only used for pure debug purposes when info needs to printed.
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afY)
+	{
+		//afY = cLux_DrawDebugText("My Debug value:"+..., afY);
+		return afY;
+	}
+ 
+	//-------------------------------------------------------
+	
+	void Update(float afTimeStep)
+	{
+		UpdatePillarPuzzle(afTimeStep);
+		
+		///////////////////////
+		// Fade in the tower billboard when picking up the orb from pedestal.
+		if (Map_GetEntity("Orb_Target_Hand").IsActive())
+		{
+			float fFadeTime = afTimeStep * 0.15;
+			mfTowerBillboardScale = cMath_IncreaseTo(mfTowerBillboardScale, fFadeTime, 0.15f);
+			iLuxEntity@ pOrbHandEnt1 = Map_GetEntity("Orb_Target_Hand", eLuxEntityType_Prop);
+			cBillboard@ pBillboard = pOrbHandEnt1.GetBillboardFromName("Billboard_1");
+			pBillboard.SetSize(mfTowerBillboardScale);
+		}
+		
+		/////////////
+		// Vitae flow
+		if (mPipe01!=null) mPipe01.OnUpdate(afTimeStep);
+		if (mPipe02!=null) mPipe02.OnUpdate(afTimeStep);
+		if (mPipe03!=null) mPipe03.OnUpdate(afTimeStep);
+		if (mAlchemistsPipe!=null) mAlchemistsPipe.OnUpdate(afTimeStep);
+	}
+ 
+	//-------------------------------------------------------
+ 
+	//} END MAIN CALLBACKS
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN FUNCTIONS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+	
+	bool mbRiftShadowAppeared = false;
+	cVitaePipe mPipe01;
+	cVitaePipe mPipe02;
+	cVitaePipe mPipe03;
+	cVitaePipe mAlchemistsPipe;
+	
+	//-------------------------------------------------------
+	
+	void SetDoorActive(const tString &in asDoor, bool abActive)
+	{
+		if (!abActive)
+			MovingButton_SetSwitchedOn(asDoor+"_Button*", false, true);
+		
+		MovingButton_SetLocked(asDoor+"_Button*", !abActive, true);
+	}
+ 
+	//-------------------------------------------------------
+	
+	void OnInteract_DoorBtnFeedback(const tString &in asEntity)
+	{
+		if (MovingButton_IsLocked(asEntity)==false) return;
+		Sound_CreateAtEntity(asEntity+"NegativeFeedback", "03_07_dw_factory/torture_victim/machine_feedback/button_negative", asEntity);
+	}
+	
+	//-------------------------------------------------------
+	
+	void Timer_LightLamp(const tString &in asTimer)
+	{
+		Lamp_SetLit(asTimer, true, true);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_SetExtenderStaticPhysics(const tString&in asTimer)
+	{
+		// Making sure player won't lock himself in the map.
+		if (Entity_IsSleeping(asTimer) && Map_GetEntity(asTimer, eLuxEntityType_Prop).GetVarBool("bInsidePortal")==false)
+			Prop_SetStaticPhysics(asTimer, true);
+		else
+			Map_AddTimer(asTimer, 0.5, "OnTimer_SetExtenderStaticPhysics");
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnCollide_Player_ShadowFleshDamage(const tString &in asParent, const tString &in asChild, int alState)
+    {
+        if (alState!=1) return true;
+		float fDmgTime = cMath_RandRectf(0.5, 1.5);
+		if (Map_TimeHasPassed("Timer_ShadowFleshDamage", fDmgTime) == false) return true;
+        Player_GiveDamage(0.1f, 0.2f, eDamageType_Guardian, asParent);
+        return true;
+    }
+	
+	//-------------------------------------------------------
+		
+	bool OnTrigger_PlayLabMusic(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		Music_PlayExt("A2_02_07_Lab_Ambience.ogg", true, 0.2f, 1.0f, 60.0f, 1.0f, eMusicPrio_BgAmb, true);
+		Map_AddTimer("Timer_MusicFade", 360.0f, "OnTimer_FadeLabMusic");
+		return false;
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_FadeLabMusic(const tString &in asTimer)
+	{
+		Music_Stop(60.0f, eMusicPrio_BgAmb);
+	}
+	
+	//-------------------------------------------------------
+	
+	void DropDebris(const tString&in sName)
+	{
+		array<iLuxEntity@> vEnts;
+		Map_GetEntityArray(sName, vEnts, eLuxEntityType_Prop);
+		
+		for(int i=0;i<vEnts.length();++i)
+		{
+			Prop_SetStaticPhysics(vEnts[i].GetName(), false);
+			vEnts[i].GetMainBody().AddImpulse(cVector3f(0,-1,0) * 0.5);
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnCollide_RegisterPlayerAndExtenders(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		if (asParent == "Area_Register_ExtenderCount_VitaeLab")
+		{
+			if (alState==1)
+				mbPlayerIsInVitaeLab = true;
+			else if (alState==-1)
+				mbPlayerIsInVitaeLab = false;
+			return true;
+		}
+		
+		if (asParent != "Area_Register_ExtenderCount_MedLab") return true;
+		
+		if (alState==1)
+		{
+			if (asChild=="Extender_PillarRoom" || asChild=="Extender_Start")
+				mlExtendersInMedLab+=1;
+			else
+				mbPlayerIsInMedLab=true;
+		}
+		else if (alState==-1)
+		{
+			if (asChild=="Extender_PillarRoom" || asChild=="Extender_Start")
+				mlExtendersInMedLab-=1;
+			else
+				mbPlayerIsInMedLab=false;
+		}
+		
+		return true;
+	}
+	
+	//-------------------------------------------------------
+
+	void OnTimer_AddOrbToInventory(const tString&in asTimer)
+	{
+		Item_AddToInventory("Orb", true);
+	}
+	
+	//-------------------------------------------------------
+	
+	void ClearLabADoorArea(const tString&in asDoorArea, const tString&in asImpulseTar)
+	{
+		array<iPhysicsBody@> vPhysBodies;
+		GetRigidBodiesInArea(asDoorArea, vPhysBodies);
+		if (vPhysBodies.length()<=0) return;
+		
+		iLuxEntity@ pImpulseTar = Map_GetEntity(asImpulseTar, eLuxEntityType_Area);
+		if (pImpulseTar==null) return;
+		
+		for (int i=0; i<vPhysBodies.length(); i++)
+		{
+			tString sPhysEntName = cLux_GetBodyEntity(vPhysBodies[i]).GetName();// .GetEntityParent().GetName();
+			iLuxEntity@ pPhysEnt = Map_GetEntity(sPhysEntName, eLuxEntityType_Prop);
+			if (pPhysEnt==null) continue;
+			
+			cVector3f vImpulseDir = (pPhysEnt.GetPosition() - pImpulseTar.GetPosition()) * -1;
+			vImpulseDir.Normalize();
+			
+			Entity_AddImpulse(sPhysEntName, (vImpulseDir * 8.f), false, false);
+			
+			//vPhysBodies[i].SetCollideFlags(cLux_GetCurrentMap().GetCollideFlag("-Door_ColGroup"));
+		}
+	}
+	
+	//-------------------------------------------------------
+ 
+	//} END MAIN FUNCTIONS
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 1 *THE PLAYER FINDS THEIR WAY OUT OF THE AMNESIA POTION LAB*
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+	
+	//-------------------------------------------------------
+	
+	int mlExtendersInMedLab=0;
+	bool mbPlayerIsInMedLab=false;
+	
+	//-------------------------------------------------------
+	
+	bool Trigger_Intro(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		if(cLux_ScriptDebugOn()) return true;
+		Voice_PlayDelayed("Dialogue_Intro", 2);
+		return false;
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnReceiverPower_FirstDoor(bool abActive, const tString&in asEntity)
+	{
+		if (abActive==false)
+		{
+			// Don't throw the extender out if it's the only one you have.
+			if (mlExtendersInMedLab<=1)
+				Entity_SetActive("medical_room_block_box", true);
+			
+			// Don't lock both extenders inside lab A
+			if (mlExtendersInMedLab>1 && mbPlayerIsInMedLab==false)
+				return;
+		}
+		
+		Entity_SetActive("medical_room_block_box", !abActive);
+		
+		SetDoorActive("FirstDoor", abActive);
+		Lamp_SetLit("Lamp_Entrance_Group_2*", abActive, true);
+		
+		float fEnvLightLvl = abActive?1.f:0.f;
+		float fTime = abActive?0.5f:0.f;
+		Light_FadeBrightnessTo("Light_Box_Entrance_Group_2_*", fEnvLightLvl, fTime);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnStateChange_FirstDoorSwitch(const tString &in asEntity, int alState)
+	{
+		if (alState==-1)
+			ClearLabADoorArea("Area_MedLabDoorKeeper", "Area_MedLabDoorPushTarget");
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnReceiverPower_Start(bool abActive, const tString&in asEntity)
+	{
+		Lamp_SetLit("Lamp_Entrance_Group_1*", abActive, true);
+		
+		float fEnvLightLvl = abActive?1:0;
+		float fTime = abActive?0.5:0;
+		Light_FadeBrightnessTo("Light_Box_Entrance_Group_1_*", fEnvLightLvl, fTime);
+	}
+		
+	//-------------------------------------------------------
+	
+	void OnInteract_TogglePhysicsOn(const tString &in asEntity)
+	{
+		Prop_SetStaticPhysics(asEntity, false);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnInteractLeave_TogglePhysicsOff(const tString &in asEntity)
+	{
+		Map_AddTimer(asEntity, 0.5, "OnTimer_SetExtenderStaticPhysics");
+	}
+	
+	//-------------------------------------------------------
+	
+	void LookAt_Dress(const tString &in asEntity, int alState)
+	{
+		Voice_Play("Dialogue_SeeDress");
+	}
+	
+	//-------------------------------------------------------
+	
+	//} END SCENE 1
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 2 *THE PLAYER EXPLORES THE PORTAL LAB A*
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+	
+	//-------------------------------------------------------
+	
+	void OnInteract_OrbInBox(const tString &in asEntity)
+	{
+		PlayerBody_PlayCutsceneAtEntity("pick_up_and_look_at_orb", "Area_OrbPickUpEventStart", false, 0.5, "OnAnimEnd_DisableFakeOrb");
+		PlayerBody_SetCutsceneMaxPitch(18);
+		PlayerBody_SetCutsceneMaxYaw(25);
+			
+		Map_AddTimer("Timer_AlertShadow", 3, "OnTimer_AlertShadow");
+		Map_AddTimer("Timer_PickupOrbFromItsHolder", 0.55, "OnTimer_PickupOrbFromItsHolder");
+		
+		/////////////////////////
+		// Disable orb holder effects
+		ParticleSystem_SetVisible("OlbHolder_PS_Open", false);
+		ParticleSystem_SetActive("OlbHolder_PS_Open", false);
+		ParticleSystem_SetVisible("OlbHolder_PS_Closed", false);
+		ParticleSystem_SetActive("OlbHolder_PS_Closed", false);
+		Light_FadeBrightnessTo("OlbHolder_Light_*", 0, 0.5);
+		
+		Map_AddTimer("Timer_AddOrbToInventory", 10.f, "OnTimer_AddOrbToInventory");
+	}
+ 
+	//-------------------------------------------------------
+	
+	void OnTimer_AlertShadow(const tString&in asTimer)
+	{
+		Voice_Play("Dialogue_PickUpOrb", -1, "OnVoiceOver_ShadowEffects", 1);
+		Music_Play("A2_02_07_Orb_Vision.ogg", 0.1f, false, eMusicPrio_MinorEvent);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnVoiceOver_ShadowEffects(const tString &in asScene, const tString &in asSubject)
+	{
+		FearHandler_SetForcedAddFearRate(0.5f, 4.f, false, 1.0f, 0.1f, 0.5f);
+		Effect_ImageTrail_Start(1.f, 5, 1.5f, 1.f);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_PickupOrbFromItsHolder(const tString&in asTimer)
+	{
+		tString sEntityName = "Orb_Fake";
+		Entity_SetActive(sEntityName, true);
+		Entity_SetCollideCharacter(sEntityName,false);
+		Entity_SetCollide(sEntityName,false);
+		Prop_SetStaticPhysics(sEntityName,true);
+		
+		////////////////////////
+		// Attach to player hand
+		iLuxEntity@ pOrbHandEnt = Map_GetEntity(sEntityName, eLuxEntityType_Prop);
+		pOrbHandEnt.SetPosition(PlayerBody_GetSocket("R_Hand").GetWorldPosition());
+		Entity_AttachToSocket(sEntityName, PlayerBody_GetEntityName(), "R_Hand", true, false);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnAnimEnd_DisableFakeOrb(const tString&in asAnim)
+	{
+		Entity_SetActive("Orb_Fake", false);
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnCollide_OrbGlowPS(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		if (Map_GetEntity("Orb", eLuxEntityType_Prop)==null) return true;
+		
+		if (alState==-1)
+		{
+			ParticleSystem_SetVisible("OlbHolder_PS_Open", true);
+			ParticleSystem_SetActive("OlbHolder_PS_Open", true);
+			ParticleSystem_SetVisible("OlbHolder_PS_Closed", false);
+			ParticleSystem_SetActive("OlbHolder_PS_Closed", false);
+			Light_FadeBrightnessTo("OlbHolder_Light_1", 25, 0.5);
+			Light_FadeBrightnessTo("OlbHolder_Light_2", 25, 0.5);
+		}
+		else if (alState==1)
+		{
+			ParticleSystem_SetVisible("OlbHolder_PS_Open", false);
+			ParticleSystem_SetActive("OlbHolder_PS_Open", false);
+			ParticleSystem_SetVisible("OlbHolder_PS_Closed", true);
+			ParticleSystem_SetActive("OlbHolder_PS_Closed", true);
+			Light_FadeBrightnessTo("OlbHolder_Light_1", 5, 0.5);
+			Light_FadeBrightnessTo("OlbHolder_Light_2", 5, 0.5);
+		}
+		
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnLookAt_Rift(const tString &in asEntity, int alState)
+	{
+		Sketchbook_AddIdea("cross_alchemistrift");
+		Voice_Play("Dialogue_SeeTheRift");
+		
+		// We re done, disable all rift dialog triggers.
+		Entity_SetActive("Trigger_RiftVoice_Switcher", false);
+		Entity_SetActive("Trigger_LookAtRift_*", false);
+		
+	}
+ 
+	//-------------------------------------------------------
+	
+	bool OnCollide_SwitchRiftVoiceTrigger(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		if (alState==1)
+		{
+			Entity_SetActive("Trigger_LookAtRift_1", false);
+			Entity_SetActive("Trigger_LookAtRift_2", true);
+		}
+		else if (alState==-1)
+		{
+			Entity_SetActive("Trigger_LookAtRift_1", true);
+			Entity_SetActive("Trigger_LookAtRift_2", false);
+		}
+		
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnCollide_AutoSave(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		if 
+		(
+			alState==1 && 
+			ItemType_GetCountInInventory("VitaeCanister")==2 || 
+			( ItemType_GetCountInInventory("VitaeCanister")==1 && ( Entity_IsActive("VitaeCanister_Placed_1") || Entity_IsActive("VitaeCanister_Placed_2") ) ) 
+		)
+		{
+			Game_AutoSave();
+			return false;
+		}
+		
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	//} END SCENE 2
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 4 *THE PLAYER GETS A VITAE CANISTER FROM THE ALCHEMIST’S OFFICE*
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+	
+	//bool mbSeenVitaeLab = false;
+	bool mbSeenAlchemist = false;
+	bool mbAlchemistIsDead = false;
+	bool mbPlayerIsInVitaeLab = false;
+	bool mbPlayerCloseToAlchemist = false;
+	
+	//-------------------------------------------------------
+	
+	void SetAlchemistDyingState(const bool abActive)
+	{
+		tString sAnimToPlay = abActive ? "dying" : "idle";
+		bool bLoop = !abActive;
+		Entity_PlayAnimation("alchemist", sAnimToPlay, 3.f, bLoop);
+		
+		WakeUpAlchemistsHosePhysics();
+		
+		//The dying anim is too big. 
+		if (abActive==false) return;
+		
+		iLuxEntity@ pEnt = Map_GetEntity("alchemist", eLuxEntityType_Prop);
+		cMeshEntity@ pMeshEnt = pEnt.GetMeshEntity();
+		cAnimationState@ pAnim = pMeshEnt.GetAnimationStateFromName("dying");
+		pAnim.SetRelativeTimePosition(0.3f);
+	}
+	
+	//-------------------------------------------------------
+	
+	void WakeUpAlchemistsHosePhysics()
+	{
+		iLuxEntity@ pHose = Map_GetEntity("alchemists_pipe", eLuxEntityType_Prop);
+		for (int i=0; i< pHose.GetBodyNum(); i++)
+		{
+			pHose.GetBody(i).AddImpulse(cVector3f_Down * 0.5);
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnReceiverPower_Office(bool abActive, const tString&in asEntity)
+	{
+		if (abActive==false && mbPlayerIsInVitaeLab) return;
+		
+		Lamp_SetLit("Lamp_Corridor_*", abActive, true);
+		float fCorridorBrightness = abActive ? 2 : 0;
+		Light_FadeBrightnessTo("Corridor_light_*", fCorridorBrightness, 0.2);
+		
+		SetDoorActive("OfficeDoor", abActive);
+		
+		Lamp_SetLit("Lamp_Corridor_Group_1*", abActive, true);
+		Lamp_SetLit("Lamp_VitaeLab_Group_1*", abActive, true);
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnDoorway_EnterVitaeLab(const tString &in asArea, const tString &in asEntity, int alState)
+	{
+		Entity_SetActive("AlchemistLookAt_Intro", true);
+		//PlayAlchemistsBreath(0);
+		
+		return true;
+	}
+	
+	//-------------------------------------------------------
+
+	void OnLookAt_VitaeLab(const tString &in asEntity, int alState)
+	{
+		Voice_PlayDelayed("Dialogue_OpenAlchemistsChamber", 2.0f);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnLookAt_Alchemist(const tString &in asEntity, int alState)
+	{
+		return;
+		// Removed now for review - IT
+		/*
+		if (mbAlchemistIsDead) return;
+		if (SequenceStates_IsActive("Seq_DisableLifeSupport")) return;
+		
+		if (alState==1)
+			Timer_TryVitaeLabVoice("Dialogue_ExamineAlchemist");
+		else
+			Map_RemoveTimer("Dialogue_ExamineAlchemist");*/
+	}
+	
+	//-------------------------------------------------------
+	
+	void Timer_TryVitaeLabVoice(const tString &in asTimer)
+	{
+		if (Voice_AnySceneIsActive())
+		{
+			//cLux_AddDebugMessage("Delaying "+asTimer);
+			Map_AddTimer(asTimer, 1, "Timer_TryVitaeLabVoice");
+			return;
+		}
+		Voice_Play(asTimer, -1);
+	}
+	
+	//-------------------------------------------------------
+	
+	bool Collide_GridSlot(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		Entity_SetVarInt(asParent, "", Entity_GetVarInt(asParent, "")+alState);
+		EvaluateVitaeGridSlotActive(cString_GetNumericSuffixInt(asParent));
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnLookAt_LifeMachineLever(const tString &in asEntity, int alState)
+	{
+		/*if (mbAlchemistIsDead)
+		{
+			PlayAlchemistsBreath(-1);
+			return;
+		}
+		
+		if (alState==1)
+		{
+			PlayAlchemistsBreath(1);
+		}
+		else if (alState==-1)
+		{
+			PlayAlchemistsBreath(0);
+		}*/
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnLookAt_LifeMachineCanister(const tString &in asEntity, int alState)
+	{
+		/*if (mbAlchemistIsDead)
+		{
+			PlayAlchemistsBreath(-1);
+			return;
+		}
+		
+		if (alState==1)
+		{
+			PlayAlchemistsBreath(2);
+		}
+		else if (alState==-1)
+		{
+			PlayAlchemistsBreath(1);
+		}*/
+	}
+		
+	//-------------------------------------------------------
+	
+	void PlayAlchemistsBreath(const int alType)
+	{
+		if (Sound_Exists("AlchemistVoice"))
+			Sound_Stop("AlchemistVoice", 0.2);
+		
+		if (mbAlchemistIsDead || alType==-1) return;
+		
+		if (alType==0)
+			Sound_CreateAtEntity("AlchemistVoice", "03_07_dw_factory/torture_victim/victim_reactions/victim_breathe_slow", "alchemist", 0.2, true, 1);
+		else if (alType==1)
+			Sound_CreateAtEntity("AlchemistVoice", "03_07_dw_factory/torture_victim/victim_reactions/victim_breathe_normal", "alchemist", 0.2, true, 1);
+		else if (alType>1)
+			Sound_CreateAtEntity("AlchemistVoice", "03_07_dw_factory/torture_victim/victim_reactions/victim_breathe_afraid", "alchemist", 0.2, true, 1);
+	}
+	
+	//-------------------------------------------------------
+	
+	void DisableAlchemistBreathing()
+	{
+		//PlayAlchemistsBreath(-1);
+		Entity_SetActive("Trigger_LookAtLifeMachineLever", false);
+		Entity_SetActive("Trigger_LookAtLifeMachineCanister", false);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnInteract_LifeSupportVitaeCanister(const tString &in asEntity)
+	{
+		Item_AddToInventory("VitaeCanister", true);
+		
+		Sound_CreateAtEntity("CanisterPickup"+asEntity, "03_07_DW_theatre/canister_unplug/small/small_remove", asEntity, 0, false, 1, 5, 20);
+		
+		DisableAlchemistBreathing();
+		
+		Entity_SetActive("VitaeCanister_LifeSupport", false);
+		
+		Light_SetBrightness("Light_Canister_LifeSupport", 0);
+		Entity_SetActive("VitaeSlot_3", true);
+		
+		if (Sound_Exists("LifeSupportSound"))
+			Sound_Stop("LifeSupportSound", 1.f);
+			
+		Sound_Stop("Sound_LifeSupportFunctioning", 2.0f);
+		Sound_CreateAtEntity("LifeSupportStop", "02_07_alchemist_lab/life_support/power_down", "Area_LifeSupportSoundSource");
+			
+		Lamp_SetLit("lamp_life_support_machine_*", false, false);
+		
+		mAlchemistsPipe.SetUvTime(0.5);
+		mAlchemistsPipe.FadeUvTime(1, 20.f);
+		mAlchemistsPipe.SetUvCoverage(0.5);
+		mAlchemistsPipe.FadeUvCoverage(0.1, 20.f);
+		
+		//////////////////////////
+		// Start Alchemist's Death
+		if (mbAlchemistIsDead) return;
+		Seq_DisableLifeSupport("");
+		SetAlchemistDyingState(true);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnConnectionStateChange_OpenLifeSupportDoor(const tString &in asEntity, int alState)
+	{
+		if (alState!=1 || SwingDoor_GetClosed("life_support_machine_door")==false) return;
+		Map_AddTimer("Timer_OpenLifeSupportDoor", 0.3f, "OnTimer_OpenLifeSupportDoor");
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_OpenLifeSupportDoor(const tString&in asTimer)
+	{
+		SwingDoor_SetBlocked("life_support_machine_door", false, true);
+		SwingDoor_PushOpen("life_support_machine_door", 2, 3);
+		
+		//////////
+		// Breathing controls
+		Entity_SetActive("Trigger_LookAtLifeMachineLever", false);
+		Entity_SetActive("Trigger_LookAtLifeMachineCanister", true);
+		
+		if (Entity_IsActive("VitaeCanister_LifeSupport"))
+			Light_SetBrightness("Light_Canister_LifeSupport", 2);
+			
+		Sound_CreateAtEntity("LabADoorLock1", "03_07_DW_theatre/canister_unplug/small/small_remove", "life_support_machine_door", 0, false, 1, 5, 20);
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnCollide_BlockLifeSupportDoor(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		if (alState!=1) return true;
+		SwingDoor_SetClosed("life_support_machine_door", true, true);
+		SwingDoor_SetBlocked("life_support_machine_door", true, true);
+		
+		//////////
+		// Breathing controls
+		Entity_SetActive("Trigger_LookAtLifeMachineLever", true);
+		Entity_SetActive("Trigger_LookAtLifeMachineCanister", false);
+		
+		//PlayAlchemistsBreath(1);
+		
+		Light_SetBrightness("Light_Canister_LifeSupport", 0);
+		
+		Sound_CreateAtEntity("LabADoorLock1", "03_07_DW_theatre/canister_unplug/small/small_remove", "life_support_machine_door", 0, false, 1, 5, 20);
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnUse_VitaeCanister_LifeSupport(const tString &in asItemID, const tString &in asTargetEntity)
+	{
+		////////////////////
+		// Breathing control
+		//PlayAlchemistsBreath(1);
+		Entity_SetActive("Trigger_LookAtLifeMachineCanister", true);
+		
+		///////////////
+		// Canister control
+		Entity_SetActive("VitaeCanister_LifeSupport", true);
+		Light_SetBrightness("Light_Canister_LifeSupport", 2);
+		Entity_SetActive("VitaeSlot_3", false);
+		
+		Sound_CreateAtEntity("LifeSupportStart", "02_07_alchemist_lab/life_support/power_up", "Area_LifeSupportSoundSource");
+		Sound_CreateAtEntity("LifeSupportSound", "02_07_alchemist_lab/life_support/loop_low_function", "Area_LifeSupportSoundSource");
+		
+		Lamp_SetLit("lamp_life_support_machine_*", true, true);
+
+		mAlchemistsPipe.SetUvTime(0);
+		mAlchemistsPipe.FadeUvTime(0.5, 20.f);
+		mAlchemistsPipe.SetUvCoverage(0.1);
+		mAlchemistsPipe.FadeUvCoverage(0.5, 5.f);
+			
+		/////////////////////////
+		// Stop Alchemist's Death
+		if (mbAlchemistIsDead) return true;
+		
+		SequenceStates_Stop("Seq_DisableLifeSupport");
+		SetAlchemistDyingState(false);
+		mSequenceDisableLifeSupport.mlStateCounter = 0;
+		if (Voice_SubjectIsPlaying("Emote_KitaDies"))
+			Voice_Stop("Kita");
+		
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnInteract_VitaeCanister(const tString &in asEntity)
+	{
+		tString sIndex = cString_GetNumericSuffix(asEntity);
+		int lVitaeCanisterSlot = cString_ToInt(sIndex, 4);
+		
+		Entity_SetActive(asEntity, false);
+		Item_AddToInventory("VitaeCanister", true);	
+		
+		Sound_CreateAtEntity("CanisterPickup"+asEntity, "03_07_DW_theatre/canister_unplug/small/small_remove", asEntity, 0, false, 1, 5, 20);
+		
+		Lamp_SetLit("VitaeGridPodLamp_"+lVitaeCanisterSlot, false, true);
+		Light_FadeBrightnessTo("VitaeGridPod_Light_"+lVitaeCanisterSlot, 0, 0.2);
+		
+		EvaluateVitaeGridSlotActive(lVitaeCanisterSlot);
+		ToggleVitaeGridPipesFlow(lVitaeCanisterSlot, false);
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnUse_VitaeCanister_VitaeGrid(const tString &in asItemID, const tString &in asTargetEntity)
+	{
+		tString sIndex = cString_GetNumericSuffix(asTargetEntity);
+		tString sCanister = "VitaeGridCanister_Dummy_"+sIndex;
+		int lVitaeCanisterSlot = cString_ToInt(sIndex, 4);
+		
+		Entity_SetActive(sCanister, true);
+		Entity_SetPlayerInteractCallback(sCanister, "OnInteract_VitaeCanister", true);
+		
+		Lamp_SetLit("VitaeGridPodLamp_"+lVitaeCanisterSlot, true, true);
+		Light_FadeBrightnessTo("VitaeGridPod_Light_"+lVitaeCanisterSlot, 1, 0.2);
+		
+		EvaluateVitaeGridSlotActive(lVitaeCanisterSlot);
+		ToggleVitaeGridPipesFlow(lVitaeCanisterSlot, true);
+
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	void ToggleVitaeGridPipesFlow(int alSlotSuffix, bool abActive)
+	{
+		/////////////////////
+		// Vitae flow Actions 
+		const float fFadeTime = 4.f;
+		if (alSlotSuffix==3)
+		{
+			if (abActive==false)
+			{
+				mPipe02.SetUvTime(0.5f);
+				mPipe02.FadeUvTime(1.f, fFadeTime);
+				mPipe02.SetUvCoverage(0.5f);
+				mPipe02.FadeUvCoverage(0.1f, fFadeTime/2);
+			}
+			else
+			{
+				if (mPipe02.mfUvTime <= 0 || mPipe02.mfUvTime >= 1)
+					mPipe02.SetUvTime(0.f);
+					
+				mPipe02.FadeUvTime(0.5f, fFadeTime);
+				mPipe02.SetUvCoverage(0.1f);
+				mPipe02.FadeUvCoverage(0.5f, fFadeTime/2);
+			}
+		}
+		
+		if (alSlotSuffix==4)
+		{
+			if (abActive==false)
+			{
+				mPipe03.SetUvTime(0.5f);
+				mPipe03.FadeUvTime(1.f, fFadeTime);
+				mPipe03.SetUvCoverage(0.5f);
+				mPipe03.FadeUvCoverage(0.1f, fFadeTime/2);
+			}
+			else
+			{
+				if (mPipe03.mfUvTime <= 0 || mPipe03.mfUvTime >= 1)
+					mPipe03.SetUvTime(0.f);
+					
+				mPipe03.FadeUvTime(0.5f, fFadeTime);
+				mPipe03.SetUvCoverage(0.1f);
+				mPipe03.FadeUvCoverage(0.5f, fFadeTime/2);
+			}
+		}
+		
+		Map_RemoveTimer("Timer_StartTowerMainPipeFlow");
+		Map_AddTimer("Timer_StartTowerMainPipeFlow", fFadeTime/2, "OnTimer_StartTowerMainPipeFlow");
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_StartTowerMainPipeFlow(const tString&in asTimer)
+	{
+		bool bVitaeSlot3Active = Map_GetEntity("VitaeGridCanister_Dummy_3", eLuxEntityType_Prop).IsActive();
+		bool bVitaeSlot4Active = Map_GetEntity("VitaeGridCanister_Dummy_4", eLuxEntityType_Prop).IsActive();
+		const float fFadeTime = 4.f;
+		
+		float fUVCoverage = 0.1f;
+		if (bVitaeSlot3Active) fUVCoverage += 0.7f;
+		if (bVitaeSlot4Active) fUVCoverage += 0.7f;
+		
+		if (bVitaeSlot3Active || bVitaeSlot4Active)
+		{
+			if (mPipe01.mfUvTime <= 0 || mPipe01.mfUvTime >= 1)
+				mPipe01.SetUvTime(0.f);
+				
+			mPipe01.FadeUvTime(0.5f, fFadeTime);
+			mPipe01.FadeUvCoverage(fUVCoverage, fFadeTime/2);
+		}
+		else
+		{
+			mPipe01.FadeUvTime(1.0f, fFadeTime);
+			mPipe01.FadeUvCoverage(0.1f, fFadeTime/2);
+		}
+		
+		Map_RemoveTimer("Timer_LightUpMiniTower");
+		Map_AddTimer("Timer_LightUpMiniTower", 2, "OnTimer_LightUpMiniTower");
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_LightUpMiniTower(const tString&in asTimer)
+	{
+		bool bVitaeSlot3Active = Map_GetEntity("VitaeGridCanister_Dummy_3", eLuxEntityType_Prop).IsActive();
+		bool bVitaeSlot4Active = Map_GetEntity("VitaeGridCanister_Dummy_4", eLuxEntityType_Prop).IsActive();
+		float fBrightness = 0;
+		if (bVitaeSlot3Active) fBrightness += 1;
+		if (bVitaeSlot4Active) fBrightness += 1;
+		Light_FadeBrightnessTo("VitaeGrid_TowerLight_*", fBrightness, 0.5f);
+		Entity_FadeEffectBaseColor("Mask_Eye_Illum_*", cColor(1) * fBrightness, 0.5f);
+	}
+	
+	//-------------------------------------------------------
+	
+	void EvaluateVitaeGridSlotActive(int alIndex)
+	{		
+		bool bActive = Entity_GetVarInt("VitaeGridCanisterDetector_"+alIndex, "") < 1;
+		Entity_SetActive("VitaeGridSlot_"+alIndex, bActive);
+	}
+	
+	//-------------------------------------------------------
+	
+	cSequenceStatesData mSequenceDisableLifeSupport;
+	void Seq_DisableLifeSupport(const tString &in asTimer)
+	{
+		Sequence_Begin("Seq_DisableLifeSupport", mSequenceDisableLifeSupport);
+		Sequence_Wait(6.f);
+		if (Sequence_DoStepAndWait(12.00f))
+		{				
+			Voice_Play("Emote_KitaDies");
+			//PlayAlchemistsBreath(-1);
+			WakeUpAlchemistsHosePhysics();
+		}
+		else if (Sequence_DoStepAndContinue())
+		{
+			cLux_AddDebugMessage("Alchemist died!");
+			
+			WakeUpAlchemistsHosePhysics();
+			
+			mbAlchemistIsDead = true;
+			
+			HeadTracker_SetActive("alchemist", false);
+			
+			Map_RemoveTimer("Timer_AlchemistBreathe");
+			DisableAlchemistBreathing();
+			
+			//////////////////
+			// Tasi's reaction
+			if (Entity_IsInPlayerFOV("AlchemistLookAt")==false || mbPlayerCloseToAlchemist==false) return;
+			Voice_Play("Dialogue_AlchemistDies");
+			Music_Play("A2_02_07_Alchemist_Death.ogg", 0.5f, false, eMusicPrio_MinorEvent);
+			
+			cLux_AddDebugMessage("Player reacted on alchemist's death!");
+			
+			Map_AddTimer("Timer_DisableHosePhysics", 2, "OnTimer_DisableHosePhysics");
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_DisableHosePhysics(const tString&in asTimer)
+	{
+		//this is to avoid shaking from static collisions.
+		Prop_SetStaticPhysics("alchemists_pipe", true);
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnCollide_SetPlayerCloseToAlchemist(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		if (alState==1) mbPlayerCloseToAlchemist = true;
+		else if (alState==-1) mbPlayerCloseToAlchemist = false;
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnInteract_Player_AlchemistDoorButton(const tString &in asEntity)
+	{
+		OnInteract_DoorBtnFeedback(asEntity);
+		
+		if (MovingButton_IsLocked(asEntity)==false && mbSeenAlchemist==false)
+		{
+			Entity_SetActive("VitaeLabLookAt", true);
+			Music_Stop(5.0f, eMusicPrio_BgAmb);
+			Music_Play("A2_02_07_Alchemist_Discover.ogg", 0.3f, true, eMusicPrio_SceneAmb);
+			Map_RemoveTimer("Timer_MusicFade");
+			Map_AddTimer("Timer_MusicStop", 150.0f, "OnTimer_VitaeMusicStop");
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_VitaeMusicStop(const tString &in asTimer)
+	
+	{
+		Music_Stop(30.0f, eMusicPrio_SceneAmb);
+		Music_PlayExt("A2_02_07_Lab_Ambience_C.ogg", true, 0.3f, 1.0f, 25.0f, 1.0f, eMusicPrio_BgAmb, true);
+		Map_AddTimer("Timer_LabMusicStop", 150.0f, "OnTimer_LabMusicStop");
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_LabMusicStop(const tString &in asTimer)
+	
+	{
+		Music_Stop(30.0f, eMusicPrio_BgAmb);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnLookAt_StartLighting(const tString &in asEntity, int alState)
+	{
+		Entity_SetActive("AlchemistLookAt_Intro", false);
+		
+		Light_FadeBrightnessTo("Light_Vitae_ExteriorDirLight", 5, 0.1);
+		//Light_FadeBrightnessTo("Light_TowerVista_1", 400, 0.1);
+		//Light_FadeBrightnessTo("Light_TowerVista_2", 900, 0.1);
+		
+		Map_AddTimer("Timer_ResetVitaeLabLighting", 1, "OnTimer_ResetVitaeLabLighting");
+		FearHandler_SetForcedAddFearRate(0.5f, 6.f, true, -1.f, 0.1f);
+		
+		mbSeenAlchemist = true;
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_ResetVitaeLabLighting(const tString&in asTimer)
+	{
+		Light_FadeBrightnessTo("Light_Vitae_ExteriorDirLight", 10, 1);
+		//Light_FadeBrightnessTo("Light_TowerVista_1", 40, 1.5);
+		//Light_FadeBrightnessTo("Light_TowerVista_2", 90, 1.5);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnBreakPot_ReleaseSlugs(const tString &in asEntity)
+	{
+		array<iLuxEntity@> vpSlugs;
+		Map_GetEntityArray("pot_slug_*", vpSlugs);
+		
+		if (vpSlugs.length()<=0) return;
+		
+		for(int i=0; i<vpSlugs.length(); i++)
+		{
+			iLuxEntity@ pSlug = vpSlugs[i];
+			if (pSlug==null) continue;
+			cVector3f vRandomPos = cMath_RandRectVector3f(cVector3f(-0.2, 0, -0.2), cVector3f(0.2));
+			pSlug.SetPosition(Map_GetEntity(asEntity, eLuxEntityType_Prop).GetPosition() + vRandomPos);
+			pSlug.SetActive(true);
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// Event A *See lightning strikes*
+	//{//////////////////////////////////////
+	
+	//-------------------------------------------------------
+	
+	tID m_idDarkWorldLightning_FlashLight;
+	tString msDWLightning_SoundName = "";
+	float mfDWLightning_Volume = 1;
+	cVector3f mvDir;
+	int mlDWLightning_Bolts = 3;
+	int mlDWLightning_Index = -1;
+	cVector3f mvDWLightning_Dir;
+	float mfDWLightning_LoopAngleOffset = 0;
+	cVector3f mvDWLightning_LoopDir;
+	int mlDWLightning_AreaCount = 0;
+	int mlDWLightning_NoLightningAreaCount = 0;
+	
+	//-------------------------------------------------------
+	
+	void InitDarkWorldLightning()
+	{
+		cLightPoint@ pFlashLight = cLux_GetCurrentMap().GetWorld().CreateLightPoint("DWFlash", "", false);
+		pFlashLight.SetBrightness(0);
+		pFlashLight.SetRadius(200);
+		m_idDarkWorldLightning_FlashLight = pFlashLight.GetID();
+		
+		mvDWLightning_LoopDir = Map_GetEntity("Widget_LightningDir").GetMatrix().GetTranspose().GetForward();
+		mfDWLightning_LoopAngleOffset = 90;
+		Map_AddTimer("OnTimer_DarkWorldLightningLoop", 5, "OnTimer_DarkWorldLightningLoop");
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnCollide_Player_FirstLightning(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		DarkWorldLightning(2, Map_GetEntity("Widget_FirstLightningDir").GetMatrix().GetTranspose().GetForward(), 0.5);
+		
+		Map_RemoveTimer("OnTimer_DarkWorldLightningLoop");
+		Map_AddTimer("OnTimer_DarkWorldLightningLoop", 10, "OnTimer_DarkWorldLightningLoop");
+		
+		Entity_SetActive("Trigger_DWLightningArea_1", true);
+		Entity_SetActive("Trigger_DWNoLightningArea_1", false);
+		mlDWLightning_NoLightningAreaCount = 0;
+		return false;
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnCollide_Player_DWLightningArea(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		mlDWLightning_AreaCount += alState;
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnCollide_Player_DWNoLightningArea(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		mlDWLightning_NoLightningAreaCount += alState;
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	void RandomDarkWorldLightning(cVector3f &in avDir, float afMaxAngleOffset = 0, float afDelay = 0, const tString&in asSound = "", float afVolume = 1)
+	{
+		msDWLightning_SoundName = asSound;
+		mfDWLightning_Volume = afVolume;
+		
+		array<int> vIndexCandidates;
+		for (int i = 1; i <= mlDWLightning_Bolts; ++i)
+		{
+			if (mlDWLightning_Index > 0 && i == mlDWLightning_Index) continue;
+			vIndexCandidates.push_back(i);
+		}
+		
+		int lIndex = vIndexCandidates[cMath_RandRectl(0, vIndexCandidates.size() - 1)];
+		
+		cVector3f vDir = avDir;
+		vDir.y = 0;
+		vDir = cMath_MatrixMul(cMath_MatrixRotateY(cMath_ToRad(cMath_RandRectf(-afMaxAngleOffset, afMaxAngleOffset))), vDir);
+		DarkWorldLightning(lIndex, vDir);
+	}
+	
+	//-------------------------------------------------------
+	
+	void DarkWorldLightning(int alIndex, cVector3f &in avDir, float afDelay = 0, const tString&in asSound = "", float afVolume = 1)
+	{
+		msDWLightning_SoundName = asSound;
+		mfDWLightning_Volume = afVolume;
+		
+		mlDWLightning_Index = alIndex;
+		mvDWLightning_Dir = avDir;
+		Map_AddTimer("Timer_DoDarkWorldLightning", afDelay, "OnTimer_DoDarkWorldLightning");
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_DoDarkWorldLightning(const tString &in asTimer)
+	{
+		Seq_DarkWorldLightning("");
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_DarkWorldLightningLoop(const tString &in asTimer)
+	{
+		if (mlDWLightning_NoLightningAreaCount <= 0)
+		{
+			bool bFront = false;
+			if (Map_TimerExists("LightningInFrontCooldown") == false)
+			{
+				float fFrontToLoopAngleDiff = cMath_Vector3Angle(mvDWLightning_LoopDir, cVector3f(Player_GetForward().x, 0, Player_GetForward().z));
+				if (fFrontToLoopAngleDiff <= mfDWLightning_LoopAngleOffset)
+				{
+					bFront = true;
+					RandomDarkWorldLightning(Player_GetForward(), 20);
+					Map_AddTimer("LightningInFrontCooldown", cMath_RandRectf(30, 120), "");
+//					Map_AddTimer("LightningInFrontCooldown", 8, "");
+					cLux_AddDebugMessage("[Map] Lightning in front");
+				}
+			}
+			if (bFront == false)
+			{
+				RandomDarkWorldLightning(mvDWLightning_LoopDir, mfDWLightning_LoopAngleOffset);
+				cLux_AddDebugMessage("[Map] Lightning random");
+			}
+		}
+		Map_RestartCurrentTimer(cMath_RandRectf(15, 45));
+//		Map_RestartCurrentTimer(8);
+	}
+	
+	//-------------------------------------------------------
+	
+	cSequenceStatesData mSeqDataDarkWorldLightning;	
+	void Seq_DarkWorldLightning(const tString &in asTimer)
+	{
+		Sequence_Begin("Seq_DarkWorldLightning", mSeqDataDarkWorldLightning);
+		if (Sequence_DoStepAndWait(0.1f))
+		{
+			Map_AddTimer("Timer_DarkWorldThunder", 0, "OnTimer_DarkWorldThunder");
+			
+			// only do visuals inside thunder areas
+			if (mlDWLightning_AreaCount > 0)
+			{
+				cVector3f vLightningDir = mvDWLightning_Dir;
+				
+				cVector3f vLightningBolt = Player_GetPosition() + vLightningDir * cMath_RandRectf(1500, 2500);
+				vLightningBolt += cVector3f_Up * cMath_RandRectf(400, 800);
+				
+				iLight@ pLight = Map_GetLight("Light_Lightning_Point_" + mlDWLightning_Index);
+				pLight.SetPosition(vLightningBolt);
+				pLight.FadeTo(cColor(0.617,0.951,1,1), pLight.GetRadius(), 0.05f);
+				
+				cBillboard@ pBillboardBolt = cLux_GetCurrentMap().GetWorld().GetBillboard("Billboard_Lightning_Bolt_" + mlDWLightning_Index);
+				pBillboardBolt.SetPosition(vLightningBolt);
+				
+				cBillboard@ pBillboardGlow = cLux_GetCurrentMap().GetWorld().GetBillboard("Billboard_Lightning_Glow_" + mlDWLightning_Index);
+				pBillboardGlow.SetPosition(vLightningBolt);
+			
+				cVector3f vFlashPos = Player_GetPosition() + vLightningDir * 100 + cVector3f_Up * 75;
+				
+				iLight@ pFlashLight = cLux_ID_Light(m_idDarkWorldLightning_FlashLight);
+				pFlashLight.SetPosition(vFlashPos);
+				pFlashLight.SetDiffuseColor(cColor(0.617,0.951,1,1));
+				pFlashLight.FadeBrightnessTo(80, 0.05);	
+			}
+		}
+		else if (Sequence_DoStepAndWait(1.f))
+		{
+			iLight@ pLight = Map_GetLight("Light_Lightning_Point_" + mlDWLightning_Index);
+			pLight.FadeTo(cColor(0,0,0,1), pLight.GetRadius(), 0.2f);
+			
+			iLight@ pFlashLight = cLux_ID_Light(m_idDarkWorldLightning_FlashLight);
+			pFlashLight.FadeBrightnessTo(0, 0.3f);
+		}
+		Sequence_End();
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_DarkWorldThunder(const tString &in asTimer)
+	{
+		cVector3f vPos = Player_GetPosition() + mvDWLightning_Dir * cMath_RandRectf(50, 100);
+		vPos += cVector3f_Up * cMath_RandRectf(20, 40);
+		
+		Debug_DrawSphere(vPos, 1, cColor_Red, 5);
+		
+		tString sSound = "level_amb_shared/amb/sweeteners/thunder/thunder_strike_inside";
+		if (mlDWLightning_AreaCount > 0) sSound = "level_amb_shared/amb/sweeteners/thunder/thunder_strike";
+		if (msDWLightning_SoundName != "") sSound = msDWLightning_SoundName;
+		
+		cLux_AddDebugMessage("SOME SOUND " + sSound);
+		cSoundEntity@ pThunder = cLux_GetCurrentMap().GetWorld().CreateSoundEntity("Thunder", sSound, true);
+		pThunder.SetPosition(vPos);
+
+		float fVolume = 1;
+		if (mlDWLightning_AreaCount <= 0) fVolume = 0.4;
+		pThunder.SetVolume(fVolume);
+	}
+	
+	//-------------------------------------------------------
+			
+	//} END Event A *See lightning strikes*
+	
+	//-------------------------------------------------------
+	 
+	//} END SCENE 4
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 5 *THE PLAYER SETS UP THE THREE PILLARS*
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+		
+		bool mbConfigCorrect = false;
+		ePillarSymbol[] mvSelectedSymbols = {ePS_U, ePS_T, ePS_Y};
+		bool mbOrbCageOpen = false;
+		bool mbPillarsActive = false;
+		cSequenceStatesData mSeq_TogglePillars;
+		
+		//-------------------------------------------------------
+		
+		void InitPillarPuzzle()
+		{
+			float fVerTarget = 0.75f;
+			float fHorTarget = 0;
+			
+			Slide_SetSlideAmount("ConfigSlider_Hor", fHorTarget);
+			SetConfigSliderState("ConfigSlider_Hor", fHorTarget, 3.0f);
+			Slide_SetSlideAmount("ConfigSlider_Ver", fVerTarget);
+			SetConfigSliderState("ConfigSlider_Ver", fVerTarget, 5.0f);
+			
+			UpdateSelectedSymbols(true);
+		}
+		
+		bool SetConfigSliderState(const tString &in asSlider, float afTarget, float afStateNum)
+		{
+			Entity_SetVarFloat(asSlider, "Target", afTarget);
+			
+			int lPrevState = Entity_GetVarInt(asSlider, "SelectState");
+			int lState = cMath_RoundToInt(afTarget * (afStateNum-1.0f));
+			Entity_SetVarInt(asSlider, "SelectState", lState);
+			
+			return (lPrevState != lState);
+		}
+		
+		//-------------------------------------------------------
+		
+		void UpdatePillarPuzzle(float afTimeStep)
+		{
+			bool bUpdateSelection = false;
+			//Horizontal Slider
+			if (Entity_IsInteractedWith("ConfigSlider_Hor"))
+			{
+				tString sEntity = "ConfigSlider_Hor";
+				float fSlideAmount = Slide_GetSlideAmount(sEntity);
+				
+				float fTarget = 1.0f;
+				if (fSlideAmount < 0.25)
+					fTarget = 0;
+				else if (fSlideAmount < 0.75)
+					fTarget = 0.5f;
+					
+				bool bStateChanged = SetConfigSliderState(sEntity, fTarget, 3.0f);
+				bUpdateSelection = bUpdateSelection || bStateChanged;
+			}
+			
+			//Vertical Slider
+			if (Entity_IsInteractedWith("ConfigSlider_Ver"))
+			{
+				tString sEntity = "ConfigSlider_Ver";
+				float fSlideAmount = Slide_GetSlideAmount(sEntity);
+				
+				float fTarget = 1.0f;
+				if (fSlideAmount < 0.125)
+					fTarget = 0;
+				else if (fSlideAmount < 0.375)
+					fTarget = 0.25f;
+				else if (fSlideAmount < 0.625)
+					fTarget = 0.5f;
+				else if (fSlideAmount < 0.875)
+					fTarget = 0.75f;
+					
+				bool bStateChanged = SetConfigSliderState(sEntity, fTarget, 5.0f);
+				bUpdateSelection = bUpdateSelection || bStateChanged;
+			}
+			
+			// Move selector
+			cVector3f vSelectorPos_Min = Map_GetEntity("ConfigSelector_Min").GetPosition();
+			cVector3f vSelectorPos_Max_Hor = Map_GetEntity("ConfigSelector_Max_Hor").GetPosition();
+			cVector3f vSelectorPos_Max_Ver = Map_GetEntity("ConfigSelector_Max_Ver").GetPosition();
+			float fVert = Slide_GetSlideAmount("ConfigSlider_Ver");
+			float fHori = Slide_GetSlideAmount("ConfigSlider_Hor");
+			
+			cVector3f vSelectorPos_Target = vSelectorPos_Min+((vSelectorPos_Max_Ver-vSelectorPos_Min)*fVert);
+			vSelectorPos_Target += (vSelectorPos_Max_Hor-vSelectorPos_Min)*fHori;
+			
+			Map_GetEntity("ConfigSelector").SetPosition(vSelectorPos_Target);
+			
+			if (bUpdateSelection)
+				UpdateSelectedSymbols(false);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnChange_ConfigButton(const tString &in asEntity, int alState)
+		{
+			if (alState==-1 || mbPillarsActive) return;
+			
+			if (mbConfigCorrect)
+			{
+				if (SequenceStates_IsActive("Seq_TogglePillars")==false)
+					Map_AddTimer("Seq_TogglePillars", 0.5f, "Seq_TogglePillars");
+					
+				Slide_SetJammed("ConfigSlider_*", true);
+			}
+			else
+			{
+				PlayNegativeFeedback(asEntity);
+			}
+		}
+		
+		//-------------------------------------------------------
+	
+		void Seq_TogglePillars(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_TogglePillars", mSeq_TogglePillars);
+			
+			if (Sequence_DoStepAndWait(0.6f))
+			{
+				Sound_CreateAtEntity("PillarBeamActivation", "03_03_herberts_hq/beam_filter/beam_filter_correct", "PillarBeamPos");
+			}
+			else if (Sequence_DoStepAndWait(0.1))
+			{
+				ToggleSidePillar(1);
+			}
+			else if (Sequence_DoStepAndWait(0.1))
+			{
+				ToggleSidePillar(2);
+			}
+			else if (Sequence_DoStepAndWait(0.6f))
+			{
+				ToggleSidePillar(3);
+			}
+			else if (Sequence_DoStepAndWait(0.1))
+			{
+				Sound_CreateAtEntity("PillarBeamLoop", "03_04_pillar_room/pillar_activate/pillar_energy_flow", "PillarBeamPos", 1, true, 0.125f, 1.0f, 12.5f);
+					
+				Light_FadeBrightnessTo("Light_PillarBeam_Center_Env", 1, 0.25f);
+				
+				ParticleSystem_SetActive("PS_PillarBeam_Middle_OutOfFocus", true);
+				ParticleSystem_SetVisible("PS_PillarBeam_Middle_OutOfFocus", true);
+				Entity_SetActive("main_ray_collector", true);
+				
+				if (mbOrbCageOpen==false)
+				{
+					ParticleSystem_SetActive("PS_PillarBeam_Middle", true);
+					ParticleSystem_SetVisible("PS_PillarBeam_Middle", true);
+					
+					if (Sound_Exists("Orb_Active_Loop_1")==false)
+						Sound_CreateAtEntity("Orb_Active_Loop_1", "03_07_dw_factory/baby_scanner/baby_scan_loop", "Orb_Target", 0.f, true, 0.55f);
+				}
+				
+				float fPillarRingLightBrightness = mbOrbCageOpen ? 8.f : 32.f;
+				Light_FadeBrightnessTo("Light_PillarRing", fPillarRingLightBrightness, 0.1f);
+				
+				mbPillarsActive = true;
+				ToggleMiddlePillarBeamLight();
+				
+				Entity_SetEffectBaseColor("Lab_B_Symbol_*", cColor(0));
+				Light_FadeBrightnessTo("Light_Lab_B_Symbol_*", 0.f, 0.1f);
+			}
+			else
+			{
+				EvaluatePortalOn();
+			}
+
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnChange_ToggleOrbCage(const tString &in asEntity, int alState)
+		{
+			if (alState==1) ToggleOrbCage(false);
+			else if (alState==-1) ToggleOrbCage(true);
+			else return;
+		}
+		
+		//-------------------------------------------------------
+		
+		void ToggleOrbCage(const bool abOpen)
+		{
+			cLux_AddDebugMessage("Toggle orb cage");
+			if (abOpen == mbOrbCageOpen) return;
+			mbOrbCageOpen = !mbOrbCageOpen;
+			
+			tString sCageAnim = abOpen ? "Open" : "Close";
+			
+			Entity_PlayAnimation("dw_orb_holder_1", sCageAnim, 0.25, false, true, "");
+			
+			Entity_AttachToSocket("Orb_Pedestal", "dw_orb_holder_1", "Orb_Socket", false);
+			Entity_SetActive("OrbSlot", abOpen && mbOrbInPlace==false);
+			
+			if (Map_TimerExists("OnTimer_OrbCageToggled"))
+				Map_RemoveTimer("OnTimer_OrbCageToggled");
+				
+			float fTime = abOpen ? 0.2f : 0.5f;
+			Map_AddTimer("Timer_OrbCageToggled", fTime, "OnTimer_OrbCageToggled");
+			
+			if (abOpen==false)
+			{
+				Entity_SetInteractionDisabled("Orb_Pedestal", true);
+				Map_RemoveTimer("Timer_EnableOrbInteraction");
+				return;
+			}
+			
+			Map_AddTimer("Timer_EnableOrbInteraction", 1.5f, "OnTimer_EnableOrbInteraction");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_EnableOrbInteraction(const tString&in asTimer)
+		{
+			Entity_SetInteractionDisabled("Orb_Pedestal", false);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_OrbCageToggled(const tString&in asTimer)
+		{
+			bool bFocusedBeamActive = mbPillarsActive && mbOrbCageOpen==false;
+			ParticleSystem_SetActive("PS_PillarBeam_Middle", bFocusedBeamActive);
+			ParticleSystem_SetVisible("PS_PillarBeam_Middle", bFocusedBeamActive);
+			
+			if (bFocusedBeamActive && Sound_Exists("Orb_Active_Loop_1")==false)
+				Sound_CreateAtEntity("Orb_Active_Loop_1", "03_07_dw_factory/baby_scanner/baby_scan_loop", "Orb_Target", 0.f, true, 0.55f);
+			else if (Sound_Exists("Orb_Active_Loop_1"))
+				Sound_Stop("Orb_Active_Loop_1", 1.f);
+			
+			if (mbPillarsActive)
+			{
+				float fPillarRingLightBrightness = mbOrbCageOpen ? 64.f : 16.f;
+				Light_FadeBrightnessTo("Light_PillarRing", fPillarRingLightBrightness, 0.1f);
+			}
+			else
+			{
+				Light_FadeBrightnessTo("Light_PillarRing", 0.f, 0.1f);
+			}
+			
+			ToggleMiddlePillarBeamLight();
+			EvaluatePortalOn();
+			
+			Lever_SetAutoMoveEnabled("dw_shutters_lever", false);
+			Lever_SetAutoMoveTarget("dw_shutters_lever", 1);
+		}
+		
+		//-------------------------------------------------------
+		
+		void ToggleMiddlePillarBeamLight()
+		{
+			float fBeamLightBrightness = 0;
+			if (mbPillarsActive)
+				fBeamLightBrightness = mbOrbCageOpen ? 3 : 8;
+				
+			Light_FadeBrightnessTo("Light_PillarBeam_Center", fBeamLightBrightness, 0.25f);
+		}
+		
+		//-------------------------------------------------------
+		
+		void ToggleShutters(const bool abOpen, const bool abInstant=false)
+		{
+			Entity_SetActive("portal_room_block_box*", !abOpen);
+			SlideDoor_SetClosed("dwf_metal_shutters_*", !abOpen, abInstant);
+			
+			// Keep the player away from getting stuck between the pillars and the shutters
+			Map_RemoveTimer("Timer_UnblockPlayer");
+			
+			if (abOpen==false)
+			{
+				Entity_SetActive("BlockBox_DebugStuck", true); 
+				return;
+			}
+			
+			Map_AddTimer("Timer_UnblockPlayer", 10, "OnTimer_UnblockPlayer");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_UnblockPlayer(const tString&in asTimer)
+		{
+			Entity_SetActive("BlockBox_DebugStuck", false);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_RaiseDust(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState!=1) return true;
+			
+			for(int i=0; i<6; ++i)
+			{
+				cParticleSystem@ pShutterDust = ParticleSystem_CreateAtEntity("Area_ShutterDust_Spawner_"+i+"_PS", "dust_impact_large_oneshot.ps", "Area_ShutterDust_Spawner_"+i, false);
+				pShutterDust.SetColor(cColor(0.451,0.438,0.277,0.2));
+			}
+			
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void ToggleSidePillar(int alPillarNum)
+		{
+			tString sPillarName = "Pillar_"+alPillarNum;
+			Entity_SetEffectsActive(sPillarName, true, true);
+			Entity_FadeEffectBaseColor(sPillarName, cColor(2), 1.f);
+			
+			tString sBeamName = "PS_PillarBeam_"+alPillarNum;
+			ParticleSystem_SetActive(sBeamName, true);
+			ParticleSystem_SetVisible(sBeamName, true);
+			
+			tString sLightName = "Light_PillarBeam_"+alPillarNum;
+			float fLighBrightness = true ? 5 : 0;
+			Light_FadeBrightnessTo(sLightName + "_1", fLighBrightness * 1.5, 0.25f);
+			Light_FadeBrightnessTo(sLightName + "_2", fLighBrightness, 0.25f);
+			
+			Lamp_SetLit("beam_disk_"+alPillarNum, true, true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void ToggleOrb()
+		{
+			float fOrbCausticBrightness = 0;
+			bool bOrbActive = mbConfigCorrect && mbOrbInPlace && mbPillarsActive && mbOrbCageOpen==false;
+			
+			if (bOrbActive)
+				fOrbCausticBrightness = mbOrbInPlace ? 30 : 0;
+			
+			Light_FadeBrightnessTo("Light_Pillar_Center_Caustic", fOrbCausticBrightness, 0.15f);
+			
+			float fIdleOrbLightBrightness = mbOrbInPlace ? 25 : 0;
+			Light_FadeBrightnessTo("PedestalHolder_Light_1", fIdleOrbLightBrightness, 0.5);
+			ParticleSystem_SetActive("PedestalHolder_PS", mbOrbInPlace);
+			ParticleSystem_SetVisible("PedestalHolder_PS", mbOrbInPlace);
+
+			bool bOn = mbPillarsActive && mbConfigCorrect && mbOrbInPlace;
+			ParticleSystem_SetActive("PS_PillarBeam_Flare", bOrbActive);
+			ParticleSystem_SetVisible("PS_PillarBeam_Flare", bOrbActive);
+			
+			Entity_SetActive("Orb_Target", bOrbActive);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnInteractLeave_ConfigSlider_Hor(const tString &in asEntity)
+		{
+			Slide_AutoMoveTo(asEntity, Entity_GetVarFloat(asEntity, "Target"));
+			CheckConfig();
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnInteractLeave_ConfigSlider_Ver(const tString &in asEntity)
+		{
+			Slide_AutoMoveTo(asEntity, Entity_GetVarFloat(asEntity, "Target"));
+			CheckConfig();
+		}
+		
+		//-------------------------------------------------------
+		
+		void CheckConfig()
+		{
+			mbConfigCorrect = mvSelectedSymbols[0] == gvPillarSolution[0] &&
+							mvSelectedSymbols[1] == gvPillarSolution[1] &&
+							mvSelectedSymbols[2] == gvPillarSolution[2];
+		}
+		
+		//-------------------------------------------------------
+
+		void UpdateSelectedSymbols(bool abInstant)
+		{
+			int lX = Entity_GetVarInt("ConfigSlider_Hor", "SelectState");
+			int lY = Entity_GetVarInt("ConfigSlider_Ver", "SelectState");
+			
+			Entity_SetEffectsActive("ConfigDeviceSymbol_*", false, true);
+			
+			Entity_SetEffectsActive("ConfigDeviceSymbol_"+lX+"_"+lY, true, true);
+			Entity_SetEffectsActive("ConfigDeviceSymbol_"+(lX+1)+"_"+lY, true, true);
+			Entity_SetEffectsActive("ConfigDeviceSymbol_"+(lX+2)+"_"+lY, true, true);
+			
+			mvSelectedSymbols[0] = gvPanelArray[lY][lX];
+			mvSelectedSymbols[1] = gvPanelArray[lY][lX+1];
+			mvSelectedSymbols[2] = gvPanelArray[lY][lX+2];
+			
+			cScript_SetGlobalArgFloat(0, GetSymbolAngle(mvSelectedSymbols[0]));
+			cScript_SetGlobalArgBool(1, abInstant);
+			cScript_RunGlobalFunc("Pillar_1", "cScrAlchemistsLabPillar", "_Global_SetAngle");
+			cScript_SetGlobalArgFloat(0, GetSymbolAngle(mvSelectedSymbols[1]));
+			cScript_SetGlobalArgBool(1, abInstant);
+			cScript_RunGlobalFunc("Pillar_2", "cScrAlchemistsLabPillar", "_Global_SetAngle");
+			cScript_SetGlobalArgFloat(0, GetSymbolAngle(mvSelectedSymbols[2]));
+			cScript_SetGlobalArgBool(1, abInstant);
+			cScript_RunGlobalFunc("Pillar_3", "cScrAlchemistsLabPillar", "_Global_SetAngle");
+		}
+		
+		//-------------------------------------------------------
+		
+		float GetSymbolAngle(ePillarSymbol aSymbol)
+		{
+			switch (aSymbol)
+			{
+				case ePS_M:
+					return 0;
+				case ePS_U:
+					return 90;
+				case ePS_T:
+					return 180;
+				case ePS_Y:
+					return 270;
+			}
+			return 0;
+		}
+		
+		//-------------------------------------------------------
+	 
+	//} END SCENE 5
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 6 *THE PLAYER SENDS THE EMITTER THROUGH THE PORTAL*
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+	
+	//-------------------------------------------------------
+	
+	bool mbOrbInPlace = false;
+	bool mbPortalOn = false;
+	int mlPortalBCount = 0;
+	bool mbExtenderSent = false;
+	bool mbMosqueTowerSeen = false;
+	cColor ActiveBtnColor(0.451,0.971,0.819,1);
+	cColor FailBtnColor(1,0,0,0);
+	float mfTowerBillboardScale = 0;
+	
+	//-------------------------------------------------------
+
+	bool CanUse_Orb(const tString &in asItemType, const tString &in asItemID, const tString &in asPickedEntity)
+	{
+		return asPickedEntity == "OrbSlot";
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnUse_Orb(const tString &in asItemType, const tString &in asItemID, const tString &in asTargetEntity, const tString &in asItemEntity, float afTimeElapsed, float afTimeStep)
+	{
+		Item_Unequip(asItemID);
+		Item_RemoveFromInventory(asItemID);
+		
+		Entity_SetActive("Orb_Pedestal", true);
+		Entity_SetInteractionDisabled("Orb_Pedestal", true);
+		mbOrbInPlace = true;
+			
+		Map_AddTimer("Timer_LockLabADoor", 0.5f, "Timer_LockLabADoor");
+
+		EvaluatePortalOn();
+
+		ToggleShutters(false);
+		Lever_SetAutoMoveEnabled("dw_shutters_lever", true);
+		Lever_SetAutoMoveTarget("dw_shutters_lever", 1);
+		
+		Sound_CreateAtEntity("PlaceOrb", "new_sounds/player/orb_put_down", "Orb_Pedestal");
+		Sound_CreateAtEntity("Sound_ShutterMechClose", "02_07_alchemist_lab/shutter/shutter_mech_close", "Sound_ShutterMovement");
+		
+		////////////////////
+		// Clear slide doors
+		ClearLabADoorArea("Area_LabADoorKeeper_Front", "Area_LabADoorPushTarget_Front");
+		ClearLabADoorArea("Area_LabADoorKeeper_Back", "Area_LabADoorPushTarget_Back");
+		
+		//////////////////
+		// Lock down lab A
+		MovingButton_SetSwitchedOn("LabADoor_Front_Button_1", false, true);
+		MovingButton_SetSwitchedOn("LabADoor_Back_Button_1", false, true);
+		MovingButton_SetLocked("LabADoor_Front_Button_*", true, true);
+		MovingButton_SetLocked("LabADoor_Back_Button_*", true, true);
+		
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	void Timer_LockLabADoor(const tString &in asTimer)
+	{
+		//Sound_Stop("LabADoorMoveLoop", 0);
+		Sound_CreateAtEntity("LabADoorLock1", "level_entity_shared/button/pressure_plate/pressure_plate_on", "LabADoor_Front", 0, false, 1, 5, 20);
+		Sound_CreateAtEntity("LabADoorLock2", "level_entity_shared/button/pressure_plate/pressure_plate_on", "LabADoor_Back", 0, false, 1, 5, 20);
+	}
+	
+	//-------------------------------------------------------
+	
+	void Timer_UnlockLabADoor(const tString &in asTimer)
+	{
+		//if (Sound_Exists("LabADoorMoveLoop1"))
+		//	Sound_Stop("LabADoorMoveLoop1", 0.1);
+		if (Sound_Exists("LabADoorMoveLoop2"))
+			Sound_Stop("LabADoorMoveLoop2", 0.1);
+	}
+	
+	//-------------------------------------------------------
+	
+	bool CanUse_VitaeCanister(const tString &in asItemType, const tString &in asItemID, const tString &in asPickedEntity)
+	{		
+		return (cString_GetFirstStringPos(asPickedEntity, "VitaeGridSlot") > -1 || 
+				asPickedEntity == "VitaeSlot_1" || 
+				asPickedEntity == "VitaeSlot_2" || 
+				asPickedEntity == "VitaeSlot_3");
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnCollide_ClearVitaeSlot(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		if (alState==-1)
+		{
+			if (asParent=="VitaeSlot_1") Entity_SetVarString("VitaeSlot_1", "sDummyEntIncluded_1", "");
+			if (asParent=="VitaeSlot_2") Entity_SetVarString("VitaeSlot_2", "sDummyEntIncluded_2", "");
+		}
+		else if (alState==1)
+		{
+			if (asParent=="VitaeSlot_1") Entity_SetVarString("VitaeSlot_1", "sDummyEntIncluded_1", asChild);
+			if (asParent=="VitaeSlot_2") Entity_SetVarString("VitaeSlot_2", "sDummyEntIncluded_2", asChild);
+		}
+		//cLux_AddDebugMessage("msPortalCannisterSlot_1_Ent: " + Entity_GetVarString("VitaeSlot_1", "sDummyEntIncluded_1"));
+		//cLux_AddDebugMessage("msPortalCannisterSlot_2_Ent: " + Entity_GetVarString("VitaeSlot_2", "sDummyEntIncluded_2"));
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnUse_VitaeCanister(const tString &in asItemType, const tString &in asItemID, const tString &in asTargetEntity, const tString &in asItemEntity, float afTimeElapsed, float afTimeStep)
+	{
+		Item_Unequip(asItemID);
+		Item_RemoveFromInventory(asItemID);
+		
+		Sound_CreateAtEntity("PlaceVitaeCanister", "03_07_DW_theatre/canister_unplug/small/small_insert", asTargetEntity);
+		
+		/////////////
+		// Vitae Grid
+		if (cString_GetFirstStringPos(asTargetEntity, "VitaeGridSlot") > -1)
+			return OnUse_VitaeCanister_VitaeGrid(asItemID, asTargetEntity);
+		
+		///////////////////////
+		// Life Support Machine
+		if (asTargetEntity == "VitaeSlot_3")
+			return OnUse_VitaeCanister_LifeSupport(asItemID, asTargetEntity);
+		
+		//////////////
+		//Portal slots
+		tString sNumSuff = cString_GetNumericSuffix(asTargetEntity);
+
+		Entity_SetActive("VitaeCanister_Placed_"+sNumSuff, true);
+		Entity_SetActive("VitaeSlot_"+sNumSuff, false);
+		Map_AddTimer("Lamp_VitaeCanister_"+sNumSuff, 1, "OnTimer_TogglePortalAVitaeLamp");
+		Light_FadeBrightnessTo("FailLight_PortalButton_"+sNumSuff, 0.f, 0.2f);
+		
+		// Disable any dummy canisters left inside.
+		tString sDummyVitaeCanister = Entity_GetVarString("VitaeSlot_"+sNumSuff, "sDummyEntIncluded_"+sNumSuff);
+		if (sDummyVitaeCanister!="" ) Entity_SetActive(sDummyVitaeCanister, false);
+		
+		// and that's about it
+		EvaluatePortalOn();
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_TogglePortalAVitaeLamp(const tString&in asTimer)
+	{
+		Lamp_SetLit(asTimer, true, true);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnInteract_TakeOrb(const tString &in asEntity)
+	{
+		mbOrbInPlace = false;
+		Entity_SetActive("OrbSlot", true);
+		
+		EvaluatePortalOn();
+		
+		MovingButton_SetLocked("LabADoor_Front_Button*", false, true);
+		MovingButton_SetLocked("LabADoor_Back_Button*", false, true);
+		
+		Map_AddTimer("Timer_UnlockLabADoor", 2.5f, "Timer_UnlockLabADoor");
+		Map_RemoveTimer("Timer_EvaluatePortalOn");
+		
+		ToggleShutters(true);
+		
+		Sound_CreateAtEntity("Sound_ShutterMechOpen", "02_07_alchemist_lab/shutter/shutter_mech_open", "Sound_ShutterMovement");
+		
+		/////////////////////////
+		// final pick up cutscene
+		if (mbExtenderSent && mbMosqueTowerSeen==false)
+		{
+			mfTowerBillboardScale = 0;
+			cVector3f vPlayerPos = Player_GetFeetPosition();
+			cVector3f vOrbPos = Map_GetEntity("OrbAnimPos").GetPosition();
+			vOrbPos.y = vPlayerPos.y;
+			float fAngle = cMath_GetAngleFromPoints3D(vOrbPos, vPlayerPos).y;
+			
+			PlayerBody_PlayCutsceneAtEntity("pick_up_and_look_at_orb_pedestal", "OrbAnimPos", false, 0.5, "OnAnimEnd_DisableFakeOrbPickup", 1, 0, 0, cMath_ToDeg(fAngle));
+			PlayerBody_SetCutsceneMaxPitch(18);
+			PlayerBody_SetCutsceneMaxYaw(25);
+			
+			// Delay this so it actually looks like it's been grabbed
+			Map_AddTimer("Timer_EnableFakeOrbPickup", 0.5f, "OnTimer_EnableFakeOrbPickup");
+			Voice_PlayDelayed("Dialogue_SeeOrbDestination", 1.5, -1,"", 3);
+			
+			//Delay pickup
+			Map_AddTimer("Timer_AddPedestalOrbToInventory", 7.f, "OnTimer_AddOrbToInventory");
+			
+			mbMosqueTowerSeen = true;
+			cScript_SetGlobalVarBool("Alchemists_TowerSeenInOrb", true);
+			return;
+		}
+		
+		//////////////////
+		// Regular pick up
+		Entity_SetActive("Orb_Pedestal", false);
+		Item_AddToInventory("Orb", true);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_EnableFakeOrbPickup(const tString&in asTimer)
+	{
+		Entity_SetActive("Orb_Pedestal", false);
+		Entity_SetActive("Orb_Target_Hand", true);
+		
+		Entity_SetCollideCharacter("Orb_Target_Hand",false);
+		Entity_SetCollide("Orb_Target_Hand",false);
+		Prop_SetStaticPhysics("Orb_Target_Hand",true);
+		
+		////////////////////////
+		// Attach to player hand
+		iLuxEntity@ pOrbHandEnt1 = Map_GetEntity("Orb_Target_Hand", eLuxEntityType_Prop);
+		pOrbHandEnt1.SetPosition(PlayerBody_GetSocket("R_Hand").GetWorldPosition());
+		Entity_AttachToSocket("Orb_Target_Hand", PlayerBody_GetEntityName(), "R_Hand", true, false);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnAnimEnd_DisableFakeOrbPickup(const tString&in asAnim)
+	{
+		Entity_SetActive("Orb_Target_Hand", false);
+		
+		if (mbPortalShadowDone) return;
+		mbPortalShadowDone=true;
+		Map_AddTimer("Timer_AlertShadowPostLabA", 4, "Seq_AlertShadowPostLabA");
+	}
+	
+	//-------------------------------------------------------
+	
+	cSequenceStatesData mSeqAlertShadowPostLabA;
+	void Seq_AlertShadowPostLabA(const tString &in asTimer)
+	{
+		Sequence_Begin("Seq_AlertShadowPostLabA", mSeqAlertShadowPostLabA);
+		if (Sequence_DoStepAndWait(0.5f))
+		{
+			Sound_CreateAtEntity("shadow_roar", "creatures/vocalisations/creature/shadow_guardian/shadow_guardian_activated", "Area_StartShadowFleshCorridor_1");
+			FearHandler_SetForcedAddFearRate(0.5f, 4.f, true, -1.f, 0.1f, 0.5f);
+			Voice_PlayDelayed("Dialogue_TheShadowComes", 2, -1, "", 1);
+		}
+		else if (Sequence_DoStepAndWait(1.5f))
+		{
+			Effect_Shake_Start(0.015f, 6.f, 1.f, 1.f);	
+		}
+		Sequence_End();
+	}
+	
+	//-------------------------------------------------------
+	
+	bool mbPortalShadowDone = false;
+	void EvaluatePortalOn()
+	{
+		ToggleOrb();
+		TogglePortal();
+	}
+	
+	//-------------------------------------------------------
+	
+	void TogglePortal()
+	{
+		bool bVitaeCanistersPlaced = Entity_IsActive("VitaeCanister_Placed_1") && Entity_IsActive("VitaeCanister_Placed_2");
+		if (!mbPortalOn && mbConfigCorrect && mbOrbInPlace && mbPillarsActive && bVitaeCanistersPlaced && mbOrbCageOpen==false)
+		{
+			SetPortalOn(true);
+			cScript_SetGlobalVarBool("Alchemists_PortalHasTurnedOn", true);
+			
+			Effect_Shake_Start(0.015f, 0.f, 0.5f, 1.f);
+			
+			cVector3f vFlashPos = Map_GetEntity("Orb_Target", eLuxEntityType_Prop).GetPosition();
+			LightFlash_Add(0.f, 0.1f, 0.5f, vFlashPos, cColor(0.34,0.76,1), 2.5f, 8.f);
+		}
+		else if (mbPortalOn && 
+			(mbConfigCorrect == false || 
+			mbOrbInPlace == false || 
+			mbPillarsActive == false || 
+			Entity_IsActive("VitaeCanister_Placed_1") == false || 
+			Entity_IsActive("VitaeCanister_Placed_2") == false || 
+			mbOrbCageOpen))
+		{
+			SetPortalOn(false);
+			Effect_Shake_Start(0.0083f, 0.f, 0.2f, 0.5f);
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void SetPortalOn(bool abState)
+	{
+		mbPortalOn = abState;
+
+		Entity_SetActive("PortalEffect", abState);
+		ParticleSystem_SetActive("PortalLabA_Idle_PS", abState);
+		ParticleSystem_SetVisible("PortalLabA_Idle_PS", abState);
+		Entity_SetEffectsActive("PortalButton", abState, true);
+		Lamp_SetLit("pillars_lamp_vitae_pipe_*", abState, abState);
+		
+		if (abState)
+		{
+			Sound_CreateAtEntity("PortalStart", "04_03_undercity/machine/energy_on", "Portal_A");
+			Sound_CreateAtEntity("PortalLoop", "04_03_undercity/machine/energy", "Portal_A", 0, true, 0.5f);
+			
+			Light_FadeBrightnessTo("Light_Portal_Ring", 2, 0.1);
+		}
+		else
+		{
+			Sound_CreateAtEntity("PortalStop", "04_03_undercity/machine/energy_off", "Portal_A");
+			Sound_Stop("PortalLoop", 0);
+			
+			Light_FadeBrightnessTo("Light_Portal_Ring", 0, 0.1);
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnChange_PortalButton(const tString &in asEntity, int alState)
+	{
+		if (alState != 1) return;	
+		
+		////////////////
+		// Fail behavior
+		if (mbPortalOn==false)
+		{
+			PlayNegativeFeedback(asEntity);
+			return;
+		}
+		
+		///////////
+		// Teleport
+		if (Map_TimerExists("Timer_CheckPortalEntities")) return;
+		
+		Timer_CheckPortalEntities("FirstCheck");
+		Prop_SetActiveAndFade("portalcage_suckeffect", true, 0.01f);
+		Map_AddTimer("Timer_DisablePoartlSuckFx", 0.1, "OnTimer_DisablePortalTeleportFx");
+	}
+	
+	//-------------------------------------------------------
+	
+	void PlayNegativeFeedback(const tString&in asEntity)
+	{
+		if (Map_TimerExists(asEntity)) return;
+		Map_AddTimer(asEntity, 0.2f, "OnTimer_StopNegativeFeedback");
+		
+		///////////////////////
+		// Control Panel Button
+		if (asEntity=="ControlPanelButton")
+		{
+			Light_SetBrightness("FailLight_ControlPanelButton", 8.f);
+			return;
+		}
+		
+		////////////////
+		// Portal Button
+		if (asEntity!="PortalButton") return;
+		
+		Entity_SetEffectsActive("PortalButton", true, true);
+		
+		if (mbOrbInPlace==false || mbOrbCageOpen)
+		{
+			Light_SetBrightness("FailLight_OrbCage", 8.f);
+			Entity_SetEffectBaseColor("pillars_lamp_vitae_pipe_*", cColor(2,0,0,1));
+			Lamp_SetLit("pillars_lamp_vitae_pipe_*", true, true);
+		}
+		
+		if (Entity_IsActive("VitaeCanister_Placed_1")==false)
+			Light_SetBrightness("FailLight_PortalButton_1", 12.f);
+			
+		if (Entity_IsActive("VitaeCanister_Placed_2")==false)
+			Light_SetBrightness("FailLight_PortalButton_2", 12.f);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_StopNegativeFeedback(const tString&in asTimer)
+	{
+		Light_FadeBrightnessTo("FailLight_"+asTimer+"*", 0.f, 0.2f);
+		
+		float fFailLightBrightness_1 = Entity_IsActive("VitaeCanister_Placed_1")? 0 : 3;
+		Light_FadeBrightnessTo("FailLight_PortalButton_1", fFailLightBrightness_1, 0.2);
+			
+		float fFailLightBrightness_2 = Entity_IsActive("VitaeCanister_Placed_2")? 0 : 3;
+		Light_FadeBrightnessTo("FailLight_PortalButton_2", fFailLightBrightness_2, 0.2);
+		
+		/////////////
+		// Fail sound
+		Sound_CreateAtEntity(asTimer+"NegativeFeedback", "03_07_dw_factory/torture_victim/machine_feedback/button_negative", asTimer);
+		
+		////////////////
+		// Orb and Pipes
+		if (asTimer!="PortalButton") return;
+		Entity_SetEffectsActive(asTimer, false, false);
+		Light_FadeBrightnessTo("FailLight_OrbCage", 0.f, 0.5f);
+		
+		Lamp_SetLit("pillars_lamp_vitae_pipe_*", false, true);
+		Map_AddTimer("OnTimer_ResetPortalPipeColor", 0.2f, "OnTimer_ResetPortalPipeColor");
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_ResetPortalPipeColor(const tString&in asTimer)
+	{
+		Entity_SetEffectBaseColor("pillars_lamp_vitae_pipe_*", cColor(1,1,1,1));
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_DisablePortalTeleportFx(const tString&in asTimer)
+	{
+		Prop_SetActiveAndFade("portalcage_suckeffect", false, 1.f);
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnCollide_SetExtenderStaticPhysics(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		// Making sure that the extender can be teleported.
+		iLuxEntity@ pExtender = Map_GetEntity(asChild, eLuxEntityType_Prop);
+		if (alState==1)
+			pExtender.SetVarBool("bInsidePortal", true);
+		else if (alState==-1)
+			pExtender.SetVarBool("bInsidePortal", false);
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	void Timer_CheckPortalEntities(const tString &in asTimer)
+	{
+		if (mbPortalOn==false)
+		{
+			Map_RemoveTimer("Timer_MoveObjectThroughPortal");
+			Map_RemoveTimer("Timer_CheckPortalEntities");
+			return;
+		}
+		
+		array<iPhysicsBody@> vBodies;
+		GetRigidBodiesInArea("Portal_A", vBodies);
+		
+		if (vBodies.length() > 0)
+		{
+			tString sName = cLux_GetBodyEntity(vBodies[0]).GetName();
+			bool bIsExtender = cString_GetFirstStringPos(sName, "Extender_")>=0;
+			
+			if (Entity_IsInteractedWith(sName))
+				Player_ChangeStateToNormal();
+			cVector3f vOffset = vBodies[0].GetWorldPosition() - Map_GetEntity("Portal_A").GetPosition();
+			
+			if (bIsExtender)
+			{
+				vOffset = 0;
+				mbExtenderSent = true;
+			}
+			
+			//Effects
+			PortalSendEffects(sName);
+			
+			Entity_SetActive(sName, false);
+			Entity_PlaceAtEntity(sName, "Portal_B", vOffset, bIsExtender);
+			Prop_ClearVelocity(sName);
+			ClearPortalB();
+			
+			Map_AddTimer(sName, 0.8, "Timer_MoveObjectThroughPortal");
+			
+			float fTimeBetweenObjects = cMath_RandRectf(0.8, 1.2);
+			Map_AddTimer("Timer_CheckPortalEntities", fTimeBetweenObjects, "Timer_CheckPortalEntities");
+		}
+		else if(asTimer == "FirstCheck")
+		{
+			PortalSendEffects("Portal_A");
+			Map_AddTimer("Portal_B", 0.8, "PortalSendEffects");
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void PortalSendEffects(const tString &in asEntity)
+	{
+		Sound_CreateAtEntity("PortalSend", "04_03_undercity/machine/energy_on", "Portal_A");
+		ParticleSystem_CreateAtEntity("teleport_in_ps", "portal_lab_teleport_IN.ps", asEntity, false);
+		LightFlash_Add(0.1,0.075,0.075, asEntity, cColor(0.42,0.85,1,1), 3, 8);
+	}
+	
+	//-------------------------------------------------------
+	
+	void PortalArriveEffects(const tString &in asEntity)
+	{
+		ParticleSystem_CreateAtEntity("teleport_out_ps", "portal_lab_teleport_OUT.ps", asEntity, false);
+		Sound_CreateAtEntity("PortalSend", "04_03_undercity/machine/energy_on", "Portal_B");
+		LightFlash_Add(0.1,0.075,0.075, asEntity, cColor(0.42,0.85,1,1), 3, 8);
+	}
+	
+	//-------------------------------------------------------
+	
+	int mlTeleportedObjects = 0;
+	
+	void Timer_MoveObjectThroughPortal(const tString &in asTimer)
+	{
+		if (mlPortalBCount > 0)
+		{
+			Map_AddTimer(asTimer, 0.8, "Timer_MoveObjectThroughPortal");
+			return;
+		}
+		
+		Voice_PlayDelayed("Dialogue_TeleportSomething", 1);
+		
+		Entity_SetActive(asTimer, true);
+		PortalArriveEffects(asTimer);
+		
+		if (asTimer != "Extender_PillarRoom" && asTimer != "Extender_Start")
+		{
+			mlTeleportedObjects++;
+			if (mlTeleportedObjects == 6)
+			{
+				Achievement_Unlock(eAchievement_Translocator);
+				Voice_PlayDelayed("Dialogue_TeleportLots", 1.0f);
+			}
+		}
+			
+		
+		//Only add initial impulse to non-extenders to clear the area
+		if (cString_GetFirstStringPos(asTimer, "Extender_") < 0)
+		{
+			Entity_AddImpulse(asTimer, cVector3f_Back, false, false);
+		}
+		
+		if (Voice_SubjectExists("Dialogue_TeleportSomething"))
+			{
+				Music_PlayExt("A2_02_07_Small_Portal_Activate.ogg", false, 0.3f, 1.0f, 0.0f, 1.0f, eMusicPrio_BigEvent, false);
+			}
+	}
+	
+	//-------------------------------------------------------
+	
+	void ClearPortalB()
+	{
+		array<iPhysicsBody@> vBodies;
+		GetRigidBodiesInArea("Portal_B", vBodies);
+		
+		mlPortalBCount = vBodies.length();
+		if (mlPortalBCount==0) return;
+		
+		float fTime = 0;
+		for (int i = 0; i < vBodies.length(); i++)
+		{
+			tString sName = cLux_GetBodyEntity(vBodies[i]).GetName();
+			Map_AddTimer(sName+"_1", fTime, "Timer_PushObjectOutOfPortal");
+			fTime+=0.095;
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void Timer_PushObjectOutOfPortal(const tString &in asTimer)
+	{
+		float fSuffix = cString_GetNumericSuffixFloat(asTimer, 1.f);
+		int lSuffixPos = cString_GetLastCharPos(asTimer, '_');
+		tString sEntity = cString_Sub(asTimer, 0, lSuffixPos);
+		
+		if (Entity_GetCollide(sEntity, "Portal_B"))
+		{
+			//cLux_AddDebugMessage("Strength = "+fSuffix);
+			
+			// Check if the entity seems to be stuck
+			if (fSuffix > 3.5f)
+			{
+				Map_GetEntity(sEntity).GetMainBody().SetCollideFlags(cLux_GetCurrentMap().GetCollideFlag("-cage"));
+			}
+			
+			Entity_AddImpulse(sEntity, cVector3f_Back*fSuffix, false, false);
+			Map_AddTimer(sEntity+"_"+(fSuffix+0.5f), 0.2, "Timer_PushObjectOutOfPortal");
+		}
+		else
+		{
+			//cLux_AddDebugMessage("Enabling collision");
+			Map_GetEntity(sEntity).GetMainBody().SetCollideFlags(-1);
+			mlPortalBCount--;
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void GetRigidBodiesInArea(const tString &in asArea, array<iPhysicsBody@> &out avOutVector)
+	{
+		iLuxEntity@ pArea = Map_GetEntity(asArea, eLuxEntityType_Area);
+		cBoundingVolume boundingVolume = pArea.GetBody(0).GetBoundingVolume();
+		cLux_GetCurrentMap().GetPhysicsWorld().GetBodiesInAABB(boundingVolume.GetMin(), boundingVolume.GetMax(), avOutVector);
+		
+		for (int i = 0; i < avOutVector.length(); i++)
+		{
+			iPhysicsBody @pBody = avOutVector[i];
+			
+			if(pBody.IsActive()==false || pBody.GetMass()==0)
+			{
+				avOutVector.removeAt(i);
+				i--;
+				continue;
+			}
+			
+			iLuxEntity @pEntity = cLux_GetBodyEntity(pBody);
+			if(pEntity == null || Entity_GetCollide(pEntity.GetName(), asArea)==false)
+			{
+				avOutVector.removeAt(i);
+				i--;
+			}
+		}
+	}
+ 
+	//-------------------------------------------------------
+		
+	void OnReceiverPower_LabB(bool abActive, const tString&in asEntity)
+	{
+		if (abActive)
+		{
+			if (mbLabBShadowFleshSeqStarted) return;
+			
+			//SetDoorActive("LabBDoor_*", true);
+			MovingButton_SetSwitchedOn("LabBDoor_Button_*", true, true);
+			
+			Map_AddTimer("Timer_EnableLabBButtons", 0.5, "Timer_EnableLabBButtons");
+			Map_AddTimer("Timer_PortalLabBPowerOn", 1, "Timer_PortalLabBPowerOn");
+			
+			float fBlinkSpeedfactor = mbExtenderSent? 1 : 0;
+			
+			Map_AddTimer("Dynamic_Lamp_LabB_1", fBlinkSpeedfactor + 0.02, "Timer_LightLamp");
+			Map_AddTimer("Dynamic_Lamp_LabB_2", fBlinkSpeedfactor + 0.1, "Timer_LightLamp");
+			Map_AddTimer("Dynamic_Lamp_LabB_4", fBlinkSpeedfactor + 0.05, "Timer_LightLamp");
+			Map_AddTimer("Dynamic_Lamp_LabB_5", fBlinkSpeedfactor + 0.025, "Timer_LightLamp");
+			Map_AddTimer("Dynamic_Lamp_LabB_6", fBlinkSpeedfactor + 0.08, "Timer_LightLamp");
+			
+			Light_FadeBrightnessTo("Lamp_LabB_Area_Light_*", 1, 1.f);
+		}
+		else
+		{
+			//SetDoorActive("LabBDoor_*", false);
+			MovingButton_SetLocked("LabBDoor_Button*", true, true);
+			
+			if (Map_TimerExists("Timer_EnableLabBButtons")==false)
+				Sound_CreateAtEntity("LabBReceiverOff", "03_04_pillar_room/config_device/plate_energy_misaligned", "Receiver_LabB", 0, false, 1, 15, 40);
+			
+			Map_RemoveTimer("Timer_EnableLabBButtons");
+			Map_RemoveTimer("Timer_PortalLabBPowerOn");
+			Map_RemoveTimer("Dynamic_Lamp_LabB_1");
+			Map_RemoveTimer("Dynamic_Lamp_LabB_2");
+			Map_RemoveTimer("Dynamic_Lamp_LabB_3");
+			Map_RemoveTimer("Dynamic_Lamp_LabB_4");
+			Map_RemoveTimer("Dynamic_Lamp_LabB_5");
+			Map_RemoveTimer("Dynamic_Lamp_LabB_6");
+			
+			Lamp_SetLit("Dynamic_Lamp_LabB_*", false, true);
+			Light_FadeBrightnessTo("Lamp_LabB_Area_Light_*", 0, 0.1f);
+			
+			if (Sound_Exists("RoomLights"))
+				Sound_Stop("RoomLights", 1);
+		}
+	}
+ 
+	//-------------------------------------------------------
+	
+	void Timer_EnableLabBButtons(const tString &in asTimer)
+	{
+		
+		MovingButton_SetLocked("LabBDoor_Button*", false, true);
+		Sound_CreateAtEntity("LabBReceiverOn", "03_04_pillar_room/config_device/plate_solve_clunk", "Receiver_LabB", 0, false, 1, 15, 40);
+	}
+	
+	//-------------------------------------------------------
+	
+	void Timer_PortalLabBPowerOn(const tString &in asTimer)
+	{
+		Sound_CreateAtEntity("RoomLights", "03_07_dw_factory/level/torture_room_lights", "PortalLabBAudio");
+	}
+		
+	//-------------------------------------------------------
+	 
+	//} END SCENE 6
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 7 *THE PLAYER EXPLORES THE PORTAL LAB B*
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+	
+	//-------------------------------------------------------
+	
+	bool mbLabBShadowFleshSeqStarted=false;
+	bool mbShadowFleshLabBPart2Done=false;
+	
+	//-------------------------------------------------------
+	
+	void DoShadowFleshEffectsAtEntity(const tString&in asName)
+	{
+		float fRandRadius = cMath_RandRectf(6, 10);
+		
+		if (cString_GetLastChar(asName)=="*")
+		{
+			array<iLuxEntity@> vEntities;
+			Map_GetEntityArray(asName, vEntities, eLuxEntityType_Area);
+			for (int i=0; i<vEntities.length(); ++i)
+			{
+				cVector3f vShadowFxPos = Map_GetEntity(vEntities[i].GetName(), eLuxEntityType_Area).GetPosition();
+				ShadowFlesh_DoFleshEffectsAtPos(vShadowFxPos, fRandRadius);
+			}
+			return;
+		}
+		
+		cVector3f vShadowFxPos = Map_GetEntity(asName, eLuxEntityType_Area).GetPosition();
+		ShadowFlesh_DoFleshEffectsAtPos(vShadowFxPos, fRandRadius);
+	}
+		
+	//-------------------------------------------------------
+	
+	bool OnCollide_SpawnBasementFleshEffects(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		if (mbExtenderSent==false) return true;
+		
+		Pregnancy_SetBabyKicksEnabled(false);
+		DoShadowFleshEffectsAtEntity("Area_ShadowFlesh_Effects_Vitae_*");
+		return false;
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnCollide_StartShadowFleshCorridor(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		if (alState!=1) return true;
+		if (mbExtenderSent==false) return true;
+		
+		Pregnancy_SetBarksActive(false);
+		
+		////////////////////////////
+		// Start the shadow sequence
+		if (asParent == "Area_StartShadowFleshCorridor_1")
+		{
+			Seq_ShadowFleshCorridor("");
+			return false;
+		}
+		
+		/////////////////////////
+		// Break the glass window
+		if (asParent != "Area_StartShadowFleshCorridor_2") return true;
+		
+		Sound_CreateAtEntity("Sound_ShadowGlassBreak", "04_02_sandstorm/critters/glass_break", "PSPos_GlassBreak_1");
+		
+		Entity_SetActive("Area_Whisper", true);
+		
+		ShadowFlesh_Spawn("ShadowChase_Path_9_*", "Decal_ShadowChase_Path_9_*", 2.f, 4.f, true);
+		
+		Effect_Shake_Start(0.05f, 1.f, 0.5f, 1.f);
+		Sound_CreateAtEntity("Sound_ShadowRoar", "creatures/vocalisations/creature/shadow_guardian/shadow_guardian_activated", "player");
+		FearHandler_SetForcedAddFearRate(0.5f, 6.f, true, -1.f, 0.1f);
+		
+		Light_FadeBrightnessTo("Light_ShadowChase_Path_9_*", 1.f, 1.f);
+		
+		Entity_SetActive("FearScaryObject_ShadowFlesh_Corridor_9_*", true);
+		
+		ShadowFlesh_Spawn("ShadowChase_Path_8_*", "Decal_ShadowChase_Path_8_*", 1.f, 3.f, true);
+		Light_FadeBrightnessTo("Light_ShadowChase_Path_8_*", 1.f, 1.f);
+		
+		ShadowFlesh_Spawn("ShadowChase_Path_13_*", "Decal_ShadowChase_Path_13_*", 1.f, 3.f, true);
+		Entity_SetActive("FearScaryObject_ShadowFlesh_Corridor_13_*", true);
+		
+		Entity_SetActive("PortalLabGlassWindow_1", false);
+		ParticleSystem_CreateAtEntity("PS_BreakGlass_1", "grass_breaking_full.ps", "PSPos_GlassBreak_1", false);
+		ParticleSystem_CreateAtEntity("PS_BreakGlass_2", "grass_breaking_full.ps", "PSPos_GlassBreak_2", false);
+		
+		return false;
+	}
+	
+	//-------------------------------------------------------
+	
+	cSequenceStatesData mSeq_ShadowFleshCorridor;
+	
+	void Seq_ShadowFleshCorridor(const tString &in asTimer)
+	{
+		Sequence_Begin("Seq_ShadowFleshCorridor", mSeq_ShadowFleshCorridor);
+		
+		if (Sequence_DoStepAndWait(0.5f))
+		{
+			Music_Play("A2_3_3_Guardian_Warning.ogg", 0.8f, false, eMusicPrio_BigEvent);
+
+			Entity_SetActive("blockbox_shadow_corridor", true);
+			DoShadowFleshEffectsAtEntity("Area_ShadowFlesh_Effects_Corridor_1");
+			Entity_SetActive("FearScaryObject_ShadowFlesh_Corridor_1_*", true);
+			ShadowFlesh_Spawn("ShadowChase_Path_1_*", "Decal_ShadowChase_Path_1_*", 2.f, 4.f, true);
+			Light_FadeBrightnessTo("Light_ShadowChase_Path_1_*", 1.f, 1.f);
+			
+			DropDebris("Debris_ShadowChase_Path_4_*");
+			DropDebris("Debris_ShadowChase_Path_7_*");
+		}
+		else if (Sequence_DoStepAndWait(1.f))
+		{
+			ShadowFlesh_Spawn("ShadowChase_Path_2_*", "Decal_ShadowChase_Path_2_*", 1.5f, 2.5f, true);
+		}
+		else if (Sequence_DoStepAndWait(1.5f))
+		{
+			ShadowFlesh_Spawn("ShadowChase_Path_3_*", "Decal_ShadowChase_Path_3_*", 1.f, 2.f, true);
+			Entity_SetActive("FearScaryObject_ShadowFlesh_Corridor_3_*", true);
+			Light_FadeBrightnessTo("Light_ShadowChase_Path_3_*", 1.f, 1.f);
+			Voice_PlayDelayed("Dialogue_TheShadowAppears", 1.f);
+		}
+		else if (Sequence_DoStepAndWait(2.f))
+		{
+			Effect_Shake_Start(0.075f, 1.f, 0.5f, 1.f);
+			Sound_CreateAtEntity("Sound_ShadowRoar", "creatures/vocalisations/creature/shadow_guardian/shadow_guardian_activated", "player");
+			
+			ShadowFlesh_Spawn("ShadowChase_Path_4_*", "Decal_ShadowChase_Path_4_*", 1.f, 2.f, true);
+			Entity_SetActive("FearScaryObject_ShadowFlesh_Corridor_4_*", true);
+			Light_FadeBrightnessTo("Light_ShadowChase_Path_4_*", 1.f, 1.f);
+			
+			ShadowFlesh_Spawn("ShadowChase_Path_5_*", "Decal_ShadowChase_Path_5_*", 1.f, 2.f, true);
+			
+			ShadowFlesh_Spawn("ShadowChase_Path_6_*", "Decal_ShadowChase_Path_6_*", 1.f, 2.f, true);
+			Entity_SetActive("FearScaryObject_ShadowFlesh_Corridor_6_*", true);
+			Light_FadeBrightnessTo("Light_ShadowChase_Path_6_*", 1.f, 1.f);
+		}
+		else if (Sequence_DoStepAndContinue())
+		{
+			ShadowFlesh_Spawn("ShadowChase_Path_7_*", "Decal_ShadowChase_Path_7_*", 2.f, 4.f, true);
+		}
+		
+		Sequence_End();
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnCollide_StartShadowFleshLabB(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		if (alState!=1) return true;
+		
+		Entity_SetActive("Trigger_LookAtRift*",false);
+		
+		if (asParent == "Area_StartShadowFleshLabB_Blocker")
+		{
+			Effect_Shake_Start(0.065f, 2.f, 1.f, 1.f);
+			DropDebris("Debris_ShadowChase_Path_23_*");
+			ShadowFlesh_Spawn("ShadowChase_Path_LabBlocker_*", "Decal_ShadowChase_Path_LabBlocker_*", 1.5f, 2.5f, true);
+			return false;
+		}
+		
+		else if (asParent == "Area_StartShadowFleshLabB_1")
+		{
+			if (mbLabBShadowFleshSeqStarted) return true;
+			Seq_ShadowFleshLabB_Part1("");
+			mbLabBShadowFleshSeqStarted = true;
+			
+			return false;
+		}
+		
+		if (asParent != "Area_StartShadowFleshLabB_2") return true;
+		
+		if (mbShadowFleshLabBPart2Done) return false;
+		if (SequenceStates_IsActive("Seq_ShadowFleshLabB_Part2")) return false;
+		
+		mbShadowFleshLabBPart2Done = true;
+		Seq_ShadowFleshLabB_Part2("");
+		return false;
+	}
+		 
+	//-------------------------------------------------------
+		
+	cSequenceStatesData mSeq_ShadowFleshLabB_Part1;
+	void Seq_ShadowFleshLabB_Part1(const tString &in asTimer)
+	{
+		Sequence_Begin("Seq_ShadowFleshLabB_Part1", mSeq_ShadowFleshLabB_Part1);
+		if (Sequence_DoStepAndWait(0.5))
+		{
+			Entity_SetActive("blockbox_shadow_lab_b", true);
+			MovingButton_SetLocked("LabBDoor_Button*", true, true);
+			SlideDoor_SetOpenAmount("LabBDoor_1", 0.5, false);
+			
+			Lamp_SetFlickerActive("Dynamic_Lamp_LabB_*", true);
+			Light_SetFlickerActive("Lamp_LabB_Area_Light_*", true);
+			
+			ShadowFlesh_Spawn("ShadowChase_Path_11_*", "Decal_ShadowChase_Path_11_*", 1.5f, 2.5f, true);
+			Entity_SetActive("FearScaryObject_ShadowFlesh_Corridor_11_*", true);
+			
+			ShadowFlesh_Spawn("ShadowChase_Path_12_*", "Decal_ShadowChase_Path_12_*", 1.5f, 2.5f, true);
+			
+			Effect_Shake_Start(0.065f, 2.f, 1.f, 1.f);
+			Sound_CreateAtEntity("Sound_ShadowRoar", "creatures/vocalisations/creature/shadow_guardian/shadow_guardian_activated", "player");
+			FearHandler_SetForcedAddFearRate(0.5f, 6.f, true, -1.f, 0.1f);
+			
+			DropDebris("Debris_ShadowChase_Path_15_*");
+		}
+		else if (Sequence_DoStepAndWait(1.5))
+		{
+			ShadowFlesh_Spawn("ShadowChase_Path_14_*", "Decal_ShadowChase_Path_14_*", 1.5f, 3.f, true);
+			Entity_SetActive("FearScaryObject_ShadowFlesh_Corridor_14_*", true);
+			
+			DropDebris("Debris_ShadowChase_Path_21_*");
+			DropDebris("Debris_ShadowChase_Path_22_*");
+
+			Light_FadeBrightnessTo("Light_ShadowChase_Path_14_*", 1.f, 1.f);
+			
+		}
+		else if (Sequence_DoStepAndWait(8.f))
+		{
+			Lamp_SetLit("Dynamic_Lamp_LabB_*", false, true);
+			Light_SetBrightness("Lamp_LabB_Area_Light_*", 0);
+			
+			ShadowFlesh_Spawn("ShadowChase_Path_16_*", "Decal_ShadowChase_Path_16_*", 2.f, 4.f, true);
+			ShadowFlesh_Spawn("ShadowChase_Path_18_*", "Decal_ShadowChase_Path_18_*", 2.f, 4.f, true);
+			Entity_SetActive("FearScaryObject_ShadowFlesh_Corridor_18_*", true);
+
+			Light_FadeBrightnessTo("Light_ShadowChase_Path_18_*", 1.f, 1.f);
+		}
+		else if (Sequence_DoStepAndContinue())
+		{
+			if (mbShadowFleshLabBPart2Done==false && SequenceStates_IsActive("Seq_ShadowFleshLabB_Part2")==false)
+				Seq_ShadowFleshLabB_Part2("");
+		}
+		
+		Sequence_End();
+	}
+	
+	//-------------------------------------------------------
+	
+	cSequenceStatesData mSeq_ShadowFleshLabB_Part2;
+	void Seq_ShadowFleshLabB_Part2(const tString &in asTimer)
+	{
+		Sequence_Begin("Seq_ShadowFleshLabB_Part2", mSeq_ShadowFleshLabB_Part2);
+		if (Sequence_DoStepAndWait(3.5))
+		{
+			Effect_Shake_Start(0.065f, 2.f, 1.f, 1.f);
+			Sound_CreateAtEntity("Sound_ShadowRoar", "creatures/vocalisations/creature/shadow_guardian/shadow_guardian_activated", "player");
+			FearHandler_SetForcedAddFearRate(0.5f, 6.f, true, -1.f, 0.1f);
+			
+			ShadowFlesh_Spawn("ShadowChase_Path_15_*", "Decal_ShadowChase_Path_15_*", 1.5f, 3.f, true);
+			ShadowFlesh_Spawn("ShadowChase_Path_17_*", "Decal_ShadowChase_Path_17_*", 1.f, 2.f, true);
+			ShadowFlesh_Spawn("ShadowChase_Path_19_*", "Decal_ShadowChase_Path_19_*", 2.f, 4.f, true);
+			ShadowFlesh_Spawn("ShadowChase_Path_20_*", "Decal_ShadowChase_Path_20_*", 2.f, 4.f, true);
+			Entity_SetActive("FearScaryObject_ShadowFlesh_Corridor_15_*", true);
+			
+			Light_FadeBrightnessTo("Light_ShadowChase_Path_19_*", 1.f, 1.f);
+			Light_FadeBrightnessTo("Light_ShadowChase_Path_15_*", 1.f, 1.f);
+			
+			
+			Music_Play("A2_3_3_Shadow_Spread.ogg", 0.8f, false, eMusicPrio_BigEvent);
+		}
+		else if (Sequence_DoStepAndWait(8.f))
+		{	
+			ShadowFlesh_Spawn("ShadowChase_Path_21_*", "Decal_ShadowChase_Path_21_*", 2.5f, 3.5f, true);
+			
+			ShadowFlesh_Spawn("ShadowChase_Path_22_*", "Decal_ShadowChase_Path_22_*", 1.5f, 2.f, true);
+			
+			ShadowFlesh_Spawn("ShadowChase_Path_23_*", "Decal_ShadowChase_Path_23_*", 1.5f, 3.f, true);
+			Entity_SetActive("FearScaryObject_ShadowFlesh_Corridor_23_*", true);
+			
+			DropDebris("Debris_ShadowChase_Path_24_*");
+		}
+		else if (Sequence_DoStepAndContinue())
+		{
+			StartShadowFleshRift();
+		}
+		
+		Sequence_End();
+	}
+	
+	//-------------------------------------------------------
+	 
+	//} END SCENE 7
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 8 *THE PLAYER OPENS THE RIFT AND LEAVES THE DARK WORLD*
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+
+	void OnRiftStage_Exit(const tString &in asRift, int alStage, bool abOpening, float afOpenAmount)
+	{
+		cLux_AddDebugMessage("afOpenAmount " + afOpenAmount);
+		
+		Prop_SetActiveAndFade("Wall_rift_rock_*", afOpenAmount < 0.55, 1.f);
+		
+		if (afOpenAmount >= 0.75 && abOpening)
+			StartShadowFleshRift();
+	}
+	 
+	//-------------------------------------------------------
+	
+	void StartShadowFleshRift()
+	{
+		if (mbRiftShadowAppeared==false && SequenceStates_IsActive("Seq_ShadowFleshRift")==false)
+			Seq_ShadowFleshRift("");
+	}
+	
+	//-------------------------------------------------------
+	
+	cSequenceStatesData mSeq_ShadowFleshRift;
+	void Seq_ShadowFleshRift(const tString &in asTimer)
+	{
+		Sequence_Begin("Seq_ShadowFleshRift", mSeq_ShadowFleshRift);
+		Sequence_Wait(1.f);
+		if (Sequence_DoStepAndWait(0.5f))
+		{
+			mbRiftShadowAppeared=true;
+			
+			ShadowFlesh_Spawn("ShadowChase_Path_25_*", "Decal_ShadowChase_Path_25_*", 1.5f, 2.5f, true);
+			
+			ShadowFlesh_Spawn("ShadowChase_Path_28_*", "Decal_ShadowChase_Path_28_*", 1.5f, 3.5f, true);
+			DropDebris("Debris_ShadowChase_Path_28_*");
+			
+			Effect_Shake_Start(0.065f, 2.f, 1.f, 1.f);
+			
+			Sound_CreateAtEntity("Sound_ShadowRoar", "creatures/vocalisations/creature/shadow_guardian/shadow_guardian_activated", "player");
+			Music_Play("A2_02_07_Shadow_Wake.ogg", 0.3f, false, eMusicPrio_MinorEvent);
+			Map_AddTimer("Timer_ShadowMusic", 10.5f, "OnTimer_ShadowAmbMusic");
+		}
+		else if (Sequence_DoStepAndWait(1.5f))
+		{
+			FearHandler_SetForcedAddFearRate(0.5f, 6.f, true, -1.f, 0.1f);
+		}
+		else if (Sequence_DoStepAndWait(1.0f))
+		{
+			ShadowFlesh_Spawn("ShadowChase_Path_26_*", "Decal_ShadowChase_Path_26_*", 1.5f, 2.f, true);
+			Entity_SetActive("FearScaryObject_ShadowFlesh_Corridor_26_*", true);
+			
+			ShadowFlesh_Spawn("ShadowChase_Path_27_*", "Decal_ShadowChase_Path_27_*", 1.5f, 3.f, true);
+            ShadowFlesh_Spawn("ShadowChase_Path_30_*", "Decal_ShadowChase_Path_30_*", 1.5f, 3.f, true);
+		}
+		else if (Sequence_DoStepAndContinue())
+		{
+			Voice_PlayDelayed("Dialogue_IntoTheRift", 1.f);
+			FearHandler_SetForcedAddFearRate(0.5f, 6.f, true, -1.f, 0.1f);
+			
+			Music_Play("A2_3_3_Shadow_Guardian_Slime.ogg", 0.6f, false, eMusicPrio_BigEvent);
+		}
+		
+		Sequence_End();
+	}
+	 
+	//-------------------------------------------------------
+	
+	void OnTimer_ShadowAmbMusic(const tString &in asTimer)
+	{
+		Music_PlayExt("A2_02_07_Shadow_Exit.ogg", true, 0.3f, 1.0f, 5.0f, 1.0f, eMusicPrio_SceneAmb, true);
+	}
+	 
+	//-------------------------------------------------------
+	
+	bool OnCollision_FinalShadowEvent(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		if (alState!=1) return true;
+		
+		ShadowFlesh_Spawn("ShadowChase_Path_24_*", "Decal_ShadowChase_Path_24_*", 1.5f, 2.f, true);
+		ShadowFlesh_Spawn("ShadowChase_Path_29_*", "Decal_ShadowChase_Path_29_*", 1.5f, 2.f, true);
+		Effect_Shake_Start(0.065f, 1.f, 1.f, 1.f);
+		Light_FadeBrightnessTo("Light_Point_4", 0, 2);
+		Sound_CreateAtEntity("Sound_ShadowRoar", "creatures/vocalisations/creature/shadow_guardian/shadow_guardian_activated", "player");
+		
+		//Player_SetNightVisionEnabled(false);
+		FearHandler_SetForcedAddFearRate(0.5f, 6.f, true, -1.f, 0.1f);
+		return false;
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnCollide_EndMap(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		Seq_EndMap("");
+		return false;
+	}
+	 
+	//-------------------------------------------------------
+	
+	cSequenceStatesData mSeq_EndMap;
+	void Seq_EndMap(const tString &in asTimer)
+	{
+		Sequence_Begin("Seq_EndMap", mSeq_EndMap);
+		
+		if (Sequence_DoStepAndWait(1.))
+		{
+			Effect_Fade_Out(0.5);
+		}
+		else if (Sequence_DoStepAndContinue())
+		{
+			Item_PutAway(eItemHandlerHand_Left);
+			Item_PutAway(eItemHandlerHand_Right);
+			Sketchbook_AddIdea("cross_alchemistrift");
+			Sketchbook_NewIdeasPage();
+
+			Map_ChangeMap("02_07_alchemists_lab_dream.hpm", "Start_Begin", "", "", false);
+		}
+		Sequence_End();
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnGuiDWNote(const tString&in asEntityName, float afTimeStep)
+	{
+		DWNote_RenderGUI(asEntityName, afTimeStep);
+	}
+}

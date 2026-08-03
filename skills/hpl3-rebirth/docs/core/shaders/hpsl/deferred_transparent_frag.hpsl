@@ -1,0 +1,593 @@
+////////////////////////////////////////////////////////
+// Deferred Base - Fragment Shader
+//
+// A basic fragment with little fancy stuff.
+////////////////////////////////////////////////////////
+
+@include helper_reflection.hpsl
+
+@ifdef UseLiquid
+	@include helper_liquid_trickle.hpsl
+@endif
+
+@ifdef UseNormalMapping || UseNormalMap
+	@include helper_normal_packing.hpsl
+@endif
+
+
+@ifdef UseFog
+	@include helper_fog.hpsl
+@endif
+
+@ifdef UseTextureBuffer
+	@include helper_type_arguments.hpsl
+@else
+	////////////////////
+	// Attributes
+	cBuffer cTransparentFragArguments
+	{
+		///////////
+		// Basic
+		float afAlpha;
+		float afLightLevel;
+		float afRefractionScale;
+	
+		///////////
+		// Fog
+		float afOneMinusFogAlpha;
+		cVector4f avFogSettings;
+
+		///////////
+		// Env map
+		cMatrixf a_mtxInvView;
+		cVector2f avFrenselBiasPow;
+		cVector2f avRimLightMulPow;
+
+		////////////
+		// Scrolling noise
+		float afScrollingNoiseDetail;
+
+		///////////
+		// Soft particles
+		float afNearPlane;
+		float afSoftParticleThickness;
+		float afSoftParticleAlphaBasedThickness;
+		float afSoftParticleDepthBias;
+
+		/////////
+		// Liquid
+		float afLiquidInvTextureSize;
+		cVector4f avLiquidColor;
+		cVector4f avLiquidFade;
+
+		cVector4f avFogColor;
+
+		//////////
+		// DoF
+		cVector4f avDepthOfFieldParams;
+
+		//////////
+		// Color fade
+		cVector4f avFadeColor;
+
+		cVector4f avFogAreaColor;
+
+		cVector4f avSecondFogColor;
+		cVector4f avSecondFogSettings;
+
+		cVector3f avFogCameraPos;
+		int alFogType;
+
+		cVector2f avInvScreenSize;
+	};	
+@endif
+
+//////////////////////////////
+// samplers
+uniform cTexture2D aDiffuseMap : 0;
+
+@ifdef UseNormalMap
+	uniform cTexture2D aNormalMap : 1;
+@endif	
+
+@ifdef UseRefraction
+	uniform cTexture2D aRefractionMap : 2;
+@endif
+
+@ifdef UseEnvMap
+	uniform cTextureCube aEnvMap : 3;
+@endif
+
+@ifdef UseCubeMapAlpha
+	uniform cTexture2D aEnvMapAlphaMap : 4;
+@endif
+
+@ifdef UseScrollingNoise
+	uniform cTexture3D aScrollingNoiseMap : 6;
+@endif
+
+@ifdef UseSoftParticle || UseRefraction
+	uniform cTexture2D aSceneDepth : 7;
+@endif
+
+@ifdef UseLiquid
+	uniform cTexture2D aLiquidMap : 8;
+@endif
+
+cVector3f ApplyFogColor(in cVector3f avColor, cVector4f avFog)
+{
+	cVector3f vFinalColor;
+
+	///////////////
+	// Fade toward color
+	@ifdef BlendMode_Add
+		vFinalColor.xyz = mix(avColor.xyz, avColor.xyz * avFog.rgb, avFog.w );
+
+	@elseif BlendMode_Mul
+		vFinalColor.xyz = max(avColor.xyz, mix(avColor.xyz, avFog.rgb, avFog.w ));
+
+	@elseif BlendMode_MulX2
+		cVector3f vBlendMulColor = mix(cVector3f(1.0, 1.0, 1.0), avFog.rgb, avFog.w);
+		vFinalColor.xyz = avColor.xyz*vBlendMulColor + cVector3f(0.5, 0.5, 0.5)*(cVector3f(1.0, 1.0, 1.0)-min(vBlendMulColor, cVector3f(1.0, 1.0, 1.0)));
+
+	@elseif BlendMode_Alpha || BlendMode_PremulAlpha
+		vFinalColor = mix(avColor.xyz, avFog.rgb, avFog.w );
+	@endif
+
+	return vFinalColor;
+}
+
+
+void main(in cVector4f px_vPosition,
+@ifdef UseUv
+		  in cVector4f px_vTexCoord0,
+@endif
+@ifdef UseNormals || UseEnvMap
+		  in cVector3f px_vNormal,
+	@ifdef UseRefraction || UseEnvMap
+		@ifdef UseNormalMap
+			@ifdef UseScreenNormal || UseEnvMap
+				in cVector3f px_vTangent,
+				in cVector3f px_vBinormal,
+			@endif
+		@else
+			@ifdef UseLiquid
+				in cVector3f px_vTangent,
+				in cVector3f px_vBinormal,
+			@endif
+		@endif	
+	@endif
+@endif
+
+
+@ifdef UseColor || UseAngleFade
+		  in cVector4f px_vColor,
+@endif
+@ifdef UseSoftParticle || UseRefraction
+		  in float px_fLinearDepth,
+@elseif UseHalo && UseOccludeHalo && UseDepthOfField
+		  in float px_fLinearDepth,
+@endif
+@ifdef UseFog || UseRefraction  || UseEnvMap || UseDepthOfField
+		  in cVector3f px_vVertexPos,
+@endif
+@ifdef UseScrollingNoise
+		  in cVector3f px_vScrollingNoiseCoord,
+@endif
+@ifdef UseTextureBuffer
+	@ifdef UseLiquid
+		 in cVector4f px_vLiquidFade,
+	@endif
+		  in cVector4f px_vAlphaAndLight,
+	@ifdef UseFadeColor
+		  in cVector4f px_vFadeColor,
+	@endif
+	@ifdef UseFog
+		  in cVector4f px_vFogAreaColor,
+	@endif
+	@ifdef Lit
+		  in cMatrixf px_mtxLightProbe,
+	@endif
+@endif
+		  out cVector4f out_vColor : 0)
+{
+	@ifdef UseTextureBuffer
+		float afAlpha = px_vAlphaAndLight.x;
+		float afLightLevel = px_vAlphaAndLight.y;
+		@ifdef UseLiquid
+			 cVector4f avLiquidFade = px_vLiquidFade;
+		@endif
+		@ifdef UseFadeColor
+			  cVector4f avFadeColor = px_vFadeColor;
+		@endif
+		@ifdef UseFog
+			  cVector4f avFogAreaColor = px_vFogAreaColor;
+		@endif
+	@endif
+
+	cVector4f vFinalColor;
+	
+	////////////////////
+	//Diffuse 
+	@ifdef UseDiffuseMap
+		vFinalColor = sample(aDiffuseMap, px_vTexCoord0.xy);
+
+		@ifdef UseFadeColor
+			////////////
+			// Fade diffuse color to a solid color
+			vFinalColor = mix(vFinalColor, cVector4f(avFadeColor.xyz, vFinalColor.a), avFadeColor.a);
+		@endif
+		
+		vFinalColor = vFinalColor * px_vColor;
+
+		@ifdef BlendMode_Add
+			vFinalColor.xyz *= px_vColor.a;
+		@endif
+	@else
+		vFinalColor = cVector4f(1e-4f, 1e-4f, 1e-4f, 1.0); //Set to almost zero
+
+		@ifdef UseFadeColor
+			////////////
+			// Fade diffuse color to a solid color
+			vFinalColor = mix(vFinalColor, cVector4f(avFadeColor.xyz, vFinalColor.a), avFadeColor.a);
+		@endif
+	@endif
+	
+	// Always make sure the alpha is atleast 1.0 when using fade colors (only used for "solid" materials)
+	@ifdef UseFadeColor
+		vFinalColor.a = max(vFinalColor.a, 1.0);
+	@endif
+
+	/////////////////
+	// Liquid Trickle
+	@ifdef UseLiquid
+		float fLiquidAmount = GetLiquidAmount(aLiquidMap, px_vTexCoord0.xy, avLiquidFade.rgb);
+
+		vFinalColor.rgb = BlendWithLiquid(vFinalColor.rgb, avLiquidColor.rgb, avLiquidColor.a, fLiquidAmount);
+
+		@ifdef UseRefraction  || UseEnvMap
+			/////////////
+			// Generate liquid normal for refraction or env map
+			cVector4f vLiquidNormal = cVector4f(0,0,0,1 ); 
+
+			@ifdef ShaderModel_4
+			if(fLiquidAmount > 0.0) //Branch if shader model  4
+			{
+			@endif
+				////////////
+				// Get the normal of the liquid	
+				vLiquidNormal = GetLiquidNormal(aLiquidMap, px_vTexCoord0.xy, avLiquidFade, afLiquidInvTextureSize);
+			@ifdef ShaderModel_4
+			}
+			@endif
+		@endif
+	@endif
+
+	float fFinalAlpha = afAlpha;
+	
+	@ifdef Lit 
+		cVector4f vLightDir = cVector4f(mul(a_mtxInvView, cVector4f(normalize(px_vNormal), 0.0)).xyz, 1.0);
+		cVector3f vLit = max(cVector3f(0, 0, 0), mul(px_mtxLightProbe, vLightDir).xyz);
+		cVector3f vEnvMapLit = vLit;
+
+		@ifdef BlendMode_MulX2 || BlendMode_Mul
+			// normalize the light when using these modes
+			float fLightScale = max(vLit.x, max(vLit.y, vLit.z)) + 1e-2f;
+			vLit /= fLightScale;
+			afLightLevel *= min(fLightScale * 8.0, 1.0);
+		@endif
+		
+		@ifdef UseFadeColor
+			//only light very slightly when using fade color
+			vFinalColor.xyz *= mix(vLit, cVector3f(1.0, 1.0, 1.0), cVector3f(0.95, 0.95, 0.95));
+		@else
+			vFinalColor.xyz *= vLit;
+		@endif
+	@endif
+	
+	////////////////////
+	//Calculate new color based on Alpha and Blend mode
+	@ifdef UseEnvMap || UseRefraction
+		if(fFinalAlpha < 1e-4f) discard;
+	@elseif BlendMode_Add
+		float fMaxDist = max(max(vFinalColor.x, vFinalColor.y), vFinalColor.z) * fFinalAlpha*afLightLevel;
+		if(fMaxDist < 1e-4) discard;
+	@elseif BlendMode_Mul
+		cVector3f vDelta = abs(vFinalColor.xyz - cVector3f(1.0, 1.0, 1.0));
+		float fMaxDist = max(max(vDelta.x, vDelta.y), vDelta.z);
+		if(fFinalAlpha < 1e-4 || fMaxDist < 1e-4) discard;
+	@elseif BlendMode_MulX2
+		cVector3f vDelta = abs(vFinalColor.xyz - cVector3f(0.5, 0.5, 0.5));
+		float fMaxDist = max(max(vDelta.x, vDelta.y), vDelta.z);
+		if(afLightLevel*fFinalAlpha < 1e-4 || fMaxDist < 1e-4) discard;
+	@elseif BlendMode_Alpha
+		if(vFinalColor.a * fFinalAlpha < 1e-4) discard;
+	@elseif BlendMode_PremulAlpha
+		if(fFinalAlpha < 1e-4) discard;
+	@endif	
+
+	/////////////////
+	//DoF
+	@ifdef UseDepthOfField
+		float fDoFAlpha = clamp((avDepthOfFieldParams.x + px_vVertexPos.z) * avDepthOfFieldParams.y, 0.0, 1.0);
+		fDoFAlpha = avDepthOfFieldParams.z + avDepthOfFieldParams.w * fDoFAlpha;
+		fFinalAlpha *= fDoFAlpha;
+	@endif
+	
+	@ifdef UseScrollingNoise
+		// sample the noise three times, doubling the frequency and with half the amplitude
+		cVector3f vNoise = sample(aScrollingNoiseMap, px_vScrollingNoiseCoord).xyz + 
+					  sample(aScrollingNoiseMap, px_vScrollingNoiseCoord * 2.0).xyz * 0.5 + 
+					  sample(aScrollingNoiseMap, px_vScrollingNoiseCoord * 4.0).xyz * 0.25;
+
+		float fNoise = dot(vNoise, cVector3f(1.0/5.25, 1.0/5.25, 1.0/5.25));
+
+		/////////
+		// Mix and clamp the noise detail and apply it to the alpha
+		fFinalAlpha *= max(0.0,fNoise);// mix(1.0, fNoise, afScrollingNoiseDetail));
+	@endif
+
+	@ifdef UseSoftParticle
+		///////////
+		// Get thickness from value and based on alpha of the particle
+		float fThickness = (afSoftParticleThickness + (vFinalColor.a * fFinalAlpha) * afSoftParticleAlphaBasedThickness) * afInvFarPlane;
+		float fDepth = px_fLinearDepth;
+
+		@ifdef UseSphericalBillboard
+			//////////
+			// Move the Z value further away from the camera the closer it is to the edge, like a Ellipsoid with thickness as radius
+			cVector2f vCenterDelta = px_vTexCoord0.xy - cVector2f(0.5, 0.5);
+			float fOffset = fThickness * dot(vCenterDelta, vCenterDelta);
+			fDepth += fOffset * 2.0;
+			fThickness += fOffset;
+		@endif
+
+		/////////
+		// Get scene depth and apply bias
+		float fSceneDepth = load(aSceneDepth, cVector2l(px_vPosition.xy), 0).x - afSoftParticleDepthBias * afInvFarPlane;
+
+		// Fade between 0-1 based on how close the vertex position is to the scene depth or to the near plane
+		cVector2f vEdge = cVector2f(fDepth + fThickness, fDepth - fThickness * 0.5);
+		cVector2f vFade = smoothstep(cVector2f(fDepth, fDepth), vEdge, cVector2f(fSceneDepth, afNearPlane * afInvFarPlane));
+		fFinalAlpha *= vFade.x * vFade.y;
+	@else
+		if(fFinalAlpha <= 0.01) discard;
+	@endif
+	
+	///////////////////
+	// Apply fog color
+	@ifdef UseFog
+		float fFogDepth = length(px_vVertexPos);
+		cVector3f vFogDir = normalize(mul(a_mtxInvView, cVector4f(px_vVertexPos, 0.0)).xyz);
+
+		float fFogAmount = FogAmount(avFogCameraPos.x, vFogDir, fFogDepth, avFogSettings, 0, alFogType);
+
+		cVector4f vFogColor = avFogColor;
+		vFogColor.w *= fFogAmount;
+
+		@ifdef UseUnderwaterFog
+			//////////
+			// Modulate toward water color
+			cVector3f vFogWaterColor = normalize(sqrt(avFogColor.rgb));
+			vFinalColor.xyz *= pow(vFogWaterColor, cVector3f(fFogAmount * 2.64));
+		@endif
+
+		@ifdef LightenFog
+			// Only apply fog if its brighter than the scene color
+			vFogColor.rgb = max(vFogColor.rgb, vFinalColor.xyz);
+		@endif
+
+		@ifdef UseSecondaryFog
+			/////////////
+			// Double colored fog, blend correctly
+			float fSecondAmount = FogAmount(avFogCameraPos.y, vFogDir, fFogDepth, avSecondFogSettings, 0, alFogType);
+			cVector4f vSecondFogColor = avSecondFogColor;
+			vSecondFogColor.w *= fSecondAmount;
+
+			// Z-sort the fog to get correct blending
+			if((avSecondFogSettings.y) < (avFogSettings.y))
+			{
+				vFogColor = mix(vSecondFogColor, vFogColor, vFogColor.w);
+			}
+			else
+			{
+				vFogColor = mix(vFogColor, vSecondFogColor, vSecondFogColor.w);
+			}
+		@endif
+
+		cVector4f vFogAreaColor = avFogAreaColor;
+
+		if(vFogAreaColor.w < 0.0)
+		{
+			vFogAreaColor.w *= -1.0;
+			vFinalColor.xyz = ApplyFogColor(vFinalColor.xyz, vFogColor);
+			vFinalColor.xyz = ApplyFogColor(vFinalColor.xyz, vFogAreaColor);
+		}
+		else
+		{
+			vFinalColor.xyz = ApplyFogColor(vFinalColor.xyz, vFogAreaColor);
+			vFinalColor.xyz = ApplyFogColor(vFinalColor.xyz, vFogColor);
+		}
+	@endif		
+
+	////////////////////
+	//Calculate new color based on Alpha and Blend mode
+	@ifdef BlendMode_Add
+		vFinalColor.xyz *= fFinalAlpha*afLightLevel;
+	@elseif BlendMode_Mul
+		vFinalColor.xyz = mix(cVector3f(1.0, 1.0, 1.0), vFinalColor.xyz, fFinalAlpha * vFinalColor.a);
+	@elseif BlendMode_MulX2
+		float fBlendMulAlpha = afLightLevel*fFinalAlpha;
+		vFinalColor.xyz = vFinalColor.xyz*fBlendMulAlpha + cVector3f(0.5, 0.5, 0.5)*(1-min(fBlendMulAlpha, 1.0));
+	@elseif BlendMode_Alpha
+		vFinalColor.a *= fFinalAlpha;
+		vFinalColor.xyz *= afLightLevel;
+	@elseif BlendMode_PremulAlpha
+		vFinalColor *= fFinalAlpha;
+		vFinalColor.xyz *= afLightLevel;
+	@endif	
+	
+	////////////////////
+	//Normalmap
+	@ifdef UseRefraction  || UseEnvMap
+		@ifdef UseNormalMap
+			cVector3f vNMapNormal = UnpackNormalmapYW(sample(aNormalMap, px_vTexCoord0.xy)); 
+
+			@ifdef UseLiquid
+				vNMapNormal = mix(vLiquidNormal.xyz, vNMapNormal, max(vLiquidNormal.w, step(fLiquidAmount, 0)));
+			@endif
+			
+			@ifdef UseScreenNormal || UseEnvMap
+				cVector3f vScreenNormal = normalize(vNMapNormal.x * px_vTangent + vNMapNormal.y * px_vBinormal + vNMapNormal.z * px_vNormal);
+			@endif
+		@else
+			@ifdef UseLiquid
+				/////////
+				// Fade liquid normal and transform into world space
+				cVector3f vNormal = mix(vLiquidNormal.xyz, cVector3f(0, 0, 1), max(vLiquidNormal.w, step(fLiquidAmount, 0)));
+				cVector3f vScreenNormal = normalize(vNormal.x * px_vTangent + vNormal.y * px_vBinormal + vNormal.z * px_vNormal);
+			@else
+				cVector3f vScreenNormal = normalize(px_vNormal);
+			@endif
+		@endif	
+	@endif
+	
+	////////////////////
+	//Refraction
+	@ifdef UseRefraction
+		float fInvDist = clamp(1.0/px_vVertexPos.z, -3.0, 3.0);
+			
+		///////////////////////
+		// sample refaraction map (using distorted coords)
+		@ifdef UseNormalMap
+			
+			//Should the screen normal or texture normal be used?
+			@ifdef RefractNormals
+				cVector2f vRefractOffset = vScreenNormal.xy;
+			@else
+				cVector2f vRefractOffset = vNMapNormal.xy;
+			@endif
+			
+			vRefractOffset *= afRefractionScale * fInvDist;
+
+			@ifdef UseAlphaBlendRefraction
+				vRefractOffset *= vFinalColor.a;
+				if(dot(vRefractOffset, vRefractOffset) <= 1e-6f) discard;
+			@elseif IsParticle
+				vRefractOffset *= px_vColor.a; 
+				if(dot(vRefractOffset, vRefractOffset) <= 1e-6f) discard;
+			@endif
+		
+			cVector2f vDistortedScreenPos = (px_vPosition.xy * avInvScreenSize + vRefractOffset); 
+		@else
+			@ifdef UseAlphaBlendRefraction
+				cVector2f vDistortedScreenPos = (px_vPosition.xy * avInvScreenSize + vScreenNormal.xy  * afRefractionScale * fInvDist * vFinalColor.a);
+			@else
+				cVector2f vDistortedScreenPos = (px_vPosition.xy * avInvScreenSize + vScreenNormal.xy  * afRefractionScale * fInvDist);
+			@endif
+		@endif
+		
+		// Edge check so not objects behind the object get refracted
+		float fRefractDepth = sample(aSceneDepth, vDistortedScreenPos).x;
+		if(fRefractDepth < px_fLinearDepth) 
+			vDistortedScreenPos = px_vPosition.xy * avInvScreenSize;
+		
+		cVector4f vRefractionColor = sample(aRefractionMap, vDistortedScreenPos);
+		vRefractionColor /= cVector4f(8.0, 8.0, 8.0, 1.0); //This removes some precision, but only refraction image so should not be that much problem!
+		
+		@ifdef UseDepthOfField
+			///////////////
+			// Fade between refracted and scene color base on DoF
+			cVector4f vSceneColor = sample(aRefractionMap, px_vPosition.xy * avInvScreenSize) / cVector4f(8.0, 8.0, 8.0, 1.0);
+			vRefractionColor = mix(vSceneColor, vRefractionColor, fDoFAlpha);
+		@endif
+
+		///////////////////////
+		// Do blending in shader (blend mode is None with refraction)		
+		@ifdef BlendMode_Add
+			vFinalColor.xyz = vFinalColor.xyz + vRefractionColor.xyz;
+	
+		@elseif BlendMode_Mul
+			vFinalColor.xyz = vFinalColor.xyz * vRefractionColor.xyz;
+		
+		@elseif BlendMode_MulX2
+			vFinalColor.xyz = vFinalColor.xyz * vRefractionColor.xyz * 2;
+		
+		@elseif BlendMode_Alpha
+			vFinalColor.xyz = vFinalColor.xyz * vFinalColor.a + vRefractionColor.xyz * (1-vFinalColor.a);
+		
+		@elseif BlendMode_PremulAlpha
+			vFinalColor.xyz = vFinalColor.xyz + vRefractionColor.xyz * (1-vFinalColor.a);
+		@endif
+	@endif
+	
+	
+	////////////////////
+	//Enviroment Map
+	@ifdef UseEnvMap
+	
+		///////////////////////////////
+		//Calculate Reflection
+		cVector3f vEyeVec = normalize(px_vVertexPos);
+		
+		float afEDotN = max(abs(dot(-vEyeVec, vScreenNormal)), 0.05);
+		float fFresnel = Fresnel(afEDotN, avFrenselBiasPow.x, avFrenselBiasPow.y);
+		
+		cVector3f vEnvUv = reflect(vEyeVec, vScreenNormal);
+		vEnvUv = mul(a_mtxInvView, cVector4f(vEnvUv,0)).xyz;
+					
+		cVector4f vReflectionColor = sample(aEnvMap,vEnvUv);
+		
+		//Alpha for environment map
+		@ifdef UseCubeMapAlpha
+			float fEnvMapAlpha = sample(aEnvMapAlphaMap, px_vTexCoord0.xy).w;
+			vReflectionColor *= fEnvMapAlpha;
+		@endif
+				
+		float fReflectMul = fFresnel;
+		
+		///////////////////////////////
+		//Rim reflections
+		@ifdef ShaderModel_4
+			if(avRimLightMulPow.x >0.0) 
+			{
+		@endif	
+		
+		float fRimLight = vScreenNormal.z;
+		fRimLight = min(1.0, pow((1.0 - abs(fRimLight)) * 0.95, avRimLightMulPow.y) * avRimLightMulPow.x);	
+		
+		fReflectMul = mix(fReflectMul, fRimLight, fRimLight);
+		
+		@ifdef ShaderModel_4
+			}
+		@endif
+
+		@ifdef Lit
+			vReflectionColor.xyz *= vEnvMapLit;
+		@endif
+
+		@ifdef UseFog
+			if(avFogAreaColor.w < 0.0)
+			{
+				vReflectionColor.xyz = mix(vReflectionColor.xyz, vReflectionColor.xyz * vFogColor.rgb, vFogColor.w );
+				vReflectionColor.xyz = mix(vReflectionColor.xyz, vReflectionColor.xyz * vFogAreaColor.rgb, vFogAreaColor.w );
+			}
+			else
+			{
+				vReflectionColor.xyz = mix(vReflectionColor.xyz, vReflectionColor.xyz * vFogAreaColor.rgb, vFogAreaColor.w );
+				vReflectionColor.xyz = mix(vReflectionColor.xyz, vReflectionColor.xyz * vFogColor.rgb, vFogColor.w );
+			}
+		@endif
+
+		vFinalColor.xyz += vReflectionColor.xyz* fReflectMul *fFinalAlpha * px_vColor.xyz;
+	@endif
+	
+	// Multiply with 8.0 to increase precision
+	// Do NOT do this on Mul or MulX2 since they assume a normalized output!
+	@ifdef UseRefraction || UseEnvMap || BlendMode_Add || BlendMode_Alpha || BlendMode_PremulAlpha
+		vFinalColor  *= cVector4f(8.0, 8.0, 8.0, 1.0);
+	@endif
+
+	out_vColor = vFinalColor;
+	
+}

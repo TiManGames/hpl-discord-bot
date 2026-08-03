@@ -1,0 +1,542 @@
+#include "player/PlayerState_Interact_RotateBase.hps"
+#include "helpers/helper_player.hps"
+#include "helpers/helper_effects.hps"
+#include "Prop_Tear.hps"
+
+/////////////////////////////////////////
+// SETTINGS
+/////////////////////////////////////////
+
+//------------------------------------------------------------
+
+const float gfTearLookMul = 100.f;
+const float gfTearMoveMul = 10.f;
+const float gfTearMinMoveSpeed = 0.1f;
+const float gfTearMaxMoveSpeed = 2.25f;
+
+//------------------------------------------------------------
+
+class cScrPlayerState_Interact_Tear : iScrPlayerState_Interact, iScrPlayerState_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		iScrPlayerState_Interact::Init();		
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// USER SETTINGS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void LoadUserConfig() override
+	{
+		iScrPlayerState_Interact::LoadUserConfig();
+	}
+	
+	void SaveUserConfig() override
+	{
+		iScrPlayerState_Interact::SaveUserConfig();
+	}	
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ENTER MAP
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+	
+	}
+	void OnMapLeave(cLuxMap @apMap)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void CreateWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	void DestroyWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL FUNCTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupTear()
+	{
+		///////////////////
+		// Get basic params & setup
+		SetupInteractVars();
+		
+		///////////////////
+		// Get the parameters
+		mfMoveSpeedFactor = cScript_GetGlobalArgFloat(3);
+		mfMoveSlowDownSpeed = cScript_GetGlobalArgFloat(4);
+		mfHealthLossFactor = cScript_GetGlobalArgFloat(5);
+		mlJointIndex = cScript_GetGlobalArgInt(6);
+        msTearPropName = cScript_GetGlobalArgString(7);
+		mbHealthTearOnly = cScript_GetGlobalArgBool(8);
+		mbCanBeTorn = cScript_GetGlobalArgBool(9);
+		mfPlayerMoveSpeedMul = cScript_GetGlobalArgFloat(10);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnEnterState(int alPrevStateId)
+	{
+		EnterInteractState(alPrevStateId);
+	
+		///////////////////
+		// Player setup
+		cScript_SetGlobalVarBool("Climb_Allowed", false);
+		
+		///////////////////
+		// Reset data
+		mfTearSpeed = 0;
+		mvMoveAdd = cVector2f(0);
+		mfHealth = 1.f;
+		mfPrevAngle = 0.f;
+
+		///////////////////
+		// Setup body
+		iPhysicsBody@ pBody = cLux_ID_Body(mBodyID);
+		mbHasGravity = pBody.GetGravity();
+		pBody.SetGravity(false);
+		
+		///////////////////
+		// Get max distance
+		iPhysicsJoint@ pJoint = cLux_ID_Prop(mPropID).GetJoint(mlJointIndex);
+		iCharacterBody@ pCharBody = cLux_GetPlayer().GetCharacterBody();
+		mfMaxDistance = cMath_Vector3Dist(pCharBody.GetFeetPosition(), pJoint.GetPivotPoint());
+		mfMaxDistance = mfMaxDistance * 1.2f + 0.5f;
+		
+		///////////////////
+		// Setup type
+		if (cPhysics_ToJointHinge(pJoint) !is null)
+			mTearType = eTearType_Hinge;
+		else if (cPhysics_ToJointSlider(pJoint) !is null)
+			mTearType = eTearType_Slide;
+		else if (cPhysics_ToJointBall(pJoint) !is null)
+			mTearType = eTearType_Ball;
+			
+		///////////////////
+		// Move state
+		mBaseObj.mpPlayer.GetCurrentMoveState().SetAutoUpdateSpeedSettings(false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnLeaveState(int alNextStateId)
+	{			
+		LeaveInteractState();
+		
+		if(cLux_ID_Prop(mPropID) is null) return;
+	
+		cLux_ID_Body(mBodyID).SetGravity(mbHasGravity);
+
+		///////////////////
+		// Resets some general stuff
+		ResetPropInteractVars();
+		
+		///////////////////
+		// Player set back to normal
+		cScript_SetGlobalVarBool("Climb_Allowed", true);
+		
+		///////////////////
+		// Move state
+		mBaseObj.mpPlayer.GetCurrentMoveState().SetAutoUpdateSpeedSettings(true);
+	}
+	
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+	
+	}
+		
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep)
+	{				
+		if (CheckShouldUpdate()==false) return;
+		
+		UpdateHints(afTimeStep);
+		
+		///////////////////
+		// Check so interact is still pressed.
+		if (mbToggleModeActive==false)
+		{
+			if (cInput_IsTriggered(eAction_Interact)==false)
+			{
+				///////////////////
+				//Change state
+				cLux_GetPlayer().ChangeState(mlPreviousState);			
+				return;
+			}
+		}
+	
+		///////////////////
+		//Set up variables
+		cLuxProp@ pProp = cLux_ID_Prop(mPropID);
+		iCharacterBody@ pCharBody = cLux_GetPlayer().GetCharacterBody();
+		iPhysicsJoint@ pJoint = pProp.GetJoint(mlJointIndex);
+		cCamera@ pCam = cLux_GetPlayer().GetCamera();
+		iPhysicsBody@ pBody = cLux_ID_Body(mBodyID);
+		
+		///////////////////
+		//Check if out of range
+		float fDistance = cMath_Vector3Dist(pCharBody.GetFeetPosition(), pJoint.GetPivotPoint());
+		if (fDistance > mfMaxDistance)
+		{
+			cLux_GetPlayer().ChangeState(mlPreviousState);
+			return;
+		}
+		
+		///////////////////
+		// Limit player move speed
+		cVector3f[] vCharDirs = { pCharBody.GetForward(), pCharBody.GetRight() };
+		cVector3f vPlayerMoveDir = cMath_Vector3Normalize(vCharDirs[0] * -mvMoveAdd.y + vCharDirs[1] * mvMoveAdd.x);
+		
+		for (int i = 0; i < 2; ++i)
+		{			
+			float fSpeed = cMath_Vector3Project(pBody.GetLinearVelocity(), vCharDirs[i]).Length();
+			fSpeed = cMath_Clamp(fSpeed * mfPlayerMoveSpeedMul, gfTearMinMoveSpeed, gfTearMaxMoveSpeed);
+			fSpeed *= cMath_Sign(cMath_Vector3Dot(vPlayerMoveDir, vCharDirs[i]));
+						
+			pCharBody.SetMaxPositiveMoveSpeed(eCharDir(i), cMath_Max(fSpeed, 0.f));
+			pCharBody.SetMaxNegativeMoveSpeed(eCharDir(i), cMath_Min(fSpeed, 0.f));
+		}
+		
+		///////////////////
+		// Check if successfully torn	
+		cScript_RunGlobalFunc(pProp.GetName(), "cScrPropTear", "_Global_GetJointFraction");
+		float fFract = cScript_GetGlobalReturnFloat();
+		
+		if (mbCanBeTorn && (mbHealthTearOnly == false && fFract >= 0.95 || mfHealth <= 0) && mfTearSpeed > 0)
+		{	
+			cLux_GetPlayer().ChangeState(mlPreviousState);
+			
+			Player_SetLookSpeedMul(0.f);
+			Player_FadeLookSpeedMulTo(1.f, 0.3f);
+			Effect_Shake_Start(0.008, 0, 0, 0.2);
+			
+			cScript_SetGlobalArgInt(0, pBody.GetUniqueID());
+			cScript_SetGlobalArgVector3f(1, mvFocusPos);
+			cScript_RunGlobalFunc(pProp.GetName(), "cScrPropTear", "_Global_Tear");			
+			return;
+		}
+		
+		///////////////////
+		//Show no crosshair!
+		Player_SetCrossHairState(eCrossHairState_None);
+		
+		///////////////////
+		//Get vectors and speed
+		float fSpeedAdd = GetSpeedAdd(pCam, pJoint);
+				
+		///////////////////
+		//Slow down the speed based on distance torn and angle
+		cScript_RunGlobalFunc(pProp.GetName(), "cScrPropTear", "_Global_GetJointAngle");		
+		float fAngle = cScript_GetGlobalReturnFloat();
+		
+		bool bApplySlowDown = fAngle > mfPrevAngle;
+		mfPrevAngle = fAngle;
+		
+		if (fSpeedAdd == 0) 
+		{
+			mfTearSpeed = 0;
+			mfHealth = cMath_Max(mfHealth, 0.2f); //restore health to avoid tearing instantly next time a movement is made
+		}
+		else if (mfTearSpeed > 0) 
+		{
+			if (bApplySlowDown)
+			{
+				mfTearSpeed -= mfMoveSlowDownSpeed * afTimeStep;
+				mfTearSpeed *= cMath_Max(1.f - fFract, 0.5f);
+			}			
+		}
+		
+		if (mfTearSpeed < 0) 
+			mfTearSpeed = 0;
+
+		///////////////////
+		//Change the speed and cap it o max if needed
+		mfTearSpeed += fSpeedAdd * mfMoveSpeedFactor * afTimeStep;	
+		mfTearSpeed = cMath_Clamp(mfTearSpeed, -1.f, 1.f);
+		
+		// Set speed on tear prop
+		pProp.SetVarFloat("TearSpeed", mfTearSpeed);
+		
+		if (fSpeedAdd > 0)
+			mfHealth -= mfTearSpeed*afTimeStep*mfHealthLossFactor;
+
+		// Reset
+		mvMoveAdd = cVector2f(0);
+		
+		///////////////////
+		//Check if focus position is outside of screen.
+		CheckOutsideAtScreenEdgeAndMove(afTimeStep);
+	}
+	
+	//------------------------------------------------------------
+	
+	void PostUpdate(float afTimeStep)
+	{
+	}
+		
+	//------------------------------------------------------------
+	
+	bool OnAnalogInput(int alAnalogId, const cVector3f &in avAmount)
+	{
+		///////////////////
+		// Looking
+		if(alAnalogId == eAnalogType_Look)
+		{
+			if (avAmount.SqrLength() < 0.0001) 
+				return false;
+				
+			cLuxInputHandler@ pInput = cLux_GetInputHandler();
+			
+			cVector2f vAmount(avAmount.x, avAmount.y);
+			if (pInput.IsYAxisInverted()) vAmount.y = -vAmount.y;	
+			
+			const float fLookMul = pInput.GetGamepadWasLastDeviceUsed() ? gfTearLookMul * 3.5f : gfTearLookMul;
+			mvMoveAdd += vAmount * fLookMul;
+			return false;
+		}
+		///////////////////
+		// Moving
+		else if(alAnalogId == eAnalogType_Move || alAnalogId == eAnalogType_GamepadMove)
+		{
+			if (avAmount.SqrLength() < 0.01) 
+				return true;
+			
+			cVector2f vAmount(avAmount.x, -avAmount.y);
+			mvMoveAdd += vAmount * gfTearMoveMul;			
+			return true;
+		}
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool AllowBuoyancy(iPhysicsBody @apBody)
+	{
+		if(apBody is cLux_ID_Body(mBodyID)) return false;
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// Helpers
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	float GetSpeedAdd(cCamera @apCam, iPhysicsJoint@ apJoint)
+	{        
+		///////////////////
+		// Setup vars
+		cLuxProp@ pProp = cLux_ID_Prop(mPropID);
+		iPhysicsBody@ pBody = cLux_ID_Body(mBodyID);
+		
+		cVector3f vUp = apCam.GetUp();
+		cVector3f vRight = apCam.GetRight();
+		cVector3f vForward = apCam.GetForward();
+		
+		float fSpeedAdd = 0.f;
+		
+		///////////////////
+		// Hinge joint
+		if (mTearType == eTearType_Hinge)
+		{
+			cVector3f vBodyCenter = cMath_MatrixMul(pBody.GetLocalMatrix(), pBody.GetMassCenter());
+			cVector3f vJointToBody =  cMath_Vector3Normalize(vBodyCenter - apJoint.GetPivotPoint());
+
+			cVector3f vPushAmount = (vUp + vForward) * -mvMoveAdd.y + vRight * mvMoveAdd.x;			
+			cVector3f vPushRotateDir = cMath_Vector3Cross(vJointToBody, vPushAmount);
+			
+			fSpeedAdd = -cMath_Vector3Dot(vPushRotateDir, apJoint.GetPinDir());
+			
+			///////////////////
+			// Call a function in swingdoor to play an effect
+			cScript_SetGlobalArgFloat(0, fSpeedAdd);
+			cScript_RunGlobalFunc(cLux_ID_Prop(mPropID).GetName(), "cScrPropTear", "_Global_OnAddSpeed");
+		}
+		
+		///////////////////
+		// Slide joint
+		else if (mTearType == eTearType_Slide)
+		{
+			cVector3f vMouseCamDir = vUp * -mvMoveAdd.y + vRight * mvMoveAdd.x;
+			fSpeedAdd = cMath_Vector3Dot(vMouseCamDir, apJoint.GetPinDir());
+		}
+		
+		///////////////////
+		// Ball joint
+		else if (mTearType == eTearType_Ball)
+		{
+			cVector3f vBodyCenter = cMath_MatrixMul(pBody.GetLocalMatrix(), pBody.GetMassCenter());
+			cVector3f vJointToBody = cMath_Vector3Normalize(vBodyCenter - apJoint.GetPivotPoint());
+
+			cVector3f vTearDir = (vUp + vForward) * -mvMoveAdd.y + vRight * mvMoveAdd.x;			
+			cVector3f vTearRotateDir = cMath_Vector3Normalize(cMath_Vector3Cross(vJointToBody, vTearDir));
+			
+			// Send rotation dir to prop
+			pProp.SetVarVector3f("TearRotateDir", vTearRotateDir);
+		
+			fSpeedAdd = mvMoveAdd.Length();
+		}
+		
+		return fSpeedAdd;
+	}
+	
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool OnAction(int alAction, bool abPressed)
+	{
+		//////////////////////
+		// Accessibility mode
+		if (mbToggleModeActive)
+		{
+			if (abPressed == true &&
+				(alAction == eAction_Interact || alAction == eAction_Throw))
+			{
+				cScript_SetGlobalVarBool("DisableUseItemAction", true);
+				cLux_GetPlayer().ChangeState(mlPreviousState);
+				return false;
+			}
+		}
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnExitPressed()
+	{
+		return true;
+	}
+	
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// CHARACTER CALLBACK
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void CharBody_GravityCollide(iCharacterBody@ apCharBody, iPhysicsBody@ apBody, cCollideData @apCollideData)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void CharBody_HitGround(iCharacterBody@ apCharBody,const cVector3f &in avVel)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPER METHODS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		apSet.DrawFont(tWString("mfHealth: "+mfHealth), apFont, cVector3f(5,afStartY,0), cVector2f(14), cColor(1,1) );
+		afStartY += 14;
+		apSet.DrawFont(tWString("mfTearSpeed: "+mfTearSpeed), apFont, cVector3f(5,afStartY,0), cVector2f(14), cColor(1,1) );
+		afStartY += 14;
+		
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+		
+	//------------------------------------------------------------
+	
+	float mfMoveSpeedFactor;
+	float mfMoveSlowDownSpeed;
+	float mfPlayerMoveSpeedMul;
+	float mfHealthLossFactor;
+	
+	int mlJointIndex;
+	bool mbHasGravity;
+
+	float mfMaxDistance;
+	float mfHealth;
+	
+	bool mbHealthTearOnly;
+	bool mbCanBeTorn;
+
+	cVector3f mvJointRight;
+	cVector3f mvJointForward;
+	
+	cVector2f mvMoveAdd;
+	
+	float mfTearSpeed;
+	float mfPrevAngle;
+	
+	eTearType mTearType;
+    
+    tString msTearPropName;
+			
+	//------------------------------------------------------------
+	
+}

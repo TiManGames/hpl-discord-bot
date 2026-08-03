@@ -1,0 +1,308 @@
+#include "interfaces/PlayerState_Interface.hps"
+#include "custom/player/PlayerState_UsingItem_Base.hps"
+#include "base/InputHandler_Types.hps"
+#include "player/Player_Types.hps"
+#include "helpers/helper_props.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+#include "helpers/helper_modules.hps"
+#include "custom/helpers/helper_items.hps"
+#include "custom/helpers/helper_props_custom.hps"
+
+//------------------------------------------------------------
+
+const float gfUsingCutters_MinPitch = cMath_ToRad(-55.f);
+const float gfUsingCutters_MaxPitch = cMath_ToRad(30.f);
+const float gfUsingCutters_PitchFadeTime = 0.25f;
+
+const float gfUsingCutters_IntroDelayTime = 0.3f;
+
+const tString gsCuttersCutAnim_PlayerL = "tool_cutter_cut_air_larm";
+const tString gsCuttersCutAnim_PlayerR = "tool_cutter_cut_air_rarm";
+const tString gsCuttersCutChainAnim_Player = "tool_cutter_cut_chain";
+const tString gsCuttersCutPadlockAnim_Player = "tool_cutter_cut_padlock";
+
+const tString gsCuttersCutAnim_Cutters = "cutter_cut_air";
+const tString gsCuttersCutChainAnim_Cutters = "cutter_cut_chain";
+const tString gsCuttersCutPadlockAnim_Cutters = "cutter_cut_padlock";
+const tString gsCuttersIdleAnim_Cutters = "cutter_idle";
+
+const cVector3f gvCuttersCutAnimDefaultOffset = cVector3f(0, -1.25, 0.03);
+const float gfCuttersCutAnimDefaultOffsetAngle = 180.0f;
+
+//------------------------------------------------------------
+
+class cScrPlayerState_UsingCutters : iScrPlayerState_UsingItem_Base, iScrPlayerState_Interface
+{
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		iScrPlayerState_UsingItem_Base::Init();
+		
+		msFocusIntroAnim_R = "tool_cutter_focus_start_rarm";
+		msFocusIntroAnim_L = "tool_cutter_focus_start_larm";
+		msFocusIntroAnim_Item = gsCuttersIdleAnim_Cutters;
+		
+		msFocusLoopAnim_R = "tool_cutter_focus_idle_rarm";
+		msFocusLoopAnim_L = "tool_cutter_focus_idle_larm";
+		msFocusLoopAnim_Item = gsCuttersIdleAnim_Cutters;
+		
+		msFocusOutroAnim_R = "tool_cutter_focus_end_rarm";
+		msFocusOutroAnim_L = "tool_cutter_focus_end_larm";
+		msFocusOutroAnim_Item = gsCuttersIdleAnim_Cutters;
+		
+		mbUsesOtherHandAnims = true;
+		
+		msItemPrompt = "UseItem";
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnEnterState(int alPrevStateId)
+	{
+		////////////////
+		// Enter base
+		iScrPlayerState_UsingItem_Base::OnEnterState(alPrevStateId);
+		AddInteractableEntityClass("cScrPropChainLock");
+		AddInteractableEntityClass("cScrPropPadlock");
+		AddInteractableEntityClass("cScrPropTrap");
+		
+		mlUseCrossHairState = eCrossHairState_UseCutters;
+		mbCheckCanInteractOnWorldInteract = true;
+		
+		////////////////
+		// Setup vars
+		mbCutChains = false;
+		mbDisarmingTrap = false;
+		
+		////////////////
+		// Setup body
+		//PlayerBody_SetCrouchArmRotationOffsetActive(false);
+		SetupPitchFade(gfUsingCutters_MinPitch, gfUsingCutters_MaxPitch, gfUsingCutters_PitchFadeTime, false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnLeaveState(int alNextStateId)
+	{		
+		iScrPlayerState_UsingItem_Base::OnLeaveState(alNextStateId);
+		
+		//////////////
+		// Disable pitch & yaw if entering cutscene
+		if (mbCutChains)
+		{
+			PlayerBody_SetArmAnimationPitch(false, true, true);
+			PlayerBody_SetArmAnimationYaw(false, true, true);
+		}
+		
+		Player_StopLookAt(10);
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateAnimationStates(float afTimeStep) override
+	{
+		////////////////
+		// Cut
+		if (mlAnimState == eUsingItemAnimState_Use)
+		{
+			///////////////
+			// Update state
+			int lState = UpdateStateAnims(gsCuttersCutAnim_PlayerR, gsCuttersCutAnim_PlayerL, gsCuttersCutAnim_Cutters, false, false, 0.1f);
+			
+			////////////////
+			// State over?
+			if (lState == -1)
+			{
+				mbDisarmingTrap = false;
+				Player_StopLookAt(10);
+				ChangeAnimState(eUsingItemAnimState_Loop);
+			}
+		}
+		
+		else
+		{
+			iScrPlayerState_UsingItem_Base::UpdateAnimationStates(afTimeStep);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnUse() 
+	{
+		//////////////////////
+		// Cut nothing but air
+		if (GetCanInteractWithFocusedEntity() == false)
+		{
+			ChangeAnimState(eUsingItemAnimState_Use);
+			return;
+		}
+		
+		//////////////////////
+		// Setup cutscene
+		cLuxMap@ pMap = cLux_GetCurrentMap();			
+		iLuxEntity@ pEnt = mPickBasics.GetFocusedEntity();
+		
+		if (pMap is null) return;
+		if (pEnt is null) return;
+		
+		tString sClass = pEnt.GetClassName();
+		
+		if (sClass == "cScrPropChainLock")
+		{			
+			/////////////
+			// Play anim
+			// (Global func as callback on player cutscene anim)
+			mbCutChains = true;			
+			
+			cMatrixf mtxChain = pEnt.GetOnLoadTransform();
+			cVector3f vPos = mtxChain.GetTranslation();
+			float fAngle = cMath_GetAngleFromPoints3D(0, mtxChain.GetTranspose().GetForward()).y + cMath_Pi;
+			
+			PlayerBody_SetUnequipItemsOnCutscene(true, false);
+			PlayerBody_PlayCutsceneAnimation(gsCuttersCutChainAnim_Player, false, 0.3f, "$_OnAnimEnd_CutChainLock", 1.f, 0.f, true, vPos, fAngle, false, false);
+			PlayerBody_SetCutsceneMaxPitch(0.f);
+			PlayerBody_SetCutsceneMaxYaw(0.f);
+			
+			Entity_PlayAnimation(msItemEntity, gsCuttersCutChainAnim_Cutters, 0.3f, false, true, "", false, false);
+			
+			/////////////
+			// Break the chain!		
+			pMap.AddTimer(pEnt.GetName(), 2.0f, "$_ChainLock_OnTimer_Break");
+		}
+		else if (sClass == "cScrPropPadlock")
+		{
+			tString sPadlockEnt = pEnt.GetName();
+			tString sAnimPosEntName = Padlock_GetAnimationPositionEntity(sPadlockEnt);
+			
+			cVector3f vOffsetPos = 0;
+			float fOffsetAngle = 0;
+			bool bLocalOffset = true;
+			if (sAnimPosEntName == "")
+			{
+				sAnimPosEntName = sPadlockEnt;
+				
+				cVector3f vFwd = pEnt.GetMatrix().GetTranspose().GetForward();
+				float fOffsetRad = cMath_ToRad(gfCuttersCutAnimDefaultOffsetAngle);
+				fOffsetRad -= cMath_ATan2(vFwd.x, -vFwd.z);
+				fOffsetAngle = cMath_ToDeg(fOffsetRad);
+				
+				vOffsetPos = cMath_MatrixMul(cMath_MatrixRotateY(fOffsetRad), gvCuttersCutAnimDefaultOffset);
+				
+				bLocalOffset = false;
+			}
+			
+			iLuxEntity@ pAnimPosEnt = pMap.GetEntityByName(sAnimPosEntName);		
+			if (pAnimPosEnt is null)
+			{
+				Error("[PlayerState_UsingCutters] AnimationPositionEntity is not set to a valid entity!");
+				return;
+			}
+			
+			/////////////
+			// Play anim
+			// (Global func as callback on player cutscene anim)
+			mbCutChains = true;			
+			
+			PlayerBody_SetUnequipItemsOnCutscene(true, false);
+			PlayerBody_PlayCutsceneAtEntity(gsCuttersCutPadlockAnim_Player, sAnimPosEntName, false, 0.3f, "$_OnAnimEnd_CutChainLock", 1, 0, vOffsetPos, fOffsetAngle, bLocalOffset);
+			PlayerBody_SetCutsceneMaxPitch(0.f);
+			PlayerBody_SetCutsceneMaxYaw(0.f);
+			
+			Entity_PlayAnimation(msItemEntity, gsCuttersCutPadlockAnim_Cutters, 0.3f, false, true, "", false, false);
+			
+			/////////////
+			// Break the chain!		
+			pMap.AddTimer(sPadlockEnt, 0.0f, "$_Padlock_OnTimer_Break");
+		}
+		else if (sClass == "cScrPropTrap")
+		{
+			mbDisarmingTrap = true;
+			
+			////////////////////////
+			// Estimate the closest point of the wire to aim at
+			cVector3f vCurrPos = mPickBasics.GetFocusPosition();
+			cVector3f vBodyPos = mPickBasics.GetFocusedBody().GetBoundingVolume().GetWorldCenter();
+			cVector3f vBodyBasePos = mPickBasics.GetFocusedBody().GetWorldPosition();
+			
+			cVector3f vEntToBodyDir = cMath_Vector3Normalize(vBodyPos-vBodyBasePos);
+			float fFocusDist = cMath_Vector3Dist(vCurrPos, vBodyBasePos);
+			
+			cVector3f vAimPos = vBodyBasePos + vEntToBodyDir*fFocusDist;
+			
+			cLux_GetPlayer().RotateCameraTowards(1, 5, 2.0f, vAimPos, false);
+			
+			ChangeAnimState(eUsingItemAnimState_Use);
+			pMap.AddTimer(pEnt.GetName(), 0.45f, "$_Trap_OnTimer_Disarm");
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool OnAnalogInput(int alAnalogId, const cVector3f &in avAmount)
+	{
+		if (mbDisarmingTrap) return false;
+		
+		return iScrPlayerState_UsingItem_Base::OnAnalogInput(alAnalogId, avAmount);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPERS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool GetShowItemPrompt() override
+	{
+		iScrItemHandler_Interface@ pHandler = cast<iScrItemHandler_Interface>( cLux_GetUserModuleFromID(eModuleType_Custom_ItemHandler) );
+		return CheckCanUse() &&
+			   pHandler !is null &&
+			   GetCanInteractWithFocusedEntity();
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet@ apSet, iFontData@ apFont, float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool mbCutChains = false;
+	bool mbDisarmingTrap = false;
+	
+	//------------------------------------------------------------
+}

@@ -1,0 +1,368 @@
+#include "interfaces/Area_Interface.hps"
+#include "helpers/helper_player.hps"
+#include "custom/components/ComponentInterfaces_Custom.hps"
+//#include "player/Player_Types.hps"
+
+class cScrAreaAISearch: iScrArea, iScrArea_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		mBaseObj.SetAutoSleep(false);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject @apVars)
+	{			
+		mBaseObj.SetCheckCollision(true);
+		mBaseObj.SetupCheckCollision(
+					true, //Check center
+					false, 	//Check Dynamic	
+					false, 	//Check Static
+					true	//Check characters
+					);
+					
+		msInterestAreaName = apVars.GetVarString("InterestName", "");
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnAfterWorldLoad()
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool OnUpdateAutoSleep()
+	{
+		return false;
+	}
+	
+	//------------------------------------------------------------
+
+	
+	//------------------------------------------------------------
+	
+	void ResetProperties()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void BeforeEntityDestruction()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnVariableUpdate(float afDeltaTime)
+	{	
+		if (mBaseObj.CollidesWithPlayer())
+		{
+			//cLux_AddDebugMessage("Collision with player detected");
+		}
+		
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INTERACTION
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	bool CanInteract(int alType, iPhysicsBody@ apBody)
+	{
+		return false;
+	}
+	
+	//-----------------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// POINTS OF INTEREST
+	/////////////////////////////////////////
+	
+	//-----------------------------------------------------------------------
+	
+	void RebuildPointsOfInterest()
+	{
+		mvInterestPoints.resize(0);
+		
+		tString sSearch = msInterestAreaName+"*";
+		array<iLuxEntity@> vEntities;
+		if (cLux_GetCurrentMap().GetEntityArray(sSearch, eLuxEntityType_Area, "", vEntities))
+		{
+			for (uint i=0; i<vEntities.length();++i)
+			{
+				mvInterestPoints.push_back(vEntities[i].GetID());
+			}
+			cLux_AddDebugMessage("We found " + mvInterestPoints.length() + " points of interest for " + mBaseObj.GetName());
+		}
+		else
+		{
+			Error("Could not find any points of interest for AISearchArea : " + mBaseObj.GetName());
+		}
+	}
+	
+	//-----------------------------------------------------------------------
+	
+	void NotifyAgentsOfPlayer()
+	{
+		cVector3f vAreaPos = mBaseObj.GetPosition();
+		
+		// Figure out how far it is to the ground
+		float fDistance=0.0f;
+		cVector3f vNormal;
+		iPhysicsBody@ pHit = cLux_GetClosestBody(vAreaPos, cVector3f_Down, 100.0f, fDistance, vNormal);
+		if (pHit is null)
+		{
+			Error("No ground under search area: " + mBaseObj.GetName());
+		}
+		else
+		{
+			float fGround = vAreaPos.y-fDistance;
+			vAreaPos.y = fGround + 0.1f;
+		}			
+				
+		cLuxEntityComponentIterator @pIt = cLux_GetCurrentMap().GetEntityComponentIterator(eComponentType_Custom_AIPlayerNotify);
+		
+		while (pIt.HasNext())
+		{
+			// Get next component
+			iLuxEntityComponent @pComp = pIt.Next();
+			iLuxEntity @pEnt = pComp.GetEntity();
+			
+			pEnt.SetVarString("DestinationSearchArea",mBaseObj.GetName());
+			pEnt.BroadcastMessage(eCustomEntityMessage_PlayerInSearchArea, null, vAreaPos,0);
+		}
+	}
+		
+	//-----------------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//-----------------------------------------------------------------------
+	
+	void OnSetActive(bool abX)
+	{
+		if (abX) return;
+	}
+	
+	//-----------------------------------------------------------------------
+	
+	
+	void OnConnectionStateChange(iLuxEntity@ apEntity,int alState)
+	{
+		if(alState==0) return;
+	}
+	
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// COLLISIONS
+	/////////////////////////////////////////
+	
+	//-----------------------------------------------------------------------
+
+	bool OnStartCheckCollision(float afTimeStep, float afTimeSinceCheck)
+	{
+		if (mBaseObj.IsActive()==false) return false;
+		if(afTimeSinceCheck < 0.1) return false;
+		
+		// Clear *current* collisions and copy everything from the last checks collision list over to previous collisions
+		mvPrevCollided = mvCollided;
+		mvCollided.resize(0);
+		
+		return true;
+	}
+	
+	//-----------------------------------------------------------------------
+
+	bool OnCheckCollision(iPhysicsBody@ apBody, iLuxEntity@ apEntity)
+	{
+		if(apEntity is null) return true;
+		if (mBaseObj.IsActive()==false) return true;
+		
+		///////////////////////////
+		// Check if we're interested in the current entity at all
+		bool bValidEntity = false;
+		int lEntType = apEntity.GetEntityType();
+		tID lID = apEntity.GetID();
+		if (lEntType == eLuxEntityType_Agent) bValidEntity = true;
+		if (lEntType == eLuxEntityType_Player) bValidEntity = true;
+		
+		///////////////////////////
+		// Only continue if above matches
+		if (!bValidEntity) return true;
+		
+		int lIndex = -1;
+		lIndex = mvPrevCollided.find(lID);
+		
+		// If our index returns -1, then the entity is not in the previously collided list.
+		bool bEnteredArea = lIndex == -1 ? true : false;
+		
+		// Make sure we add colliding entities every check, otherwise this won't work!
+		mvCollided.push_back(lID);
+		
+		// Send messages to agents when player enters this area
+		if (lEntType == eLuxEntityType_Player)
+		{
+			if (bEnteredArea)
+			{
+				// Send Message
+				cLux_AddDebugMessage("Player entered search area : " + mBaseObj.GetName());
+				NotifyAgentsOfPlayer();
+				
+			}
+			return true;
+		}
+		
+		// Send messages to agents when the agent enters this area
+		if (lEntType == eLuxEntityType_Agent)
+		{
+			if (bEnteredArea)
+			{
+				// Send Message
+				//cLux_ID_Entity(lID).SetVarString("NewSearchArea",mBaseObj.GetName());
+				//cLux_ID_Entity(lID).BroadcastMessage(eCustomEntityMessage_EnteredSearchArea, null, mBaseObj.GetPosition(),0);
+			}
+			return true;
+		}
+		
+		return true;
+	}
+	
+	//-----------------------------------------------------------------------
+
+	void OnEndCheckCollision(float afTimeStep)
+	{
+		if (mBaseObj.IsActive()==false) return;
+		
+		int lIndex = -1;
+		tID lID;
+		for (uint i=0; i<mvPrevCollided.length();++i)
+		{
+			lIndex = mvCollided.find(mvPrevCollided[i]);
+			if (lIndex == -1)
+			{
+				lID = mvPrevCollided[i];
+				cLux_AddDebugMessage("Entity Exitted Search Area : " + mBaseObj.GetName());
+				
+			}
+		}
+		
+	}
+	
+	//-----------------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL
+	/////////////////////////////////////////
+	
+	//-----------------------------------------------------------------------
+	
+	void _Global_GetRandomInterestPosition()
+	{
+		// No points of interest?
+		if (mvInterestPoints.length() <= 0)
+		{
+			// Try to rebuild
+			RebuildPointsOfInterest();
+			
+			// Still no points of interest? Check the map yourself to see if they exist
+			if (mvInterestPoints.length() <= 0)
+			{
+				Error("_Global_GetRandomInterest could not run as there are no points of interest declared for " + mBaseObj.GetName());
+				return;
+			}
+		}
+		
+		///////////////////////////
+		// Pick random area.
+		int i = cMath_RandRectl(0,mvInterestPoints.length()-1);
+		iLuxEntity@ pEnt = cLux_ID_Entity(mvInterestPoints[i]);
+		
+		//tID lID = mvInterestPoints[i];
+		//iLuxEntity@ pEnt = cLux_GetCurrentMap().GetEntityByID(lID,eLuxEntityType_Area,"cScrAreaAIInterest");
+		
+		if (pEnt is null)
+		{
+			Error("_Global_GetRandomInterest returned null for " + mBaseObj.GetName());
+			return;
+		}
+		
+		////////////////////////////
+		// Return its position
+		cVector3f vRandomPos = pEnt.GetPosition();
+		cScript_SetGlobalReturnVector3f(vRandomPos);
+	}
+	
+	//-----------------------------------------------------------------------
+	
+	array<tID> GetInterestPointArray()
+	{
+		RebuildPointsOfInterest();
+		return mvInterestPoints;
+	}	
+	
+	//-----------------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		//for (uint i=0;i<mvPrevCollided.length();++i)
+		//afStartY = cLux_DrawDebugText(" Prev : " + mvPrevCollided.length(), afStartY);
+		//afStartY = cLux_DrawDebugText(" Coll : " + mvCollided.length(), afStartY);
+			
+		afStartY = cLux_DrawDebugText("mvInterestPoints (len) : " + mvInterestPoints.length(), afStartY);
+			
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	tString msInterestAreaName = "";
+	array<tID> mvInterestPoints;
+	
+	array<tID> mvCollided;
+	array<tID> mvPrevCollided;
+	
+	//------------------------------------------------------------
+		
+}	

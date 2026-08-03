@@ -1,0 +1,341 @@
+#include "interfaces/UserComponent_Interface.hps"
+#include "custom/components/ComponentInterfaces_Custom.hps"
+#include "base/Base_Types.hps"
+
+#include "helper_player.hps"
+#include "helper_modules_custom.hps"
+
+//---------------------------------------------------
+
+float gfNrmRadiationDist_Low = 0.5f; 		//Distance at which low radiation damage and effects should kick in.
+float gfNrmRadiationDist_High = 0.25f;		//Distance at which high radiation damage should kick in.
+
+float gfAmbientRadiationDamage = 0.001f;	//Increase to lucidity meter while outside of the low radiation zone. Should barely be noticeable without the medallion.
+float gfLowRadiationDamage = 0.005f;		//Base increase to lucidity meter in the low radiation zone. Player is not in immediate danger but should try to get out of there.
+
+//---------------------------------------------------
+
+class cScrCurseRadiatorComponent : iScrUserComponent, iScrUserComponent_Interface, iScrCurseRadiatorComponent_Interface
+{	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		mfUpdateTimer = cMath_RandRectf(0, 1.0f);
+		
+		mBaseObj.GetEntity().SetEffectBaseColor(cColor(0));
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// SETUP
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	void OnSetupAfterLoad(cWorld@ apWorld)
+	{
+	}
+	
+	void OnAfterWorldLoad()
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INTERFACE
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		mfRadius = apInstanceVars.GetVarFloat("CurseRadiator_Custom_Radius", -1);
+		if (mfRadius < 0) mfRadius = apVars.GetVarFloat("CurseRadiator_Radius", 0);
+		mfMinRadius = apVars.GetVarFloat("CurseRadiator_Custom_MinRadius", -1);
+		if (mfMinRadius < 0)  mfMinRadius = apVars.GetVarFloat("CurseRadiator_MinRadius", 0);
+		mfBaseIntensity = apVars.GetVarFloat("CurseRadiator_Intensity", 0);
+		
+		mbActive = apInstanceVars.GetVarBool("CurseRadiator_Active", true);
+		mfIntensityMul = apInstanceVars.GetVarFloat("CurseRadiator_IntensityMul", 1);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetActive(bool abX)
+	{
+		if (mbActive==abX) return;
+		
+		mbActive = abX;
+		
+		if (abX==false)
+		{
+			iScrLucidityMeterHandler_Interface @pHandler = cast<iScrLucidityMeterHandler_Interface>( cLux_GetUserModuleFromID(eModuleType_Custom_LucidityMeterHandler) );
+			if (mfPlayerDistNormalized < 1.0f)
+				pHandler.RemoveRadiator(mBaseObj.GetEntity().GetID());
+			
+			mfPlayerDistNormalized=2.0f;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	bool IsActive()
+	{
+		return mbActive;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetIntensityMul(float afMul)
+	{
+		mfIntensityMul = afMul;
+	}
+	
+	//------------------------------------------------------------
+	
+	float GetIntensityMul()
+	{
+		return mfIntensityMul;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetRadius(float afRadius)
+	{
+		mfRadius = afRadius;
+	}
+	
+	//------------------------------------------------------------
+	
+	float GetRadius()
+	{
+		return mfRadius;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetMinRadius(float afMinRadius)
+	{
+		mfMinRadius = afMinRadius;
+	}
+	
+	//------------------------------------------------------------
+	
+	float GetMinRadius()
+	{
+		return mfMinRadius;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetLowIntensity(bool abLowIntensity)
+	{
+		mbLowIntensity = abLowIntensity;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetLowIntensity()
+	{
+		return mbLowIntensity;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void VariableUpdate(float afTimeStep)
+	{
+		//UpdateEntityEffects();
+		if (!mbActive) return;
+		
+		UpdateRadiation(afTimeStep);
+		
+		mfUpdateTimer -= afTimeStep;
+		if (mfUpdateTimer > 0) return;
+		mfUpdateTimer += 0.3f;
+		
+		PlayerDistanceCheck();
+	}
+
+	//------------------------------------------------------------
+	
+	void PlayerDistanceCheck()
+	{
+		float fPlayerDist = cMath_Vector3Dist(mBaseObj.GetEntity().GetPosition(), Player_GetPosition());
+		
+		float fPrevDistNormalized = mfPlayerDistNormalized;
+		mfPlayerDistNormalized = (fPlayerDist-mfMinRadius)/(mfRadius-mfMinRadius);
+		
+		if (fPlayerDist < mfRadius && fPrevDistNormalized > 1.0f)
+		{
+			float fIntensity = GetIntensityAtNormalizedDist(mfPlayerDistNormalized);
+			iScrLucidityMeterHandler_Interface @pHandler = cast<iScrLucidityMeterHandler_Interface>( cLux_GetUserModuleFromID(eModuleType_Custom_LucidityMeterHandler) );
+			pHandler.AddRadiator(mBaseObj.GetEntity().GetID(), fIntensity);
+		}
+		else if (fPlayerDist >= mfRadius && fPrevDistNormalized <= 1.0f)
+		{
+			iScrLucidityMeterHandler_Interface @pHandler = cast<iScrLucidityMeterHandler_Interface>( cLux_GetUserModuleFromID(eModuleType_Custom_LucidityMeterHandler) );
+			pHandler.RemoveRadiator(mBaseObj.GetEntity().GetID());
+		}
+		
+	}
+
+	//------------------------------------------------------------
+	
+	void UpdateRadiation(float afTimeStep)
+	{
+		if (mfPlayerDistNormalized <= 1.0f)
+		{
+			float fIntensity = GetIntensityAtNormalizedDist(mfPlayerDistNormalized);
+			iScrLucidityMeterHandler_Interface @pHandler = cast<iScrLucidityMeterHandler_Interface>( cLux_GetUserModuleFromID(eModuleType_Custom_LucidityMeterHandler) );
+			pHandler.SetRadiatorIntensity(mBaseObj.GetEntity().GetID(), fIntensity);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	float GetIntensityAtDist(float afDist)
+	{
+		float fNrmDist = cMath_Clamp(afDist/mfRadius, 0.0f, 1.0f);
+		return GetIntensityAtNormalizedDist(fNrmDist);
+	}
+	
+	//------------------------------------------------------------
+	
+	float GetIntensityAtNormalizedDist(float afNrmDist)
+	{
+		if (afNrmDist > 1.0f) return 0;
+		
+		float fMinDamage = -1;
+		float fMaxDamage = -1;
+		float fMinDist = 0;
+		float fMaxDist = 0;
+		eEasing easingType = eEasing_Linear;
+		
+		// Outside the immediate danger zone, will only be detectable with medallion
+		if (afNrmDist > gfNrmRadiationDist_Low)
+		{
+			fMinDamage = 0;
+			fMaxDamage = gfAmbientRadiationDamage;
+			fMinDist = gfNrmRadiationDist_Low;
+			fMaxDist = 1.0f;
+			easingType = eEasing_QuartOut;
+		}
+		
+		// Low radiation zone, player can stay here for a while without losing all radiation.
+		// Effects are noticeable even without medallion.
+		else if (afNrmDist > gfNrmRadiationDist_High || mbLowIntensity)
+		{
+			float fMaxIntensityDist = mbLowIntensity ? 0 : gfNrmRadiationDist_High;
+			
+			fMinDamage = gfAmbientRadiationDamage;
+			fMaxDamage = gfLowRadiationDamage*mfIntensityMul;
+			fMinDist = fMaxIntensityDist;
+			fMaxDist = gfNrmRadiationDist_Low;
+			easingType = eEasing_QuartOut;
+		}
+		
+		// High radiation zone. This uses the radiation set in the end file
+		else
+		{
+			fMinDamage = gfLowRadiationDamage*mfIntensityMul;
+			fMaxDamage = mfBaseIntensity*mfIntensityMul;
+			fMinDist = 0;
+			fMaxDist = gfNrmRadiationDist_High;
+			easingType = eEasing_Linear;
+		}
+		
+			
+		float fIntensity = fMaxDamage-fMinDamage;
+		float fDistMul = 1.0f-cMath_Clamp((afNrmDist-fMinDist)/(fMaxDist-fMinDist), 0.0f, 1.0f);
+		fDistMul = cMath_Easing(easingType, fDistMul);
+		return fMinDamage+(fIntensity*fDistMul);
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateEntityEffects()
+	{
+		if (mbActive == false || mfPlayerDistNormalized > 1.0f)
+		{
+			mBaseObj.GetEntity().FadeEffectBaseColor(cColor(0), 0.5f);
+			mfEffectFadeDir = 1.0f;
+			return;
+		}
+		if (mBaseObj.Timer_Exists("EffectColorFade")==false)
+		{
+			mBaseObj.Timer_Add("", 2, "Timer_EffectColorFade", false, true);
+		}
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void Timer_EffectColorFade(uint64 aTimerID)
+	{
+		if (mbActive == false || mfPlayerDistNormalized > 1.0f)
+		{
+			mBaseObj.Timer_Remove(aTimerID);
+			return;
+		}
+		cColor effectColor = mfEffectFadeDir > 0 ? cColor_White : cColor(0);
+		float fFadeTime = mfEffectFadeDir > 0 ? 2.0f : 2.5f;
+		mBaseObj.GetEntity().FadeEffectBaseColor(effectColor, fFadeTime);
+		mfEffectFadeDir *= -1;
+	}
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnRenderSolid(cRendererCallbackFunctions@ apFunctions)
+	{
+		if (mbActive && mfRadius > 0)
+		{
+			apFunctions.GetLowLevelGfx().DrawSphere(mBaseObj.GetEntity().GetPosition(), mfRadius, cColor(0,1,0,1));
+			apFunctions.GetLowLevelGfx().DrawSphere(mBaseObj.GetEntity().GetPosition(), gfNrmRadiationDist_Low*mfRadius, cColor(1,0.5,0,1));
+			if (mbLowIntensity==false) apFunctions.GetLowLevelGfx().DrawSphere(mBaseObj.GetEntity().GetPosition(), gfNrmRadiationDist_High*mfRadius, cColor(1,0,0,1));
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	float mfUpdateTimer = 0;
+	float mfPlayerDistNormalized = 2;
+	float mfEffectFadeDir = 1;
+	
+	bool mbActive = true;
+	float mfRadius = 0;
+	float mfMinRadius = 0;
+	float mfBaseIntensity = 0;
+	float mfIntensityMul = 1;
+	bool mbLowIntensity = false;
+}
+
+
+
+//---------------------------------------------------

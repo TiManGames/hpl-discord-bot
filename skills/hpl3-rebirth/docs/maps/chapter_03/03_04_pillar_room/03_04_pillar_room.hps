@@ -1,0 +1,2030 @@
+#include "interfaces/Map_Interface.hps"
+#include "base/Inputhandler_Types.hps"
+
+#include "helpers/helper_map.hps"
+#include "helpers/helper_menu.hps"
+#include "helpers/helper_props.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_audio.hps"
+#include "helpers/helper_imgui.hps"
+#include "helpers/helper_sequences.hps"
+#include "helpers/helper_game.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_ai.hps"
+#include "helpers/helper_items.hps"
+#include "helpers/helper_agent.hps"
+#include "helpers/helper_player.hps"
+#include "custom/helpers/helper_player_custom.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+#include "custom/helpers/helper_effects_custom.hps"
+#include "custom/helpers/helper_props_custom.hps"
+
+//--------------------------------------------------
+ 
+/*Place any global values here. These must be const variables as they will not be saved*/
+/*This is also the place for enums and classes, but these should be avoided whenever possible*/
+ 
+//--------------------------------------------------
+ 
+class cScrMap : iScrMap
+{
+	//--------------------------------------------
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN CALLBACKS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+ 
+	////////////////////////////
+	// Set up map environment
+	void Setup()
+	{
+		// Put display name entry in english.lang / Levels
+		GetBase().SetDisplayNameEntry("03-04-pillar-room");
+		
+		// Set up color grading etc.
+		
+		Pregnancy_SetStage(ePregStage_Stage2);
+		Pregnancy_SetBarksActive(true);
+		Pregnancy_SetBabyTalkMinimumStage(eBabyTalkStage_TTH_BeforeName);
+		GhoulProgression_SetBarkMinimumStage(eGhoulBarkStage_BecomingMonster);
+		Player_SetAllowCheckBaby(true);
+		
+		if (cScript_GetGlobalVarBool("TTH_Milked"))
+		{
+			FearHandler_SetWhisperStage(eFearWhisperStage_MilkingToDWFA);
+		}
+		else
+		{
+			FearHandler_SetWhisperStage(eFearWhisperStage_HQAToVitaeStation);
+		}
+		
+		StruggleFlashHandler_SetActive(true);
+		StruggleFlashHandler_PreloadFlashGroupTextures(1);
+		StruggleFlashHandler_SetProgression(1);
+		
+		Player_SetAutoTeleportWhenBelowAltitude(-6.f);
+	}
+	
+	//-------------------------------------------------------
+		
+	void PreloadData()
+	{
+		/////////////////
+		// Preload gui
+		//ImGui_PreloadImage("some_image");
+
+		///////////////
+		// Preload particles
+		ParticleSystem_Preload("pillar_dust.ps");
+		ParticleSystem_Preload("dust_impact_simple_oneshot.ps");
+		ParticleSystem_Preload("debris_falling_huge.ps");
+
+		//////////////
+		// Preload screen effects
+		//Material_Preload("some_material.mat");
+		
+		Entity_Preload("radio_receiver_held.ent");
+		Sound_PreloadEvent("level_entity_shared/fire/fire_ignite/wall_torch_ignite");
+	}
+	
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run first time starting map
+	void OnStart()
+	{
+		//Set GhoulProgresison limit
+		GhoulProgression_SetLimit(9);
+		// Any general setup of script / entities
+		
+		Entity_SetEffectsActive("pressureplate*",false,true);
+		
+		Entity_PlayAnimation("configuration_device_iris", "open", 0.1f, true, true);
+					
+		SetupPillars();
+		SetupConfigDevice();
+		
+		Entity_SetActive("Corpse_2",false);
+		Entity_SetActive("Corpse_Old",false);
+		Entity_AddImpulse("pottery_basic_small_grab_10",cVector3f_One,true,true);
+		Entity_AddImpulse("pottery_basic_small_grab_13",cVector3f_One,true,true);
+		
+		
+		
+		//Player_SetNightVisionEnabled(false);
+		Player_SetCanUseLightSource(true);
+		Player_SetMapDeepShadow(0.2f);
+		
+		//cScript_SetGlobalVarBool("TTH_VitaeCanisterInserted", true);
+		FogArea_SetVisible("FogArea_DeathScenario",false);
+		
+		// Setup death areas
+		Death_SetActiveDeathAreaForSource(msMonster,"DeathArea_GhoulAlchemistChambers");
+		
+		// Setup effects
+		//ParticleSystem_SetVisible("vitae_beam_initial_*", false);
+		
+		//if (ItemType_GetCountInInventory("Radio") < 1)
+		//	Item_AddToInventory("Radio");
+		
+		/////////////////////////
+		// Debug
+		if(cLux_ScriptDebugOn())
+		{
+			if (ItemType_GetCountInInventory("Lantern") < 1)
+				Item_AddToInventory("Lantern");
+				
+			if (ItemType_GetCountInInventory("Radio") < 1)
+				Item_AddToInventory("Radio");
+				
+			Item_SetContent(ItemType_GetFirstInInventory("Lantern"), "Oil", 10);
+		}
+		
+		Music_Play("A2_3_4_PillarRoomAmbience.ogg", 0.2, true, eMusicPrio_BgAmb);
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when entering map
+	void OnEnter()
+	{	
+		PlayerBody_SetActive(true);
+		
+		Pregnancy_SetBabyKicksEnabled(true);
+        
+        Heat_SetActive(false);
+		
+		Entity_SetCollide("gear_right_*", false);
+		Entity_SetCollide("gear_middle_*", false);
+		
+		///////////////////////////////////
+		// PF-ing should be off until a PF seq is registered
+		FearHandler_SetPermaFailEnabled(false);
+		
+		Player_SetNightVisionEnabled(false);
+		// Updated 200403
+		Player_SetNightVisionBrightness(1.5f);
+		
+		if (mbSequencePillars == false)
+			SetupConfigDevice();
+		else
+		{
+			Sound_CreateAtEntity("Sound_PillarSound", "03_04_pillar_room/pillar_activate/pillar_energy_flow", "SoundArea_Pillar");
+			ParticleSystem_CreateAtEntity("PS_Orb","vitae_orb.ps","PosArea_OrbParticles",true);
+			ParticleSystem_CreateAtEntity("PS_Orb_Refraction","vitae_orb_refraction.ps","PosArea_OrbParticles",true);
+			Entity_SetEffectsActiveExt("lit_pillar_symbol_*",true,true,0.8f,2);
+		}
+		
+		Game_AutoSave();
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when leaving map
+	void OnLeave()
+	{
+		///////////////////
+		// Clear permafails
+		FearHandler_ClearPermaFailScenes();
+		
+		//Pregnancy_SetBabyKicksEnabled(true);
+	}
+	
+	//------------------------------------------------------- 
+	
+	void Update(float afTimeStep) 
+	{	
+		//cLux_AddDebugMessage("UPDATE");
+		//float fWheel = Wheel_GetCurrentAngle("BeltDrive_Right");
+		//float fPill =cMath_ToDeg(cMath_MatrixToEulerAngles(Map_GetEntity("pillar_right").GetMatrix().GetRotation()).y);
+		//cLux_AddDebugMessage("WHEEL: "+fWheel+" - PILL: "+fPill+" - DIFF: "+(fWheel-fPill));
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////////////
+	// Called when player HP reaches 0
+	bool OnDeath(const tString &in asSource)
+	{
+		cLux_AddTodoMessage("DEAD : SOURCE = " + asSource);
+		// return false for default behaviour
+		
+		if (asSource == "Ghoul_AlchemistChambers")
+		{
+			DeathScenario_OnDeath_PlayerLosesConfigNote(asSource);
+			Death_SetRespawnCallback("DeathScenario_OnRespawn_PlayerLosesConfigNote");
+			return true;
+		}
+		
+		return false;
+	}
+	
+	//-------------------------------------------------------
+	
+	////////////////////////////////////
+	// Called when player should respawn (after death)
+	bool OnRespawn(const tString &in asSource)
+	{
+		// return false for default behaviour (fadeout and death area)
+		return false;
+	}
+	
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// To get when player makes input (mostly used for debug)
+	void OnAction(int alAction, bool abPressed) 
+	{
+		if(abPressed==false) return;
+		
+		if(alAction == eAction_Test1)
+		{
+			Player_Teleport("Start_AlchemistChambers_CorpseRoom");
+			Entity_SetActive("Trigger_ActivateGhoulAlchemistChambers", true);
+			Entity_SetActive("Trigger_DeactivateGhoulAlchemistChambers", true);
+		}
+		if(alAction == eAction_Test2)
+		{
+			Seq_PowerUpPillars("");
+			cScript_SetGlobalVarBool("TTH_PillarRoomComplete", true);
+		}
+		if(alAction == eAction_Test3)
+		{
+			Seq_PowerUpPillars("");
+			cScript_SetGlobalVarBool("TTH_VitaeCanisterInserted", true);
+			//mbOverwriteSolution = true;
+		}
+		if (alAction == eAction_Test4)
+		{
+			//iLuxEntity@ pEnt = cLux_GetCurrentMap().GetEntityByName("pillar_right");
+			Radio_StartCall("Dialogue_CallDoc", "OnEndOfVoice_RadioAway", 5.f, "Radio_Doctor;Radio_Yasmin");
+			Map_AddTimer("Timer_PutAwayRadio", 32.f, "OnTimer_PutAwayRadio");
+		}
+
+		if (alAction == eAction_Test5)
+		{
+			Entity_SetActive("CorpsePose_2",false);
+			Entity_SetActive("Corpse_Old",false);
+		}
+		if (alAction == eAction_Test6)
+		{
+			Prop_MoveLinearTo("ConfigDeviceSelector","PosArea_ConfigDeviceHide",0.5,0.3,1,false,"");
+			Prop_MoveLinearTo("pillar_room_configuration_device*","PosArea_ConfigDeviceHide",0.5,0.3,1,false,"");
+			Entity_SetEffectsActive("rune_*", false, false);
+			Prop_MoveLinearTo("rune_*","PosArea_ConfigDeviceHide",1,0.3,1,false,"");
+		    Entity_PlayAnimation("configuration_device_iris", "closing", 0.1f, false, true);
+		}
+		if (alAction == eAction_Test7)
+		{
+			//mbSequencePillars = true;
+			FearHandler_TriggerPermaFail();
+		}
+		if (alAction == eAction_Test8)
+		{
+			Sound_CreateAtEntity("Sound_PlateSolved","03_04_pillar_room/config_device/plate_solve_energy_loop","ConfigRotator");
+		}
+		
+		//////////////////////////////
+		// Permafail Test
+		if (alAction == eAction_Test9)
+		{
+			FearHandler_SetPermaFailStruggleEnabled(false);
+			FearHandler_SetPermaFailEnabled(true);
+			FearHandler_FadeLevelTo(1.f, 1.f);
+			FearHandler_SetForcedAddFearRate(0.5f, 10.f, false, -1.f, -1.f, 0.f);
+		}
+		if (alAction == eAction_TestPlus)
+		{
+			float lCurrentFearLevel = FearHandler_GetLevel();
+			FearHandler_FadeLevelTo(lCurrentFearLevel+0.1f,0,true);
+		}
+		if (alAction == eAction_TestMinus)
+		{
+			//Pregnancy_SetBabyKicksEnabled(true);
+			Pregnancy_DoBabyKick(true);	
+			//Map_AddTimer("Timer_DoBabyNamingSeq", 2.5f, "OnTimer_DoBabyNamingSeq");
+		}
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// This only used for pure debug purposes when info needs to printed.
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afY)
+	{
+		//afY = cLux_DrawDebugText("My Debug value:"+..., afY);
+		return afY;
+	}
+ 
+	//-------------------------------------------------------
+ 
+	//} END MAIN CALLBACKS
+ 
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN FUNCTIONS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+	
+	/*Put any variables that are used in more than one scene here.*/
+ 
+	bool mbLostNote = false;
+	bool mbLostNoteComment = false;
+ 
+	//-------------------------------------------------------
+ 
+	/*Put any functions that are used in more than one scene here.*/
+	
+	void OnTimer_DelayedRespawn(const tString &in asTimer)
+	{
+		Death_Respawn(false);
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnCollide_ToggleNightVision(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		if (alState==1) Player_SetNightVisionEnabled(true);
+		else if (alState==-1) Player_SetNightVisionEnabled(false);
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnPermaFail()
+	{
+		// PermaFails
+		FearHandler_AddPermaFailScene("Area_Permafail_Run_Point_A", "Area_Permafail_Run_Point_B", 5.f, 3.f, true);
+		FearHandler_AddPermaFailScene("Area_Permafail_Run_Point_C", "Area_Permafail_Run_Point_D", 5.f, 0.5f, true);
+		FearHandler_AddPermaFailScene("struggle_gnaw_on_fairchild_loop", "Area_Permafail_FeedTarget");
+		FearHandler_AddPermaFailScene("cannon_stumble", "Area_Permafail_Run_Point_D","","", 1.25f);
+		FearHandler_SetPermaFailRespawnArea("Area_PermaFail_1");
+		
+		if (Entity_IsActive(msMonster))
+			Entity_SetActive(msMonster, false);
+			
+		FearArea_SetUnsafeMusic("Fear_Global", "");
+		FearHandler_SetPermaFailEnabled(false);
+		return true;
+	}
+ 
+	//-------------------------------------------------------
+ 
+	//} END MAIN FUNCTIONS
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 1 *ENTER LEVEL THROUGH ROMAN RUINS AND DISCOVER ACCESS TO TIN HINAN INNER RUINS*
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+ 
+		/////////////////////////////////////////
+		// General
+		//{//////////////////////////////////////
+		
+		//-------------------------------------------------------
+	
+		/*Put any variables that are used by many events in Scene X here.*/
+	
+		//-------------------------------------------------------
+	
+		/*Put any functions that are used in more than one event in Scene X here.*/
+	
+		//-------------------------------------------------------
+		
+		//} END General	
+	
+		/////////////////////////////////////////
+		// Event A - ENCOUNTER A GHOUL
+		//{//////////////////////////////////////
+	
+		//-------------------------------------------------------
+	
+		/*Put any variables that are only used in Scene 1, Event A here.*/
+	
+		//-------------------------------------------------------
+	
+		/*Put any functions that are only used in Scene 2, Event A here.*/
+	
+		//-------------------------------------------------------
+	
+		//} END Event A
+	
+	//} END SCENE 1
+	
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 2 *ENTER THE PILLAR ROOM AND DISCOVER THE PILLARS AND THE STAR MAP*
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+ 
+		/////////////////////////////////////////
+		// General
+		//{//////////////////////////////////////
+		
+		//-------------------------------------------------------
+	
+		/*Put any variables that are used by many events in Scene 2 here.*/
+		
+		//-------------------------------------------------------
+	
+		/*Put any functions that are used in more than one event in Scene 2 here.*/
+		
+		bool OnCollide_Player_CallDoc(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState != 1) return true;
+		
+			Map_AddTimer("Timer_DoctorCalls",22,"OnTimer_DoctorCalls");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_DoctorCalls(const tString &in asTimer)
+		{
+			if (Entity_GetCollide("Player","Trigger_MainHall") == false || Entity_IsActive(msMonster))
+			{
+				Map_RestartCurrentTimer(2);
+				return;
+			}
+			
+			Radio_StartCall("Dialogue_CallDoc", "OnEndOfVoice_RadioAway", 5.f, "Radio_Doctor;Radio_Yasmin");
+			Map_AddTimer("Timer_PutAwayRadio", 32.f, "OnTimer_PutAwayRadio");
+			
+			/*Player_FadeRunSpeedMulTo(.6f,1);
+			Player_FadeMoveSpeedMulTo(.5f,2);
+			Voice_Play("Dialogue_CallDoc",-1,"OnEndOfVoice_RadioAway");
+			Map_AddTimer("Timer_PickUpRadio",5,"OnTimer_PickUpRadio");*/
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PutAwayRadio(const tString &in asTimer)
+		{
+			Radio_StopCall();
+		}
+		
+		//-------------------------------------------------------
+		
+		/*void OnTimer_PickUpRadio(const tString &in asTimer)
+		{
+			Player_SetJumpDisabled(true);
+			Item_TakeOut(ItemType_GetFirstInInventory("Radio"));
+		}*/
+		
+		/*void OnEndOfVoice_RadioAway(const tString &in asScene, const tString &in asSubject)
+		{
+			Player_FadeRunSpeedMulTo(1.f,1);
+			Player_FadeMoveSpeedMulTo(1.f,2);
+			Player_SetJumpDisabled(false);
+			Item_PutAway(eItemHandlerHand_Right);
+		}*/
+	
+		//-------------------------------------------------------
+		
+		//} END General	
+	
+		/////////////////////////////////////////
+		// Event A - LEARN HOW THE PILLARS INTERACT WITH THE STAR MAP
+		//{//////////////////////////////////////
+	
+		//-------------------------------------------------------
+	
+		/*Put any variables that are only used in Scene 2, Event A here.*/
+	
+		//-------------------------------------------------------
+	
+		/*Put any functions that are only used in Scene 2, Event A here.*/
+	
+		//-------------------------------------------------------
+	
+		//} END Event A
+	
+		/////////////////////////////////////////
+		// Event B - EXAMINE HERBERT'S EQUIPMENT AND THE PILLARS
+		//{//////////////////////////////////////
+	
+		//-------------------------------------------------------
+	
+		/*Put any variables that are only used in Scene 2, Event B here.*/
+	
+		//-------------------------------------------------------
+	
+		/*Put any functions that are only used in Scene 2, Event B here.*/
+	
+		//-------------------------------------------------------
+	
+		//} END Event B
+	
+		/////////////////////////////////////////
+		// Event C - EXAMINE STAR MAP AND LINK BETWEEN WORLDS
+		//{//////////////////////////////////////
+	
+		//-------------------------------------------------------
+	
+		/*Put any variables that are only used in Scene 2, Event C here.*/
+	
+		//-------------------------------------------------------
+	
+		/*Put any functions that are only used in Scene 3, Event C here.*/
+	
+		//-------------------------------------------------------
+	
+		//} END Event C
+	
+		/////////////////////////////////////////
+		// Event D - FIND HERBERT'S STAR MAP DIAGRAM
+		//{//////////////////////////////////////
+	
+		//-------------------------------------------------------
+	
+		/*Put any variables that are only used in Scene 2, Event D here.*/
+	
+		//-------------------------------------------------------
+	
+		/*Put any functions that are only used in Scene 2, Event D here.*/
+	
+		//-------------------------------------------------------
+	
+		//} END Event D
+	
+	//} END SCENE 2
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 3 *ALIGN THE PILLARS TO THE STAR MAP*
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+ 
+		/////////////////////////////////////////
+		// General
+		//{//////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		/*Put any variables that are used by many events in Scene 3 here.*/
+	
+		float mfPrevBeltDriveAngle = -1;
+		float mfPrevPillarAngle = -1;
+		float mfBeltDriveTimer = 0.25;
+	
+		//-------------------------------------------------------
+		
+		/*Put any functions that are used by many events in Scene 3 here.*/
+		
+		void SetupPillars()
+		{
+			Entity_SetVarInt("pillar_right", "targetRotation", 4);
+			Entity_SetVarInt("pillar_middle", "targetRotation", 2);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Wheel_Stuck(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState != 1) return true;
+			
+			Sound_CreateAtEntity("Sound_Stuck","02_04_living_quarters/floor_plank/floor_plank_creak","BeltDrive_Left");
+			//Sound_CreateAtEntity("Sound_PillarMisalignedMiddle","03_04_pillar_room/pillar/pillar_misaligned","pillar_left");
+			
+			return true;
+		}
+	
+		//-------------------------------------------------------
+	
+		void OnInteract_BeltDrive(const tString &in asEntity)
+		{
+			if (cScript_GetGlobalVarBool("TTH_PillarRoomComplete")) return;
+			
+			Map_AddTimer(asEntity, 0.2f, "OnTimer_UpdateAutoRotation");
+			
+			/*iPhysicsJoint@ pJoint = cLux_GetCurrentMap().GetPhysicsWorld().GetJoint(asEntity+"_JointHinge_1");
+			iPhysicsJointHinge@ pHinge = cPhysics_ToJointHinge(pJoint);
+			mfPrevBeltDriveAngle = pHinge.GetAngle();
+			
+			tString sAssignedPillar = Entity_GetVarString(asEntity,"");
+			iPhysicsJoint@ pPillarJoint = cLux_GetCurrentMap().GetPhysicsWorld().GetJoint(sAssignedPillar+"_JointHinge_1");
+			iPhysicsJointHinge@ pPillarHinge = cPhysics_ToJointHinge(pPillarJoint);
+			mfPrevPillarAngle = pPillarHinge.GetAngle();*/
+		}
+		
+		//-------------------------------------------------------
+		
+		[nosave] float mfPrevWheelAngVel = 0.f;
+		
+		void OnTimer_UpdateAutoRotation(const tString &in asTimer)
+		{
+			// UPDATE ROTATION ON RELEASE
+			
+			//////////////////////////////
+			// Sounds
+			bool bInteractedWith = Entity_IsInteractedWith(asTimer);
+			bool bJammed = Wheel_GetJammed(asTimer);
+			float fAngVel = Map_GetEntity(asTimer).GetBody(1).GetAngularVelocity().Length();
+			tString sStartSound = "03_04_pillar_room/pillar/pillar_turn_start";
+			tString sStopSound = "03_04_pillar_room/pillar/pillar_turn_end";
+			
+			tString sPos = (asTimer == "BeltDrive_Right") ? "_Right" : "_Mid";
+			
+			if (fAngVel > 0.1f && mfPrevWheelAngVel < 0.1f)
+				Sound_CreateAtEntity("Sound_PillarStart"+sPos, sStartSound, "SoundArea_Pillar"+sPos);
+			if (fAngVel < 0.1f && mfPrevWheelAngVel > 0.1f || bInteractedWith == false && fAngVel > 0.1f)
+				Sound_CreateAtEntity("Sound_PillarStop"+sPos, sStopSound, "SoundArea_Pillar"+sPos);
+				
+			Sound_Fade("Sound_RotatePillar"+sPos, fAngVel > 0.1f && bInteractedWith && bJammed == false ? 1.f : 0.f , 0.5f);
+			if (bInteractedWith == false)
+				Sound_Stop("Sound_RotatePillar"+sPos, 0.5f);
+			
+			mfPrevWheelAngVel = fAngVel;
+			
+			if (bInteractedWith == false)
+			{
+				mfPrevWheelAngVel = 0.f;
+				
+				float fAngle = Wheel_GetCurrentAngle(asTimer);
+				float fMod = cMath_Abs(cMath_Modulus(fAngle, 90.f));
+				float fTar = -1.f;
+
+				if (fMod >= 45.f) fTar = fAngle + (90.f - fMod) * cMath_Sign(fAngle);
+				if (fMod < 45.f) fTar = fAngle + fMod * cMath_Sign(-fAngle);
+
+				if (fTar == -1.f) return;
+				
+				Wheel_SetAngle(asTimer, cMath_ToRad(fTar), true);
+				
+				tString sCollideArea = "AreaPulleyRight";
+				if (asTimer=="BeltDrive_Mid") sCollideArea="AreaPulleyMid";
+				tString sPillar = Entity_GetVarString(asTimer, "");
+				
+				int lAlignmentIx = -1;
+				for (int i = 1; Entity_Exists(sCollideArea+"_Align_"+i); i++)
+				{
+					if (Entity_GetCollide(sCollideArea, sCollideArea+"_Align_"+i))
+						lAlignmentIx = i;
+						Debug_Log(asTimer + " POSITION: "+lAlignmentIx);
+				}
+					
+				if (lAlignmentIx >= 1)
+				{
+					Entity_SetVarInt(sPillar, "currentRotation", lAlignmentIx);
+					cLux_AddDebugMessage("CURR ROT: "+Entity_GetVarInt(sPillar,"currentRotation"));
+					//EvaluateSolution(1);
+				}
+				else
+				{
+					Map_AddTimer(asTimer, 0.2f, "OnTimer_UpdateAutoRotation");
+				}
+				return;
+			}
+			
+			Map_AddTimer(asTimer, 0.2f, "OnTimer_UpdateAutoRotation");
+		}
+		
+		//--------------------------------------------------------
+		
+		void OnTimer_BeltDriveInteract(const tString &in asTimer)
+		{
+			
+			iPhysicsJoint@ pJoint = cLux_GetCurrentMap().GetPhysicsWorld().GetJoint(asTimer+"_JointHinge_1");
+			iPhysicsJointHinge@ pHinge = cPhysics_ToJointHinge(pJoint);
+			
+			float fDiff = cMath_GetAngleDistanceRad(mfPrevBeltDriveAngle, pHinge.GetAngle());
+			float fSpeed = fDiff/mfBeltDriveTimer;
+			mfPrevBeltDriveAngle = pHinge.GetAngle();
+			
+			tString sPillar = Entity_GetVarString(asTimer, "");
+			
+			Prop_RotateToSpeed(sPillar, 100.0f, fSpeed, false, "");
+			
+			// Stop matching rotation speed to belt drive and if close enough to a valid alignment, rotate it into position.
+			if (cMath_Abs(fSpeed) < 0.001 && Entity_IsInteractedWith(asTimer)==false)
+			{
+				tString sCollideArea = "AreaPulleyRight";
+				if (asTimer=="BeltDrive_Mid") sCollideArea="AreaPulleyMid";
+				
+				int lAlignmentIx = -1;
+				for (int i = 1; Entity_Exists(sCollideArea+"_Align_"+i); i++)
+				{
+					if (Entity_GetCollide(sCollideArea, sCollideArea+"_Align_"+i))
+						lAlignmentIx = i;
+						//Debug_Log("POSITION "+lAlignmentIx);
+				}
+					
+				if (lAlignmentIx >= 1)
+				{
+					Prop_AlignRotation(sPillar, sPillar+"_Align_"+lAlignmentIx, 2.0, 1.0, 0.1, true, "");
+					Entity_SetVarInt(sPillar, "currentRotation", lAlignmentIx);
+					//EvaluateSolution(1);
+				}
+				return;
+			}
+			
+			Map_AddTimer(asTimer, mfBeltDriveTimer, "OnTimer_BeltDriveInteract");
+		}
+	
+		//-------------------------------------------------------
+		
+		//} END General	
+	
+		/////////////////////////////////////////
+		// Event A - INSPECT THE EAST PILLAR AND SEE THAT IT IS STUCK
+		//{//////////////////////////////////////
+	
+		//-------------------------------------------------------
+	
+		/*Put any variables that are only used in Scene 3, Event A here.*/
+	
+		//-------------------------------------------------------
+	
+		/*Put any functions that are only used in Scene 3, Event A here.*/
+	
+		//-------------------------------------------------------
+	
+		//} END Event A
+	
+		/////////////////////////////////////////
+		// Event B - REMOVE CORPSE FROM MIDDLE PILLAR CONTROLS
+		//{//////////////////////////////////////
+	
+		//-------------------------------------------------------
+	
+		/*Put any variables that are only used in Scene 3, Event B here.*/
+	
+		//-------------------------------------------------------
+	
+		/*Put any functions that are only used in Scene 3, Event B here.*/
+	
+		void StickyDetach_CorpseArm(const tString &in asStickyArea, const tString &in asBodyName)
+		{
+			Entity_SetActive(asStickyArea, false);
+			Entity_SetActive("BeltDriveBlocker_*", false);
+			Sound_CreateAtEntity("Sound_CorpseDebris", "03_04_pillar_room/helper_corpse/helper_corpse_debris", "Sound_CorpseDebris");
+		}
+	
+		//-------------------------------------------------------
+	
+		//} END Event B
+	
+		/////////////////////////////////////////
+		// Event C - ROTATE THE MIDDLE PILLAR TO CONTINUE THE TIME STREAM
+		//{//////////////////////////////////////
+	
+		//-------------------------------------------------------
+	
+		/*Put any variables that are only used in Scene 3, Event C here.*/
+	
+		//-------------------------------------------------------
+	
+		/*Put any functions that are only used in Scene 3, Event C here.*/
+	
+		//-------------------------------------------------------
+	
+		//} END Event C
+	
+		/////////////////////////////////////////
+		// Event D - ROTATE THE WEST PILLAR TO COMPLETE THE TIME STREAM
+		//{//////////////////////////////////////
+	
+		//-------------------------------------------------------
+	
+		/*Put any variables that are only used in Scene 3, Event D here.*/
+	
+		//-------------------------------------------------------
+	
+		/*Put any functions that are only used in Scene 3, Event D here.*/
+	
+		//-------------------------------------------------------
+	
+		//} END Event D
+	
+	//} END SCENE 3
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 4 *INPUT HIGHLIGHTED SYMBOLS IN TO CONFIGURATION DEVICE*
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+ 
+		/////////////////////////////////////////
+		// General
+		//{//////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		tString msMonster = "Ghoul_AlchemistChambers";
+	
+		float mfConfigRotationTimer = 0.06;
+		float mfPrevConfigRotationAngle = -1;
+		float mfConfigRotationDir = 0;
+		float mfConfigRotationTarget = 0;
+		cVector2f mvSelectorCoords = cVector2f(1, 2);	// The position of the Selector on the grid
+		cVector2f mvSlidersCollideAreas = cVector2f(0, 2); 	// The collide area of the two sliders. X=SliderH, Y=SliderV 
+		
+		bool mbEvaluatedSolution = false;
+		
+		int[][] mvConfigDeviceSymbols = {{1, 4, 3, 4, 3},
+										 {1, 2, 1, 2, 2},
+										 {4, 4, 2, 1, 2},
+										 {3, 2, 4, 4, 1},
+										 {3, 3, 2, 3, 1}};
+		int[][] mvConfigDeviceMask =	{{1, 1, 1, 1, 0},
+										 {1, 1, 0, 0, 0},
+										 {0, 0, 0, 0, 1},
+										 {0, 0, 0, 0, 0},
+										 {1, 0, 0, 0, 0}};
+	
+		//-------------------------------------------------------
+		
+		void OnInteractLeave_Slider(const tString &in asEntity)
+		{
+			
+			tString sTarget = Entity_GetVarString(asEntity, "Target");
+			cLux_AddDebugMessage("MOVE TO: "+Entity_GetVarString(asEntity, "Target"));
+			
+			if (asEntity == "ConfigDevice_SliderH")
+			{
+				if (sTarget == "PosArea_ConfigDevice_SliderH_0") // Middle
+					Slide_AutoMoveTo(asEntity, 0.5f);
+				else if (sTarget == "PosArea_ConfigDevice_SliderH_1") // Middle
+					Slide_AutoMoveTo(asEntity, 1.f);
+				else if (sTarget == "PosArea_ConfigDevice_SliderH_2") // Middle
+					Slide_AutoMoveTo(asEntity, 0.f);
+					
+				Sound_CreateAtEntity("selector_move", "03_04_pillar_room/config_device/device_selector_H", "ConfigDeviceSelector",0,false,0.2f);
+			}
+			else if (asEntity == "ConfigDevice_SliderV")
+			{
+				if (sTarget == "PosArea_ConfigDevice_SliderV_0") // Top
+					Slide_AutoMoveTo(asEntity, 1.f);
+				else if (sTarget == "PosArea_ConfigDevice_SliderV_1") // Middle
+					Slide_AutoMoveTo(asEntity, 0.75f);
+				else if (sTarget == "PosArea_ConfigDevice_SliderV_2") // Middle
+					Slide_AutoMoveTo(asEntity, 0.5f);
+				else if (sTarget == "PosArea_ConfigDevice_SliderV_3") // Middle
+					Slide_AutoMoveTo(asEntity, 0.25f);
+				else if (sTarget == "PosArea_ConfigDevice_SliderV_4") // Bottom
+					Slide_AutoMoveTo(asEntity, 0.f);
+					
+				Sound_CreateAtEntity("selector_move", "03_04_pillar_room/config_device/device_selector_V", "ConfigDeviceSelector",0,false,0.2f);
+			}
+		}
+
+		//-------------------------------------------------------
+		
+		void SetupConfigDevice()
+		{
+			// Setup pillars powering on
+			ParticleSystem_SetVisible("PS_PillarActive_*", false);
+			Light_FadeTo("Light_PillarPower_Point_2", cColor(0,0,0,0), -1, 0.1);
+		}
+	
+		//-------------------------------------------------------
+	
+		void OnInteract_ConfigRotation(const tString &in asEntity)
+		{
+			if (cScript_GetGlobalVarBool("TTH_PillarRoomComplete")) return;
+			
+			Map_AddTimer(asEntity, mfConfigRotationTimer, "OnTimer_ConfigRotationInteract");
+			
+			iPhysicsJoint@ pJoint = cLux_GetCurrentMap().GetPhysicsWorld().GetJoint(asEntity+"_JointHinge_1");
+			iPhysicsJointHinge@ pHinge = cPhysics_ToJointHinge(pJoint);
+			mfPrevConfigRotationAngle = pHinge.GetAngle();
+			mbEvaluatedSolution = false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void AlignRunes()
+		{
+			Prop_AlignRotation("rune_*","ConfigDeviceSelector",5,5,1.0f,false);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ConfigRotationInteract(const tString &in asTimer)
+		{
+
+			iPhysicsJoint@ pJoint = cLux_GetCurrentMap().GetPhysicsWorld().GetJoint(asTimer+"_JointHinge_1");
+			iPhysicsJointHinge@ pHinge = cPhysics_ToJointHinge(pJoint);
+			
+			if (Entity_IsInteractedWith(asTimer)==false)
+			{
+				float fDiv = pHinge.GetAngle()/cMath_PiDiv2;
+				float fDecimals = cMath_Abs(fDiv-cMath_Floor(fDiv));
+				
+				if (fDecimals > 0.8 || fDecimals < 0.2) mfConfigRotationTarget = cMath_Round(fDiv)*cMath_PiDiv2;
+				else if (mfConfigRotationDir > 0)		mfConfigRotationTarget = cMath_Floor(fDiv)*cMath_PiDiv2;
+				else									mfConfigRotationTarget = cMath_Ceil(fDiv)*cMath_PiDiv2;
+				
+				OnTimer_AlignConfigRotation(asTimer);
+				return;
+			}
+			
+			float fDiff = cMath_GetAngleDistanceRad(pHinge.GetAngle(), mfPrevConfigRotationAngle);
+			mfConfigRotationDir = cMath_Sign(fDiff);
+			mfPrevConfigRotationAngle = pHinge.GetAngle();
+				
+			AlignRunes();
+			
+			Map_AddTimer(asTimer, mfConfigRotationTimer, "OnTimer_ConfigRotationInteract");
+		}
+	
+		//-------------------------------------------------------
+		
+		void OnTimer_AlignConfigRotation(const tString &in asTimer)
+		{
+			
+			AlignRunes();
+			if (Entity_IsInteractedWith(asTimer))
+				return;
+
+			iPhysicsJoint@ pJoint = cLux_GetCurrentMap().GetPhysicsWorld().GetJoint(asTimer+"_JointHinge_1");
+			iPhysicsJointHinge@ pHinge = cPhysics_ToJointHinge(pJoint);
+			
+			float fDiff = cMath_GetAngleDistanceRad(mfConfigRotationTarget, pHinge.GetAngle());
+			float fDistModifier = cMath_Easing(eEasing_QuartOut, cMath_Abs(fDiff)/cMath_PiDiv2);
+			float fTorque = cMath_Sign(fDiff)*mfConfigRotationTimer*fDistModifier*128.f;
+			
+/*			if (cMath_Abs(fDiff) < 0.1 && mbEvaluatedSolution==false)
+			{
+				mbEvaluatedSolution = true;
+				//EvaluateSolution(0.5f);
+			}
+			*/
+			
+			if (cMath_Abs(fTorque) < 0.04)
+				return;
+			
+			Entity_AddTorque(asTimer, cVector3f_Up*fTorque, true, false);
+			Map_AddTimer(asTimer, mfConfigRotationTimer, "OnTimer_AlignConfigRotation");
+
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_SliderH_MoveSelector(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (cScript_GetGlobalVarBool("TTH_PillarRoomComplete")) return false;
+			
+			if (alState == -1) return true;
+			Entity_SetVarString("ConfigDevice_SliderH","Target",asChild);
+			Slider_MoveSelector(0, cString_GetNumericSuffixInt(asChild), 2);
+			return true;
+		}
+
+		//--------------------------------------------------------
+		
+		bool OnCollide_SliderV_MoveSelector(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (cScript_GetGlobalVarBool("TTH_PillarRoomComplete")) return false;
+			
+			if (alState == -1) return true;
+			Entity_SetVarString("ConfigDevice_SliderV","Target",asChild);
+			Slider_MoveSelector(1, cString_GetNumericSuffixInt(asChild), 4);
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void Slider_MoveSelector(int alIndex, int alPos, int alMax)
+		{
+			int lCurrentPos = mvSlidersCollideAreas.GetElement(alIndex);
+			int lDir = 0;
+			if (alPos == 0 && lCurrentPos == alMax)
+				lDir = 1;
+			else if (alPos == alMax && lCurrentPos == 0)
+				lDir = -1;
+			else
+				lDir = alPos-lCurrentPos;
+
+			mvSlidersCollideAreas.SetElement(alIndex, alPos);
+
+			int lCurrentCoord = mvSelectorCoords.GetElement(alIndex);
+			int lNewCoord = cMath_Clamp(lCurrentCoord+lDir, 0, alMax);
+			mvSelectorCoords.SetElement(alIndex, lNewCoord);
+			Prop_MoveLinearTo("ConfigDeviceSelector", "SelectorPos_"+int(mvSelectorCoords.x)+"_"+int(mvSelectorCoords.y), 2, 1, 0.05, true);
+			Sound_CreateAtEntity("selector_move", "03_04_pillar_room/config_device/device_selector", "ConfigDeviceSelector");
+			
+			//EvaluateSolution(0.5f);
+		}
+	
+		//-------------------------------------------------------
+		
+		void OnGui_ConfigSymbols(const tString&in asEntityName, float afTimeStep)
+		{
+			for (int x = 0; x < 5; x++)
+			{
+				for (int y = 0; y < 5; y++)
+				{
+					if (mvConfigDeviceMask[y][x]==0) continue;
+					ImGui_SetModRotateAngle(-Wheel_GetCurrentAngle("ConfigRotator"));
+					ImGui_DoImage(cImGuiGfx("temp_pillar_symbol_"+mvConfigDeviceSymbols[y][x]+".tga", eImGuiGfx_Texture), ImGui_NrmPos(x*0.2, y*0.2, 1), ImGui_NrmSize(0.2, 0.2));
+				}
+			}
+		}
+	
+		//-------------------------------------------------------
+		
+		//} END General	
+	
+		/////////////////////////////////////////
+		// Event A - INSPECT CONFIG DEVICE, SEE THAT YOU NEED MORE INFORMATION
+		//{//////////////////////////////////////
+	
+		//-------------------------------------------------------
+	
+		/*Put any variables that are only used in Scene 4, Event A here.*/
+	
+		//-------------------------------------------------------
+	
+		/*Put any functions that are only used in Scene 4, Event A here.*/
+	
+		//-------------------------------------------------------
+	
+		//} END Event A
+	
+		/////////////////////////////////////////
+		// Event B - FIND HERBERT'S TRANSLATION NOTES IN THE ARCHIVES
+		//{//////////////////////////////////////
+	
+		//-------------------------------------------------------
+	
+		/*Put any variables that are only used in Scene 4, Event B here.*/
+	
+		//-------------------------------------------------------
+		
+		/*Put any functions that are only used in Scene 4, Event B here.*/
+		
+		bool OnCollide_Player_EnterAlchemistChambers(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			//Music_PlayExt("A2_Proto_CreepyDesertAmbience.ogg", false, 0.2f, 1.0f, 6.0f, 1.0f, eMusicPrio_SceneAmb, true);
+			//Entity_AddImpulse("Pot_Roll", cVector3f(2.f,0,0), true, true);
+			//Sound_CreateAtEntity("Sound_PotRoll", "03_04_pillar_room/events/pot_roll_start", "Pot_Roll");
+			FearHandler_SetPermaFailEnabled(true);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_AlchemistChambersMusic(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState == 1)
+			{
+				cLux_AddDebugMessage("Enter MUSIC");
+				Map_RemoveTimer("Timer_CreepyMusicOff");
+				Map_AddTimer("Timer_CreepyMusicOn", 3.2f, "OnTimer_CreepyMusicOn");
+			}
+			else
+			{
+				cLux_AddDebugMessage("Leave MUSIC");
+				Map_RemoveTimer("Timer_CreepyMusicOn");
+				Map_AddTimer("Timer_CreepyMusicOff", 3, "OnTimer_CreepyMusicOff");
+			}
+				
+			return true;
+		}
+		
+		//------------------------------------------------------- 
+		
+		bool OnCollide_Player_PastBlockage(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState == -1)
+			{
+				if (Entity_IsActive(msMonster))
+				{
+					//Entity_SetActive(msMonster,false);
+					Agent_SetSensesActive(msMonster,false);
+					Map_AddTimer("Timer_GhoulLeave",3,"OnTimer_GhoulLeave");
+				}
+			}
+			else
+			{
+				if (Entity_IsActive(msMonster))
+				{
+					Agent_SetSensesActive(msMonster,true);
+				}
+			}
+			
+			return true;
+		}
+		
+		//------------------------------------------------------- 
+		
+		void OnTimer_CreepyMusicOff(const tString &in asTimer)
+		{
+			cLux_AddDebugMessage("STOP MUSIC");
+			Music_Stop(3, eMusicPrio_SceneAmb);
+		}
+		
+		void OnTimer_CreepyMusicOn(const tString &in asTimer)
+		{
+			cLux_AddDebugMessage("STRART MUSIC");
+			Music_PlayExt("A2_Proto_CreepyDesertAmbience.ogg", true, 0.2f, 1.0f, 6.0f, 1.0f, eMusicPrio_SceneAmb, true);
+		}
+		
+		
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_AlchemistChamberWhisper(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			bool bWhisper = (alState == 1) ? true : false;
+			Pregnancy_SetWhispering(bWhisper);
+		
+			return true;
+		}
+		
+		
+		
+		//-------------------------------------------------------
+			
+		bool OnCollide_Player_AlchemistChambersRocksFall(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState != 1) return true;
+			if (FearHandler_GetIsPermaFailing()) return true;
+			
+			FearHandler_SetForcedAddFearRate(0.6f,4,false,0.5f);
+			Sound_CreateAtEntity("Sound_RocksFalling", "prototype/cave/rock_wall_pull_scrape", "SoundArea_RocksFall");
+			ParticleSystem_CreateAtEntity("PS_Rocks", "dust_impact_simple_oneshot.ps","SoundArea_RocksFall",false);
+			return false;
+		}
+	
+		//-------------------------------------------------------
+	
+		//} END Event B
+	
+		/////////////////////////////////////////
+		// Event C - FIND HERBERT'S NOTE IN RESEARCH ROOM CONTAINING CONFIG DEVICE DIAGRAM
+		//{//////////////////////////////////////
+		
+		//-------------------------------------------------------
+	
+		/*Put any variables that are only used in Scene 4, Event C here.*/
+	
+		//-------------------------------------------------------
+	
+		/*Put any functions that are only used in Scene 4, Event C here.*/
+		
+		//-------------------------------------------------------
+		
+		bool OnDoorTrigger_Player_EncounterReady(const tString &in asArea, const tString &in asEntity, int alState)
+		{
+			if (alState!=-1)
+				return true;
+
+			Entity_SetActive(msMonster, true);
+			Ghoul_SetSmellingActive(msMonster,false);
+			Pathfinder_Track_Clear(msMonster);
+			Pathfinder_Track_Stop(msMonster);
+			Entity_SetActive("Trigger_ActivateGhoulAlchemistChambers", true);
+			return false;
+		}
+		
+		bool OnCollide_Player_CorpsePose(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (FearHandler_GetIsPermaFailing()) return true;
+			
+			Entity_SetActive("Trigger_ChangeCorpsePose", true);
+			return false;
+		}
+	
+		void OnInteract_GetConfigNote(const tString &in asEntity)
+		{
+			if (!mbLostNote)
+			{
+				//////////////////////////
+				// First time you find the note
+				Entity_SetActive("Trigger_ActivateGhoulAlchemistChambers", true);
+				Entity_SetActive("Trigger_DeactivateGhoulAlchemistChambers", true);
+			}
+			else
+			{
+				//////////////////////////
+				// After death scenario
+				Entity_SetActive("Trigger_ResetAlchemistChambers",true);
+				Entity_SetActive("Trigger_ChangeCorpsePose",true);
+			}
+		}
+		
+		//-------------------------------------------------------
+	
+		//} END Event C
+		
+		/////////////////////////////////////////
+		// Event D - GHOUL APPROACHES THE RESEARCH ROOM AND PLAYER MUST HIDE OR SNEAK AWAY
+		//{//////////////////////////////////////
+	
+		//-------------------------------------------------------
+	
+		/*Put any variables that are only used in Scene 4, Event D here.*/
+	
+		//-------------------------------------------------------
+	
+		/*Put any functions that are only used in Scene 4, Event D here.*/
+		
+		bool OnCollide_Player_ActivateGhoulAlchemistChambers(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (FearHandler_GetIsPermaFailing()) return true;
+			
+			GhoulAlchemistChambers_Activate();
+			Seq_AlchemistChambersLights("");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void GhoulAlchemistChambers_Activate()
+		{
+			Sound_CreateAtEntity("Sound_GhoulScream", "creatures/vocalisations/creature/ghoul/ghoul_search", msMonster);
+			Sound_CreateAtEntity("Sound_WindHowl", "03_04_pillar_room/events/event_wind_howl", "Audio_TunnelWind");
+			
+			for (int i = 0; i <= 12; i++)
+				Ghoul_CommandPatrol_AddNode(msMonster,"PathNode_AlchemistChambersRoute_"+i,0,0,"",false);
+			Ghoul_CommandPatrol_Execute(msMonster,true,1,false,eGhoulSpeed_Walk,"OnEndOfTrack_GhoulAlchemistChambers");
+				
+			Map_AddTimer("Timer_GhoulAlchemistChambers", 4, "OnTimer_ActivateGhoulSenses");
+			Hint_ShowHint_Hold("Hints", "HintHideMode", true);
+		}
+		
+		//-------------------------------------------------------		
+		
+		void OnTimer_ActivateGhoulSenses(const tString &in asTimer)
+		{
+			Agent_SetSensesActive(msMonster, true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnBreak_Pot(const tString &in asEntity)
+        {
+			tString sContent = Entity_GetVarString(asEntity,"");
+            Prop_RemoveAttachedProp(asEntity,sContent);
+			Prop_SetStaticPhysics(sContent,false);
+			Entity_AddImpulse(sContent,cVector3f_One*0.1f,true,true);
+		}
+		
+		//------------------------------------------------------- 
+		
+		cSequenceStatesData mAlchemistChambersLightsSequence;
+			
+		void Seq_AlchemistChambersLights(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_AlchemistChambersLights", mAlchemistChambersLightsSequence);
+				
+			if (Sequence_DoStepAndWait(10))
+			{		
+				//Music_FadeVolumeMul(1,0);
+				Music_Play("A2_3_4_GhoulEvent.ogg", 0.2, false, eMusicPrio_BigEvent);
+				//Sound_CreateAtEntity("Sound_GhoulScream", "prototype/stingers/darkworld_enter", "SoundArea_GhoulSpawn");
+				Light_FadeTo("PointLight_59",cColor(0,0,0,0),0,1);
+				Light_FadeTo("BoxLight_18",cColor(0,0,0,0),0,1);
+				Light_FadeTo("BoxLight_19",cColor(0,0,0,0),0,1);
+				Light_FadeTo("BoxLight_20",cColor(0,0,0,0),0,1);
+				Light_FadeTo("BoxLight_21",cColor(0,0,0,0),0,1);
+				Light_FadeTo("BoxLight_27",cColor(0,0,0,0),0,1);
+				Light_FadeTo("SpotLight_20",cColor(0,0,0,0),0,1);
+				Light_FadeTo("Light_GhoulAlchemistChambers_*",cColor(0.753,0.92,0.665,0.382),-1,3);
+			}
+			else if (Sequence_DoStepAndWait(0))
+			{
+				Light_FadeTo("PointLight_59",cColor(1,1,1,1),0,3);
+				Light_FadeTo("BoxLight_18",cColor(1,1,1,1),0,6);
+				Light_FadeTo("BoxLight_19",cColor(1,1,1,1),0,6);
+				Light_FadeTo("BoxLight_20",cColor(1,1,1,1),0,6);
+				Light_FadeTo("BoxLight_21",cColor(1,1,1,1),0,6);
+				Light_FadeTo("BoxLight_27",cColor(1,1,1,1),0,6);
+				Light_FadeTo("Light_GhoulAlchemistChambers_*",cColor(0,0,0,0),0,12);
+			}
+		
+			Sequence_End();
+		}
+	
+
+		//-------------------------------------------------------
+		
+		void OnEndOfTrack_GhoulAlchemistChambers(const tString &in asEntity)
+		{
+//			Ghoul_ForceSniff(msMonster);
+			Map_AddTimer("Timer_GhoulLeave",4,"OnTimer_GhoulLeave");
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_DeactivateGhoulAlchemistChambers(const tString &in asParent, const tString &in asChild, int alState)
+		{		
+			if (Entity_IsActive(msMonster))
+			{
+				//Entity_SetActive(msMonster,false);
+				Agent_SetSensesActive(msMonster,false);
+				Map_AddTimer("Timer_GhoulLeave",3,"OnTimer_GhoulLeave");
+			}
+			Prop_MoveLinearTo("temp_pillarcollapse_1","temp_pillarcollapse_2",10,10,1,false);
+			Prop_MoveLinearTo("temp_pillarcollapse_3","temp_pillarcollapse_4",10,10,1,false);
+			Prop_MoveLinearTo("temp_pillarcollapse_5","temp_pillarcollapse_6",10,10,1,false);
+			Sound_CreateAtEntity("Sound_Collapse","prototype/cave/rock_wall_collapse","temp_pillarcollapse_1");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_GhoulLeave(const tString &in asTimer)
+		{
+			Ghoul_SetHoleNetwork(msMonster,"GhoulHole_AlchemistChambers_*","","");
+			Ghoul_Command_Remove(msMonster,true);
+			Ghoul_CommandGoToHole_Execute(msMonster,Map_GetEntity(msMonster).GetPosition(),true,false,true,true,eGhoulSpeed_FastWalk);
+			//Ghoul_CommandGoToSpecificHole_Execute(msMonster,"GhoulHole_AlchemistChambers_1",true,false,true,eGhoulSpeed_FastWalk);
+		}
+	
+
+			
+		//} END Event D
+		
+		/////////////////////////////////////////
+		// Event E - WAKE UP IN PILLARS ROOM. PLAYER LOSES THE CONFIG DEVICE NOTE AND MUST GO GET IT AGAIN (DEATH SCENARIO)
+		//{//////////////////////////////////////
+	
+		//-------------------------------------------------------
+	
+		/*Put any variables that are only used in Scene 4, Event E here.*/
+	
+		//-------------------------------------------------------
+	
+		/*Put any functions that are only used in Scene 4, Event E here.*/
+		
+		void DeathScenario_OnDeath_PlayerLosesConfigNote(const tString &in asSource)
+		{
+			Item_PutAway(eItemHandlerHand_Left);
+			Item_PutAway(eItemHandlerHand_Right);
+			Agent_SetSensesActive(msMonster,false);
+//			Ghoul_ForceIdle(msMonster,-1);
+			Death_PickRespawnArea("DeathArea_GhoulAlchemistChambers");
+			Effect_Fade_Out(1.0f);
+			Map_AddTimer("Timer_DelayedRespawn",3.0f,"OnTimer_DelayedRespawn");
+		}
+		
+		//-------------------------------------------------------
+		
+		bool DeathScenario_OnRespawn_PlayerLosesConfigNote(const tString &in asSource)
+		{
+			Music_Stop(1, eMusicPrio_SceneAmb);
+			
+			while (Map_TimerExists("Timer_GhoulAlchemistChambers"))
+				Map_RemoveTimer("Timer_GhoulAlchemistChambers");
+						
+			Entity_SetActive(msMonster, false);
+			Entity_SetActive("Trigger_ActivateGhoulAlchemistChambers", false);
+
+			//AlechemistChambers_SetupAfterDeath();
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void AlechemistChambers_SetupAfterDeath()
+		{
+			// Vars
+			//Sketchbook_RemoveNote("ConfigNote");	
+			mbLostNote = true;
+		
+			// Objects
+			Entity_SetActive("Corpse_1",false);
+			Entity_SetActive("Corpse_2",true);
+			Entity_SetActive("ConfigNote_1",false);
+			Entity_SetActive("ConfigNote_2",true);
+			
+			// Triggers
+			Entity_SetActive("Trigger_ActivateGhoulIntro",false);	// Purely debug
+			
+			// Fog
+			FogArea_SetVisible("FogArea_DeathScenario",true);
+			
+			// Lights
+			Light_SetBrightness("PointLight_57",0);
+			Light_SetBrightness("PointLight_59",0);
+			Light_SetBrightness("BoxLight_19",0);
+			Light_SetBrightness("BoxLight_20",0);
+			Light_SetBrightness("BoxLight_21",0);
+			Light_SetBrightness("BoxLight_27",0);
+			Light_SetBrightness("SpotLight_20",0);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnPlayerLookAt_ChangeCorpsePose(const tString &in asEntity, int alState)
+		{
+			Entity_SetActive("Corpse_1", false);
+			Entity_SetActive("Corpse_2", true);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnPlayerCollide_ResetAlchemistChambers(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			AlechemistChambers_Reset();
+			return false;
+		}
+				
+		//-------------------------------------------------------
+		
+		void AlechemistChambers_Reset()
+		{
+			// Fog
+			FogArea_SetVisible("FogArea_DeathScenario",false);
+			// Lights
+			Light_SetBrightness("PointLight_57",15);
+			Light_SetBrightness("PointLight_59",10);
+			Light_SetBrightness("BoxLight_19",15);
+			Light_SetBrightness("BoxLight_20",4);
+			Light_SetBrightness("BoxLight_21",4);
+			Light_SetBrightness("BoxLight_27",20);
+			Light_SetBrightness("SpotLight_20",2);
+		}
+		
+		//-------------------------------------------------------
+	
+		//} END Event E
+	
+		/////////////////////////////////////////
+		// Event F - RETURN TO PILLAR ROOM WITH CONFIG DEVICE DIAGRAM AND INPUT THE SYMBOLS
+		//{//////////////////////////////////////
+	
+		//-------------------------------------------------------
+	
+		/*Put any variables that are only used in Scene 4, Event F here.*/
+		
+		bool mbOverwriteSolution = false;	//DEBUG! Remove when done!
+		bool mbPillarsSolved = false;
+		bool mbConfigDeviceSolved = false;
+		bool mbVitaeCannisterSolved = false;
+	
+		//-------------------------------------------------------
+	
+		/*Put any functions that are only used in Scene 4, Event F here.*/
+		
+		bool OnCollide_PressurePlate(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			
+			tString sPlate = "pressureplate_"+cString_GetNumericSuffixInt(asParent);
+			
+			if (alState == 1)
+			{
+				Entity_SetEffectsActive(sPlate,true,true);
+				Effect_Rumble_Start(cMath_RandRectf(0.01f,0.5f),0.2f,0,0);
+				//Sound_CreateAtEntity("Sound_Press","level_entity_shared/doors/tin_hinan_lock_door/TH_lock_door_slide_min_max",sPlate);
+				Sound_CreateAtEntity("Sound_StarMapStart", "03_04_pillar_room/starmap/starmap_start", "Sound_Starmap");
+				Sound_CreateAtEntity("Sound_StarMapLoop", "03_04_pillar_room/starmap/starmap_loop", "Sound_Starmap");				
+				Lamp_SetLit("starmap_lamp",true, true);
+				cLux_GetPlayer().AutomoveCharBodyTo(100.f, 4.f, 1.f, Map_GetEntity("PosArea_ConfigDevice").GetPosition());
+			}
+			
+			if (alState == -1)
+			{
+				cLux_GetPlayer().StopAutomoveCharBody();
+				//Sound_CreateAtEntity("Sound_Press","level_entity_shared/doors/tin_hinan_lock_door/TH_lock_door_slide_min_max",sPlate);
+				Sound_Stop("Sound_StarMapLoop", 1.0f);
+				Sound_CreateAtEntity("Sound_StarMapStop", "03_04_pillar_room/starmap/starmap_stop", "Sound_Starmap");
+				Entity_SetEffectsActive(sPlate,false,true);
+				Lamp_SetLit("starmap_lamp",false, true);
+			}
+				
+			return true;
+		}
+		
+		//-------------------------------------------------------
+	
+		void EvaluateSolution(float afDelay)
+		{
+			Map_RemoveTimer("Timer_EvaluateSolution");
+			Map_AddTimer("Timer_EvaluateSolution", afDelay, "OnTimer_EvaluateSolution");
+		}
+		
+		//-------------------------------------------------------
+		
+		int mlConfigAttempts = 0;
+		int mlConfigAttemptsMax = 3;
+		
+		void OnInteract_Player_EvaluateSolution(const tString &in asEntity)
+		{
+			//Voice_PlayDelayed("Dialogue_PillarsAttempts",0.3f);
+			mbPillarsSolved = Evaluate_Pillars();
+			mbConfigDeviceSolved = Evaluate_ConfigDevice();
+			Debug_Log("PILLARS SOLVED: 			"+mbPillarsSolved);
+			Debug_Log("CONFIG DEVICE SOLVED: 	"+mbConfigDeviceSolved);
+			
+			if (mbOverwriteSolution)
+			{
+				mbPillarsSolved = true;
+				mbConfigDeviceSolved = true;
+			}
+			
+			if (mbConfigDeviceSolved)
+			{
+				// POSITIVE FEEDBACK
+				Billboard_SetVisible("Billboard_ConfigDevice",true);
+				Billboard_SetBrightness("Billboard_ConfigDevice",0.5f);
+				Light_FadeTo("Light_Point_ConfigDevice", cColor(0.957,0.967,0.812,1),1,1);
+				Sound_CreateAtEntity("Sound_PlateSolved","03_04_pillar_room/config_device/plate_solve_energy_loop","ConfigRotator");
+				//Sound_CreateAtEntity("Sound_PlateMisaligned","03_04_pillar_room/config_device/plate_energy_misaligned","ConfigRotator");
+			}
+			else 
+			{
+				mlConfigAttempts++;
+				// NEGATIVE FEEDBACK
+				Light_FadeTo("Light_Point_ConfigDevice", cColor(0.955f,0.433f,0.433f,0.205f),1,0.2f);
+				Map_AddTimer("Timer_ResetConfigLight",0.2f,"OnTimer_ResetConfigLight");
+				Sound_Stop("Sound_PlateSolved",0.5);
+				//Sound_CreateAtEntity("Sound_PlateMisaligned","03_04_pillar_room/config_device/plate_energy_misaligned","ConfigRotator");
+				Billboard_SetVisible("Billboard_ConfigDevice",false);
+				Billboard_SetBrightness("Billboard_ConfigDevice",0);
+				
+				bool bKnowsAboutPortal = cScript_GetGlobalVarBool("TTH_KnowsAboutPortal");
+				
+				//if (bKnowsAboutPortal == false && mbPillarsSolved == false) 
+					//Voice_PlayDelayed("Dialogue_MessWithMachine",2.4f);
+			}	
+			
+			cLux_AddDebugMessage("ATTEMPTS: "+mlConfigAttempts);
+			
+			if (mbConfigDeviceSolved && mbPillarsSolved)// && mbVitaeCannisterSolved)
+			{
+				// PUZZLE IS SOLVED
+				EvaluateSolution(0.5f);
+			}
+			else
+			{
+				if (Voice_SubjectIsPlaying("Dialogue_CallDoc") == false && mlConfigAttempts >= mlConfigAttemptsMax)
+				{
+					cLux_AddDebugMessage("HERE");
+					
+					
+					if (Voice_SubjectIsPlaying("Dialogue_PillarsFails") == false)
+					{
+						if (mbConfigDeviceSolved)
+							Voice_PlayDelayed("Dialogue_PillarsFails",2.f,3);
+						else
+							Voice_PlayDelayed("Dialogue_PillarsFails",2.f);
+					}
+						
+					mlConfigAttempts = 0;
+					mlConfigAttemptsMax = cMath_RandRectl(3,5);
+				}
+					
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ResetConfigLight(const tString &in asTimer)
+		{
+			Sound_CreateAtEntity("Sound_PlateMisaligned","03_04_pillar_room/config_device/plate_energy_misaligned","ConfigRotator");
+			Light_FadeTo("Light_Point_ConfigDevice", cColor(0,0,0,0),1,1);
+			return;
+		}
+	
+		//-------------------------------------------------------
+		
+		bool Evaluate_Pillars()
+		{
+			if (Entity_GetVarInt("pillar_middle", "currentRotation")!=1 ||	Entity_GetVarInt("pillar_right", "currentRotation")!=2)
+			{
+				//Sketchbook_AddSketchImageByPage("tth_hint_pillars", "tth_full", true, "tth_hint_pillars_checked");
+				return false;
+			}
+			else 
+			{
+				//Sketchbook_AddSketchImageByPage("tth_hint_pillars_checked", "tth_full", true, "tth_hint_pillars");
+				return true;
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		bool Evaluate_ConfigDevice()
+		{
+			// Check config device rotation
+			if (cMath_Abs(mfConfigRotationTarget) > 3.15 || 
+				cMath_Abs(mfConfigRotationTarget) < 3.13)  
+				{
+					//Sketchbook_AddSketchImageByPage("tth_hint_codeblock", "tth_full", true, "tth_hint_codeblock_checked");
+					return false;
+				}
+			
+			// Check config device selector
+			if (int(mvSelectorCoords.x) != 0 ||
+				int(mvSelectorCoords.y) != 1)
+				{
+					//Sketchbook_AddSketchImageByPage("tth_hint_codeblock", "tth_full", true, "tth_hint_codeblock_checked");
+					return false;
+				}
+					
+			//Sketchbook_AddSketchImageByPage("tth_hint_codeblock_checked", "tth_full", true, "tth_hint_codeblock");
+			return true;
+		}
+		
+		//------------------------------------------------------- 
+		
+		bool mbPlayerOnConfigDevice = false;
+		
+		bool OnCollide_PlayerOnConfigDevice(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (cScript_GetGlobalVarBool("TTH_PillarRoomComplete") == true) return false;
+			
+			if (alState == -1)
+			{
+				mbPlayerOnConfigDevice = false;
+				Light_FadeTo("starmap_red_path_light", cColor(0,0,0,0), -1, 2);
+				Entity_SetEffectsActiveExt("lit_pillar_symbol_*",false,true,2,2);
+				//Entity_SetActive("lit_pillar_symbol_*", false);	
+			}
+			else
+			{
+				mbPlayerOnConfigDevice = true;	
+				mbPillarsSolved = Evaluate_Pillars();
+				if (mbPillarsSolved)
+					{
+						// POSITIVE FEEDBACK
+						Light_FadeTo("starmap_red_path_light", cColor(0.872,1,0.789,0), -1, 0.4f);
+						Sound_CreateAtEntity("Sound_PillarMisalignedMiddle","03_04_pillar_room/pillar/pillar_misaligned","pillar_middle");
+						Sound_CreateAtEntity("Sound_PillarMisalignedRight","03_04_pillar_room/pillar/pillar_misaligned","pillar_right");	
+                        Entity_SetActive("lit_pillar_symbol_*", true);	
+						Entity_SetEffectsActiveExt("lit_pillar_symbol_*",true,true,0.8f,2);
+						//Voice_PlayDelayed("Dialogue_PillarsDone",0.6f);
+
+						//Wheel_SetStuckState("BeltDrive_Right", 1, false);
+						//Wheel_SetStuckState("BeltDrive_Mid", 1, false);				
+					}
+					else
+					{
+						// NEGATIVE FEEDBACK	
+			
+						int lSign = cMath_Sign(cMath_RandRectf(-1,1));
+						Wheel_SetAngle("BeltDrive_Mid", cMath_ToRad(Wheel_GetCurrentAngle("BeltDrive_Mid"))+cMath_RandRectf(0.2f,0.4f)*lSign,true);
+						Map_AddTimer("BeltDrive_Mid", 0.2f, "OnTimer_UpdateAutoRotation");
+						Sound_CreateAtEntity("Sound_PillarMisalignedMiddle","03_04_pillar_room/pillar/pillar_misaligned","pillar_middle");
+						ParticleSystem_CreateAtEntity("PS_Debris", "pillar_dust.ps","PosArea_DebrisMid",false);
+					
+
+						lSign = cMath_Sign(cMath_RandRectf(-1,1));
+						Wheel_SetAngle("BeltDrive_Right", cMath_ToRad(Wheel_GetCurrentAngle("BeltDrive_Right"))+cMath_RandRectf(0.2f,0.4f)*lSign,true);
+						Map_AddTimer("BeltDrive_Right", 0.2f, "OnTimer_UpdateAutoRotation");
+						Sound_CreateAtEntity("Sound_PillarMisalignedRight","03_04_pillar_room/pillar/pillar_misaligned","pillar_right");
+						ParticleSystem_CreateAtEntity("PS_Debris", "pillar_dust.ps","PosArea_DebrisRight",false);
+
+					}	
+			}
+
+			return true;
+		}
+		
+		void OnLookAt_Player_ConfigDevice(const tString &in asEntity, int alState)
+		{
+			Sketchbook_AddIdea("fix_pillars");
+			//Sketchbook_AddSketchImageByPage("tth_hint_codeblock", "tth_full", true, "");
+		}
+		
+		void OnLookAt_Player_Pillars(const tString &in asEntity, int alState)
+		{
+			Sketchbook_AddIdea("fix_pillars");
+			//Sketchbook_AddSketchImageByPage("tth_hint_pillars", "tth_full", true, "");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_EvaluateSolution(const tString &in asTimer)
+		{
+			// Check pillar alignment
+					
+			if (!mbOverwriteSolution)	//DEBUG!!! REMOVE WHEN DONE
+			{
+				if (Evaluate_Pillars() == false) return;
+				
+				if (Evaluate_ConfigDevice() == false) return;
+			}
+			
+			// Handle entity interactions
+			if (Entity_IsInteractedWith("BeltDrive_Right") ||
+				Entity_IsInteractedWith("BeltDrive_Mid") ||
+				Entity_IsInteractedWith("ConfigDevice_SliderH") ||
+				Entity_IsInteractedWith("ConfigDevice_SliderV") ||
+				Entity_IsInteractedWith("ConfigRotator"))
+			{
+				Player_ChangeStateToNormal();
+				Player_SetLookSpeedMul(0);
+				Player_FadeLookSpeedMulTo(1, 1);
+			}
+			
+			// Disable controllers
+			Entity_SetInteractionDisabled("ConfigRotator", true);
+			Map_AddTimer("Timer_SetRotatorStuckState", 0.5, "OnTimer_SetRotatorStuckState");
+			//Wheel_SetStuckState("BeltDrive_Right", 1, false);
+			//Wheel_SetStuckState("BeltDrive_Mid", 1, false);
+			//Wheel_SetStuckState("ConfigDevice_SliderH", 1, false);
+			//Wheel_SetStuckState("ConfigDevice_SliderV", 1, false);
+			Entity_SetActive("Trigger_EvaluateSolution",false);
+			Entity_SetActive("Trigger_OnConfigDevice",false);
+			Entity_SetInteractionDisabled("button_small_1",true);
+			Entity_SetInteractionDisabled("BeltDrive_Right",true);
+			Entity_SetInteractionDisabled("BeltDrive_Mid",true);
+			Entity_SetInteractionDisabled("ConfigDevice_SliderH",true);
+			Entity_SetInteractionDisabled("ConfigDevice_SliderV",true);
+			Entity_SetInteractionDisabled("ConfigRotator",true);
+			
+			//CLOSE CONFIG DEVICE
+			Prop_MoveLinearTo("ConfigDeviceSelector","PosArea_ConfigDeviceHide",0.5,0.3,1,false,"");
+			Prop_MoveLinearTo("pillar_room_configuration_device*","PosArea_ConfigDeviceHide",0.5,0.3,1,false,"");
+			Entity_SetEffectsActive("rune_*", false, false);
+			Prop_MoveLinearTo("rune_*","PosArea_ConfigDeviceHide",1,0.3,1,false,"");
+		    Entity_PlayAnimation("configuration_device_iris", "closing", 0.1f, false, true);
+			Sound_CreateAtEntity("Sound_Iris","03_07_DW_theatre/canister_unplug/small/small_insert","configuration_device_iris");
+			
+			Light_FadeTo("starmap_red_path_light", cColor(0.872,1,0.789,0), -1, 1);
+			
+			// Pillars Complete Sequence
+			if (!mbSequencePillars)
+				Seq_PowerUpPillars("");
+				
+			Sketchbook_CompleteIdea("fix_pillars");			
+			cScript_SetGlobalVarBool("TTH_PillarRoomComplete", true);
+			LoadScreen_ProgressStory();
+			Voice_PlayDelayed("Dialogue_PillarsDone",8);
+		}
+		
+		void OnTimer_SetRotatorStuckState(const tString &in asTimer)
+		{
+			Map_RemoveTimer("ConfigRotator");
+			Wheel_SetStuckState("ConfigRotator", 1, false);
+			Entity_SetInteractionDisabled("ConfigRotator", false);
+		}
+	
+		//-------------------------------------------------------
+	
+		//} END Event F
+	
+		/////////////////////////////////////////
+		// Event G - WITNESS THE POWERING OF THE PORTAL AND STAR MAP RECONFIGURE IN TO THE DARK WORLD/TIN HINAN SYMBOL
+		//{//////////////////////////////////////
+	
+		//-------------------------------------------------------
+	
+		/*Put any variables that are only used in Scene 4, Event G here.*/
+		
+		bool mbSequencePillars = false;
+	
+		//-------------------------------------------------------
+		
+		/*Put any functions that are only used in Scene 4, Event G here.*/
+
+		cSequenceStatesData mPowerUpPillarsSequence;
+			
+		void Seq_PowerUpPillars(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_PowerUpPillars", mPowerUpPillarsSequence);
+				
+			if (Sequence_DoStepAndWait(0.75))
+			{		
+				mbSequencePillars = true;
+				Sound_CreateAtEntity("Sound_EnergyStart", "03_04_pillar_room/pillar_activate/energy_start", "SoundArea_Pillar");
+				Sound_Play("Sound_DebrisLeft", 0.0f);
+				Sound_Play("Sound_DebrisMid", 0.0f);
+				Sound_Play("Sound_DebrisRight", 0.0f);
+				Sound_Play("Sound_Rumble", 0.0f);
+				Sound_Play("Sound_ThudStart", 0.0f);
+				
+				Prop_MoveLinearTo("pillar_middle_filter", "pillar_middle_filter_down", 5, 1, 0.1, true, "Pillar_MoveDone");
+				Map_AddTimer("Timer_VitaeLightMiddle", 1.5, "OnTimer_FadeInVitaeLight");
+			}
+			else if (Sequence_DoStepAndWait(2.5))
+			{
+				Prop_MoveLinearTo("pillar_right_filter", "pillar_right_filter_down", 5, 1, 0.1, true, "Pillar_MoveDone");
+				
+				//if (cScript_GetGlobalVarBool("TTH_VitaeCanisterInserted")) 
+				Map_AddTimer("Timer_VitaeLightRight", 1.5, "OnTimer_FadeInVitaeLight");
+			}
+			else if (Sequence_DoStepAndWait(1.1))
+			{
+				ParticleSystem_SetVisible("PS_PillarActive_Left_*", true);
+				//Entity_SetActive("PillarBeam_Left", true);
+				Sound_CreateAtEntity("Sound_PillarCharge", "03_04_pillar_room/pillar_activate/pillar_energy_burst", "SoundArea_Pillar");
+				Sound_CreateAtEntity("Sound_PillarActivate", "03_04_pillar_room/pillar_activate/pillar_energy_activate", "SoundArea_Pillar");
+				Light_FadeTo("Light_PillarPower_Point_1", cColor(0.676,1,0.897,1)*0.333, -1, 0.2);
+				Sound_CreateAtEntity("Sound_PillarSound", "03_04_pillar_room/pillar_activate/pillar_energy_flow", "SoundArea_Pillar");
+				Effect_Shake_Start(0.2f, 0.25f, 0.5f, 1, 0.2f, 64);
+				ParticleSystem_CreateAtEntity("rumble_dust", "debris_falling_huge.ps", "rumble_dust_ps_area_1", false);
+				
+				Music_Play("A2_3_4_PillarActivate_NEW.ogg", 0.4, false, eMusicPrio_BigEvent);
+			}
+			else if (Sequence_DoStepAndWait(1.1))
+			{
+				ParticleSystem_SetVisible("PS_PillarActive_Mid_*", true);
+				Sound_CreateAtEntity("Sound_PillarCharge", "03_04_pillar_room/pillar_activate/pillar_energy_burst", "SoundArea_Pillar", 0);
+				Light_FadeTo("Light_PillarPower_Point_1", cColor(0.676,1,0.897,1)*0.666, -1, 0.2);
+				Effect_Shake_Start(0.2f, 0.25f, 0.5f, 1, 0.2f, 64);
+				ParticleSystem_CreateAtEntity("rumble_dust", "debris_falling_huge.ps", "rumble_dust_ps_area_2", false);
+				Entity_SetActive("PillarBeam_Mid_weak", true);
+
+				Sound_Fade("Sound_PillarSound", 0.666, 0.15);
+			}
+			else if (Sequence_DoStepAndWait(1.1))
+			{
+				ParticleSystem_SetVisible("PS_PillarActive_Right_*", true);
+				//Entity_SetActive("Effect_centre_orb", true);
+				ParticleSystem_CreateAtEntity("PS_Orb","vitae_orb.ps","PosArea_OrbParticles",true);
+				ParticleSystem_CreateAtEntity("PS_Orb_Refraction","vitae_orb_refraction.ps","PosArea_OrbParticles",true);
+				Entity_SetActive("PillarBeam_Mid", true);
+				Sound_CreateAtEntity("Sound_PillarCharge", "03_04_pillar_room/pillar_activate/pillar_energy_burst", "SoundArea_Pillar", 0);
+				Sound_CreateAtEntity("Sound_PillarActivate", "03_04_pillar_room/pillar_activate/pillar_energy_loop_start", "SoundArea_Pillar");
+				Light_FadeTo("Light_PillarPower_Point_1", cColor(0.676,1,0.897,1), -1, 0.2);
+				Light_FadeTo("Light_PillarPower_Point_2", cColor(0.676,1,0.897,1), -1, 1);
+				Light_SetFlickerActive("Light_PillarPower_Point_2", true);
+				Effect_Shake_Start(0.3f, 0.5f, 2.5f, 3, 0.2f, 64);
+				ParticleSystem_CreateAtEntity("rumble_dust", "debris_falling_huge.ps", "rumble_dust_ps_area_3", false);
+				ParticleSystem_CreateAtEntity("rumble_dust", "debris_falling_huge.ps", "rumble_dust_ps_area_4", false);
+				ParticleSystem_CreateAtEntity("rumble_dust", "debris_falling_huge.ps", "rumble_dust_ps_area_5", false);
+				
+				Sound_Fade("Sound_PillarSound", 1, 0.15);
+			}
+		
+			Sequence_End();
+		}
+	
+		//-------------------------------------------------------
+		
+		void OnTimer_FadeInVitaeLight(const tString &in asTimer)
+		{
+			Light_FadeTo(asTimer, cColor(0.309,0.684,1,0), -1, 0.2);
+		}
+	
+		//-------------------------------------------------------
+		
+		void Pillar_MoveDone(const tString &in asTimer)
+		{
+			Sound_CreateAtEntity("Sound_PillarSlam", "03_04_pillar_room/pillar_activate/pillar_open", "SoundArea_Pillar");
+		}
+	
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_BabyNaming(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState == 1 && Entity_PlayerIsInFront(asParent) && Entity_IsInPlayerFOV(asParent) && Voice_SubjectIsPlaying("Dialogue_CallDoc") == false && cScript_GetGlobalVarBool("TTH_PillarRoomComplete") && !mbBabyNamingMoment)
+			{
+				Player_SetCrouching(false);		
+				Player_SetMoveSpeedMul(0.4f);
+				Pregnancy_DoBabyKick(true);	 
+				Map_AddTimer("Timer_ForceBabyKick",5,"OnTimer_ForceCheckOnBaby");
+				return false;
+			
+			}
+			return true;
+		}
+		
+		//------------------------------------------------------- 
+		
+		bool mbBabyNamingMoment = false;
+		
+		void OnCheckBaby(int alState)
+		{
+			if (mbBabyNamingMoment == false && cScript_GetGlobalVarBool("TTH_PillarRoomComplete") && Entity_GetCollide("player","Trigger_EnterAlchemistChambers_1") == false)
+			{
+				Map_RemoveTimer("Timer_ForceBabyKick");
+				Map_AddTimer("Timer_ForceBabyKick",0,"OnTimer_ForceCheckOnBaby");
+				mbBabyNamingMoment = true;			
+			}
+		}
+		
+		//------------------------------------------------------- 
+		
+		void OnTimer_ForceCheckOnBaby(const tString &in asTimer)
+		{
+			Seq_BabyNaming("");
+		}
+		
+		//-------------------------------------------------------
+		 
+		cSequenceStatesData mSequenceDataBabyNaming;
+		void Seq_BabyNaming(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_BabyNaming", mSequenceDataBabyNaming);
+			if (Sequence_DoStepAndWait(0.9f))
+			{			
+				mbBabyNamingMoment = true;
+				Pregnancy_SetBabyTalkStage(eBabyTalkStage_TTH_AfterName);
+				Voice_StopAll();
+				Player_SetCrouching(false);
+				 
+				Effect_BabyKick_Start(0.4f);
+				//Voice_PlayWhenPossible("Dialogue_KickPrompt_Short");
+				Voice_Play("Dialogue_KickPrompt_Short");
+				 
+				Item_PutAway(eItemHandlerHand_Left);
+				Item_PutAway(eItemHandlerHand_Right);
+			}
+			else if (Sequence_DoStepAndWait(8.f))
+			{				
+				Player_SetCrouching(false);
+				if (cLux_GetPlayer().GetCurrentStateId() != ePlayerState_Custom_CheckBaby)
+					Player_ChangeStateToNormal();
+				Player_SetMoveSpeedMul(0.5f);
+				Player_SetRunSpeedMul(0.2f);
+				Player_ForceCheckOnBaby(15);
+				Music_PlayExt("A2_01_02_Baby_Memory.ogg", false, 0.2f, 1.0f, 0.2f, 0.0f, eMusicPrio_MinorEvent, false);
+				 
+				 //Pregnancy_SetBabyTalkStage(eBabyTalkStage_TTHAfterKick);				 
+			}
+			else if (Sequence_DoStepAndWait(3))
+			{
+				Player_FadeRunSpeedMulTo(1,30);
+				Player_FadeMoveSpeedMulTo(1,60);
+			}
+			Sequence_End();
+		}
+	
+		//} END Event E
+	
+	//} END SCENE 4
+ 
+ 
+	/////////////////////////////////////////
+	// ==============
+	// TERMINALS
+	// ==============
+	//{//////////////////////////////////////
+ 
+		//-------------------------------------------------------
+	
+		/////////////////////////////////////////
+		// Terminal *Name Of Terminal*
+		//{//////////////////////////////////////
+	
+		//-------------------------------------------------------
+	
+		/*Put any variables that are only used Terminal here.*/
+	
+		//-------------------------------------------------------
+	
+		/*Put any functions that are only used Terminal here.*/
+		
+		void OnGuiDWNote(const tString&in asEntityName, float afTimeStep)
+		{
+			DWNote_RenderGUI(asEntityName, afTimeStep);
+		}
+	 
+	
+		//-------------------------------------------------------
+	
+		//} END Terminal *Name Of Terminal*
+	
+	//} END TERMINALS
+ 
+ 
+	///////////////////////////
+	// ========
+	// AUDIO
+	// ========
+	/////////////////////////// 
+	
+	//-----------
+	
+
+ 
+	//----------
+	
+	void OnPlayerInteract_Corpse_BeltDrive(const tString &in asEntity)
+	{
+		//Sound_CreateAtEntity ("Sound_CorpseMove", "03_04_pillar_room/helper_corpse/helper_corpse_start", "Corpse_BeltDrive");
+	}
+	//-----------
+	
+	/////////////////////////////////////////
+	// ==============
+	// HANKS NOTES
+	// ==============
+	//{//////////////////////////////////////
+ 		
+		void OnInteractLeave_HanksNote(const tString &in asEntity)
+		{
+			Map_AddTimer(Entity_GetVarString(asEntity, ""), 1.f, "OnTimer_PlayDossierMicroflash");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PlayDossierMicroflash(const tString &in asTimer)
+		{
+			if (Voice_SceneInvolvingCharacterIsActive("Player") || Sketchbook_IsMicroflashActive())
+				return;
+			
+			Sketchbook_Microflash(asTimer);
+		}
+	
+	//} END HANKS NOTES
+
+}

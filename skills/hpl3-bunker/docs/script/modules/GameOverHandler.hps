@@ -1,0 +1,525 @@
+#include "interfaces/UserModule_Interface.hps"
+#include "modules/ModuleInterfaces.hps"
+#include "base/Inputhandler_Types.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_audio.hps"
+#include "helpers/helper_imgui.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+
+//------------------------------------------------------------
+
+/////////////////////////////////////////
+// SETTINGS
+/////////////////////////////////////////
+
+//------------------------------------------------------------
+
+int glGameOver_CheckpointCount = 0;
+bool gbGameOver_LoadingSaveGame = false;
+tString gsGameOver_DeathCallback= "";
+tString gsGameOver_DeathSource = "";
+
+const tString gsGameOver_DeathScreen = "simple_black.dds";
+
+//------------------------------------------------------------
+
+class cDeathHint
+{
+	tString msID;
+	tString msLangEntryID;
+	tString msDeathSourceID;
+}
+
+//------------------------------------------------------------
+
+class cScrGameOverHandler : iScrUserModule, iScrUserModule_Interface, iScrGameOverHandler_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// USER SETTINGS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void LoadUserConfig() {}
+	void SaveUserConfig() {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ENTER MAP
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap@ apMap)
+	{
+		msCustomDeathMessageCat = "";
+		msCustomDeathMessageEntry = "";
+		msDeathCallback = "";
+		mlCheckPointDeathNum = 0;
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnMapLeave(cLuxMap@ apMap)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void PreloadData(cLuxMap@ apMap)
+	{
+		ImGui_PreloadImage(gsGameOver_DeathScreen, eImGuiGfx_Texture);
+		
+		LoadDeathHintsXML();
+	}
+	
+	//------------------------------------------------------------
+
+	void CreateWorldEntities(cLuxMap@ apMap) {}
+	void DestroyWorldEntities(cLuxMap@ apMap) {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Reset()
+	{		
+		if (gbGameOver_LoadingSaveGame == false)
+		{
+			mbActive = false;
+			mbShowScreen = false;
+			mbShowText = false;
+			mbShowPressButtonText = false;
+		}
+		
+		msCustomDeathMessageCat = "";
+		msCustomDeathMessageEntry = "";
+		msDeathCallback = "";
+		
+		mfTimeSinceLastGameOver = 999999.f;
+	}
+	
+	//------------------------------------------------------------
+
+	void Update(float afTimeStep)
+	{
+		if (mfTimeSinceLastGameOver < 999999.f)
+			mfTimeSinceLastGameOver += afTimeStep;
+	}
+	
+	//------------------------------------------------------------
+	
+	void PostUpdate(float afTimeStep) {}
+	void VariableUpdate(float afDeltaTime) {}
+	
+	//------------------------------------------------------------
+		
+	void OnAction(int alAction, bool abPressed)
+	{
+		if (abPressed == false || mbShowPressButtonText == false) 
+			return;
+		
+		///////////////////
+		// End?
+		if (alAction == eAction_Interact || 
+			alAction == eAction_InteractCancel ||
+			alAction == eAction_Jump || 
+			alAction == eAction_MenuConfirm)
+		{
+			End();
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnGui(float afTimeStep)
+	{
+		if (mbShowScreen == false)
+			return; 
+		
+		///////////////////
+		// Begin group		
+		ImGui_GroupBegin(ImGui_FullScreenPos(0.f), ImGui_FullScreenSize());
+		
+			///////////////////
+			// Background
+			mfBackgroundAlpha = cMath_IncreaseTo(mfBackgroundAlpha, afTimeStep, 1.f);
+			ImGui_DoImage(cImGuiGfx(gsGameOver_DeathScreen, eImGuiGfx_Texture), ImGui_NrmPosGroup(0.f, 0.f, 1.f), ImGui_NrmSizeGroup(1.f, 1.f));
+
+			/////////////////////////////
+			// print death hint
+			if (mfTextAlpha > 0.f || mbShowText)
+			{
+				mfTextSizeMul = 1.f;//cMath_IncreaseTo(mfTextSizeMul, afTimeStep * 0.15, 1.f);
+				
+				cImGuiTextFrameData textFrameData = ImGui_GetDefaultTextFrame();
+				textFrameData.mFont.SetFile(FontHandler_GetFont(eFontType_Intro, 72));
+				textFrameData.mFontAlign = eFontAlign_Left;
+				textFrameData.mFont.mvSize = cVector2f(24.f);
+				textFrameData.mFont.mColor = cColor(1, mfTextAlpha);
+				textFrameData.mbUseDisabledColor = false;
+				textFrameData.mColorBase = cColor(0);
+				
+				tString sMessage;
+				
+				if(msCustomDeathMessageCat !="" && msCustomDeathMessageEntry !="")
+					sMessage = msCustomDeathMessageEntry;
+				else
+					sMessage = "DefaultMessage";
+				
+				float fTextAlphaGoal = mbShowText ? 1.f : 0.f;
+				mfTextAlpha = cMath_IncreaseTo(mfTextAlpha, afTimeStep * 0.2, fTextAlphaGoal);
+				
+				ImGui_SetTransCategory(msCustomDeathMessageCat);
+				ImGui_DoTextFrameExt(sMessage, cVector2f(0,0), 0, 0, textFrameData, ImGui_NrmPosGroup(0.25f, 0.4f, 2.f), ImGui_NrmSizeGroup(0.5f));
+			}
+			
+			///////////////////////////
+			// Continue game hint
+			if (mfPressButtonAlpha > 0.f || mbShowPressButtonText)
+			{
+				ImGui_FadeOscillateFloat("ContinueBtnAlphaBlink", 0.5, 1.0, 1.0);
+
+				cImGuiLabelData labelData;
+				labelData.mFont.SetFile(FontHandler_GetFont(eFontType_Hints, 56));
+				labelData.mFont.mvSize = cVector2f(24.f);
+				labelData.mFontAlign = eFontAlign_Center;
+				float fContinueBtnAlphaMul = mfPressButtonAlpha * ImGui_GetStateFloat("ContinueBtnAlphaBlink", 1.0);
+				labelData.mFont.mColor = cColor(1, mfPressButtonAlpha * fContinueBtnAlphaMul);
+				labelData.mbUseDisabledColor = false;
+				
+				float fPressButtonAlphaGoal = mbShowPressButtonText ? 1.f : 0.f;
+				mfPressButtonAlpha = cMath_IncreaseTo(mfPressButtonAlpha, afTimeStep, fPressButtonAlphaGoal);
+				
+				ImGui_SetTransCategory(msCustomDeathMessageCat);
+				ImGui_DoLabelExt("PressToContinue", labelData, ImGui_NrmPosGroup(0.f, 0.8f, 2.f), ImGui_NrmSizeGroup(1.f, 0.2f), 1.f);
+			}
+			
+			ImGui_ResetModifiers();
+		
+		///////////////////
+		// End group
+		ImGui_GroupEnd();
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnDraw(float){}
+	void OnPostRender(float){}
+	void OnEnterContainer(const tString&in){}
+	void OnLeaveContainer(const tString&in){}
+	void AppGotInputFocus(){}
+	void AppLostInputFocus(){}	
+	void OnAnalogInput(int alAnalogId, const cVector3f &in avAmount){}
+	void OnExitPressed(){}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// CLASS METHODS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void LoadDeathHintsXML()
+	{
+		tString sConfigFileName = "death_hints.cfg";
+		iXmlDocument@ pDeathHintsXML = cResources_LoadXmlDocument(sConfigFileName);
+		
+		if (pDeathHintsXML is null)
+		{
+			Error("[GameOverHandler] Couldn't load " + sConfigFileName + "!");
+			return;
+		}
+		
+		mvDeathHints.resize(0);
+			
+		cXmlElement@ pHintsList = pDeathHintsXML.GetFirstElement("Entries");
+		if (pHintsList is null)
+		{
+			Error("[GameOverHandler] " + sConfigFileName + " isn't setup correctly.");
+			return;
+		}
+		
+		cXmlNodeListIterator@ pHintsIt = pHintsList.GetChildIterator();
+		if (pHintsIt is null)
+		{
+			Error("[GameOverHandler] " + sConfigFileName + " isn't setup correctly.");
+			return;
+		}
+		
+		while(pHintsIt.HasNext())
+		{
+			cXmlElement @pHintElement = pHintsIt.Next().ToElement();
+			tString sHintID = pHintElement.GetAttributeString("ID","");
+			
+			if (sHintID=="")
+			{
+				Error("[GameOverHandler] A death hint ID can't be ''. Check " + sConfigFileName + ".");
+				return;
+			}
+			
+			for (int i=0; i<mvDeathHints.size(); ++i)
+			{
+				if (mvDeathHints[i].msID != sHintID) continue;
+				Error("[GameOverHandler] Death Hint " + sHintID + " can't be added because it already exists. Check " + sConfigFileName + ".");
+				return;
+			}
+			
+			cDeathHint pHint;
+			pHint.msID = sHintID;
+			pHint.msLangEntryID = pHintElement.GetAttributeString("LangEntryID","");
+			pHint.msDeathSourceID = pHintElement.GetAttributeString("DeathSourceID","");
+			
+			mvDeathHints.push_back(pHint);
+		}
+		
+		cLux_AddDebugMessage("[GameOverHandler] Death hints succesfully loaded.");
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PUBLIC METHODS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Start(const tString& in asDeathSource)
+	{
+		mbActive = true;
+		
+		mBaseObj.Timer_Remove(3);
+		
+		cLux_GetPlayer().SetActive(false);
+		
+		Voice_StopAll();
+		
+		//////////////////////////////
+		// Start variables
+		mfBackgroundAlpha = 0.f;
+		mfTextAlpha = 0.f;
+		mfPressButtonAlpha = 0.f;
+		mbShowText = false;
+		mbShowScreen = true;
+		mbShowPressButtonText = false;
+		
+		/////////////////////////////
+		// Set up globals
+		gsGameOver_DeathCallback = msDeathCallback;
+		gsGameOver_DeathSource = asDeathSource;
+		cLux_AddDebugMessage("[GameOverHandler] Source: " + asDeathSource);
+		glGameOver_CheckpointCount = mlCheckPointDeathNum+1;
+		
+		//////////////////////////
+		// Choose a death hint
+		array<cDeathHint@> vSuitableHints;
+		
+		for (int i=0; i<mvDeathHints.size(); i++)
+		{
+			cDeathHint@ pHint = mvDeathHints[i];
+			if (pHint is null) continue;
+			if (pHint.msDeathSourceID != asDeathSource) continue;
+			
+			vSuitableHints.push_back(pHint);
+		}
+		
+		if (vSuitableHints.size() > 0)
+		{
+			int lRndHintNum = cMath_RandRectl(0, vSuitableHints.size() - 1);
+			cDeathHint@ pHint = vSuitableHints[lRndHintNum];
+			if (pHint !is null)
+			{
+				msCustomDeathMessageCat = "GameOver";
+				msCustomDeathMessageEntry = pHint.msLangEntryID;
+			}
+		}
+		
+		// disable stuff
+		cLux_GetCurrentMap().SetActive(false);
+		Music_StopAll(1.f);
+		//Effect_Fade_In(0.25f);
+		cSound_FadeGlobalVolume(0.f, 1.f, eSoundEntryType_AllExceptGui, eLuxGlobalVolumeType_Menu, false);
+
+		//////////////////////////
+		// Next step
+		mBaseObj.Timer_Add(2, 1.2f, "Start_Timer_ShowText");
+	}
+	
+	//------------------------------------------------------------
+	
+	void End()
+	{
+		mbShowPressButtonText = false;
+		mbShowText = false;
+        
+		mBaseObj.Timer_Add(3, 2.f, "End_Timer_DeathOver");
+	}
+	
+	//------------------------------------------------------------
+		
+	void Start_Timer_ShowText(uint64 alID)
+	{
+		//mbShowText = true;
+		
+		
+			
+	
+		
+		//mBaseObj.Timer_Add(2, 5.f, "Start_Timer_FadeInPressButton");
+
+		cLux_LoadScreenSetContinueText("", cResources_Translate(msCustomDeathMessageCat, msCustomDeathMessageEntry), "");
+		gbGameOver_LoadingSaveGame = true;
+		cLux_LoadScreenSetBarPosAndSize(0.f, 0.f);
+		SaveRoom_LoadLastSave();
+	}
+	
+	//------------------------------------------------------------
+	
+	void Start_Timer_FadeInPressButton(uint64 alID)
+	{
+		mbShowPressButtonText = true;
+	}
+	
+	//------------------------------------------------------------
+	
+	float GetTimeSinceLastGameOver()
+	{
+		return mfTimeSinceLastGameOver;
+	}
+	
+	//------------------------------------------------------------
+	
+	void End_Timer_DeathOver(uint64 alID)
+	{
+		gbGameOver_LoadingSaveGame = true;
+		cLux_LoadScreenSetBarPosAndSize(0.f, 0.f);
+		
+		SaveRoom_LoadLastSave();
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnLoadSaveDone()
+	{
+		///////////////
+		// Setup variables
+		cLuxMap@ pMap = cLux_GetCurrentMap();
+		
+		pMap.SetActive(true);
+				
+		mbActive = false;
+		gbGameOver_LoadingSaveGame = false;
+		mlCheckPointDeathNum = glGameOver_CheckpointCount;
+		mfTimeSinceLastGameOver = 0.f;
+				
+		///////////////
+		// Custom callback
+		if (gsGameOver_DeathCallback != "")
+		{
+			if(pMap.ScriptPrepare("void "+gsGameOver_DeathCallback+"(int alNumberOfRecentDamages, const tString &in asSource)"))
+			{
+				pMap.SetArgInt(0, mlCheckPointDeathNum);
+				pMap.SetArgString(1, gsGameOver_DeathSource);
+				pMap.ScriptExecute();
+			}
+		}
+		
+		///////////////
+		// Map death callback
+		if (pMap.ScriptMethodExists("void OnPlayerKilled(int alNumberOfRecentDamages, const tString &in asSource)"))
+		{
+			if (pMap.ScriptPrepare("void OnPlayerKilled(int alNumberOfRecentDamages, const tString &in asSource)"))
+			{
+				pMap.SetArgInt(0, mlCheckPointDeathNum);
+				pMap.SetArgString(1, gsGameOver_DeathSource);
+				pMap.ScriptExecute();
+			}
+		}
+	}
+	
+		
+	//------------------------------------------------------------
+	
+	void SetCustomGameOverScreenText(const tString& in asCat, const tString& in asEntry)
+	{
+		msCustomDeathMessageCat = asCat;
+		msCustomDeathMessageEntry = asEntry;
+	}
+		
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// GLOBAL METHODS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetupCheckPoint()
+	{
+		msDeathCallback = cScript_GetGlobalArgString(0);
+		mlCheckPointDeathNum = 0;
+	}
+			
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	[nosave] bool mbActive = false;
+	[nosave] bool mbShowText = false;
+	[nosave] bool mbShowPressButtonText = false;
+	
+	[nosave] bool mbShowScreen = false;
+	[nosave] float mfTextAlpha = 0.f;
+	[nosave] float mfTextSizeMul = 1.1f;
+	[nosave] float mfPressButtonAlpha = 0.f;
+	[nosave] float mfBackgroundAlpha = 0.f;
+	
+	float mfTimeSinceLastGameOver = 999999.0f;
+	
+	int mlCheckPointDeathNum = 0;
+	
+	tString msDeathCallback = "";
+	tString msCustomDeathMessageCat = "";
+	tString msCustomDeathMessageEntry = "";
+	
+	[nosave] array<cDeathHint> mvDeathHints;
+	
+	//------------------------------------------------------------
+}

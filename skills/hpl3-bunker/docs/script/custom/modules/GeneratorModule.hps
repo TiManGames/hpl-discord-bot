@@ -1,0 +1,1589 @@
+#include "base/Base_Types.hps"
+#include "interfaces/UserModule_Interface.hps"
+#include "custom/modules/ModuleInterfaces_Custom.hps"
+#include "helpers/helper_audio.hps"
+#include "helpers/helper_imgui.hps"
+#include "custom/player/PlayerTypes_Custom.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_game.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_props.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+
+//----------------------------------------------------------------------------------------
+
+const tString gsGenerator_FuelGaugeDial = "hand_minute";
+
+const tString gsGenerator_TransmissionBone = "j_transmission_back";
+const tString gsGenerator_WheelBone = "j_big_wheel";
+const tString gsGenerator_CylinderBone = "j_cylinder_top";
+const tString gsGenerator_BigCylinderBone = "j_big_cylinder";
+
+const tString gsGenerator_StartAnim = "start";
+const tString gsGenerator_StopAnim = "stop";
+const tString gsGenerator_RunningAnim = "running";
+
+const float gfGenerator_FuelGaugeStartAngle = cMath_ToRad(0.f);
+const float gfGenerator_FuelGaugeAngleRange = cMath_ToRad(300.f);
+const float gfGenerator_FuelGaugeRotSpeed = 4.f;
+const float gfGenerator_FullnessInteractLimit = 0.975f;
+const float gfGenerator_RunTimePerFuelUnit = 60.f * 3.5f;
+const float gfGenerator_RunTimePerFuelUnit_Easy = 60.f * 5.f;
+const float gfGenerator_RunTimePerFuelUnit_Hard = 60.f * 2.75f;
+const int glGenerator_MaxFuelAmount = 5;
+
+//----------------------------------------------------------------------------------------
+
+class cPowerSwitch
+{
+	cPowerSwitch() {}
+	cPowerSwitch(const tString &in asName, const tString &in asParent, const tString &in asChild, 
+				 const tString &in asLamps, bool abOn)
+	{
+		msName = asName;
+		msParent = asParent;
+		msChild = asChild;
+		msLamps = asLamps;
+		mbOn = abOn;
+		
+		array<iLuxEntity@> vLamps;
+		cLux_GetCurrentMap().GetEntityArray(msLamps, eLuxEntityType_Prop, "cScrPropLamp", vLamps);
+		
+		mvLamps.resize(0);
+		for (int i = 0; i < vLamps.size(); ++i)
+			mvLamps.push_back(vLamps[i].GetName());
+	}
+	
+	tString msName = "";
+	tString msParent = "";
+	tString msChild = "";
+	tString msLamps = "";
+	array<tString> mvLamps;
+	bool mbOn = false;
+}
+
+//----------------------------------------------------------------------------------------
+
+class cScrGeneratorModule : iScrUserModule, iScrUserModule_Interface, iScrGeneratorModule_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		m_setMapsThatCanBePowered.Add("officer_hub");
+	}
+		
+	//------------------------------------------------------------
+	
+	void LoadUserConfig() {}
+	void SaveUserConfig() {}
+	
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// MAP LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap@ apMap)
+	{
+		////////////////////
+		// New game setup
+		if (mbNewGameSetup == false)
+		{
+			mbNewGameSetup = true;
+						
+			////////////////////
+			// Fuse gameplay
+			mbFuseGameplayActive = GameDifficulty_GetSettingValueByID_Bool(eGameDifficultySetting_FusesAndFuseBoxes);			
+			if (mbFuseGameplayActive)
+			{
+				array<tString> sFuseBoxMaps = { "maintenance", "soldier_quarters", "arsenal", "prison" };
+				int lInitialPoweredFuseBoxes = GameDifficulty_GetSettingValueByID_Int(eGameDifficultySetting_InitialPoweredFuseBoxes);
+				
+				for (int i = 0; i < lInitialPoweredFuseBoxes; ++i)
+				{
+					int lId = cMath_RandRectl(0, sFuseBoxMaps.size() - 1);
+					m_setMapsThatCanBePowered.Add(sFuseBoxMaps[lId]);
+					sFuseBoxMaps.removeAt(lId);
+				}				
+			}
+		}
+	}
+
+	//------------------------------------------------------------
+
+	void OnMapLeave(cLuxMap@ apMap)
+	{
+		mbSetupDone = false;
+		msGenerator = "";
+		msPowerLamp = "";
+		msLever = "";
+		msLamps = "";
+		m_idFuelGauge = tID_Invalid;
+		mvLamps.resize(0);
+		mvBackupLamps.resize(0);
+		mvPowerSwitches.resize(0);
+		
+		ResetFuseBox();
+		
+		mBaseObj.Timer_ClearAll();
+	}
+	
+	//------------------------------------------------------------
+	
+	void PreloadData(cLuxMap @apMap)
+	{
+		/////////
+		// Preload
+		ParticleSystem_Preload("sparks_tiny.ps");
+	}
+	
+	//------------------------------------------------------------
+	
+	void CreateWorldEntities(cLuxMap @apMap) {}
+	void DestroyWorldEntities(cLuxMap @apMap) {}
+	void OnEnterContainer(const tString&in asOldContainer) {}
+	void OnLeaveContainer(const tString&in asNewContainer) {}
+	
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+		mbActive = false;
+		mbSetupDone = false;
+		mlPrevLeverState = 0;
+		mlFlickerAtFuelAmount = 1;
+		mfFuelGaugeAngle = 0.f;
+		msGenerator = "";
+		msPowerLamp = "";
+		msLever = "";
+		msLamps = "";
+		m_idFuelGauge = tID_Invalid;
+		mvLamps.resize(0);
+		mvBackupLamps.resize(0);
+		mvPowerSwitches.resize(0);
+		
+		ResetFuseBox();
+		msFuseBox_NoteDiscoveredMap = "";
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////	
+	
+	//------------------------------------------------------------
+	
+	void VariableUpdate(float afDeltaTime)
+	{		
+		if (mbActive == false) return;
+		if (cLux_IsChangingMap()) return;
+				
+		///////////////////////////
+		// Update lever
+		if (msLever != "")
+		{
+			int lLeverState = Lever_GetState(msLever);	
+			bool bTurnOn = lLeverState == 1;
+			if (lLeverState != mlPrevLeverState)
+			{
+				ChangeState(bTurnOn ? eGeneratorState_On : eGeneratorState_Off);
+				if (bTurnOn && GetFuelTimeLeft()>0.f)
+					Effect_Rumble_Start(0.3, 0.5);
+			}
+			
+			mlPrevLeverState = lLeverState;
+		}
+		
+		///////////////////////////
+		// Update state
+		if (mState == eGeneratorState_On)
+		{
+			if (mbRunForever == false)
+			{
+				mfTimeCount += afDeltaTime;
+				
+				if (mfTimeCount >= GetRunTimePerFuelUnit())
+				{
+					mfTimeCount = 0.f;				
+					--mlFuelAmount;
+						
+					if (mlFuelAmount <= mlFlickerAtFuelAmount)
+					{
+						SetFlickerActive(true);
+					}
+					else if (mlFuelAmount <= 0)
+					{
+						mlFuelAmount = 0;
+					}
+							
+					cLux_AddDebugMessage("Generator fuel amount: " + mlFuelAmount);
+				}
+					
+				if (mlFuelAmount == 0)
+				{
+					ChangeState(eGeneratorState_Off);
+					GameStats_IncreaseEntryAmount(eHeroStats_Blackouts);
+				}
+			}			
+		}
+		else if (mState == eGeneratorState_Off)
+		{
+			
+		}
+		
+		///////////////////////////
+		// Update gauge
+		cLuxProp@ pGauge = cLux_ID_Prop(m_idFuelGauge);
+		cSubMeshEntity@ pDial = pGauge !is null ? pGauge.GetMeshEntity().GetSubMeshEntityName(gsGenerator_FuelGaugeDial) : null;
+		
+		float fFullness = GetFullness();
+		
+		if (pDial !is null)
+		{
+			float fAngleGoal = gfGenerator_FuelGaugeStartAngle - gfGenerator_FuelGaugeAngleRange * fFullness;
+
+			float fCurrent = mfFuelGaugeAngle;
+			float fDelta = fAngleGoal - fCurrent;
+			float fSmoothing = 0.5f;
+			
+			fDelta *= cMath_Max(1.f - fSmoothing, 0.001f) * afDeltaTime * gfGenerator_FuelGaugeRotSpeed;
+			mfFuelGaugeAngle = fCurrent + fDelta;
+
+			cMatrixf mtxNew = cMath_MatrixMul(pDial.GetLocalMatrix(), cMath_MatrixRotateY(fDelta));
+			pDial.SetMatrix(mtxNew);
+		}
+		
+		///////////////////////////
+		// Update spinny parts
+		if (m_idGenerator != tID_Invalid)
+		{
+			iLuxEntity@ pGenerator = cLux_ID_Entity(m_idGenerator);
+			cMeshEntity@ pGeneratorMeshEnt = pGenerator !is null ? pGenerator.GetMeshEntity() : null;
+			
+			if (pGeneratorMeshEnt !is null)
+			{
+				cBoneState@ pWheel = pGeneratorMeshEnt.GetBoneStateFromName(gsGenerator_WheelBone);
+				cBoneState@ pCylinder = pGeneratorMeshEnt.GetBoneStateFromName(gsGenerator_CylinderBone);
+				cBoneState@ pBigCylinder = pGeneratorMeshEnt.GetBoneStateFromName(gsGenerator_BigCylinderBone);
+				cBoneState@ pTransmission = pGeneratorMeshEnt.GetBoneStateFromName(gsGenerator_TransmissionBone);
+				
+				if (pWheel is null) return;
+				if (pCylinder is null) return;
+				if (pBigCylinder is null) return;
+				if (pTransmission is null) return;
+				
+				if (mState == eGeneratorState_On)
+				{
+					mfWheelAngleSpeed = cMath_IncreaseTo(mfWheelAngleSpeed, afDeltaTime * 3.f, cMath_PiMul2 * 2.25f);
+					mfCylinderAngleSpeed = cMath_IncreaseTo(mfCylinderAngleSpeed, afDeltaTime * 1.5f, cMath_PiMul2 * 2.25f);
+					mfBigCylinderAngleSpeed = cMath_IncreaseTo(mfBigCylinderAngleSpeed, afDeltaTime * 4.f, cMath_PiMul2 * -4.f);
+				}
+				else
+				{
+					mfWheelAngleSpeed = cMath_IncreaseTo(mfWheelAngleSpeed, afDeltaTime * 3.1f, 0.f);
+					mfCylinderAngleSpeed = cMath_IncreaseTo(mfCylinderAngleSpeed, afDeltaTime * 4.5f, 0.f);
+					mfBigCylinderAngleSpeed = cMath_IncreaseTo(mfBigCylinderAngleSpeed, afDeltaTime * 4.5f, 0.f);
+				}
+				
+				mfWheelAngle += mfWheelAngleSpeed * afDeltaTime;
+				mfCylinderAngle += mfCylinderAngleSpeed * afDeltaTime;
+				mfBigCylinderAngle += mfBigCylinderAngleSpeed * afDeltaTime;
+				
+				mfWheelAngle %= cMath_PiMul2;
+				mfCylinderAngle %= cMath_PiMul2;
+				mfBigCylinderAngle %= cMath_PiMul2;
+				
+				pWheel.SetUsePreTransform(true);
+				pCylinder.SetUsePreTransform(true);
+				pBigCylinder.SetUsePreTransform(true);
+				pTransmission.SetUsePreTransform(true);
+				
+				pWheel.SetPreTransform(cMath_MatrixRotateX(mfWheelAngle));
+				pCylinder.SetPreTransform(cMath_MatrixRotateY(mfCylinderAngle));
+				pBigCylinder.SetPreTransform(cMath_MatrixRotateX(mfBigCylinderAngle));
+				pTransmission.SetPreTransform(cMath_MatrixRotateX(mfWheelAngle));			
+				
+				////////////////////////////////
+				// Highlight the generator controls
+				if (m_idLeverMesh != tID_Invalid && 
+					m_idFunnelMesh != tID_Invalid)
+				{				
+					cLuxEffectHandler@ pEffect = cLux_GetEffectHandler();
+					cSubMeshEntity@[] pSubMeshes = {cLux_ID_SubMeshEntity(m_idLeverMesh), cLux_ID_SubMeshEntity(m_idFunnelMesh) };				
+					cVector3f vPlayerPos = cLux_GetPlayer().GetCharacterBody().GetPosition();
+					
+					for (int i = 0; i < pSubMeshes.length(); ++i)
+					{
+						cSubMeshEntity@ pSubMesh = pSubMeshes[i];
+						
+						if (pEffect is null) break;
+						if (pSubMesh is null) continue;
+						
+						bool bGlow = true;
+						float fDistToPlayerSqr = (vPlayerPos - pSubMesh.GetWorldPosition()).SqrLength();
+							
+						if (fDistToPlayerSqr > 4.5f * 4.5f)
+							bGlow = false;
+						if (mState == eGeneratorState_On)
+							bGlow = false;
+								
+						float fGlowMulGoal = bGlow ? 1.f : 0.f;
+						mfGlowMul[i] = cMath_IncreaseTo(mfGlowMul[i], afDeltaTime * 2.f, fGlowMulGoal);
+							
+						if (mfGlowMul[i] <= 0.f)
+						{
+							mfGlowCount[i] = 0.f;
+						}
+						else
+						{
+							mfGlowCount[i] += afDeltaTime * mfGlowSpeed[i];
+							if (mfGlowCount[i] >= 4.f)
+								mfGlowCount[i] = 0.f;
+						}		
+						
+						float fY = cMath_Min(mfGlowCount[i], 1.f);
+						float fGlow = 1.f - cMath_Abs(2.f * fY - 1.f);
+						fGlow = cMath_Easing(eEasing_QuadInOut, fGlow) * mfGlowMul[i];
+						fY = cMath_Easing(eEasing_SineInOut, fY);
+							
+						float fColorMul = 2.5f;
+						cColor color = cColor(0.35f * fColorMul, 0.15f * fColorMul, 0.f, fGlow);
+						
+						if (fGlow > 0.f)
+						{
+							pEffect.AddGlowObject(pSubMesh, color, fY);
+						}
+					}
+				}
+			}
+		}		
+	}
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep) {}
+	void PostUpdate(float afTimeStep) {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnAction(int alAction, bool abPressed) {}
+	void OnAnalogInput(int alAnalogId, const cVector3f &in avAmount) {}	
+	void OnExitPressed() {}
+	
+	//------------------------------------------------------------
+	
+	void AppGotInputFocus() {}
+	void AppLostInputFocus() {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPERS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void ChangeState(eGeneratorState aNewState)
+	{
+		if (aNewState == eGeneratorState_On && mlFuelAmount <= 0)
+			return;
+			
+		if (mState != aNewState)
+		{
+			///////////////
+			// Setup vars
+			cLuxMap@ pMap = cLux_GetCurrentMap();
+			if (pMap is null) return;
+			
+			///////////////
+			// Change state
+			mState = aNewState;
+			SetEffectsActive(GetState(true) == eGeneratorState_On, false);
+			UpdateAnim();
+			
+			//////////////////////
+			// Start pocket watch?
+			float fDistToPlayer = 100.f;
+			
+			iLuxEntity@ pEnt = cLux_GetCurrentMap().GetEntityByName(msGenerator, eLuxEntityType_Prop);			
+			if (pEnt !is null)
+				fDistToPlayer = cMath_Vector3DistSqr(pEnt.GetPosition(), cLux_GetPlayer().GetCharacterBody().GetPosition());
+			
+			bool bNoThreats = RatHandler_GetAttackingRatCount() <= 0 && Blackboard_GetHuntingAgentCount() <= 0;
+			bool bStateOk = bNoThreats && fDistToPlayer < 5.f * 5.f && ItemType_GetFirstInInventory("PocketWatch") != "";
+			
+			if (mState == eGeneratorState_On && bStateOk)
+			{
+				ManageFuelPocketTimer(1.f);
+			}
+			else
+			{
+				PocketWatch_Stop();
+			}
+			
+			///////////////
+			// Broadcast message
+			array<iLuxEntity@> vAgents;
+			pMap.GetEntityArray("*", eLuxEntityType_Agent, "", vAgents);
+				
+			for (int i = 0; i < vAgents.size(); ++i)
+			{
+				cLuxAgent@ pAgent = cLux_ToAgent(vAgents[i]);
+				if (pAgent is null) continue;
+					
+				int lMessage = aNewState == eGeneratorState_On ? eCustomEntityMessage_GeneratorTurnedOn : eCustomEntityMessage_GeneratorTurnedOff;
+				pAgent.BroadcastMessage(lMessage, null, cVector3f(0.f), -1);
+			}
+			
+			////////////////////
+			// Map callback			
+			tString sCallback = "void OnStateChange_Generator(int alState)";
+			if (pMap !is null && pMap.ScriptMethodExists(sCallback) && pMap.ScriptPrepare(sCallback))
+			{
+				pMap.SetArgInt(0, (mState == eGeneratorState_On ? 1 : -1));
+				pMap.ScriptExecute();
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateAnim()
+	{
+		bool bLoop;
+		tString sAnim;
+			
+		if (mState == eGeneratorState_On)
+		{
+			bLoop = true;
+			sAnim = gsGenerator_RunningAnim;
+		}
+		else
+		{
+			bLoop = false;
+			sAnim = gsGenerator_StopAnim;
+		}
+			
+		if (msGenerator != "")
+		{
+			Entity_PlayAnimation(msGenerator, sAnim, 0.1f, bLoop, true);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	eGeneratorState GetState(bool abCheckFuse = false)
+	{
+		if (abCheckFuse == false) return mState;
+		if (msFuseBox_Name == "") return mState;
+		if (mbFuseGameplayActive == false) return mState;
+		
+		return mbFuseBox_On ? mState : eGeneratorState_Off;
+	}
+	
+	//------------------------------------------------------------
+	
+	float GetFullnessInteractLimit()
+	{
+		return gfGenerator_FullnessInteractLimit;
+	}
+	
+	//------------------------------------------------------------
+	
+	float GetFullness()
+	{
+		float fTimeT = mfTimeCount / GetRunTimePerFuelUnit();
+		float fFuelT = (float(mlFuelAmount) - fTimeT) / float(glGenerator_MaxFuelAmount);
+		return fFuelT;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetEffectsActive(bool abActive, bool abIsSetup)
+	{	
+		////////////////////
+		// Power lamp
+		if (msPowerLamp != "")
+			Lamp_SetLit(msPowerLamp, abActive, abIsSetup == false);
+		
+		////////////////////
+		// Lever
+		if (msLever != "")
+			Lever_SetStuckState(msLever, abActive ? 1 : 0, abIsSetup == false);
+		
+		////////////////////
+		// Fuse boxes
+		if (mbFuseGameplayActive)
+		{
+			if (Sound_Exists(msFuseBox_SoundLoop))
+			{
+				if (GetState(true) == eGeneratorState_On) 	Sound_Play(msFuseBox_SoundLoop, 0.6f);
+				else										Sound_Stop(msFuseBox_SoundLoop, 0.1f);
+			}
+			
+			if (abIsSetup == false)
+			{
+				float fDelay = abActive ? cMath_RandRectf(0.1f, 0.3f) : 0.f;
+				mBaseObj.Timer_Remove("Timer_UpdateFuseBoxLampState");
+				mBaseObj.Timer_Add("Timer_UpdateFuseBoxLampState", fDelay, "OnTimer_UpdateFuseBoxLampState", false, false);
+			}
+		}
+		
+		////////////////////
+		// Switches
+		int lRootSwitchCount = 0;		
+		for (int i = 0; i < mvPowerSwitches.size(); ++i)
+		{
+			cPowerSwitch@ pSwitch = mvPowerSwitches[i];
+			
+			if (abIsSetup || abActive == false)
+			{
+				////////////////////
+				// Only do root switches (they handle their children)
+				if (pSwitch.msParent == "")
+					SetPowerSwitchOn(pSwitch.msName, abActive, abIsSetup);
+				
+				continue;
+			}
+			
+			////////////////////
+			// Switch on root switches!
+			if (abActive && pSwitch.msParent == "")
+			{
+				float fDelay = 0.5f + cMath_RandRectf(0.1f, 0.5f) * (lRootSwitchCount++ / 2.f);
+				SetPowerSwitchOn_Delayed(pSwitch.msName, fDelay);
+			}			
+		}
+		
+		////////////////////
+		// Lamps
+		for (int i = 0; i < mvLamps.size(); ++i)
+		{
+			tString sLamp = mvLamps[i];
+			bool bLit = abActive;
+			
+			//////////////////
+			// Some lamps in transfer areas should only be allowed to light up if the other map is powered
+			// (Fuse gameplay only)
+			if (mbFuseGameplayActive)
+			{
+				tString sLampConnectedMap = Entity_GetVarString(sLamp, "");				
+				if (sLampConnectedMap != "")
+				{
+					if (m_setMapsThatCanBePowered.Exists(sLampConnectedMap) == false)
+					{
+						bLit = false;
+					}
+					else if (mState == eGeneratorState_On && 
+							 GetCurrentMapName() != sLampConnectedMap)
+					{
+						bLit = true;
+					}
+				}
+			}			
+			
+			//////////////////
+			// Update state
+			if (bLit == false || abIsSetup)
+			{
+				Lamp_SetLit(sLamp, bLit, abIsSetup == false);
+				continue;
+			}
+			
+			float fTime = 0.5f + cMath_RandRectf(0.1f, 0.5f) * (i / 2.f);
+			mBaseObj.Timer_Add(i, fTime, "OnTimer_TurnOnLamp");
+		}
+		
+		////////////////////
+		// Backup lamps
+		bool bBackupLampsOn = abActive == false;
+		for (int i = 0; i < mvBackupLamps.size(); ++i)
+		{
+			if (abIsSetup)
+			{
+				Lamp_SetLit(mvBackupLamps[i], bBackupLampsOn, abIsSetup == false);
+				continue;
+			}
+			
+			if (bBackupLampsOn == false)
+			{
+				float fTime = 0.25f + cMath_RandRectf(0.1f, 0.5f) * (i / 2.f);
+				mBaseObj.Timer_Add(i, fTime, "OnTimer_TurnOffBackupLamp");
+				continue;
+			}
+			
+			float fTime = 0.5f + cMath_RandRectf(0.1f, 0.5f) * (i / 2.f);
+			mBaseObj.Timer_Add(i, fTime, "OnTimer_TurnOnBackupLamp");
+		}
+		
+		////////////////////
+		// Sounds
+		if (abActive)
+		{
+			Sound_PlayGui("player/UI/tone/shepard_tone", 1.f, eSoundEntryType_Gui);
+			Sound_PlayGui("level_entity_shared/GUI/creepy_tones_on", 1.f, eSoundEntryType_Gui);
+			Sound_Play("Sound_GeneratorLoop", 5.f);
+			Sound_Play("Sound_GeneratorRattle", 5.f);
+			Sound_Play("Sound_GenOnSweet_*", 7.0f);
+			
+			if (Sound_GuiIsPlaying("level_entity_shared/GUI/creepy_tones"))
+				Sound_StopGui("level_entity_shared/GUI/creepy_tones", 0.f);
+			
+			if (abIsSetup == false && Sound_Exists("Sound_GeneratorStart"))
+			{
+				Sound_Play("Sound_GeneratorStart", 0.f);
+				Sound_AddClosedCaption("GeneralClosedCaptions", "GeneratorOn");
+			}
+				
+			if (Sound_Exists("Sound_GeneratorStop"))
+				Sound_Stop("Sound_GeneratorStop", 0.3f);
+				
+			// TODO: Do a proper implementation for this
+			Entity_SetActive("Soundscape_On_*", true);
+			Entity_SetActive("Soundscape_Off_*", false);
+		}
+		else
+		{ 
+			Sound_PlayGui("level_entity_shared/GUI/creepy_tones", 1.f, eSoundEntryType_Gui);
+			
+			if (Sound_GuiIsPlaying("player/UI/tone/shepard_tone"))
+				Sound_StopGui("player/UI/tone/shepard_tone", 0.f);
+			if (Sound_GuiIsPlaying("level_entity_shared/GUI/creepy_tones_on"))
+				Sound_StopGui("level_entity_shared/GUI/creepy_tones_on", 0.f);
+			
+			if (Sound_Exists("Sound_GeneratorLoop"))
+				Sound_Stop("Sound_GeneratorLoop", 1.5f);
+			if (Sound_Exists("Sound_GeneratorStart"))
+				Sound_Stop("Sound_GeneratorStart", 0.3f);
+			if (Sound_Exists("Sound_GeneratorRattle"))
+				Sound_Stop("Sound_GeneratorRattle", 1.5f);
+			if (Sound_Exists("Sound_GenOnSweet_*"))
+				Sound_Stop("Sound_GenOnSweet_*", 5.0f);
+			
+			if (abIsSetup == false)
+			{
+				Sound_Play("Sound_GeneratorStop", 0.f);
+				
+				if (Sound_Exists("Sound_GeneratorStart"))
+					Sound_Stop("Sound_GeneratorStart", 0.3f);
+			}
+				
+			// TODO: Do a proper implementation for this
+			Entity_SetActive("Soundscape_Off_*", true);
+			Entity_SetActive("Soundscape_On_*", false);
+		}
+	}
+		
+	//------------------------------------------------------------
+	
+	void OnTimer_TurnOnPowerSwitch(uint64 alId)
+	{
+		if (GetState(true) != eGeneratorState_On)
+			return;
+		
+		SetPowerSwitchOn(mvPowerSwitches[alId].msName, true, false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnTimer_TurnOnLamp(uint64 alId)
+	{
+		if (GetState(true) != eGeneratorState_On)
+			return;
+			
+		Lamp_SetLit(mvLamps[alId], true, true);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnTimer_TurnOnBackupLamp(uint64 alId)
+	{
+		if (GetState(true) != eGeneratorState_Off)
+			return;
+			
+		Lamp_SetLit(mvBackupLamps[alId], true, true);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnTimer_TurnOffBackupLamp(uint64 alId)
+	{
+		if (GetState(true) != eGeneratorState_On)
+			return;
+			
+		Lamp_SetLit(mvBackupLamps[alId], false, true);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnTimer_UpdateFuseBoxLampState(uint64 alId)
+	{
+		bool bGeneratorOn = mState == eGeneratorState_On;
+		Lamp_SetLit(msFuseBox_Lamp, mbFuseBox_On && bGeneratorOn, true);
+		Lamp_SetLit(msFuseBox_BackupLamp, mbFuseBox_On == false && bGeneratorOn, true);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnTimer_TurnOnFuseBoxHighPrioLamps(uint64 alId)
+	{
+		if (GetState(true) != eGeneratorState_On)
+			return;
+		
+		Lamp_SetLit(msFuseBox_HighPrioLamps, true, true);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetFlickerActive(bool abX)
+	{
+		float fOnMin = 1.f;
+		float fOnMax = 2.f;
+
+		float fOffMin = 0.1f;
+		float fOffMax = 0.15f;
+
+		float fAlphaMin = 0.5f;
+		float fAlphaMax = 1.f;
+
+		if (msLamps == "")
+			return;
+		
+		Lamp_SetFlickerActive(msLamps, abX);
+		Lamp_SetupFlicker(msLamps, fOnMin, fOnMax, fOffMin, fOffMax, true, "", "", "", "", fAlphaMin, fAlphaMax);
+		
+		for (int i = 0; i < mvPowerSwitches.size(); ++i)
+		{
+			Lamp_SetupFlicker(mvPowerSwitches[i].msLamps, fOnMin, fOnMax, fOffMin, fOffMax, true, "", "", "", "", fAlphaMin, fAlphaMax);
+			Lamp_SetFlickerActive(mvPowerSwitches[i].msLamps, abX);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	cPowerSwitch@ GetPowerSwitch(const tString &in asSwitch)
+	{
+		for (int i = 0; i < mvPowerSwitches.size(); ++i)
+		{
+			if (asSwitch == mvPowerSwitches[i].msName)
+				return mvPowerSwitches[i];
+		}
+		
+		return null;
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnTimer_WindUpPocketWatch(uint64 alId)
+	{
+		PocketWatch_WindUp(false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnTimer_TakeOutPocketWatch(uint64 alId)
+	{
+		//////////////////////
+		// Make sure player is in normal state
+		if (cLux_GetPlayer().GetCurrentStateId() != ePlayerState_Normal)
+		{
+			tString sTimer = "Timer_TakeOutPocketWatch";
+			
+			if (mBaseObj.Timer_Exists(sTimer))
+				mBaseObj.Timer_Remove(sTimer);
+				
+			mBaseObj.Timer_Add("Timer_TakeOutPocketWatch", 0.5f, "OnTimer_TakeOutPocketWatch");
+			return;
+		}
+		
+		tString sTimer = "Timer_StartPocketWatch";
+		if (mBaseObj.Timer_Exists(sTimer))
+			mBaseObj.Timer_Remove(sTimer);
+				
+		//////////////////////
+		// Start immediately if already held
+		if (Item_GetHeldType(eItemHandlerHand_Right) == "PocketWatch")
+		{
+			mBaseObj.Timer_Add(sTimer, 0.5f, "OnTimer_StartPocketWatch", false);
+			return;
+		}
+		
+		//////////////////////
+		// Take out
+		Item_TakeOut(ItemType_GetFirstInInventory("PocketWatch"));
+		mBaseObj.Timer_Add(sTimer, 1.3f, "OnTimer_StartPocketWatch", false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnTimer_StartPocketWatch(uint64 alId)
+	{
+		//////////////////////
+		// Okay to start it?
+		if (Item_GetHeldType(eItemHandlerHand_Right) != "PocketWatch")
+			return;
+		
+		PocketWatch_WindUp(false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnTimer_PutAwayPocketWatch(uint64 alId)
+	{
+		if (Item_GetHeldType(eItemHandlerHand_Right) != "PocketWatch")
+			return;
+		
+		Item_PutAway(eItemHandlerHand_Right);
+	}
+	
+	//------------------------------------------------------------
+	
+	void ManageFuelPocketTimer(float afDelay)
+	{
+		///////////////////
+		// Pocketwatch Held
+		if (mbPocketWatchTutorialDone)
+		{
+			if (Item_GetHeldType(eItemHandlerHand_Right) == "PocketWatch")
+			{
+				if (PocketWatch_GetWindUpNeeded())
+					mBaseObj.Timer_Add("Timer_StartPocketWatch", afDelay, "OnTimer_StartPocketWatch", false);
+				else
+					PocketWatch_Run();
+			}
+		}
+		
+		///////////////////////
+		// Pocketwatch Tutorial
+		else
+		{
+			tString sTimer = "Timer_TakeOutPocketWatch";
+			
+			if (mBaseObj.Timer_Exists(sTimer))
+				mBaseObj.Timer_Remove(sTimer);
+				
+			mBaseObj.Timer_Add(sTimer, afDelay, "OnTimer_TakeOutPocketWatch", false);
+			
+			mbPocketWatchTutorialDone = true;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	float GetRunTimePerFuelUnit()
+	{
+		return GameDifficulty_GetSettingValueByID_Float(eGameDifficultySetting_GeneratorRunTime);
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetFuseBox()
+	{
+		msFuseBox_Name = "";
+		msFuseBox_Lamp = "";
+		msFuseBox_BackupLamp = "";
+		msFuseBox_Lever = "";
+		msFuseBox_FuseSocket = "";
+		msFuseBox_Grating = "";
+		msFuseBox_FusePickup = "";
+		msFuseBox_FuseInteractArea = "";
+		msFuseBox_SoundLoop = "";
+		msFuseBox_HighPrioLamps = "";
+		mbFuseBox_On = false;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetIsFirstTimeInMap()
+	{	
+		return m_setMapsSetup.Exists(GetCurrentMapName()) == false;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetFuseBoxGratingOpen(bool abX)
+	{
+		float fAnimSpeed = abX ? 5.f : -5.f;
+		Entity_PlayProcAnimation(msFuseBox_Grating, "Open", 1.f, false, 0.f);
+		Entity_SetProcAnimationSpeed(msFuseBox_Grating, "Open", fAnimSpeed);
+	}
+	
+	//------------------------------------------------------------
+	
+	void LockFuseBox()
+	{
+		Entity_SetInteractionDisabled(msFuseBox_FusePickup, true);
+		HighlightEffect_RemoveHighlightedEntity(msFuseBox_FusePickup);
+		
+		cLuxProp@ pLever = cLux_ToProp(cLux_GetCurrentMap().GetEntityByName(msFuseBox_Lever, eLuxEntityType_Prop));
+		if (pLever !is null && pLever.GetInteractConnectionNum() > 0)
+		{
+			pLever.RemoveAllInteractConnections();
+		}
+
+		Lever_SetStuckState(msFuseBox_Lever, 1, true);
+		Lever_SetInteractionDisablesStuck(msFuseBox_Lever, false);
+		MoveObject_SetState(msFuseBox_FuseSocket, 1.f);
+		
+		Entity_SetActive(msFuseBox_FuseInteractArea, false);
+		
+		SetFuseBoxGratingOpen(false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnTimer_LockFuseBox(uint64 alId)
+	{
+		LockFuseBox();
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INTERFACE
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupEntities(const tString &in asGenerator, const tString &in asPowerLamp, const tString &in asLever, 
+					   const tString &in asFuelGauge, const tString &in asLamps, const tString &in asBackupLamps)
+	{
+		cLuxMap@ pMap = cLux_GetCurrentMap();
+		if (pMap is null) return;
+		
+		////////////////////
+		// Setup vars
+		mbActive = true;
+		msGenerator = asGenerator;
+		msPowerLamp = asPowerLamp;
+		msLever = asLever;
+		msLamps = asLamps;
+		msBackupLamps = asBackupLamps;
+		
+		iLuxEntity@ pGauge = pMap.GetEntityByName(asFuelGauge, eLuxEntityType_Prop);
+		m_idFuelGauge = pGauge !is null ? pGauge.GetID() : tID_Invalid;
+		
+		iLuxEntity@ pGenerator = pMap.GetEntityByName(asGenerator, eLuxEntityType_Prop);
+		m_idGenerator = pGenerator !is null ? pGenerator.GetID() : tID_Invalid;
+		
+		iLuxEntity@ pLever = pMap.GetEntityByName(msLever, eLuxEntityType_Prop);
+		cSubMeshEntity@ pLeverMesh = pLever !is null ? pLever.GetMeshEntity().GetSubMeshEntityName("handle_int") : null;
+		m_idLeverMesh = pLeverMesh !is null ? pLeverMesh.GetID() : tID_Invalid;
+		
+		cSubMeshEntity@ pFunnel = pGenerator !is null ? pGenerator.GetMeshEntity().GetSubMeshEntityName("m_Funnel") : null;
+		m_idFunnelMesh = pFunnel !is null ? pFunnel.GetID() : tID_Invalid;
+		
+		array<iLuxEntity@> vLamps;
+		pMap.GetEntityArray(msLamps, eLuxEntityType_Prop, "cScrPropLamp", vLamps);
+		
+		mvLamps.resize(0);
+		for (int i = 0; i < vLamps.size(); ++i)
+			mvLamps.push_back(vLamps[i].GetName());
+			
+		array<iLuxEntity@> vBackupLamps;
+		pMap.GetEntityArray(msBackupLamps, eLuxEntityType_Prop, "cScrPropLamp", vBackupLamps);
+		
+		mvBackupLamps.resize(0);
+		for (int i = 0; i < vBackupLamps.size(); ++i)
+			mvBackupLamps.push_back(vBackupLamps[i].GetName());
+	}
+	
+	//------------------------------------------------------------
+	
+	void AddPowerSwitch(const tString &in asSwitch, const tString &in asParent, const tString &in asChild,
+						const tString &in asLamps, bool abOn)
+	{
+		mvPowerSwitches.push_back(cPowerSwitch(asSwitch, asParent, asChild, asLamps, abOn));
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetPowerSwitchOn(const tString &in asSwitch, bool abX, bool abIsSetup)
+	{	
+		if (abX && GetState(true) == eGeneratorState_Off)
+			return;
+		
+		////////////////////
+		// Get switches
+		cPowerSwitch@ pSwitch = GetPowerSwitch(asSwitch);
+		cPowerSwitch@ pParent = pSwitch !is null ? GetPowerSwitch(pSwitch.msParent) : null;
+		cPowerSwitch@ pChild = pSwitch !is null ? GetPowerSwitch(pSwitch.msChild) : null;
+		
+		if (pSwitch is null) return;
+		
+		////////////////////
+		// Setup vars
+		bool bFirstTimeInMap = GetIsFirstTimeInMap();
+		int lSuffix = cString_GetNumericSuffixInt(pSwitch.msName);
+		int lLeverState = Lever_GetState(asSwitch);
+		
+		bool bPowerIn = GetState(true) == eGeneratorState_On && (pParent is null || pParent.mbOn);
+		bool bOn = abX && (lLeverState == 1 || (pSwitch.mbOn && abIsSetup && bFirstTimeInMap)) && GetState(true) == eGeneratorState_On && bPowerIn;			
+		
+		tString sPowerLampIn = "PowerSwitchLamp_In_" + lSuffix;
+		tString sPowerLampOut = "PowerSwitchLamp_Out_" + lSuffix;
+				
+		////////////////////
+		// Set lever state
+		if (bOn || 
+			(pSwitch.mbOn && abIsSetup && bFirstTimeInMap))
+		{
+			Lever_SetStuckState(asSwitch, 1, abIsSetup == false);
+		}
+		
+		////////////////////
+		// Effects!
+		Lamp_SetLit(sPowerLampIn, bPowerIn, abIsSetup == false);
+		Lamp_SetLit(sPowerLampOut, bOn, abIsSetup == false);		
+		Lamp_SetLit(pSwitch.msLamps, bOn, abIsSetup == false);
+		
+		Entity_SetEffectsActive(pSwitch.msName, bPowerIn, true);
+			
+		if (bOn)
+		{
+			ParticleSystem_CreateAtEntity("PS_Sparks_" + asSwitch, "sparks_tiny.ps", sPowerLampOut, false);
+			Sound_CreateAtEntity("Sound_Sparks_" + asSwitch, "level_entity_shared/lights/bunker_box_spark", asSwitch);
+		}
+		
+		////////////////////
+		// Update state
+		bool bPrevState = pSwitch.mbOn;
+		pSwitch.mbOn = bOn;
+		
+		////////////////////
+		// Map callback
+		cLuxMap@ pMap = cLux_GetCurrentMap();
+		
+		if (bPrevState != pSwitch.mbOn)
+		{			
+			tString sCallback = "void OnStateChange_PowerSwitch(const tString &in asEntity, int alState)";
+			if (pMap.ScriptMethodExists(sCallback) && pMap.ScriptPrepare(sCallback))
+			{
+				tString sName = pSwitch.msName;
+				pMap.SetArgString(0, sName);
+				pMap.SetArgInt(1, (pSwitch.mbOn ? 1 : -1));
+				pMap.ScriptExecute();
+			}
+		}
+		
+		if (bOn)
+		{
+			tString sCallback = "void OnPowerSwitchTurnedOn(const tString &in asEntity)";
+			if (pMap.ScriptMethodExists(sCallback) && pMap.ScriptPrepare(sCallback))
+			{
+				tString sName = pSwitch.msName;
+				pMap.SetArgString(0, sName);
+				pMap.ScriptExecute();
+			}
+		}
+		
+		////////////////////
+		// Update child
+		if (pChild !is null)
+		{
+			if (abX == false || abIsSetup)
+			{
+				SetPowerSwitchOn(pChild.msName, bOn, abIsSetup);
+			}
+			else
+			{
+				float fDelay = cMath_RandRectf(0.1f, 0.5f);
+				SetPowerSwitchOn_Delayed(pChild.msName, fDelay);
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetPowerSwitchOn_Delayed(const tString &in asName, float afDelay)
+	{
+		int lIndex = -1;
+		for (int i = 0; i < mvPowerSwitches.size(); ++i)
+		{
+			if (mvPowerSwitches[i].msName == asName)
+			{
+				lIndex = i;
+				break;
+			}
+		}
+		
+		if (lIndex != -1)
+			mBaseObj.Timer_Add(lIndex, afDelay, "OnTimer_TurnOnPowerSwitch");
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupFuseBox(const tString &in asName, const tString &in asLamp, const tString &in asBackupLamp,
+					  const tString &in asLever, const tString &in asSocket, const tString &in asGrating,
+					  const tString &in asFusePickup, const tString &in asNote, const tString &in asNail, 
+					  const tString &in asNoteInteractAux, const tString &in asFuseInteractArea, 
+					  const tString &in asSoundLoop, const tString &in asHighPrioLamps)
+	{	
+		bool bFirstTimeInMap = GetIsFirstTimeInMap();
+		bool bFuseBoxOn = m_setMapsThatCanBePowered.Exists(GetCurrentMapName());
+		
+		if (bFirstTimeInMap)
+		{
+			Entity_SetActive(asName, mbFuseGameplayActive);
+			Entity_SetActive(asLamp, mbFuseGameplayActive);
+			Entity_SetActive(asBackupLamp, mbFuseGameplayActive);
+			Entity_SetActive(asLever, mbFuseGameplayActive);
+			Entity_SetActive(asSocket, mbFuseGameplayActive);
+			Entity_SetActive(asGrating, mbFuseGameplayActive);
+			Entity_SetActive(asFusePickup, false);
+			Entity_SetActive(asFuseInteractArea, mbFuseGameplayActive);
+			
+			tString sDetails = Entity_GetVarString(asName, "");
+			if (sDetails != "")
+				Entity_SetActive(sDetails, mbFuseGameplayActive);
+		}	
+		
+		cLuxMap@ pMap = cLux_GetCurrentMap();
+		if (pMap !is null)
+		{
+			bool bNoteDiscoveredInCurrentMap = pMap !is null && msFuseBox_NoteDiscoveredMap == pMap.GetName();
+			bool bNoteActive = mbFuseGameplayActive &&
+							   Sketchbook_GetHasNote("PowerOutageInstructions") == false &&
+							   (msFuseBox_NoteDiscoveredMap == "" || bNoteDiscoveredInCurrentMap);
+			
+			if (bFuseBoxOn && bNoteDiscoveredInCurrentMap == false)
+				bNoteActive = false;
+			
+			Entity_SetActive(asNote, bNoteActive);
+			Entity_SetActive(asNail, bNoteActive);
+			Entity_SetActive(asNoteInteractAux, bNoteActive);
+			
+			if (bNoteActive && bFirstTimeInMap)
+				Entity_AttachToEntity(asNoteInteractAux, asNote, "Body_1", true, false, true);
+		}
+		
+		if (mbFuseGameplayActive == false) return;
+	
+		msFuseBox_Name = asName;
+		msFuseBox_Lamp = asLamp;
+		msFuseBox_BackupLamp = asBackupLamp;
+		msFuseBox_Lever = asLever;
+		msFuseBox_FuseSocket = asSocket;
+		msFuseBox_Grating = asGrating;
+		msFuseBox_FusePickup = asFusePickup;
+		msFuseBox_FuseInteractArea = asFuseInteractArea;		
+		msFuseBox_SoundLoop = asSoundLoop;
+		msFuseBox_HighPrioLamps = asHighPrioLamps;
+		mbFuseBox_On = bFuseBoxOn;
+		
+		if (bFirstTimeInMap)
+		{			
+			if (mbFuseBox_On)
+			{
+				ActivateFuseBox(true);
+			}
+		}
+		else
+		{		
+			if (mbFuseBox_On)
+			{
+				Lamp_SetLit(msFuseBox_Lamp, mState == eGeneratorState_On, false);
+			}
+		}
+		
+		Lamp_SetLit(asBackupLamp, mState == eGeneratorState_On && mbFuseBox_On == false, false);
+		SetFuseBoxGratingOpen(mbFuseBox_On == false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void ActivateFuseBox(bool abIsSetup)
+	{
+		if (mbFuseGameplayActive == false) return;
+		
+		//////////////////////
+		// Fuse placed?
+		if (abIsSetup)
+		{			
+			Entity_SetActive(msFuseBox_FusePickup, true);
+			MoveObject_SetState(msFuseBox_FuseSocket, 1.f);
+		}	
+		
+		if (Entity_IsActive(msFuseBox_FusePickup) == false) 
+			return;
+		
+		//////////////////////
+		// Update state
+		bool bWasOn = mbFuseBox_On;
+		mbFuseBox_On = true;
+		
+		if (abIsSetup)
+		{
+			mBaseObj.Timer_Add("Timer_LockFuseBox", 0.1f, "OnTimer_LockFuseBox", false);
+		}
+		else
+		{
+			LockFuseBox();
+		}		
+		
+		tString sMapName = GetCurrentMapName();
+		if (m_setMapsThatCanBePowered.Exists(sMapName) == false)
+			m_setMapsThatCanBePowered.Add(sMapName);
+		
+		////////////////////
+		// Effects		
+		Lamp_SetLit(msFuseBox_BackupLamp, false, abIsSetup == false);
+		
+		if (mState == eGeneratorState_On)
+		{
+			Lamp_SetLit(msFuseBox_Lamp, true, abIsSetup == false);
+			
+			if (abIsSetup)
+			{
+				Lamp_SetLit(msFuseBox_HighPrioLamps, true, false);
+			}
+			else
+			{
+				mBaseObj.Timer_Add(msFuseBox_HighPrioLamps, 0.3f, "OnTimer_TurnOnFuseBoxHighPrioLamps", false, false);
+				
+				Sound_CreateAtEntity("Sound_FuseBoxSpark", "level_entity_shared/lights/bunker_box_spark", msFuseBox_FusePickup);
+				ParticleSystem_CreateAtEntity("PS_FuseBoxSparks", "sparks_tiny.ps", msFuseBox_FusePickup, false);
+				
+				SetEffectsActive(true, false);
+			}
+		}
+		
+		if (abIsSetup == false && bWasOn == false)
+		{
+			Sound_CreateAtEntity("Sound_LockFuse", "update/player/fuse_lock", msFuseBox_FusePickup);
+		}
+		
+		////////////////////
+		// Update maps
+		InGameMap_UpdateGlobalMapState();
+		
+		////////////////////
+		// Broadcast state
+		if (abIsSetup == false)
+		{
+			array<iLuxEntity@> vAgents;
+			cLux_GetCurrentMap().GetEntityArray("*", eLuxEntityType_Agent, "", vAgents);
+				
+			for (int i = 0; i < vAgents.size(); ++i)
+			{
+				cLuxAgent@ pAgent = cLux_ToAgent(vAgents[i]);
+				if (pAgent is null) continue;
+					
+				pAgent.BroadcastMessage(eCustomEntityMessage_GeneratorTurnedOn, null, cVector3f(0.f), -1);
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void PlaceFuseInFuseBox(const tString &in asCutsceneFuseEnt)
+	{
+		if (mbFuseGameplayActive == false) return;
+		
+		Entity_SetActive(msFuseBox_FusePickup, true);
+		Entity_SetActive(msFuseBox_FuseInteractArea, false);
+		Entity_AlignBaseMatrix(msFuseBox_FusePickup, asCutsceneFuseEnt);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetFuseBoxNoteDiscovered(bool abX)
+	{
+		if (abX == false) return;
+		if (msFuseBox_NoteDiscoveredMap != "") return;
+		
+		cLuxMap@ pMap = cLux_GetCurrentMap();
+		msFuseBox_NoteDiscoveredMap = pMap !is null ? pMap.GetName() : "";
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetFuseBoxNoteDiscovered()
+	{
+		return msFuseBox_NoteDiscoveredMap != "";
+	}
+	
+	//------------------------------------------------------------
+	
+	tString GetFuseInteractArea()
+	{
+		return msFuseBox_FuseInteractArea;
+	}
+	
+	//------------------------------------------------------------
+	
+	tString GetFuseBoxEntity()
+	{
+		return msFuseBox_Name;
+	}
+	
+	//------------------------------------------------------------
+	
+	void EndSetup()
+	{
+		////////////////////
+		// Setup effects!
+		bool bEffectsOn = GetState(true) == eGeneratorState_On;		
+		SetEffectsActive(bEffectsOn, true);
+		
+		bool bFlicker = mlFuelAmount > 0 && mlFuelAmount <= mlFlickerAtFuelAmount && mbRunForever == false;
+		SetFlickerActive(bFlicker);
+		
+		UpdateAnim();
+			
+		////////////////////
+		// Setup done!
+		mbSetupDone = true;
+		
+		tString sMapName = GetCurrentMapName();
+		if (m_setMapsSetup.Exists(sMapName) == false)
+			m_setMapsSetup.Add(sMapName);
+	}
+	
+	//------------------------------------------------------------
+	
+	void AddFuel(int alAmount)
+	{
+		if (alAmount <= 0)
+			return;
+			
+		////////////////////
+		// Increase amount
+		int lPrevFuel = mlFuelAmount;
+		mlFuelAmount = cMath_Min(mlFuelAmount + alAmount, glGenerator_MaxFuelAmount);
+		
+		////////////////////
+		// Set new flicker amount if it was empty
+		if (lPrevFuel == 0)
+		{
+			mlFlickerAtFuelAmount = 1;
+		}
+		
+		if (lPrevFuel <= mlFlickerAtFuelAmount && mlFuelAmount > mlFlickerAtFuelAmount && mbRunForever == false)
+		{
+			SetFlickerActive(false);
+		}
+		
+		////////////////////
+		// Reset decrease time
+		mfTimeCount = 0.f;
+		
+		mlFuelAddedTimestamp = cLux_GetCurrentMap().GetTimeStamp();
+		
+		//////////////////
+		// Wind up the timer
+		if (mbPocketWatchTutorialDone && Item_GetHeldType(eItemHandlerHand_Right) != "PocketWatch")
+			return;
+		
+		if (mState != eGeneratorState_On)
+			return;
+			
+		PocketWatch_Stop();
+		
+		ManageFuelPocketTimer(3.f);
+	}
+	
+	//------------------------------------------------------------
+	
+	int GetFuelAddedTimestamp()
+	{
+		return mlFuelAddedTimestamp;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetIsSetupDone()
+	{
+		return mbSetupDone;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetRunForever(bool abX)
+	{
+		mbRunForever = abX;		
+		SetFlickerActive(mlFuelAmount <= mlFlickerAtFuelAmount && mbRunForever == false);
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetRunForever()
+	{
+		return mbRunForever;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetFuelAmount(int alAmount, float afTimeUntilDecrease = -1.f)
+	{
+		int lPrevFuel = mlFuelAmount;
+		mlFuelAmount = cMath_Clamp(alAmount, 0.001f, glGenerator_MaxFuelAmount);
+		
+		if (lPrevFuel <= mlFlickerAtFuelAmount && mlFuelAmount > mlFlickerAtFuelAmount && mbRunForever == false)
+		{
+			SetFlickerActive(false);
+		}
+		
+		if (afTimeUntilDecrease >= 0.f)
+			mfTimeCount = GetRunTimePerFuelUnit() - afTimeUntilDecrease;
+	}
+	
+	//------------------------------------------------------------
+	
+	float GetFuelTimeLeft()
+	{
+		return (mlFuelAmount * GetRunTimePerFuelUnit()) - mfTimeCount;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetGeneratorIsInCurrentMap()
+	{
+		iLuxEntity@ pEnt = cLux_GetCurrentMap().GetEntityByName(msGenerator);
+		return pEnt !is null;
+	}
+	
+	//------------------------------------------------------------
+	
+	tString GetCurrentMapName()
+	{
+		cLuxMap@ pMap = cLux_GetCurrentMap();
+		return pMap !is null ? pMap.GetName() : "";
+	}
+	
+	//------------------------------------------------------------
+	
+	array<tString>@ GetMapsWithActivatedFuseBox()
+	{
+		array<tString> vOut;
+		m_setMapsThatCanBePowered.ElementsToArray(vOut);
+		
+		for (int i = 0; i < vOut.size(); ++i)
+		{
+			if (vOut[i] == "officer_hub")
+			{
+				vOut[i] = vOut[vOut.size() - 1];
+				vOut.pop_back();
+				break;
+			}
+		}
+		
+		return vOut;
+	}
+	
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// GUI
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+
+	void OnGui(float afTimeStep) {}	
+	void OnDraw(float afFrameTime) {}
+	void OnPostRender(float afFrameTime) {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	float DrawDebugOutput(cGuiSet@ apSet, iFontData@ apFont,float afY)
+	{
+		afY = cLux_DrawDebugText("------------ Generator ------------", afY);
+		afY = cLux_DrawDebugText("Fullness: " + GetFullness(), afY);
+		afY = cLux_DrawDebugText("Time (s): " + (GetFullness() * (glGenerator_MaxFuelAmount * GetRunTimePerFuelUnit())), afY);
+		return afY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// VARIABLES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool mbActive = false;
+	bool mbSetupDone = false;
+	bool mbRunForever = false;
+	
+	float mfTimeCount = 0.f;
+	float mfFuelGaugeAngle = gfGenerator_FuelGaugeStartAngle;
+	
+	int mlFuelAmount = 0;
+	int mlFuelAddedTimestamp = 0;
+	int mlFlickerAtFuelAmount = 1;
+	int mlPrevLeverState = 0;
+	
+	eGeneratorState mState = eGeneratorState_Off;
+	
+	tString msGenerator = "";
+	tString msPowerLamp = "";
+	tString msLever = "";
+	tString msLamps = "";
+	tString msBackupLamps = "";
+	
+	tID m_idGenerator = tID_Invalid;
+	tID m_idFuelGauge = tID_Invalid;
+	tID m_idLeverMesh = tID_Invalid;
+	tID m_idFunnelMesh = tID_Invalid;
+	
+	array<tString> mvLamps;
+	array<tString> mvBackupLamps;
+	array<cPowerSwitch> mvPowerSwitches;
+	
+	tString msFuseBox_Name = "";
+	tString msFuseBox_Lamp = "";
+	tString msFuseBox_BackupLamp = "";
+	tString msFuseBox_Lever = "";
+	tString msFuseBox_FuseSocket = "";
+	tString msFuseBox_Grating = "";
+	tString msFuseBox_FusePickup = "";
+	tString msFuseBox_FuseInteractArea = "";
+	tString msFuseBox_SoundLoop = "";
+	tString msFuseBox_HighPrioLamps = "";
+	tString msFuseBox_NoteDiscoveredMap = "";
+	bool mbFuseBox_On = false;
+	bool mbFuseGameplayActive = false;
+	
+	cScriptStringSet m_setMapsThatCanBePowered;
+	cScriptStringSet m_setMapsSetup;
+	
+	bool mbPocketWatchTutorialDone = false;
+	
+	float mfWheelAngle = 0.f;
+	float mfCylinderAngle = 0.f;
+	float mfBigCylinderAngle = 0.f;
+	float mfWheelAngleSpeed = 0.f;
+	float mfCylinderAngleSpeed = 0.f;
+	float mfBigCylinderAngleSpeed = 0.f;
+	
+	float[] mfGlowCount = {0.f, 0.f};
+	float[] mfGlowMul = {0.f, 0.f};
+	float[] mfGlowSpeed = {0.95f, 0.8f};
+	
+	bool mbNewGameSetup = false;
+	
+	//------------------------------------------------------------
+}

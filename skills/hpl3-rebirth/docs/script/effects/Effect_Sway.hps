@@ -1,0 +1,250 @@
+#include "effect/Effects.hps"
+#include "player/Player_Types.hps"
+
+/////////////////////////////////////////
+// SWAY
+/////////////////////////////////////////
+
+const float gfRollFactor = 0.2f;
+
+//------------------------------------------------------------
+
+class cScrEffect_Sway : iScrEffect, iScrEffect_Interface, iScrEffect_Sway
+{
+
+	//----------------------------------
+	
+	void Init()
+	{
+		mfSize = 0.0f;
+	}
+
+	//----------------------------------
+	
+	void OnDestroy()
+	{
+	}
+	
+	//----------------------------------
+	
+	/////////////////////////////////////////
+	// PUBLIC METHODS
+	/////////////////////////////////////////
+	
+	//----------------------------------
+	
+	// Just gives us the current horizontal offset size
+	cVector3f GetOffset()
+	{
+		return mvCurrentOffset;
+	}
+	
+	//----------------------------------
+
+	void FadeIn(float afSize, float afTime, float afRate, float afAngle, float afInitialAmount, 
+		float afYMul, float afDecay, float afMoveFactor, float afRollMul, float afPosAddMul, bool abLocalSway)
+	{
+		mfAmplitudeDecay = afDecay;
+		mfMoveFactor = afMoveFactor;
+		mfYMul = afYMul;
+		mfRate = afRate;
+		mfRollMul = afRollMul;
+		mfPosAddMul = afPosAddMul;
+		mbLocalSway = abLocalSway;
+		
+		if (afInitialAmount>=0.0f)
+			mfCurrentAmplitude = afInitialAmount;
+		
+		mfTargetSize = afSize;
+		mfSizeDelta = cMath_Abs((mfTargetSize-mfSize)/afTime);
+		
+		if (mfSize>0.0f)
+		{	
+			mfTargetAngle = afAngle;
+			mfAngleDelta = cMath_Abs((mfTargetAngle-mfAngle)/afTime);
+		}
+		else
+		{
+			mfTargetAngle = afAngle;
+			mfAngle = afAngle;
+		}
+		
+		mBaseObj.SetActive(true);
+	}
+	
+	//----------------------------------
+
+	void SetDirect(float afSize, float afRate, float afAngle, float afInitialAmount, 
+		float afYMul, float afDecay, float afMoveFactor, float afRollMul, float afPosAddMul, bool abLocalSway)
+	{
+		mfAmplitudeDecay = afDecay;
+		mfMoveFactor = afMoveFactor;
+		mfYMul = afYMul;
+		mfSize = afSize;
+		mfTargetSize = afSize;
+		mfRate = afRate;
+		mfAngle = afAngle;
+		mfTargetAngle = afAngle;
+		mfRollMul = afRollMul;
+		mfPosAddMul = afPosAddMul;
+		mbLocalSway = abLocalSway;
+		
+		if (afInitialAmount>=0.0f)
+			mfCurrentAmplitude = afInitialAmount;
+		
+		mBaseObj.SetActive(true);
+	}
+	
+	//----------------------------------
+	
+	void FadeOut(float afTime)
+	{
+		if (mfTargetSize==0.0f)
+			return;
+		mfTargetSize = 0.0f;
+		mfSizeDelta = cMath_Abs((mfTargetSize-mfSize)/afTime);
+	}
+	
+	//----------------------------------
+	
+	void Stop()
+	{
+		mfSize = 0.0f;
+		Reset();
+		mBaseObj.SetActive(false);
+	}
+
+	//----------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL CALLBACKS
+	/////////////////////////////////////////
+	
+	
+	//----------------------------------
+	
+	void OnStart()
+	{
+	}
+
+	//----------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+		Reset();
+	}
+	
+	//----------------------------------
+	
+	void OnMapLeave(cLuxMap @apMap)
+	{
+		Reset();
+	}
+
+	//----------------------------------
+	
+	void Reset()
+	{
+		mfCurrentTime = 0.0f;
+		mfCurrentAmplitude = 0.0f;
+		cLux_GetPlayer().SetCameraPosAdd(eCameraAddType_Sway, cVector3f_Zero);
+	}
+
+	//----------------------------------
+	
+	
+	void Update(float afTimeStep)
+	{
+		//cLux_AddDebugMessage("Size:"+mfSize+" target:"+mfTargetSize+" delta:"+mfSizeDelta);
+		mfCurrentTime+=afTimeStep*mfRate;
+		
+		iCharacterBody@ pCharBody = cLux_GetPlayer().GetCharacterBody();
+		cMatrixf mtxPlayer = cMath_MatrixInverse(cMath_MatrixUnitVectors(pCharBody.GetRight(), pCharBody.GetUp(), pCharBody.GetForward(), cVector3f(0)));
+		
+		mfCurrentAmplitude = cMath_Min(mfCurrentAmplitude+pCharBody.GetMoveSpeed(eCharDir_Forward)*mfMoveFactor*afTimeStep, 1.0f);
+
+		cVector3f vSway = cVector3f_Zero;
+		vSway.z = mfCurrentAmplitude*mfSize*cMath_Sin(mfCurrentTime);
+		vSway.y = mfCurrentAmplitude*mfSize*mfYMul*(cMath_Easing(eEasing_CubicIn, cMath_Abs(cMath_Cos(mfCurrentTime)), 0.0f, 1.0f)-1.0f);		
+		
+		float fRoll = -vSway.z;
+		if (mbLocalSway)
+		{
+			vSway = cVector3f_Right * vSway.z + cVector3f_Up * vSway.y;
+			mvCurrentOffset = vSway;
+		}
+		else
+		{
+			cMatrixf mtxAxis = cMath_MatrixRotateY(cMath_ToRad(mfAngle));
+			vSway = cMath_MatrixMul(mtxAxis, vSway);
+
+			mvCurrentOffset = vSway;
+		
+			vSway = cMath_MatrixMul(mtxPlayer, vSway);
+			
+			fRoll = -vSway.x;
+		}
+		
+		cLux_GetPlayer().GetCamera().SetRoll(fRoll*gfRollFactor*mfRollMul);
+		cLux_GetPlayer().SetCameraPosAdd(eCameraAddType_Sway, vSway*mfPosAddMul);
+		
+		if (mfTargetSize!=mfSize)
+		{
+			mfSize = cMath_IncreaseTo(mfSize, mfSizeDelta*afTimeStep, mfTargetSize);
+
+			if ((mfSize==mfTargetSize)&&(mfSize==0.0f))
+			{
+				mBaseObj.SetActive(false);
+				Reset();
+			}
+		}
+		
+		if (mfTargetAngle!=mfAngle)
+		{
+			mfAngle = cMath_TurnAngleDeg(mfAngle, mfTargetAngle, mfAngleDelta*afTimeStep);
+		}
+		
+		mfCurrentAmplitude*=mfAmplitudeDecay;
+	}
+	
+	//----------------------------------
+	
+	void OnDraw(float afFrameTime)
+	{
+		
+	}
+	
+	//----------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//----------------------------------
+
+	float mfCurrentTime = 0.0f;
+	float mfCurrentAmplitude = 0.0f;
+	
+	float mfAmplitudeDecay = 0.995f;
+	float mfMoveFactor = 0.4f;
+	
+	float mfYMul = 0.25f;	// Sway y multiplier
+	float mfSize = 0.2f;	// Sway X amplitude
+	float mfRate = 1.0f;	// How many sways per second
+	float mfAngle = 0.0f;	// Y rotation of sway axis
+	
+	float mfTargetSize = 0.0f;
+	float mfSizeDelta = 0.0f;
+	
+	float mfTargetAngle = 0.0f;
+	float mfAngleDelta = 0.0f;
+	
+	float mfRollMul = 1.f;
+	float mfPosAddMul = 1.f;
+	
+	bool mbLocalSway = false;
+	
+	cVector3f mvCurrentOffset = cVector3f_Zero;
+	
+	//----------------------------------
+}

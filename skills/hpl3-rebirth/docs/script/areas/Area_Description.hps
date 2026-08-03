@@ -1,0 +1,447 @@
+#include "interfaces/Area_Interface.hps"
+
+#include "helpers/helper_modules.hps"
+
+//------------------------------------------------------------
+
+const float gfInsideFOVAngleAdd = 35;
+const float gfTimeBeforeRedisplay = 3.0f;	// Seconds
+
+//------------------------------------------------------------
+
+enum eDescTriggerType
+{
+	eDescTriggerType_Look,
+	eDescTriggerType_Collide,
+}
+
+enum eDescBusyType
+{
+	eDescBusyType_Wait,
+	eDescBusyType_Skip,
+	eDescBusyType_Enqueue,
+}
+
+//------------------------------------------------------------
+
+class cScrAreaDescription : iScrArea, iScrArea_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		mbTextDisplayed = false;
+		mlLookAtCount =0;
+		mfTimeSinceLastLookedAt = 10000.0f;	// Dummy val
+		mBaseObj.SetVariableUpdateRate(0.3f); //call variable update no faster than once per 0.3 sec
+		
+		mBaseObj.SetForceLookAtCheck(true);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// LOADING
+	/////////////////////////////////////////
+	
+	eDescTriggerType ToTriggerType(const tString& in asStr)
+	{
+		if(asStr=="look") return eDescTriggerType_Look;
+		if(asStr=="collide") return eDescTriggerType_Collide;
+	
+		Error("Description collide type'"+asStr+"' in area '"+mBaseObj.GetName()+"' does not exist!");
+		
+		return eDescTriggerType_Look;
+	}
+	
+	//------------------------------------------------------------
+	
+	eDescBusyType ToBusyType(const tString& in asStr)
+	{
+		if(asStr=="wait") return eDescBusyType_Wait;
+		if(asStr=="skip") return eDescBusyType_Skip;
+		if(asStr=="enqueue") return eDescBusyType_Enqueue;
+	
+		Error("Description busy type'"+asStr+"' in area '"+mBaseObj.GetName()+"' does not exist!");
+		
+		return eDescBusyType_Wait;
+	}
+	
+	//------------------------------------------------------------
+	
+	eDescEffect ToEffect(const tString& in asStr)
+	{
+		if(asStr=="none") return eDescEffect_None;
+		if(asStr=="shake") return eDescEffect_Shake;
+		
+		Error("Description effect type'"+asStr+"' in area '"+mBaseObj.GetName()+"' does not exist!");
+		
+		return eDescEffect_None;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject @apVars)
+	{
+		cLux_GetTextCatAndEntryFromString(apVars.GetVarString("TextData",""),msTextCat, msTextEntry);	
+		
+		mlNumOfSentences = apVars.GetVarInt("NumOfSentences",1);
+		
+		mfTimeVisibleMul = apVars.GetVarFloat("TimeVisibleMul",1);
+		mfMaxLookDistance = apVars.GetVarFloat("MaxLookDistance",3);
+		
+		mbOnlyShowOnce = apVars.GetVarBool("OnlyShowOnce",false);
+		
+		mTriggerType = ToTriggerType(apVars.GetVarString("TriggerType",""));
+		mBusyType = ToBusyType(apVars.GetVarString("BusyType",""));
+		
+		mEffect = ToEffect(apVars.GetVarString("Effect",""));
+		
+		mfEffectAmount = apVars.GetVarFloat("EffectAmount",0);
+		mColor = apVars.GetVarColor("Color",cColor(1,1));
+		
+		msShowTextCallback = apVars.GetVarString("ShowTextCallback","");
+		
+		mBaseObj.SetCheckCollision(false);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	bool CheckIfInLookDistanceAndUpdateLastLookPos(float afMaxDistMul)
+	{
+		iPhysicsWorld @pPhysicsWorld = mBaseObj.GetMap().GetPhysicsWorld();
+		iPhysicsBody @pBody = mBaseObj.GetBody(0);
+		cCamera @pCam = cLux_GetPlayer().GetCamera();
+		
+		cVector3f vStart = pCam.GetPosition();
+		cVector3f vEnd = vStart + pCam.GetForward()*mfMaxLookDistance*afMaxDistMul;
+		cVector3f vNormal;
+		
+		float fT = pPhysicsWorld.CastRayOnShape(pBody.GetShape(), pBody.GetLocalMatrix(), vStart, vEnd , vNormal, false);
+		
+		if(fT<0 || fT>1)
+		{
+			return false;
+		}
+		
+		mvLastLookPosition = vStart + pCam.GetForward()*mfMaxLookDistance*fT;
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnVariableUpdate(float afDeltaTime)
+	{		
+		///////////////////////////////////////
+		// Text is displayed
+		if(mbTextDisplayed)
+		{
+			//////////////////////////////
+			// Check if this message is still displayed
+			if(mlDisplayedId != Description_GetCurrentId() || Description_IsActive()==false)
+			{
+				mbTextDisplayed = false;
+				mlLookAtCount = 0;
+				if (mbOnlyShowOnce)
+					mBaseObj.SetActive(false);
+				return;
+			}
+			
+			//////////////////////////////
+			// Check if in distance
+			bool bInDistance = CheckIfInLookDistanceAndUpdateLastLookPos(1.3f); //Slightly longer look distance allowed!
+			
+			//////////////////////////////
+			// Check if inside FOV
+			bool bInFOV = true;
+			
+			if(mBaseObj.IsLookedAtByPlayer()==false)
+			{
+				cCamera @pCam = cLux_GetPlayer().GetCamera();
+				cVector3f vToLastLookPos = cMath_Vector3Normalize(mvLastLookPosition - pCam.GetPosition());
+				float fAngle = cMath_Vector3Angle(pCam.GetForward(), vToLastLookPos);
+				
+				if(fAngle > cMath_ToRad(gfInsideFOVAngleAdd)) bInFOV = false;
+			}
+			
+		
+			//////////////////////////////
+			// Check if force fade is needed
+			if(bInFOV==false || bInDistance==false) 
+			{
+				Description_SetForceFading(true);
+			}
+			else
+			{
+				Description_SetForceFading(false);
+			}
+			
+			return;
+		}
+		
+		///////////////////////////////////////
+		// Look triggered
+		if(mTriggerType == eDescTriggerType_Look)
+		{
+			if(mBaseObj.IsLookedAtByPlayer()==false) 
+			{
+				mlLookAtCount =0;
+				mfTimeSinceLastLookedAt+=afDeltaTime;	
+				return;
+			}
+			
+			if(CheckIfInLookDistanceAndUpdateLastLookPos(1.0f)==false)
+			{
+				mlLookAtCount =0;
+				mfTimeSinceLastLookedAt+=afDeltaTime;	
+				return;
+			}
+			
+			if (mlLookAtCount==0 && mfTimeSinceLastLookedAt<gfTimeBeforeRedisplay)
+			{
+				mfTimeSinceLastLookedAt+=afDeltaTime;	
+				return;
+			}
+				
+			mfTimeSinceLastLookedAt = 0.0f;
+			
+			++mlLookAtCount;
+			if(mlLookAtCount<2) return;
+			
+			///////////////////////////////////////
+			// Callback
+			bool bCallbackReturn = true;
+			if(msShowTextCallback != "")
+			{
+				cLuxMap @pMap = mBaseObj.GetMap();
+				
+				if(pMap.ScriptPrepare("bool " + msShowTextCallback + "(tString &in asAreaName") )
+				{
+					tString sAreaName = mBaseObj.GetName();
+					pMap.SetArgString(0, sAreaName);
+					
+					if(pMap.ScriptExecute())
+					{
+						bCallbackReturn = pMap.GetReturnBool();
+					}
+				}
+			}
+			//If callback returned false, do not show any message.
+			if(bCallbackReturn==false)
+			{
+				if(mBusyType != eDescBusyType_Wait) mBaseObj.SetActive(false);
+				return;
+			}
+			
+			///////////////////////////////////////
+			// Trigger description
+			tString sEntry = msTextEntry;
+			if(mlNumOfSentences>1) sEntry += "01"; //If we have several, the first begins with a number.
+			
+			
+			mlDisplayedId = Description_AddExt(msTextCat, sEntry, mfTimeVisibleMul, mBusyType == eDescBusyType_Enqueue, false, mEffect, mfEffectAmount, mColor);
+			if(mlDisplayedId >= 0)
+			{
+				//If more sentences, now is the time to display these!
+				if(mlNumOfSentences>1)
+				{
+					for(int i=2; i<=mlNumOfSentences; ++i)
+					{
+						tString sAdd = i<10 ? "0"+i : ""+i;
+						Description_AddExt(msTextCat, msTextEntry+sAdd, mfTimeVisibleMul, true, true, mEffect, mfEffectAmount, mColor);
+					}
+				}
+				
+				mbTextDisplayed = true;
+			}
+			else if(mBusyType != eDescBusyType_Wait)
+			{
+				mBaseObj.SetActive(false);
+			}
+		}
+		///////////////////////////////////////
+		// Collide Triggered
+		else
+		{
+			///////////////////////////////////////
+			// Check collision
+			if(mBaseObj.CheckCharacterCollision(cLux_GetPlayer().GetCharacterBody(), mBaseObj.GetMap())==false)
+			{
+				return;
+			}
+			
+			///////////////////////////////////////
+			// Trigger description
+			tString sEntry = msTextEntry;
+			if(mlNumOfSentences>1) sEntry += "01"; //If we have several, the first begins with a number.
+						
+			if(Description_AddExt(msTextCat, sEntry, mfTimeVisibleMul, mBusyType == eDescBusyType_Enqueue, false, mEffect, mfEffectAmount, mColor)>=0 || mBusyType != eDescBusyType_Wait)
+			{
+				//If more setences, now is the time to display these!
+				for(int i=2; i<=mlNumOfSentences; ++i)
+				{
+						tString sAdd = i<10 ? "0"+i : ""+i;
+						Description_AddExt(msTextCat, msTextEntry+sAdd, mfTimeVisibleMul, true, true, mEffect, mfEffectAmount, mColor);
+				}
+					
+				mBaseObj.SetActive(false);
+			}
+		}
+		
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnPostUpdate(float afTimeStep)
+	{
+	
+	}
+	//------------------------------------------------------------
+	
+	void ResetProperties()
+	{
+		mbTextDisplayed	= false;
+	}
+	
+	//------------------------------------------------------------
+	
+	void BeforeEntityDestruction()
+	{
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INTERACTION
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	bool CanInteract(int alType, iPhysicsBody@ apBody)
+	{
+		return false;
+	}
+	
+	//------------------------------------------------------------
+		
+	bool OnInteract(int alType, iPhysicsBody@ apBody, const cVector3f &in avFocusPos, const tString&in asData)
+	{
+		return false;
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// COLLISIONS
+	/////////////////////////////////////////
+	
+	//-----------------------------------------------------------------------
+
+	bool OnStartCheckCollision(float afTimeStep, float afTimeSinceCheck)
+	{
+		return false;
+	}
+	
+	//-----------------------------------------------------------------------
+
+	bool OnCheckCollision(iPhysicsBody@ apBody, iLuxEntity@ apEntity)
+	{
+		return true;
+	}
+	
+	//-----------------------------------------------------------------------
+
+	void OnEndCheckCollision(float afTimteStep)
+	{
+	}
+	
+	//-----------------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//-----------------------------------------------------------------------
+	
+	void OnSetActive(bool abX)
+	{
+	
+	}
+	
+	//-----------------------------------------------------------------------
+	
+	
+	void OnConnectionStateChange(iLuxEntity@ apEntity,int alState)
+	{
+		if(alState==0) return;
+	}
+	
+	
+	//-----------------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		//apSet.DrawFont(tWString("Desc:"+mBaseObj.GetName()+" Looked at:"+mBaseObj.IsLookedAtByPlayer()), apFont, cVector3f(5,afStartY,0), cVector2f(14), cColor(1,1) );
+		//afStartY += 16;
+	
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	tString msTextCat;
+	tString msTextEntry;
+	
+	bool mbOnlyShowOnce;
+	
+	int mlNumOfSentences;
+	
+	eDescBusyType mBusyType;
+	eDescTriggerType mTriggerType;
+	
+	float mfTimeVisibleMul;
+			
+	float mfMaxLookDistance;
+	
+	tString msShowTextCallback;
+	
+	eDescEffect mEffect;
+	float mfEffectAmount;
+	cColor mColor;
+	float mfTimeSinceLastLookedAt;
+		
+	//------------------------------------------------------------
+	
+	int mlLookAtCount;
+	
+	bool mbTextDisplayed;
+	int mlDisplayedId;
+	cVector3f mvLastLookPosition;
+		
+	//------------------------------------------------------------
+		
+}	

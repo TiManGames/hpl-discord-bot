@@ -1,0 +1,3020 @@
+#include "interfaces/Map_Interface.hps"
+#include "base/Inputhandler_Types.hps"
+
+#include "helpers/helper_map.hps"
+#include "helpers/helper_menu.hps"
+#include "helpers/helper_props.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_audio.hps"
+#include "helpers/helper_imgui.hps"
+#include "helpers/helper_sequences.hps"
+#include "helpers/helper_game.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_ai.hps"
+#include "helpers/helper_areas.hps"
+#include "helpers/helper_agent.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+#include "helpers/helper_player.hps"
+#include "custom/helpers/helper_player_custom.hps"
+#include "custom/helpers/helper_props_custom.hps"
+#include "custom/helpers/helper_effects_custom.hps"
+#include "base/AchievementHandler_Types.hps"
+#include "helpers/helper_components.hps"
+
+//--------------------------------------------------
+ 
+/*Place any global values here. These must be const variables as they will not be saved*/
+/*This is also the place for enums and classes, but these should be avoided whenever possible*/
+ 
+//--------------------------------------------------
+
+const float gfUndercityPlayerMoveSpeedMul = 0.8f;
+const float gfUndercityPlayerRunSpeedMul = 0.75f;
+
+//--------------------------------------------------
+ 
+enum eUndercityPermaFailStage
+{
+	eUndercityPermaFailStage_TopFloor,
+	eUndercityPermaFailStage_BottomFloor
+};
+ 
+//--------------------------------------------------
+
+class cScrMap : iScrMap
+{
+	//--------------------------------------------
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN CALLBACKS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+ 
+	////////////////////////////
+	// Set up map environment
+	void Setup()
+	{
+		// Put display name entry in english.lang / Levels
+		GetBase().SetDisplayNameEntry("04-03-undercity");
+		
+		// Reset effects
+		Effect_Bloom_FadeBrightPass(0.75f, 3);
+        Effect_Bloom_FadeBloomWidth(128, 1);
+        Effect_Bloom_FadeBloomFalloff(0.5f, 2);
+        Effect_Bloom_FadeBloomTint(1, 1, 1, 2);
+		
+		Pregnancy_SetStage(ePregStage_Born);
+		Pregnancy_SetBarksActive(true);
+		Pregnancy_SetBabyTalkStage(eBabyTalkStage_Born);
+		Pregnancy_SetBabyKicksEnabled(false);
+		GhoulProgression_SetBarkStage(eGhoulBarkStage_BecomingGhoul);
+		Player_SetAllowCheckBaby(true);
+		FearHandler_SetWhisperStage(eFearWhisperStage_BirthToThroneRoom);
+		
+		Player_SetCameraFarPlane(8192.0f);
+		
+		cScript_SetGlobalVarBool("Global_LanternLost", true);
+		
+		StruggleFlashHandler_SetActive(true);
+		StruggleFlashHandler_PreloadFlashGroupTextures(2);
+		StruggleFlashHandler_SetProgression(2);
+		
+		Player_SetAutoTeleportWhenBelowAltitude(-200.f);
+	}
+	
+	//-------------------------------------------------------
+		
+	void PreloadData()
+	{
+		/////////////////
+		// Preload gui
+		//ImGui_PreloadImage("some_image");
+
+		///////////////
+		// Preload particles
+		ParticleSystem_Preload("ps_impact_metal_high.ps");
+		ParticleSystem_Preload("sparks_small.ps");
+
+		//////////////
+		// Preload screen effects
+		//Material_Preload("some_material.mat");
+		
+		///////////////
+		// Preload sounds
+		//Sound_PreloadProject("04_03_undercity");
+				
+		///////////////
+		// Preload entities
+		Entity_Preload("dw_solidifier_syringe_rigid.ent");
+		Entity_Preload("player6.ent");
+		
+		///////////////v
+		// Preload materials
+		int lGhoulProgression = GhoulProgression_GetProgression();			
+		if (lGhoulProgression >= GHOUL_PROGRESSION_MIRROR_HIGH)
+		{
+			Entity_Preload("player6_head_ghoul_3.ent");
+		}
+		else if (lGhoulProgression >= GHOUL_PROGRESSION_MIRROR_MED)
+		{
+			Entity_Preload("player6_head_ghoul_2.ent");
+		}
+		else
+		{
+			Entity_Preload("player6_head_ghoul_1.ent");
+		}
+		
+		Material_Preload("Tasi_Body_Upgrade_hands_ghoul_" + lGhoulProgression + ".mat");
+	}
+	
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run first time starting map
+	void OnStart()
+	{
+		//Set GhoulProgresison limit
+		GhoulProgression_SetLimit(20);
+		
+		// Any general setup of script / entities
+		
+		/////////////////////////
+		// Debug
+		if (cLux_ScriptDebugOn())
+		{
+			if (ItemType_GetCountInInventory("ShadowFleshCanister") == 0)
+			{
+				Item_AddToInventory("ShadowFleshCanister");
+				Item_AddToInventory("Matchbook");
+				Item_SetAmount(ItemType_GetFirstInInventory("ShadowFleshCanister"), 3);
+			}
+			
+			if (ItemType_GetCountInInventory("VitaeCanister") == 0)
+			{
+				Item_AddToInventory("VitaeCanister");
+			}
+		}
+		
+		Player_SetAllowCheckBaby(false);
+		Player_SetVertigoActive(false);
+		Player_SetJumpDisabled(false);
+		
+		///////////////////////////
+		// Set up Doctor chase
+		Player_SetMoveSpeedMul(gfUndercityPlayerMoveSpeedMul);
+		Player_SetRunSpeedMul(0.5f);
+		
+		Entity_AttachToSocket("Baby_Bottom", "Doctor", "j_R_HandSocket", true, true);
+		Entity_PlayAnimation("Baby_Bottom", "baby_held_by_idling_doctor", 0.f, true);
+		
+		Entity_AttachToEntity("InteractAux_ElevatorLever", "ElevatorLever", "Body_1", true, false, true);
+		Entity_AttachToEntity("InteractAux_HatchLever", "HatchLever", "Body_1", true, false, true);
+		Entity_AttachToEntity("InteractAux_Ladder_Hatch", "Elevator_1_Hatch", "hatch", true, false, true);
+		
+		///////////////////////////
+		// Set up elevator puzzle
+		Entity_SetInteractionDisabled("Ladder_Hatch", true);
+		
+		cLuxAgent@ pHank = cLux_ToAgent(Map_GetEntity("Hank", eLuxEntityType_Agent));
+		if (pHank !is null)
+			pHank.GetCharBody().SetTestCollision(false);
+		
+		Entity_PlayAnimation("Hank", "idle_sleep", 0.f, true);
+		Entity_PlayAnimation("HankCable", "cable_hank_idle_sleep", 0.f, true);
+		
+		StickyArea_AttachBody("Sticky_PowerCable_1_Left", "PowerCable_1_Body_11");
+		
+		for (int i = 1; i < 9; ++i)
+			Entity_PlayProcAnimation("Cog_Left_" + i, "Spin", i % 2 != 0 ? 1.f : -1.f, true, 0.f);
+		for (int i = 1; i < 9; ++i)
+			Entity_PlayProcAnimation("Cog_Right_" + i, "Spin", i % 2 != 0 ? 1.f : -1.f, true, 0.f);
+		
+		SetElevatorCogsActive(true, true);		
+		SetElevatorCogsActive(false, false);
+		
+		Entity_AttachToEntity("InteractAux_BrokenBar_1", "BrokenBar_1", "Body_1", true, false, true);
+		Entity_AttachToEntity("InteractAux_BrokenBar_2", "BrokenBar_2", "Body_1", true, false, true);
+		
+		// End of static cable not visible, linking it with another cable
+		iLuxEntity@ pCable_1 = Map_GetEntity("undercity_cable_2", eLuxEntityType_Prop); 
+		iLuxEntity@ pCable_2 = Map_GetEntity("undercity_cable_3", eLuxEntityType_Prop); 
+		if (pCable_1 !is null && pCable_2 !is null)
+		{
+			pCable_1.GetMeshEntity().GetSubMeshEntityName("plug").SetVisible(false);
+			pCable_2.GetMeshEntity().GetSubMeshEntityName("connector").SetVisible(false);
+		}
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when entering map
+	void OnEnter()
+	{		
+		cVector3f vRot = cVector3f(0, cMath_ToRad(93), 0); //old value 110
+		cLux_GetCurrentMap().GetWorld().SetSkyboxRotation(vRot);
+		
+		cLux_ClearAllMapSaveData();
+		Game_AutoSave();
+		
+		// Setup physics world
+		cLuxArea@ pArea = cLux_ToArea(mBaseObj.GetEntityByName("Area_PhysicsWorld", eLuxEntityType_Area));
+		cBoundingVolume@ pAreaBounds = pArea.GetAreaBody().GetBoundingVolume();
+		mBaseObj.GetPhysicsWorld().SetWorldSize(pAreaBounds.GetMin(), pAreaBounds.GetMax());
+		
+		Achievement_Unlock(eAchievement_Mother);		
+		
+		PlayerBody_SetActive(true);		
+		Player_SetJumpForceMul(1.f);		
+		Player_SetMapDeepShadow(0.2f);
+		Player_SetNightVisionBrightness(3.5f);
+		Player_SetNightVisionRadius(6.f);
+		
+		FearHandler_SetPermaFailEnabled(false);
+		FearHandler_SetPermafailBabySceneEnabled(false, false);
+		
+		RiftHandler_SetAllowHint(false);		
+        Heat_SetActive(false);
+		
+		Blackboard_AddWraithBillboards("WraithBillboard");
+		
+		ItemType_RemoveFromInventory("CurseMedallion");
+		
+		SetElevatorDoorOpen(2, true, true);
+		
+		mlGhoulLevelOnEnter = GhoulProgression_GetProgression();
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when leaving map
+	void OnLeave()
+	{
+		Player_RestoreClipPlane();
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnPermaFail(const tString &in asSource)
+	{
+		FearHandler_ClearPermaFailScenes();
+		
+		///////////////
+		// Setup permafail
+		switch (mlPermaFailStage)
+		{
+			case eUndercityPermaFailStage_TopFloor:		return OnPermaFail_TopFloor(asSource);
+			case eUndercityPermaFailStage_BottomFloor:	return OnPermaFail_BottomFloor(asSource);
+		}		
+		
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	void SetupGenericPermaFail()
+	{
+		if (mvUnplayedGenericPermaFails.size() == 0)
+		{
+			for (int i = 1; i < 4; i++)
+				mvUnplayedGenericPermaFails.push_back(i);
+		}
+			
+		int lId = cMath_RandRectl(0, mvUnplayedGenericPermaFails.size() - 1);
+		int lSceneId = mvUnplayedGenericPermaFails[lId];
+		mvUnplayedGenericPermaFails.removeAt(lId);
+		
+		tString sAreaBase = "Area_PermaFail";
+		switch (lSceneId)
+		{
+			case 1:
+				FearHandler_AddPermaFailScene(sAreaBase + "_1_Start_1", sAreaBase + "_1_End_1", 3.5f, 2.25f, true);
+				FearHandler_AddPermaFailScene(sAreaBase + "_1_Start_2", sAreaBase + "_1_End_2", 3.5f, 2.25f, true);
+				FearHandler_AddPermaFailScene(sAreaBase + "_1_Start_3", sAreaBase + "_1_End_3", 3.5f, 2.25f, true);
+				break;
+			case 2:
+				FearHandler_AddPermaFailScene(sAreaBase + "_2_Start_1", sAreaBase + "_2_End_1", 2.f, 2.25f, true);
+				FearHandler_AddPermaFailScene(sAreaBase + "_2_Start_2", sAreaBase + "_2_End_2", 2.5f, 2.25f, true);
+				FearHandler_AddPermaFailScene(sAreaBase + "_2_Start_3", sAreaBase + "_2_End_3", 2.f, 2.25f, true);
+				break;
+			case 3:
+				FearHandler_AddPermaFailScene(sAreaBase + "_3_Start_1", sAreaBase + "_3_End_1", 2.f, 2.25f, true, true);
+				FearHandler_AddPermaFailScene(sAreaBase + "_3_Start_2", sAreaBase + "_3_End_2", 3.f, 2.25f, true);
+				FearHandler_AddPermaFailScene(sAreaBase + "_3_Start_3", sAreaBase + "_3_End_3", 3.f, 2.25f, true);
+				break;
+		}
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// To get when player makes input (mostly used for debug)
+	void OnAction(int alAction, bool abPressed) 
+	{
+		if(abPressed==false) return;
+		
+		if (alAction == eAction_Test0)
+		{
+			cLux_SetScriptDebugOn(false);
+			Player_Teleport("Start_Begin");
+		}
+		
+		if (alAction == eAction_Test1)
+		{
+			cLux_SetScriptDebugOn(false);
+			Entity_SetActive("Doctor", false);
+			Entity_SetActive("Baby_Bottom", false);
+			Entity_SetActive("Trigger_DoctorLeave", false);
+			Entity_PlaceAtEntity("Elevator_2", "Elevator_2_Goal");
+			MovingButton_SetLocked("ElevatorButton_2_1", true);
+			Entity_SetEffectsActive("ElevatorButton_2_1", false, true);
+			Player_SetRunSpeedMul(1.f);
+			Entity_SetActive("Trigger_PlayFountainMemory", false);
+			mbDoctorElevatorLeft = true;
+			Player_Teleport("Start_MaintenanceHub");
+			
+			Pregnancy_SetStage(ePregStage_BornRecovered);
+		}
+		
+		if (alAction == eAction_Test2)
+		{
+			cLux_SetScriptDebugOn(false);
+			Entity_SetActive("Doctor", false);
+			Entity_SetActive("Baby_Bottom", false);
+			Entity_SetActive("Trigger_DoctorLeave", false);
+			Entity_PlaceAtEntity("Elevator_2", "Elevator_2_Goal");
+			MovingButton_SetLocked("ElevatorButton_2_1", true);
+			Entity_SetEffectsActive("ElevatorButton_2_1", false, true);
+			Player_SetRunSpeedMul(1.f);
+			mbDoctorElevatorLeft = true;
+			OnAttach_PowerCable1_Right("Elevator_1", "");
+			Map_RemoveTimer("Timer_ActivateElevator");
+			OnTimer_ActivateElevator("");			
+			Entity_SetActive("Trigger_PlayFountainMemory", false);
+			Player_Teleport("Start_Elevators");
+						
+			Pregnancy_SetStage(ePregStage_BornRecovered);
+		}
+		
+		if (alAction == eAction_Test3)
+		{
+			Entity_SetActive("Doctor", false);
+			Entity_SetActive("Baby_Bottom", false);
+			Entity_SetActive("Trigger_DoctorLeave", false);
+			Entity_PlaceAtEntity("Elevator_2", "Elevator_2_Goal");
+			MovingButton_SetLocked("ElevatorButton_2_1", true);
+			Entity_SetEffectsActive("ElevatorButton_2_1", false, true);
+			Player_SetRunSpeedMul(1.f);
+			Entity_SetActive("Trigger_PlayFountainMemory", false);
+			mbDoctorElevatorLeft = true;
+			Player_Teleport("Start_MaintenanceHub");
+			
+			Pregnancy_SetStage(ePregStage_BornRecovered);
+			
+			mbElevatorCrashed = true;				
+			Seq_ElevatorCrash("");
+		}
+		
+		if (alAction == eAction_Test4)
+		{
+			ResetPlayerMoveSpeed(false);
+			Entity_SetActive("Trigger_SpawnWraith", true);
+			Player_Teleport("Start_Encounter");
+		}
+		
+		if (alAction == eAction_Test5)
+		{
+			cScript_SetGlobalVarBool("SalimsRingVisible", true);
+			
+			iLuxEntity@ pRing = Map_GetEntity("SalimsRing_Accessory", eLuxEntityType_Prop);
+			if (pRing !is null)
+				pRing.GetMeshEntity().SetVisible(true);
+		}
+		
+		if (alAction == eAction_Test6)
+		{
+			Entity_SetActive("Wraith_Stairs", true);
+			Wraith_CommandPatrol_AddNode("Wraith_Stairs", "PathNode_141");
+			Wraith_CommandPatrol_Execute("Wraith_Stairs", true, 0, false, false);
+		}
+		
+		if (alAction == eAction_Test7)
+		{
+			cLux_SetScriptDebugOn(false);
+			Entity_SetActive("Doctor", false);
+			Entity_SetActive("Baby_Bottom", false);
+			Entity_SetActive("Trigger_DoctorLeave", false);
+			Entity_PlaceAtEntity("Elevator_2", "Elevator_2_Goal");
+			MovingButton_SetLocked("ElevatorButton_2_1", true);
+			Entity_SetEffectsActive("ElevatorButton_2_1", false, true);
+			Player_SetRunSpeedMul(1.f);
+			mbDoctorElevatorLeft = true;
+			OnAttach_PowerCable1_Right("Elevator_1", "");
+			Map_RemoveTimer("Timer_ActivateElevator");
+			OnTimer_ActivateElevator("");			
+			Entity_SetActive("Trigger_PlayFountainMemory", false);
+			Entity_SetActive("Trigger_PlayHankMemory_*", false);
+			Player_Teleport("Start_Puzzle");
+			SlideLock_SetOpenAmount("tin_hinan_door_lock_1", 1);
+			
+			Pregnancy_SetStage(ePregStage_BornRecovered);
+		}
+		
+		if (alAction == eAction_Test8)
+		{
+			//Entity_PlayProcAnimation("Elevator_1", "OpenFront", -1.5f, false);
+			//Entity_PlayProcAnimation("Elevator_1", "OpenBack", -1.5f, false);
+			//SetElevatorDoorOpen(2, true, true);
+			
+			//Prop_SetCustomMaterial(PlayerBody_GetEntityName(), "head_ghoul_03.mat", "m_Tasi_Head");
+			
+			OnAttach_PowerCable1_Right("Elevator_1", "");
+		}
+		
+		if (alAction == eAction_Test9)
+		{
+			Voice_PlayDelayed("Global_Tasi_Bark_Stage2_Climb_Long", 1.f, 4);
+			//Item_AddToInventory("Matchbook");
+		}
+		
+		if (alAction == eAction_TestMinus)
+		{
+			//Material_Preload("head_ghoul_01.mat");
+			//Material_Preload("head_ghoul_02.mat");
+			//Material_Preload("head_ghoul_03.mat");
+			//Material_Preload("head_ghoul_01_hair.mat");
+			//Material_Preload("head_ghoul_02_hair.mat");
+			//Material_Preload("head_ghoul_03_hair.mat");
+			
+			//GhoulProgression_Increase(true, true);
+			
+			GhoulProgression_SetProgression(GHOUL_PROGRESSION_MIRROR_MED);
+			mlGhoulLevelOnEnter = GHOUL_PROGRESSION_MIRROR_MED;
+		}
+		
+		if (alAction == eAction_TestPlus)
+		{
+			GhoulProgression_SetProgression(GHOUL_PROGRESSION_MIRROR_HIGH);
+			mlGhoulLevelOnEnter = GHOUL_PROGRESSION_MIRROR_HIGH;
+			
+			//FearHandler_FadeLevelTo(1.f, 1.f);
+			//FearHandler_SetForcedAddFearRate(1.f, 10.f, false);
+		}
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// This only used for pure debug purposes when info needs to printed.
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afY)
+	{
+		//afY = cLux_DrawDebugText("My Debug value:"+..., afY);
+		return afY;
+	}
+ 
+	//-------------------------------------------------------
+ 
+	//} END MAIN CALLBACKS 
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN FUNCTIONS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+ 
+	/*Put any variables that are used in more than one scene here.*/
+	
+	bool mbElevatorPowerOn = false;
+	int mlPermaFailStage = eUndercityPermaFailStage_TopFloor;
+	int mlGhoulLevelOnEnter = 0;
+	array<int> mvUnplayedGenericPermaFails = { 1, 2, 3 };	
+	
+	//-------------------------------------------------------
+ 
+	/*Put any functions that are used in more than one scene here.*/
+	
+	void VariableUpdate(float afDeltaTime)
+	{
+		UpdateElevatorPuzzleFogAreas(afDeltaTime);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_PlayDialogue(const tString &in asTimer)
+	{
+		Voice_Play(asTimer);
+	}
+	
+	//-------------------------------------------------------
+	
+	void ResetPlayerMoveSpeed(bool abFade = false)
+	{
+		if (abFade)
+		{
+			Player_FadeRunSpeedMulTo(gfUndercityPlayerRunSpeedMul, 0.5f);
+			Player_FadeMoveSpeedMulTo(gfUndercityPlayerMoveSpeedMul, 0.5f);
+			return;
+		}
+		
+		Player_SetMoveSpeedMul(gfUndercityPlayerMoveSpeedMul);
+		Player_SetRunSpeedMul(gfUndercityPlayerRunSpeedMul);
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnTrigger_Player_SetRespawnArea(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		if (alState == 1)
+			return true;
+			
+		if (Entity_PlayerIsInFront(asParent))
+			mlPermaFailStage = eUndercityPermaFailStage_BottomFloor;
+		else
+			mlPermaFailStage = eUndercityPermaFailStage_TopFloor;
+		
+		return true;
+	}
+	
+	//-------------------------------------------------------
+ 
+	//} END MAIN FUNCTIONS
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 1 *THE PLAYER FOLLOWS THE DOCTOR TO THE ELEVATOR*
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+ 
+		/////////////////////////////////////////
+		// General
+		//{//////////////////////////////////////
+		 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are used by many events in Scene 1 here.*/
+		
+		bool mbDoctorElevatorLeft = false;
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are used in more than one event in Scene 1 here.*/
+			 
+		//-------------------------------------------------------
+		
+		//} END General	
+	 
+		/////////////////////////////////////////
+		// Event A *Spot the DOCTOR leaving in the ELEVATOR*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 1, Event A here.*/
+		
+		bool mbDoctorLeft = false;
+		
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 1, Event A here.*/
+		
+		bool OnTrigger_Player_PlayObjectiveDialogue(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Map_AddTimer("Dialogue_Objective", 1.f, "OnTimer_PlayDialogue");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_OpenEntranceDoor(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			SlideDoor_SetClosed("EntranceDoor_*", alState == -1);
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_SetupDoctorLeave(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Entity_SetActive("Doctor", true);
+			Entity_SetActive("Baby_Bottom", true);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_DoctorLeave(const tString &in asParent, const tString &in asChild, int alState)
+		{			
+			DoctorLeave();
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnLookAt_DoctorBottom(const tString &in asEntity, int alState)
+		{
+			DoctorLeave();
+			Voice_PlayDelayed("Dialogue_SeeDoctor", 0.1f, -1, "OnVoiceEnd_SeeDoctor");
+		}
+		
+		//-------------------------------------------------------
+		
+		void DoctorLeave()
+		{
+			if (mbDoctorLeft) 
+				return;
+				
+			Entity_SetActive("Trigger_SetupDoctorLeave", false);
+			
+			mbDoctorLeft = true;
+			
+			Sound_CreateAtEntity("Sound_BabyScreamBottom", "04_03_undercity/baby/baby_elevator", "Baby_Bottom");
+			mBaseObj.GetWorld().GetSoundEntity("Sound_BabyScreamBottom").SetUseCustomProperties(true);
+			mBaseObj.GetWorld().GetSoundEntity("Sound_BabyScreamBottom").SetCustomMaxDistance(40.f);
+			Entity_AttachToSocket("Sound_BabyScreamBottom", "Doctor", "socket_righthand_damage", true, true);
+			
+			Seq_DoctorLeave("");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnVoiceEnd_SeeDoctor(const tString &in asScene, const tString &in asSubject)
+		{
+			Voice_SetSource("Doctor", "Doctor", 2.f, 38.f, true);
+			Voice_PlayDelayed("Dialogue_DoctorAscent", 0.1f);
+		}
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSeqDataDoctorLeave;
+		void Seq_DoctorLeave(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_DoctorLeave", mSeqDataDoctorLeave);
+			Sequence_Wait(2.5f);
+			if (Sequence_DoStepAndWait(1.f))
+			{				
+				SetElevatorDoorOpen(2, false);
+				CharMover_SetUseMoveStateAnimations("Doctor", false);
+				
+				Voice_PlayDelayed("Dialogue_DoctorAscent", 0.5f);
+			
+				Map_AddTimer("Timer_DisableDoctor", 20.f, "OnTimer_DisableDoctor");
+			}
+			else if (Sequence_DoStepAndWait(2.5f))
+			{
+				Sound_CreateAtEntity("Sound_DoctorGate", "04_03_undercity/elevator/doctor_enter", "Elevator_2");
+			}
+			else if (Sequence_DoStepAndWait(2.5f))
+			{						
+				Prop_MoveLinearTo("Elevator_2", "Elevator_2_Goal", 0.5f, 5.f, 1.f, false, "OnMoveLinear_DoctorElevator");
+				Sound_CreateAtEntity("Sound_DoctorElevatorMove", "04_03_undercity/elevator/doctor_depart", "Elevator_2");
+				
+				Map_AddTimer("Dialogue_DoctorAscent", 1.f, "OnTimer_PlayDialogue");
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{				
+				Map_AddTimer("Timer_DoctorElevatorLeft", 5.f, "OnTimer_DoctorElevatorLeft");
+				Map_AddTimer("Timer_ResetPlayerSpeed", 15.f, "OnTimer_ResetPlayerSpeed");
+			}
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnMoveLinear_DoctorElevator(const tString &in asProp)
+		{		
+			Sound_Stop("Sound_DoctorElevatorMove", 1.f);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_DisableDoctor(const tString &in asTimer)
+		{
+			Entity_SetActive("Baby_Bottom", false);
+			Entity_SetActive("Doctor", false);
+			Entity_SetActive("DoctorElevatorLight", false);
+			Sound_Stop("Sound_BabyScreamBottom", 1.f);
+			Sound_Stop("Sound_DoctorElevatorMove", 1.0f);			
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_DoctorElevatorLeft(const tString &in asTimer)
+		{
+			mbDoctorElevatorLeft = true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ResetPlayerSpeed(const tString &in asTimer)
+		{
+			ResetPlayerMoveSpeed(true);
+		}
+
+		//-------------------------------------------------------
+
+		//} END Event A *Spot the DOCTOR leaving in the ELEVATOR*
+		
+		/////////////////////////////////////////
+		// Event B *Suffer a Wraith scare*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 1, Event B here.*/
+		
+		bool mbBeamScareTriggered = false;
+		bool mbDistantWraithScreamsPlayed = true;
+		
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 1, Event B here.*/
+		
+		bool OnTrigger_Player_EnablePermaFail(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			FearHandler_SetPermaFailEnabled(true);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_StartSeqBeamScare(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			StartBeamScare();
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnLookAt_StartSeqBeamScare(const tString &in asEntity, int alState)
+		{
+			StartBeamScare();
+		}
+		
+		//-------------------------------------------------------
+		
+		void StartBeamScare()
+		{
+			if (mbBeamScareTriggered == false)
+			{
+				mbBeamScareTriggered = true;
+				Entity_SetActive("Trigger_StartSeqBeamScare_*", false);
+				
+				Seq_BeamScare("");
+			}			
+		}
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSeqDataBeamScare;
+		void Seq_BeamScare(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_BeamScare", mSeqDataBeamScare);
+			if (Sequence_DoStepAndWait(0.01f))
+			{
+				Entity_SetActive("Wraith_BeamScare", true);
+				
+				iLuxEntity@ pCrystal = Map_GetEntity("Wraith_BeamScare_crystal", eLuxEntityType_Prop);
+				if (pCrystal !is null)
+					pCrystal.GetLightFromName("Light_Spot_1").SetBrightness(0.f);
+			}
+			else if (Sequence_DoStepAndWait(1.5f))
+			{
+				cVector3f vPos = Map_GetEntity("Area_WraithBeamScareTarget", eLuxEntityType_Area).GetPosition();
+				Wraith_CommandLookAtPosition_Execute("Wraith_BeamScare", vPos, true, false, true, "");
+				Wraith_SetSpotlightOn("Wraith_BeamScare", true, false, 0.f);
+				
+				FearHandler_SetForcedAddFearRate(0.4f, 5.f, true, -1.f, 0.1f, 0.2f);
+			}
+			else if (Sequence_DoStepAndWait(0.5f))
+			{
+				Entity_CallEntityInteract("MaintenanceDoor_1_Button_2");
+				MovingButton_SetLocked("MaintenanceDoor_1_Button_2", true, true);
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{
+				Wraith_SetSpotlightOn("Wraith_BeamScare", false);
+			}
+			else if (Sequence_DoStepAndWait(2.5f))
+			{
+				Entity_SetActive("Wraith_BeamScare", false);
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{
+				mbDistantWraithScreamsPlayed = false;
+				MovingButton_SetLocked("MaintenanceDoor_1_Button_2", false, true);
+				Sound_CreateAtEntity("Sound_ButtonOn", "03_07_dw_factory/torture_victim/machine_feedback/button_positive", "MaintenanceDoor_1_Button_2");
+			}
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnConnectionStateChange_MaintenanceDoor(const tString &in asEntity, int alState)
+		{
+			if (alState == -1 || mbDistantWraithScreamsPlayed)
+				return;
+			
+			mbDistantWraithScreamsPlayed = true;
+			Map_AddTimer("Timer_PlayDistantWraithSounds", 3.f, "OnTimer_PlayDistantWraithSounds");
+		}
+				
+		//-------------------------------------------------------
+		
+		void OnTimer_PlayDistantWraithSounds(const tString &in asTimer)
+		{
+			Sound_CreateAtEntity("Sound_DistantWraith", "creatures/vocalisations/creature/wraith/distant_call_random", "player");
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event B *Suffer a Wraith scare*
+		
+		/////////////////////////////////////////
+		// Event C *Get a memory by the FOUNTAIN*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 1, Event C here.*/
+		
+		bool mbFountainMemoryPlayed = false;
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 1, Event C here.*/
+		
+		bool OnTrigger_Player_ActivateFountainMemory(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Entity_SetActive("Trigger_PlayFountainMemory", true);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_PlayNegotiationsMemory(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			PlayNegotiationsMemory();
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnLookAt_THMask(const tString &in asEntity, int alState)
+		{
+			PlayNegotiationsMemory();
+		}
+		
+		//-------------------------------------------------------
+		
+		void PlayNegotiationsMemory()
+		{
+			Entity_SetActive("Trigger_PlayNegotiationsMemory_*", false);
+			Sketchbook_UnlockMemory("Memory_Negotiations", true, "OnMemoryEnd_Negotations");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnMemoryEnd_Negotations(const tString &in asScene, const tString &in asSubject)
+		{
+			Voice_PlayDelayed("Dialogue_AfterNegotiations", 0.1f);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnLookAt_PlayFountainMemory(const tString &in asEntity, int alState)
+		{
+			UnlockFountainMemory();
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_ForceFountainMemory(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			UnlockFountainMemory();
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void UnlockFountainMemory()
+		{
+			if (mbFountainMemoryPlayed)
+				return;
+				
+			mbFountainMemoryPlayed = true;
+			
+			Voice_StopAll();
+			
+			Map_RemoveTimer("Timer_CheckShouldPlayCylinderDialogue");
+			Map_RemoveTimer("Timer_PlayCylinderDialogue");
+			Voice_AbortIfQueued("Dialogue_ReactSaboteur");
+			
+			Sketchbook_UnlockMemory("TheFountain", true, "OnMemoryEnd_Fountain");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnMemoryEnd_Fountain(const tString &in asScene, const tString &in asSubject)
+		{
+			Voice_PlayDelayed("Dialogue_AfterFountain", 0.1f);
+		}
+
+		//-------------------------------------------------------
+
+		//} END Event C *Get a memory by the FOUNTAIN*
+		
+		/////////////////////////////////////////
+		// Event D *Find the SABOTEUR*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 1, Event D here.*/
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 1, Event D here.*/
+		
+		void OnInteract_SaboteurMemoryCyliner(const tString &in asEntity)
+		{
+			Map_AddTimer("Timer_CheckShouldPlayCylinderDialogue", 0.1f, "OnTimer_CheckShouldPlayCylinderDialogue");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_CheckShouldPlayCylinderDialogue(const tString &in asTimer)
+		{
+			if (cLux_GetPlayer().GetCurrentStateId() == ePlayerState_Custom_ReadMemoryCylinder)
+			{
+				Map_RestartCurrentTimer();
+				return;
+			}
+			
+			Map_AddTimer("Timer_PlayCylinderDialogue", 1.f, "OnTimer_PlayCylinderDialogue");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PlayCylinderDialogue(const tString &in asTimer)
+		{
+			if (cLux_GetPlayer().GetCurrentStateId() == ePlayerState_Custom_ReadMemoryCylinder)
+			{
+				Map_AddTimer("Timer_CheckShouldPlayCylinderDialogue", 0.1f, "OnTimer_CheckShouldPlayCylinderDialogue");
+				return;
+			}
+			
+			Voice_PlayWhenPossible("Dialogue_ReactSaboteur");
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event D *Find the SABOTEUR*
+		
+		/////////////////////////////////////////
+		// Event E *Tasi looks at her reflection in the FOUNTAIN*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 1, Event E here.*/
+		
+		bool mbReflectionEnabled = false;
+		bool mbFountainDialoguePlayed = false;
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 1, Event E here.*/
+		
+		bool OnTrigger_Play_SetFountainReflectionActive(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Entity_SetActive("FountainWater_Reflection", alState == 1);
+			Entity_SetActive("FountainWater", alState == -1);
+			
+			if (alState == 1)
+				Map_AddTimer("Timer_CheckAllowFountainInteraction", 0.1f, "OnTimer_CheckAllowFountainInteraction");
+			else
+				Map_RemoveTimer("Timer_CheckAllowFountainInteraction");
+				
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_CheckAllowFountainInteraction(const tString &in asTimer)
+		{
+			Entity_SetInteractionDisabled("Area_FountainInteract_*", Voice_SceneInvolvingCharacterIsActive("Player"));
+			Map_RestartCurrentTimer();
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_FountainWater(const tString &in asEntity)
+		{
+			//////////////////
+			// Force reflection
+			cConfigFile@ config = cLux_GetUserConfig();
+			mbReflectionEnabled = config.GetBool("Graphics", "WorldReflection", true);
+				 
+			if (mbReflectionEnabled == false)
+			{
+				config.SetBool("Graphics", "WorldReflection", true);
+				cLux_ApplyUserConfig();
+			}
+			
+			///////////////////
+			// Setup progression
+			float fVoiceDelay = 7.5f - 4.03f;			
+			tString sModel = "player6_head_ghoul_1.ent";
+			tString sAnim = "player_generic_look_at_fountain_reflection_low_ghoul";
+
+			if (mlGhoulLevelOnEnter >= GHOUL_PROGRESSION_MIRROR_HIGH)
+			{
+				fVoiceDelay = 7.5f - 5.9f;
+				sModel = "player6_head_ghoul_3.ent";
+				sAnim = "player_generic_look_at_fountain_reflection_high_ghoul";
+			}
+			else if (mlGhoulLevelOnEnter >= GHOUL_PROGRESSION_MIRROR_MED)
+			{
+				fVoiceDelay = 7.5f - 5.8f;
+				sModel = "player6_head_ghoul_2.ent";
+				sAnim = "player_generic_look_at_fountain_reflection_med_ghoul";
+			}
+			
+			if (mbFountainDialoguePlayed)
+			{
+				sAnim = "player_generic_look_at_fountain_reflection";
+			}
+			
+			///////////////////
+			// Setup player
+			Player_SetCrouching(false);
+			Player_FadeLookSpeedMulTo(0.4f, 0.5f);		 
+			PlayerBody_SetModel(sModel);
+			
+			tString sEnt = PlayerBody_GetEntityName();
+			Entity_SetEffectsActive(sEnt, false, false);
+			FootPlacement_SetActive(sEnt, false);
+			GhoulProgression_ResetArms();
+				 
+			PlayerBody_AttachProp("Amulet_Bracelet", "AmuletSocket", false, false);
+			PlayerBody_AttachProp("SalimsRing_Accessory", "RingSocket", false, false);
+			PlayerBody_SetReflectionVisibility(true);
+			
+			Entity_SetReflectionVisibility(Item_GetItemEntity(ItemType_GetFirstInInventory("CurseMedallion")), true, true);
+			Entity_SetReflectionVisibility("Amulet_Bracelet", true, true);
+			Entity_SetReflectionVisibility("SalimsRing_Accessory", true, true);
+					
+			//////////////////
+			// Play anim		
+			PlayerBody_PlayCutsceneAtEntity(sAnim, "Area_FountainCutscene", false, 0.3f, "OnAnimEnd_FountainMoment");
+			PlayerBody_SetCutsceneMaxPitch(15.f);
+			PlayerBody_SetCutsceneMaxYaw(15.f);
+				 
+			Map_AddTimer(sAnim, PlayerBody_GetAnimationState(sAnim).GetLength() - 0.3f, "OnTimer_ResetPlayerModel");
+			
+			Light_FadeBrightnessTo("Light_Spot_Reflection", 4.f, 1.f);
+				
+			//////////////////
+			// Voice
+			if (mbFountainDialoguePlayed == false)
+			{
+				mbFountainDialoguePlayed = true;
+				
+				tString sSubject = "Dialogue_FountainMoment_Normal";				
+				if (mlGhoulLevelOnEnter >= GHOUL_PROGRESSION_MIRROR_MED)		sSubject = "Dialogue_FountainMoment_SemiGhoulish";
+				if (mlGhoulLevelOnEnter >= GHOUL_PROGRESSION_MIRROR_HIGH)		sSubject = "Dialogue_FountainMoment_VeryGhoulish";
+				
+				Voice_StopAll();
+				Voice_PlayDelayed(sSubject, fVoiceDelay);
+				
+				Achievement_Unlock(eAchievement_Narcissist);
+			}
+		}
+		 
+		//-------------------------------------------------------
+		 
+		void OnTimer_ResetPlayerModel(const tString &in asTimer)
+		{
+			float fT = PlayerBody_GetAnimationState(asTimer).GetRelativeTimePosition();
+			 
+			PlayerBody_SetModel("player6.ent");
+			 
+			tString sEnt = PlayerBody_GetEntityName();
+			Entity_SetEffectsActive(sEnt, false, false);
+			FootPlacement_SetActive(sEnt, false);
+			GhoulProgression_ResetArms();
+			
+ 			PlayerBody_AttachProp("Amulet_Bracelet", "AmuletSocket", false, false);
+ 			PlayerBody_AttachProp("SalimsRing_Accessory", "RingSocket", false, false);
+
+			PlayerBody_PlayCutsceneAtEntity(asTimer, "Area_FountainCutscene", false, 0.f, "OnAnimEnd_FountainMoment", 1.f, fT);			 
+			PlayerBody_SetCutsceneMaxPitch(15.f);
+			PlayerBody_SetCutsceneMaxYaw(15.f);
+			
+			Light_FadeBrightnessTo("Light_Spot_Reflection", 0.f, 1.f);
+		}
+		 
+		//-------------------------------------------------------
+		 
+		void OnAnimEnd_FountainMoment(const tString &in asAnim)
+		{
+			if (mbReflectionEnabled == false)
+			{
+				cLux_GetUserConfig().SetBool("Graphics", "WorldReflection", mbReflectionEnabled);
+				cLux_ApplyUserConfig();
+			}
+			
+			Player_FadeLookSpeedMulTo(1.f, 0.5f);		 
+			PlayerBody_SetReflectionVisibility(false);
+			
+			Entity_SetReflectionVisibility(Item_GetItemEntity(ItemType_GetFirstInInventory("CurseMedallion")), false, true);
+			Entity_SetReflectionVisibility("Amulet_Bracelet", false, true);
+			Entity_SetReflectionVisibility("SalimsRing_Accessory", false, true);
+		}
+
+		//-------------------------------------------------------
+
+		//} END Event E *Tasi looks at her reflection in the FOUNTAIN*
+		
+		/////////////////////////////////////////
+		// Event F *Get spooked by another wraith beam*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 1, Event F here.*/
+		
+		float mfFountainScareCount = 0.f;
+		bool mbPlayerSeenFountainBeam = false;
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 1, Event F here.*/
+		
+		bool OnTrigger_Player_StartSeqBeamScareFountain(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (Entity_IsInPlayerFOV("Wraith_BeamScareFountain") || Voice_AnySceneIsActive()) 
+				return false;
+			
+			ResetPlayerMoveSpeed(false);
+			Seq_BeamScareFountain("");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSeqDataBeamScareFountain;
+		void Seq_BeamScareFountain(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_BeamScareFountain", mSeqDataBeamScareFountain);
+			if (Sequence_DoStepAndWait(0.01f))
+			{
+				Entity_SetActive("Wraith_BeamScareFountain", true);
+				
+				iLuxEntity@ pCrystal = Map_GetEntity("Wraith_BeamScareFountain_crystal", eLuxEntityType_Prop);
+				if (pCrystal !is null)
+					pCrystal.GetLightFromName("Light_Spot_1").SetBrightness(0.f);
+			}
+			else if (Sequence_DoStepAndPause(1.5f))
+			{
+				cVector3f vPos = Map_GetEntity("Area_WraithBeamScareFountainTarget", eLuxEntityType_Area).GetPosition();
+				Wraith_CommandLookAtPosition_Execute("Wraith_BeamScareFountain", vPos, false, false, true, "");
+				Wraith_SetSpotlightOn("Wraith_BeamScareFountain", true, false, 0.f);
+				
+				Map_AddTimer("Timer_ResumeFountainScare", 0.1f, "OnTimer_ResumeFountainScare");
+				
+				FearHandler_SetForcedAddFearRate(0.3f, 5.f, true, -1.f, 0.1f, 0.2f);
+				
+				Music_Play("A2_4_3_Wraith_Stinger.ogg", 0.18f, false, eMusicPrio_MinorEvent);
+			}
+			else if (Sequence_DoStepAndWait(0.5f))
+			{
+				Wraith_SetSpotlightOn("Wraith_BeamScareFountain", false);
+			}
+			else if (Sequence_DoStepAndWait(2.5f))
+			{
+				if (mbPlayerSeenFountainBeam)
+				{
+					cVector3f vPos = Map_GetEntity("Area_BeamScareWraithDashGoal", eLuxEntityType_Area).GetPosition();
+					Wraith_CommandDash_Execute("Wraith_BeamScareFountain", vPos, false, true, true, "OnDashEnd_WraithFountainBeamScare");
+				}
+				else
+				{
+					Entity_SetActive("Wraith_BeamScareFountain", false);
+					Map_AddTimer("Timer_BeamScareFountainWraithDisappeared", 1.f, "");
+				}				
+				
+				ResetPlayerMoveSpeed(true);
+			}
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ResumeFountainScare(const tString &in asTimer)
+		{
+			bool bSeeBeam = Map_GetEntity("Area_FountainScareBeam", eLuxEntityType_Area).CheckIsOnScreen(true);
+			if (mfFountainScareCount >= 4.f || bSeeBeam)
+			{
+				mbPlayerSeenFountainBeam = bSeeBeam;
+				SequenceStates_Resume("Seq_BeamScareFountain");
+				return;
+			}
+			
+			float fTime = 0.1f;
+			mfFountainScareCount += fTime;
+			Map_AddTimer("Timer_ResumeFountainScare", fTime, "OnTimer_ResumeFountainScare");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnDashEnd_WraithFountainBeamScare(const tString &in asEntity)
+		{
+			Map_AddTimer("Timer_BeamScareFountainWraithDisappeared", 2.f, "");
+		}
+				
+		//-------------------------------------------------------
+
+		//} END Event F *Get spooked by another wraith beam*
+		
+		/////////////////////////////////////////
+		// Event G *Interact with the BROKEN ELEVATOR BUTTON*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 1, Event G here.*/
+		
+		bool mbPressedDoctorElevatorButton = false;
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 1, Event G here.*/
+		
+		void OnInteract_BrokenButton(const tString &in asEntity)
+		{
+			if (mbPressedDoctorElevatorButton)
+				return;
+				
+			mbPressedDoctorElevatorButton = true;
+			
+			MovingButton_SetLocked("ElevatorButton_2_1", true);
+			Entity_SetEffectsActive("ElevatorButton_2_1", false, true);
+			
+			ParticleSystem_CreateAtEntity("PS_Sparks", "sparks_tiny.ps", asEntity, false);
+			Sound_CreateAtEntity("Sound_ButtonBroken", "01_01_wreckage/events/radio_spark", asEntity);
+				
+			Voice_PlayDelayed("Dialogue_BrokenElevatorButton", 1.f);
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event G *Interact with the BROKEN ELEVATOR BUTTON*
+		
+		/////////////////////////////////////////
+		// Event H *Get a memory in the stairs*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 1, Event H here.*/
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 1, Event H here.*/
+		
+		bool OnTrigger_Player_PlayNotFeelingTooGoodMemory(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			OnTimer_PlayStairsMemory(""); 
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PlayStairsMemory(const tString &in asTimer)
+		{
+			if (Entity_IsActive("Wraith_BeamScareFountain") || Map_TimerExists("Timer_BeamScareFountainWraithDisappeared"))
+			{
+				Map_AddTimer("Timer_PlayStairsMemory", 1.f, "OnTimer_PlayStairsMemory");
+			}
+			else
+			{
+				Sketchbook_StopAnyMemoryFlashes();
+				Sketchbook_UnlockMemory("Memory_NotFeelingTooGood", true, "OnMemoryEnd_NotFeelingTooGood");
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnMemoryEnd_NotFeelingTooGood(const tString &in asScene, const tString &in asSubject)
+		{
+			Voice_PlayDelayed("Dialogue_AfterNotFeelingTooGood", 0.1f);
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event H *Interact with the BROKEN ELEVATOR BUTTON*
+		
+		/////////////////////////////////////////
+		// Event H *Wake up on the top floor (PERMAFAIL)*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 1, Event H here.*/
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 1, Event H here.*/
+		
+		bool OnPermaFail_TopFloor(const tString &in asSource)
+		{
+			Entity_SetActive("Wraith_Stairs", false);
+			
+			Music_Stop(5.0f, eMusicPrio_SceneAmb);
+			
+			SetupGenericPermaFail();
+			FearHandler_SetPermaFailRespawnArea("PermaFail_TopFloor_*");
+			return true;
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event H *Wake up on the top floor (PERMAFAIL)*
+	 
+	//} END SCENE 1
+	
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 2 *THE PLAYER FINDS HANK MITCHELL AND FIXES THE ELEVATOR*
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+ 
+		/////////////////////////////////////////
+		// General
+		//{//////////////////////////////////////
+		 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are used by many events in Scene 2 here.*/
+		
+		int mlElevatorShaftLampId = 1;
+		int mlActiveElevatorId = 2;
+		bool mbDoorClosed = true;
+		bool mbElevatorPuzzleSolved = false;
+		bool mbUpdateElevatorPuzzleFogAreas = true;
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are used in more than one event in Scene 2 here.*/
+		
+		void UpdateElevatorPuzzleFogAreas(float afDeltaTime)
+		{
+			if (mbUpdateElevatorPuzzleFogAreas == false)
+				return;
+			
+			bool bUpdate = false;			
+			for (int i = 1; i < 3; ++i)
+			{
+				cFogArea@ pFogArea = mBaseObj.GetWorld().GetFogArea("FogArea_Elevator_" + i);
+				if (pFogArea is null)
+					continue;
+				
+				float fAlphaGoal = i == mlActiveElevatorId ? 0.3f : 1.f;
+				float fAlpha = pFogArea.GetColor().a;
+				fAlpha = cMath_IncreaseTo(fAlpha, afDeltaTime, fAlphaGoal);
+				pFogArea.SetColor(cColor(0.f, 0.f, 0.f, fAlpha));
+				
+				if (fAlpha != fAlphaGoal)
+					bUpdate = true;
+			}
+			
+			if (bUpdate == false)
+				mbUpdateElevatorPuzzleFogAreas = false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void SetElevatorActive(int alId, int alCableId, bool abX)
+		{
+			if (abX)
+				mlActiveElevatorId = alId;
+			else
+				mlActiveElevatorId = -1;
+				
+			mbUpdateElevatorPuzzleFogAreas = true;
+			
+			tString sSide = (alId == 1 ? "Right" : "Left");
+			tString sCableLamp = "CableLamp_" + sSide + "_*";
+			Lamp_SetLit(sCableLamp, abX, true);
+			Entity_FadeEffectBaseColor(sCableLamp, abX ? cColor(2.f) : cColor(0.f), abX ? 2.f : 0.3f);
+			
+			if (abX)
+				Map_AddTimer(sCableLamp, 2.f, "OnTimer_ResetCableLampBrightness");
+				
+			Lamp_SetLit("ElevatorBottomLamp_" + alId + "_*", abX, true);
+			Lamp_SetLit("ElevatorLamp_" + alId + "_*", abX, true);
+			Entity_SetEffectsActive("Elevator_" + alId, abX, true);
+			
+			tString sShaftLamp = "Lamp_Shaft_" + sSide + "_";
+			
+			if (abX)
+			{
+				mlElevatorShaftLampId = 1;
+				Map_AddTimer(sShaftLamp, 0.75f, "OnTimer_ActivateElevatorShaftLamps");
+			}
+			else
+			{
+				mlElevatorShaftLampId = 0;
+				Map_RemoveTimer(sShaftLamp);
+				Lamp_SetLit(sShaftLamp + "*", false, true);
+			}
+			
+			tString sSoundArea = "Area_ElevatorFeedbackSound_" + alId;			
+			Sound_CreateAtEntity("Sound_ElevatorCableAttach", "03_05_vitae_station/milking_machine/milking_machine_close_metal", sSoundArea);
+			
+			if (abX)	Sound_Play("Sound_ElevatorEngine_" + alId, 1.f);
+			else		Sound_Stop("Sound_ElevatorEngine_" + alId, 1.f);
+			
+			///////////////////////////
+			// Specifics for elevator 1
+			if (alId != 1) 
+				return;
+			
+			if (abX)
+			{
+				mbElevatorPowerOn = true;
+				
+				MovingButton_SetLocked("ElevatorButton_1_1", false, true);								
+				Sound_CreateAtEntity("Sound_ElevatorFeedback", "04_03_undercity/machine/energy_on", sSoundArea);
+				
+				Light_FadeBrightnessTo("Light_Spot_ElevatorStart", 9.f, 1.f, eEasing_CubicIn);
+				Map_AddTimer("Timer_FadeOutElevatorStartLight", 3.f, "OnTimer_FadeOutElevatorStartLight");
+				
+				Map_AddTimer("Timer_ActivateElevator", 1.5f, "OnTimer_ActivateElevator");
+				
+				if (mbElevatorPuzzleSolved == false)
+				{
+					mbElevatorPuzzleSolved = true;
+					Seq_HankReveal("");
+				}
+			}
+			else
+			{
+				mbElevatorPowerOn = false;
+				
+				Prop_StopMovement("Elevator_1");
+				MovingButton_SetLocked("ElevatorButton_1_1", true, true);
+				
+				Sound_Stop("Sound_ElevatorStart", 2.f);
+				Sound_Stop("Sound_ElevatorMove", 2.f);
+								
+				if (alCableId == 1)
+					Sound_CreateAtEntity("Sound_ElevatorFeedback", "04_03_undercity/machine/energy_off", sSoundArea);
+				
+				Map_RemoveTimer("Timer_ActivateElevator");
+			}		
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ResetCableLampBrightness(const tString &in asTimer)
+		{
+			Entity_FadeEffectBaseColor(asTimer, cColor(1.f), 1.f);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ActivateElevator(const tString &in asTimer)
+		{
+			SetElevatorHatchOpen(false);			
+			Sound_CreateAtEntity("Sound_ElevatorActive", "03_03_herberts_hq/alter_open/orb_machine_clunk", "Area_ElevatorSound_1");			
+	
+			//Voice_PlayDelayed("Dialogue_PuzzleSolved", 3.f);			
+			
+			Entity_SetActive("Trigger_SpawnWraith", true);
+			Entity_SetActive("Trigger_PlayWraithScareSound", true);
+			
+			if (Entity_GetDeltaToEntity("Elevator_1", "Elevator_1_StartGoal").Length() <= 0.f)
+				return;
+				
+			Effect_Shake_Start(0.01f, 2.f, 0.5f, 0.5f);
+			
+			Prop_MoveLinearTo("Elevator_1", "Elevator_1_StartGoal", 0.5f, 5.f, 0.f, false, "OnMoveLinear_ElevatorStart");
+			
+			Sound_CreateAtEntity("Sound_ElevatorStart", "04_03_undercity/elevator/player_depart", "Elevator_1");
+			Sound_CreateAtEntity("Sound_ElevatorMove", "04_03_undercity/elevator/doctor_elevator_motor", "Elevator_1");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_FadeOutElevatorStartLight(const tString &in asTimer)
+		{
+			Light_FadeBrightnessTo("Light_Spot_ElevatorStart", 0.f, 1.f, eEasing_SineOut);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnMoveLinear_ElevatorStart(const tString &in asProp)
+		{			
+			Lever_SetStuckState("ElevatorLever", -1, true);
+			Lever_SetInteractionDisablesStuck("ElevatorLever", true);
+			
+			SetElevatorDoorOpen(1, true);
+			MovingButton_SetSwitchedOn("ElevatorButton_1_1", true, true);
+			
+			Sound_Stop("Sound_ElevatorStart", 2.f);
+			Sound_Stop("Sound_ElevatorMove", 2.f);
+			
+			Effect_Shake_Start(0.01f, 1.f, 0.5f, 0.5f);
+			
+			Sound_CreateAtEntity("Sound_ElevatorEnd", "04_03_undercity/elevator/elevator_stop", "Elevator_1");
+			Sound_CreateAtEntity("Sound_ElevatorStop", "04_03_undercity/elevator/player_arrive", "Elevator_1");
+		}
+		
+		//-------------------------------------------------------
+		
+		void SetElevatorCogsActive(bool abX, bool abLeft, float afSpeed = 1.f)
+		{
+			tString sSide = abLeft ? "Left" : "Right";
+			tString sCog = "Cog_" + sSide + "_";
+			tString sSpinningLight = "CogLight_" + sSide + "_*";
+			tString sPipe = "VitaePipe_" + sSide + "_*";
+			
+			if (abX)
+			{				
+				Entity_FadeProcAnimationSpeed(sCog + "1", "Spin", afSpeed, 2.f);
+				Entity_FadeProcAnimationSpeed(sCog + "2", "Spin", -afSpeed, 2.f);
+				Entity_FadeProcAnimationSpeed(sCog + "3", "Spin", afSpeed, 2.f);
+				Entity_FadeProcAnimationSpeed(sCog + "4", "Spin", -afSpeed, 2.f);
+				Entity_FadeProcAnimationSpeed(sCog + "5", "Spin", afSpeed, 2.f);
+				Entity_FadeProcAnimationSpeed(sCog + "6", "Spin", -afSpeed, 2.f);
+				Entity_FadeProcAnimationSpeed(sCog + "7", "Spin", afSpeed, 2.f);
+				Entity_FadeProcAnimationSpeed(sCog + "8", "Spin", -afSpeed, 2.f);
+				
+				Lamp_SetLit(sPipe, true, true);
+				
+				Entity_SetEffectsActive(sSpinningLight, true, true);
+				Prop_RotateToSpeed(sSpinningLight, 4.f, 10.f, false, "");
+				
+				Sound_CreateAtEntity("Sound_CogsStart_" + sSide, "04_03_undercity/elevator_engine/elevator_start", sCog + "1");
+				
+				Sound_CreateAtEntity("SoundSubstationStart", "04_03_undercity/elevator_engine/substation_start", "Sound_Substation");
+				Sound_CreateAtEntity("Sound_SubstationLoop", "04_03_undercity/elevator_engine/substation_loop", "Sound_Substation");
+
+				Map_AddTimer("Timer_ClunkSoundStart", 0.01f, "OnTimer_PlayEngineClunk");
+				
+				//Sound_Play("Sound_ElevatorClunk_" + sSide, 0.5f);
+			}
+			else
+			{
+				Entity_FadeProcAnimationSpeed(sCog + "1", "Spin", 0.f, 5.f);
+				Entity_FadeProcAnimationSpeed(sCog + "2", "Spin", 0.f, 5.f);
+				Entity_FadeProcAnimationSpeed(sCog + "3", "Spin", 0.f, 5.f);
+				Entity_FadeProcAnimationSpeed(sCog + "4", "Spin", 0.f, 5.f);
+				Entity_FadeProcAnimationSpeed(sCog + "5", "Spin", 0.f, 5.f);
+				Entity_FadeProcAnimationSpeed(sCog + "6", "Spin", 0.f, 5.f);
+				Entity_FadeProcAnimationSpeed(sCog + "7", "Spin", 0.f, 5.f);
+				Entity_FadeProcAnimationSpeed(sCog + "8", "Spin", 0.f, 5.f);
+				
+				Lamp_SetLit(sPipe, false, true);
+				
+				Entity_SetEffectsActive(sSpinningLight, false, true);
+				Prop_StopMovement(sSpinningLight);
+				
+				//Sound_Stop("Sound_ElevatorClunk_" + sSide, 0.5f);
+				Sound_Stop("Sound_SubstationLoop", 0.5f);
+				Sound_CreateAtEntity("Sound_CogsStop_" + sSide, "04_03_undercity/elevator_engine/elevator_stop", sCog + "1");
+				
+				Map_RemoveTimer("Timer_ClunkDelaySound");
+			}
+		}
+		
+		//-------------------------------------------------------
+
+		bool open(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState == 1)
+				{
+					mbDoorClosed = false;
+					return true;
+				}
+			else
+				{
+					mbDoorClosed = true;
+					return true;
+				}
+			
+		}
+		
+		//-------------------------------------------------------
+
+		void OnTimer_PlayEngineClunk(const tString &in asTimer)
+		{
+			if (mbDoorClosed == true)
+				{	
+					Sound_Play("Sound_ElevatorClunkOccluded", 0.0f);
+					Map_AddTimer("Timer_ClunkDelay", 0.01f, "OnTimer_ClunkDelay");
+				}
+			else if (mbDoorClosed == false)
+				{
+					Sound_Play("Sound_ElevatorClunk", 0.0f);
+					Map_AddTimer("Timer_ClunkDelay", 0.01f, "OnTimer_ClunkDelay");
+				}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ClunkDelay(const tString &in asTimer)
+		{
+			Map_AddTimer("Timer_ClunkDelaySound", 1.5f, "OnTimer_PlayEngineClunk");
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OccludeOn(const tString &in asParent, const tString &in asChild, int alState)
+			{
+				Entity_SetActive("Trigger_DoorOcclusion", true);
+				return true;
+			}
+			
+		//-------------------------------------------------------
+
+		bool OccludeOff(const tString &in asParent, const tString &in asChild, int alState)
+			{
+				Entity_SetActive("Trigger_DoorOcclusion",false);
+				return true;
+			}
+			
+		//------------------------------------------------------
+		
+		void OnTimer_ActivateElevatorShaftLamps(const tString &in asTimer)
+		{
+			tString sLamp = asTimer + mlElevatorShaftLampId;
+			if (Entity_Exists(sLamp + "_1") == false)
+				return;
+			
+			Lamp_SetLit(sLamp + "_*", true, true);			
+			Sound_CreateAtEntity("Sound_ElevatorCogLampOn", "03_03_herberts_hq/alter_open/alter_lights_off", sLamp + "_1", 0.f, false, 1.f, 10.f, 150.f);
+			
+			mlElevatorShaftLampId++;
+			Map_AddTimer(asTimer, 0.75f, "OnTimer_ActivateElevatorShaftLamps");
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_SetPermaFailEnabled(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			FearHandler_SetPermaFailEnabled(alState == -1);
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END General	
+		
+		/////////////////////////////////////////
+		// Event A *Find HANK'S DOSSIER*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 2, Event B here.*/
+		
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 2, Event B here.*/
+		
+		void OnInteractLeave_HanksNote(const tString &in asEntity)
+		{
+			Map_AddTimer("Timer_PlayDossierMicroflash", 1.f, "OnTimer_PlayDossierMicroflash");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PlayDossierMicroflash(const tString &in asTimer)
+		{
+			if (Voice_SceneInvolvingCharacterIsActive("Player") ||
+				Sketchbook_IsMicroflashActive() ||
+				Sketchbook_IsFlashbackActive())
+				return;
+			
+			Sketchbook_Microflash("Microflash_HankNote_Hank", "OnVoiceEnd_HankNote");
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event A *Find HANK'S DOSSIER*
+		
+		/////////////////////////////////////////
+		// Event B *Get a flashback of Hank*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 2, Event B here.*/
+		
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 2, Event B here.*/
+		
+		void OnLookAt_PlayHankMemory(const tString &in asEntity, int alState)
+		{
+			OnTimer_PlayHankMemory("");
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_PlayHankMemory(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Map_AddTimer("Timer_PlayHankMemory", 0.5f, "OnTimer_PlayHankMemory");
+			Entity_SetActive("Trigger_PlayHankMemory_*", false);
+			return false;
+		}
+
+		//-------------------------------------------------------
+		
+		void OnTimer_PlayHankMemory(const tString &in asTimer)
+		{
+			if (Entity_IsActive("Wraith_Stairs"))
+				return;
+			
+			if (Sketchbook_IsFlashbackActive() || Sketchbook_IsMicroflashActive())
+			{
+				Map_RestartCurrentTimer();
+				return;
+			}
+			
+			Sketchbook_UnlockMemory("MitchellTurns", true, "OnMemoryEnd_MitchellTurns");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnMemoryEnd_MitchellTurns(const tString &in asScene, const tString &in asSubject)
+		{
+			Voice_PlayDelayed("Dialogue_AfterMitchellTurns", 0.1f);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_PuzzleDoor(const tString &in asEntity)
+		{
+			Map_RemoveTimer("Timer_UpdatePuzzleDoorLight");
+			Map_AddTimer("Timer_UpdatePuzzleDoorLight", 0.f, "OnTimer_UpdatePuzzleDoorLight");
+			
+			OnEncounterDoorInteract(asEntity);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_UpdatePuzzleDoorLight(const tString &in asTimer)
+		{
+			if (Entity_IsInteractedWith("Door_Puzzle") == false && Entity_IsSleeping("Door_Puzzle"))
+				return;
+			
+			float fT = cMath_Clamp(1.f - SwingDoor_GetOpenAmount("Door_Puzzle"), 0.f, 1.f);
+			cColor color = cColor(0.f) * (1.f - fT) + cColor(0.349,0.703,0.791,0) * fT;
+			Light_FadeTo("Light_PuzzleDoor", color, 1.f, 0.1f);
+			Billboard_SetBrightness("Billboard_PuzzleDoor", 0.05f * fT);
+			
+			Map_AddTimer("Timer_UpdatePuzzleDoorLight", 0.1f, "OnTimer_UpdatePuzzleDoorLight");
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event B *Get a flashback of Hank*
+		
+		/////////////////////////////////////////
+		// Event C *Spot HANK and MALICK at the bottom of the elevator shaft*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 2, Event C here.*/
+				
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 2, Event C here.*/
+
+		void OnLookAt_PlayMalickDialogue(const tString &in asEntity, int alState)
+		{				
+			Voice_PlayWhenPossible("Dialogue_Malick", "OnVoiceCondition_Malick", -1.f, -1.f);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnVoiceCondition_Malick(const tString &in asSubject)
+		{
+			return Map_GetEntity("Trigger_PlayMalickDialogue").CheckIsOnScreen(true) &&
+				   Entity_IsActive("Wraith_Stairs") == false;
+		}
+
+		//-------------------------------------------------------
+
+		//} END Event C *Spot HANK at the bottom of the elevator shaft*
+		
+		/////////////////////////////////////////
+		// Event D *Unplug ELEVATOR POWER CABLEs*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 2, Event D here.*/
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 2, Event D here.*/
+		
+		void OnDetach_PowerCable1_Right(const tString &in asStickyArea, const tString &in asBodyName)
+		{
+			SetElevatorActive(1, 1, false);
+			SetElevatorCogsActive(false, false);
+			SetCableStaticPhysics(false);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnDetach_PowerCable1_Left(const tString &in asStickyArea, const tString &in asBodyName)
+		{
+			SetElevatorActive(2, 1, false);
+			SetElevatorCogsActive(false, true);
+			SetCableStaticPhysics(false);
+		}
+		
+		//-------------------------------------------------------
+		
+		void SetCableStaticPhysics(bool abX)
+		{
+		//	Map_AddTimer("Timer_SetCableStaticPhysics", abX ? 1.f : 0.f, "OnTimer_SetCableStaticPhysics");
+		//	Map_SetTimerUserVarInt("Timer_SetCableStaticPhysics", abX ? 1 : 0);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_SetCableStaticPhysics(const tString &in asTimer)
+		{
+			Prop_SetStaticPhysics("PowerCable_1", Map_GetTimerUserVarInt(asTimer) == 1);
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event D *Unplug ELEVATOR POWER CABLEs*
+		
+		/////////////////////////////////////////
+		// Event E *Plug in ELEVATOR POWER CABLES*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 2, Event E here.*/
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 2, Event E here.*/
+		
+		bool OnAttach_PowerCable1_Right(const tString &in asStickyArea, const tString &in asBodyName)
+		{
+			SetElevatorActive(1, 1, true);
+			SetElevatorCogsActive(true, false);
+			SetCableStaticPhysics(true);
+			return true;
+		}
+				
+		//-------------------------------------------------------
+		
+		bool OnAttach_PowerCable1_Left(const tString &in asStickyArea, const tString &in asBodyName)
+		{
+			SetElevatorActive(2, 1, true);
+			SetElevatorCogsActive(true, true);
+			SetCableStaticPhysics(true);
+			return true;
+		}
+
+		//-------------------------------------------------------
+
+		//} END Event E *Plug in ELEVATOR POWER CABLES*
+		
+		/////////////////////////////////////////
+		// Event F *Tear loose the ELEVATOR GRATING*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 2, Event F here.*/
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 2, Event F here.*/
+		
+		void OnTear_Grating(const tString &in asEntity)
+		{
+			Sound_CreateAtEntity("Sound_Tear" + asEntity, "level_entity_shared/breakables/relic_room_bars/relic_bars_break", asEntity);
+			
+			cParticleSystem@ pPS = ParticleSystem_CreateAtEntity("PS_Sparks", "sparks_tiny.ps", asEntity, false);
+			cVector3f vPos = Map_GetProp(asEntity).GetJoint(0).GetPivotPoint();
+			pPS.SetWorldPosition(vPos);
+
+			Entity_SetActive("InteractAux_" + asEntity, false);
+		}
+
+		//-------------------------------------------------------
+
+		//} END Event F *Tear loose the ELEVATOR GRATING*
+		
+		/////////////////////////////////////////
+		// Event G *Leave HANK*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 2, Event G here.*/
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 2, Event G here.*/
+		
+		cSequenceStatesData mSeqDataHankReveal;
+		void Seq_HankReveal(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_HankReveal", mSeqDataHankReveal);
+			if (Sequence_DoStepAndWait(0.f))
+			{
+				ParticleSystem_CreateAtEntity("PS_Sparks", "elevator_sparks.ps", "Area_OutletSparks", false);
+				Sound_CreateAtEntity("Sound_OutletSparks", "01_01_wreckage/events/radio_spark", "Area_OutletSparks");
+				
+				LightFlash_Add(0.05f, 0.05f, 0.05f, "Area_OutletFlash", cColor(1,0.915,0.492,1), 1.f, 25.f);
+			}
+			else if (Sequence_DoStepAndWait(3.f))
+			{
+				Player_SetCrouching(false, false, false);
+				
+				PlayerBody_PlayCutsceneAtEntity("tasi_undercity_fall_on_butt_start", "Area_PuzzleCutscene", false, 0.4f, "OnAnimEnd_FallOnButt");
+				PlayerBody_SetCutsceneMaxPitch(10.f);
+				PlayerBody_SetCutsceneMaxYaw(10.f);
+				
+				Map_AddTimer("Timer_PlayHankWakeUpAnim", 1.f, "OnTimer_PlayHankWakeUpAnim");
+			}
+			else if (Sequence_DoStepAndWait(6.3f))
+			{
+				FearHandler_SetCanGasp(false);
+				
+				FearHandler_SetForcedAddFearRate(1.f, 7.f, false, 0.05f, 0.05f, 1.f);
+				Entity_SetActive("FearScaryObject_Hank", true);
+				Entity_SetActive("FearThreatObject_Hank", true);
+				FearScaryObject_SetComponentEnabled("FearScaryObject_Hank", true);
+				FearThreat_SetComponentEnabled("FearThreatObject_Hank", true);
+				
+				Voice_PlayDelayed("Global_Tasi_Bark_Stage2_Climb_Long", 1.1f, 4);
+			}
+			else if (Sequence_DoStepAndWait(0.5f))
+			{
+				FearHandler_SetCanGasp(true);
+				
+				PlayerBody_PlayCutsceneAtEntity("tasi_undercity_fall_on_butt_end", "Area_PuzzleCutscene_Offset", false, 0.75f, "", 1.f, 0.f, 0.f, 0.f, true, false, true);
+				PlayerBody_SetCutsceneMaxPitch(10.f);
+				PlayerBody_SetCutsceneMaxYaw(10.f);
+				
+				HeadTracker_SetActive("Hank", true);
+			}
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnAnimEnd_FallOnButt(const tString &in asAnim)
+		{
+			PlayerBody_PlayCutsceneAtEntity("tasi_undercity_fall_on_butt_loop", "Area_PuzzleCutscene", true, 0.3f, "", 1.f, 0.f, 0.f, 0.f, true, false, true);
+			PlayerBody_SetCutsceneMaxPitch(10.f);
+			PlayerBody_SetCutsceneMaxYaw(10.f);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PlayHankWakeUpAnim(const tString &in asTimer)
+		{						
+			Entity_PlayAnimation("Hank", "look_at_player", 0.3f, true, true);
+			Entity_PlayAnimation("HankCable", "cable_hank_look_at_player", 0.3f, true, true);
+			Entity_SetAnimationMessageEventCallback("Hank", "OnAnimMessageEvent_Hank", false);
+			
+			Voice_PlayDelayed("Dialogue_HankBeg", 1.85f);
+			Map_AddTimer("Timer_HankTalk", 4.5f, "OnTimer_HankTalk");
+			Map_AddTimer("Timer_PlaySorryHankDialogue", 5.35f, "OnTimer_PlaySorryHankDialogue");
+			Map_AddTimer("Timer_HankMusicStinger", 2.5f, "OnTimer_HankMusicStinger");
+			//Music_Play("Hank_Stinger.ogg", 0.8f, false, eMusicPrio_MinorEvent);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnAnimMessageEvent_Hank(const tString &in asEntityName, const tString &in asAnimName, int alMessageEventID)
+		{
+			Sound_CreateAtEntity("Sound_BarGrab_1", "creatures/foley/creature/ghoul/animations/custom/bar_hand_place", "Hank", 0.f, false, 1.f, 3.f, 10.f);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_HankMusicStinger(const tString &in asTimer)
+		{
+			Music_Play("Hank_Stinger.ogg", 0.8f, false, eMusicPrio_MinorEvent);
+		}
+		
+		void OnTimer_HankTalk(const tString &in asTimer)
+		{
+			if (Voice_SceneInvolvingCharacterIsActive("Hank"))
+			{
+				Map_RestartCurrentTimer();
+				return;
+			}
+			
+			if (Entity_GetDeltaToEntity("Hank", "player").Length() > 15.f)
+				return;
+				
+			tString sSubject = GhoulProgression_GetProgression() >= GHOUL_PROGRESSION_UNDERCITYA_HIGH ? "Dialogue_Hank_ToTasi_HighGhoul" : "Dialogue_Hank_ToTasi_LowGhoul";
+			Voice_Play(sSubject, -1, "OnVoiceEnd_HankTalk");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnVoiceEnd_HankTalk(const tString &in asScene, const tString &in asSubject)
+		{
+			Map_AddTimer("Timer_HankTalk", cMath_RandRectf(4.f, 8.f), "OnTimer_HankTalk");
+		}
+							
+		//-------------------------------------------------------
+		
+		void OnTimer_PlaySorryHankDialogue(const tString &in asTimer)
+		{
+			if (Voice_AnySceneIsActive() || 
+				cLux_GetPlayer().GetCurrentStateId() != ePlayerState_Normal ||
+				Map_GetEntity("Trigger_RecognizeHank").CheckIsOnScreen(true) == false)
+			{				
+				Map_AddTimer("Timer_PlaySorryHankDialogue", 0.75f, "OnTimer_PlaySorryHankDialogue");
+				return;
+			}
+			
+			Voice_Play("Dialogue_Hank", -1, "OnVoiceEnd_HankDialogue");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnVoiceEnd_HankDialogue(const tString &in asScene, const tString &in asSubject)
+		{
+			Voice_PlayDelayed("Dialogue_SorryHank", 0.1f);
+		}
+
+		//-------------------------------------------------------
+
+		//} END Event G *Leave HANK*
+	 
+	//} END SCENE 2
+	
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 3 *The player avoids a WRAITH coming down the stairs*
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+ 
+		/////////////////////////////////////////
+		// General
+		//{//////////////////////////////////////
+		 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are used by many events in Scene 3 here.*/
+		
+		tString msStairsWraithGoal = "";
+		bool mbStairsWraithReachedGoal = false;
+		bool mbStairsWraithLeaving = false;
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are used in more than one event in Scene 3 here.*/
+	 
+		//-------------------------------------------------------
+		
+		//} END General	
+		
+		/////////////////////////////////////////
+		// Event A *The WRAITH comes down the stairs*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 3, Event A here.*/
+		
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 3, Event A here.*/
+		
+		bool OnTrigger_Player_PlayWraithScareSound(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Map_AddTimer("Timer_PlayWraithScareSound", 0.5f, "OnTimer_PlayWraithScareSound");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PlayWraithScareSound(const tString &in asTimer)
+		{
+			Sound_CreateAtEntity("Sound_DistantWraith", "creatures/vocalisations/creature/wraith/distant_call_random", "player");
+			FearHandler_SetForcedAddFearRate(0.2f, 4.f, false, -1.f, 0.05f, 0.3f);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_SpawnWraith(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			///////////////
+			// Setup wraith encounter
+			ResetPlayerMoveSpeed(false);
+			
+			PhysicsSlideDoor_SetOpenAmount("StairsDoor_*", 1.f);
+			Music_Play("A2_4_3_Wraith_Hunt2.ogg", 0.18f, true, eMusicPrio_SceneAmb);
+			Entity_SetActive("Wraith_Stairs", true);
+			Agent_SetSensesActive("Wraith_Stairs", false);
+			
+			Map_AddTimer("Timer_CheckDistanceToWraith", 1.f, "OnTimer_CheckDistanceToWraith");
+			Map_AddTimer("Timer_EnableWraithSenses", 10.f, "OnTimer_EnableWraithSenses");			
+			Map_AddTimer("Timer_UpdateWraithPatrol", 0.f, "OnTimer_UpdateWraithPatrol");
+			
+			Wraith_SetHearingMul("Wraith_Stairs", 0.75f);
+			Wraith_SetCallback_Alerted("Wraith_Stairs", "OnAlerted_WraithStairs");
+			
+			Map_AddTimer("Timer_PlayStairsWraithIntroScream", 2.5f, "OnTimer_PlayStairsWraithIntroScream");
+			
+			Voice_StopScenesWithCharacter("Player");
+			
+			mlPermaFailStage = eUndercityPermaFailStage_BottomFloor;
+			
+			///////////////
+			// Fix so Hank is idling			
+			Map_RemoveTimer("Timer_PlaySorryHankDialogue");
+			Map_RemoveTimer("Timer_HankTalk");
+			
+			Entity_PlayAnimation("Hank", "idle_sleep", 0.f, true);
+			Entity_PlayAnimation("HankCable", "cable_hank_idle_sleep", 0.f, true);
+			
+			cLux_AddDebugMessage("Reseting Hank anims!");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PlayStairsWraithIntroScream(const tString &in asTimer)
+		{
+			Map_RemoveTimer("Timer_PlayStairsWraithIntroScream");
+			Map_GetEntity("Wraith_Stairs").PlaySound("IntroScream", "creatures/vocalisations/creature/wraith/sees_the_player", true, true);
+			
+			Wraith_SetSpotlightOn("Wraith_Stairs", true);
+			Map_AddTimer("Timer_TurnOffStairsWraithSpot", 3.f, "OnTimer_TurnOffStairsWraithSpot");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_TurnOffStairsWraithSpot(const tString &in asTimer)
+		{
+			Wraith_SetSpotlightOn("Wraith_Stairs", false);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnLookAt_StairsWraith(const tString &in asEntity, int alState)
+		{
+			if (Map_TimerExists("Timer_PlayStairsWraithIntroScream") == false)
+				return;
+			
+			OnTimer_PlayStairsWraithIntroScream("");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_CheckDistanceToWraith(const tString &in asTimer)
+		{
+			if (Entity_GetDeltaToEntity("player", "Wraith_Stairs").Length() < 10.f && 
+				Map_TimerExists("Timer_EnableWraithSenses"))
+			{
+				OnTimer_EnableWraithSenses("");
+			}
+			else
+			{
+				Map_AddTimer("Timer_CheckDistanceToWraith", 0.1f, "OnTimer_CheckDistanceToWraith");
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_EnableWraithSenses(const tString &in asTimer)
+		{
+			Map_RemoveTimer("Timer_TurnOffStairsWraithSpot");
+			Map_RemoveTimer("Timer_PlayStairsWraithIntroScream");
+			Map_RemoveTimer("Timer_EnableWraithSenses");
+			Map_RemoveTimer("Timer_CheckDistanceToWraith");
+			
+			Agent_SetSensesActive("Wraith_Stairs", true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_UpdateWraithPatrol(const tString &in asTimer)
+		{
+			if (mbStairsWraithReachedGoal)
+				return;
+			
+			//////////////////
+			// Move to player
+			bool bPlayerByCloset = Entity_GetCollide("player", "Area_Closet");
+			tString sGoal = bPlayerByCloset ? "PathNode_Closet" : "PathNode_Puzzle";
+			
+			if (msStairsWraithGoal != sGoal)
+			{
+				Wraith_CommandPatrol_ClearNodes("Wraith_Stairs");
+				Wraith_CommandPatrol_AddNode("Wraith_Stairs", sGoal);
+				Wraith_CommandPatrol_Execute("Wraith_Stairs", false, 1, false, false, eWraithSpeed_Slow, "OnPatrolEnd_Wraith");
+			}
+			
+			msStairsWraithGoal = sGoal;
+			
+			//////////////////
+			// Move faster if player is hiding
+			if (Wraith_GetAlertState("Wraith_Stairs") == 0)
+			{
+				tString sDoor = bPlayerByCloset ? "Door_Closet" : "Door_Puzzle";
+				if (SwingDoor_GetOpenAmount(sDoor) < 0.1f && Entity_PlayerIsInFront(sDoor) == false)
+				{
+					CharMover_SetSpeedState("Wraith_Stairs", eWraithSpeed_Run);
+				}
+				else
+				{
+					float fDist = Entity_GetDeltaToEntity("player", "Wraith_Stairs").Length();
+					int lSpeed = fDist > 20.f ? eWraithSpeed_FastWalk : eWraithSpeed_Slow;
+					CharMover_SetSpeedState("Wraith_Stairs", lSpeed);
+				}
+			}	
+			
+			Map_AddTimer("Timer_UpdateWraithPatrol", 1.f, "OnTimer_UpdateWraithPatrol");
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event A *The WRAITH comes down the stairs*
+		
+		/////////////////////////////////////////
+		// Event B *The WRAITH investigates outside the player's hiding spot*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 3, Event B here.*/
+		
+		int mlEncounterDoorMoveCount = 0;
+		float mfEncounterDoorInteractCount = 0.f;
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 3, Event B here.*/
+		
+		void OnInteract_EncounterDoor(const tString &in asEntity)
+		{
+			OnEncounterDoorInteract(asEntity);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnEncounterDoorInteract(const tString &in asDoor)
+		{
+			if (Entity_IsActive("Wraith_Stairs") == false)
+				return;
+			
+			Map_RemoveTimer(asDoor);
+			Map_RemoveTimer("Timer_ResetStairsWraithHearing");
+			Map_AddTimer(asDoor, 0.f, "OnTimer_UpdateWraithHearing");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_UpdateWraithHearing(const tString &in asTimer)
+		{
+			if (Entity_IsInteractedWith(asTimer))
+			{
+				iPhysicsBody@ pBody = Map_GetEntity(asTimer, eLuxEntityType_Prop).GetMainBody();
+				if (pBody.GetLinearVelocity().Length() > 0.2f)
+					mfEncounterDoorInteractCount += 0.1f;
+					
+				if (mfEncounterDoorInteractCount >= 2.5f)
+					Wraith_SetHearingMul("Wraith_Stairs", 0.75f);
+				else
+					Wraith_SetHearingMul("Wraith_Stairs", 0.2f);
+			}
+			else
+			{
+				mfEncounterDoorInteractCount = 0.f;
+				Map_AddTimer("Timer_ResetStairsWraithHearing", 2.f, "OnTimer_ResetStairsWraithHearing");
+				return;
+			}
+			
+			Map_RestartCurrentTimer(0.1f);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ResetStairsWraithHearing(const tString &in asTimer)
+		{
+			Wraith_SetHearingMul("Wraith_Stairs", 0.75f);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnAlerted_WraithStairs(const tString &in asEntity)
+		{
+			if (Map_TimerExists("Timer_CheckIfWraithByHidingSpot"))
+				return;
+			
+			Map_AddTimer("Timer_CheckIfWraithByHidingSpot", 0.1f, "OnTimer_CheckIfWraithByHidingSpot");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_CheckIfWraithByHidingSpot(const tString &in asTimer)
+		{
+			if (mbStairsWraithLeaving || Wraith_GetAlertState("Wraith_Stairs") == 0)
+				return;
+				
+			///////////////////
+			// Leave if it's alerted near player hiding spot
+			bool bPlayerByCloset = Entity_GetCollide("player", "Area_Closet");
+			tString sArea = bPlayerByCloset ? "Area_Closet" : "Area_Puzzle";
+			
+			if (Entity_GetCollide("Wraith_Stairs", sArea))
+			{
+				StairsWraithLeave();
+				return;
+			}
+			
+			Map_AddTimer("Timer_CheckIfWraithByHidingSpot", 0.1f, "OnTimer_CheckIfWraithByHidingSpot");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnPatrolEnd_Wraith(const tString &in asEntity)
+		{
+			///////////////////
+			// Walk to pos near door
+			mbStairsWraithReachedGoal = true;
+			
+			bool bPlayerByCloset = Entity_GetCollide("player", "Area_Closet");
+			tString sGoal = bPlayerByCloset ? "PathNode_ClosetDoor" : "PathNode_PuzzleDoor";
+			
+			Wraith_CommandPatrol_ClearNodes("Wraith_Stairs");
+			Wraith_CommandPatrol_AddNode("Wraith_Stairs", sGoal);
+			Wraith_CommandPatrol_Execute("Wraith_Stairs", false, 1, false, true, eWraithSpeed_Slow, "OnPatrolEnd_WraithNear");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnPatrolEnd_WraithNear(const tString &in asEntity)
+		{
+			///////////////////
+			// Look at door for a bit
+			bool bPlayerByCloset = Entity_GetCollide("player", "Area_Closet");
+			tString sDoor = bPlayerByCloset ? "Door_Closet" : "Door_Puzzle";
+			cVector3f vPos = Map_GetEntity(sDoor, eLuxEntityType_Prop).GetPosition();
+			
+			Wraith_ModeIdle_SetResetSpotlight("Wraith_Stairs", false, true);
+			Wraith_CommandLookAtPosition_Execute("Wraith_Stairs", vPos, false, false, false, "OnLookAtPos_WraithStairs");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnLookAtPos_WraithStairs(const tString &in asEntity)
+		{
+			StairsWraithLeave();
+		}
+		
+		//-------------------------------------------------------
+		
+		void StairsWraithLeave()
+		{
+			mbStairsWraithReachedGoal = true;
+			mbStairsWraithLeaving = true;
+			
+			bool bPlayerByCloset = Entity_GetCollide("player", "Area_Closet");
+			tString sGoal = bPlayerByCloset ? "PathNode_LeavePuzzle" : "PathNode_LeaveCloset";
+			
+			Wraith_ModeIdle_SetResetSpotlight("Wraith_Stairs", false, true);
+			
+			Wraith_CommandPatrol_ClearNodes("Wraith_Stairs");			
+			Wraith_CommandPatrol_AddNode("Wraith_Stairs", sGoal);
+			Wraith_CommandPatrol_Execute("Wraith_Stairs", false, 1, false, true, eWraithSpeed_Walk, "OnPatrolEnd_Leave");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnPatrolEnd_Leave(const tString &in asEntity)
+		{		
+			float fDistA = Entity_GetDeltaToEntity("player", "Area_StairsWraithDashGoal_1").SqrLength();
+			float fDistB = Entity_GetDeltaToEntity("player", "Area_StairsWraithDashGoal_2").SqrLength();
+				
+			tString sGoal = fDistA > fDistB ? "Area_StairsWraithDashGoal_1" : "Area_StairsWraithDashGoal_2";
+			cVector3f vPos = Map_GetEntity(sGoal, eLuxEntityType_Area).GetPosition();
+			
+			Wraith_CommandDash_Execute("Wraith_Stairs", vPos, true, true, false, "OnDash_StairsWraith");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_StopWraithMusic(const tString &in asTimer)
+		{
+			Music_Stop(5.f, eMusicPrio_SceneAmb);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_LeaveEncounterArea(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (Entity_IsActive("Wraith_Stairs") == false)
+				return true;
+			
+			Map_AddTimer("OnTimer_WraithForceLeave", 0.1f, "OnTimer_WraithForceLeave");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_WraithForceLeave(const tString &in asTimer)
+		{
+			if (Struggle_IsActive(true) || FearHandler_GetIsPermaFailing())
+			{
+				Map_RestartCurrentTimer(0.1f);
+				return;
+			}
+			
+			Agent_SetSensesActive("Wraith_Stairs", false);
+			Agent_ResetPlayerDetectionState("Wraith_Stairs");
+			
+			cVector3f vPos = Map_GetEntity("Area_StairsWraithDashGoal_3", eLuxEntityType_Area).GetPosition();
+			
+			Wraith_Command_Remove("Wraith_Stairs");
+			Wraith_CommandDash_Execute("Wraith_Stairs", vPos, true, true, false, "OnDash_StairsWraith");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnDash_StairsWraith(const tString &in asAgent)
+		{
+			Map_AddTimer("Timer_StopWraithMusic", 8.f, "OnTimer_StopWraithMusic");
+		}
+				
+		//-------------------------------------------------------
+
+		//} END Event B *The WRAITH investigates outside the player's hiding spot*
+		
+		/////////////////////////////////////////
+		// Event C *Wake up on the bottom floor (PERMAFAIL)*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 3, Event C here.*/
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 3, Event C here.*/
+		
+		bool OnPermaFail_BottomFloor(const tString &in asSource)
+		{
+			Entity_SetActive("Wraith_Stairs", false);
+			
+			Music_Stop(5.0f, eMusicPrio_SceneAmb);
+			
+			SetupGenericPermaFail();
+			FearHandler_SetPermaFailRespawnArea("PermaFail_BottomFloor_*");
+			return true;
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event C *Wake up on the bottom floor (PERMAFAIL)*
+	 
+	//} END SCENE 3
+	
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 4 *THE PLAYER RIDES THE ELEVATOR TO THE TOP*
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+ 
+		/////////////////////////////////////////
+		// General
+		//{//////////////////////////////////////
+		 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are used by many events in Scene 4 here.*/
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are used in more than one event in Scene 4 here.*/
+	 
+		//-------------------------------------------------------
+		
+		//} END General	
+		
+		/////////////////////////////////////////
+		// Event A *The Shadow roars*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 4, Event A here.*/
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 4, Event A here.*/
+		
+		//-------------------------------------------------------
+
+		//} END Event A *The Shadow roars*
+		
+		/////////////////////////////////////////
+		// Event B *Enter the ELEVATOR*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 4, Event B here.*/
+		
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 4, Event B here.*/
+		
+		bool OnTrigger_Player_EnterElevator(const tString &in asParent, const tString &in asChild, int alState)
+		{			
+			if (alState == -1)
+				return true;
+						
+			if (mbElevatorPowerOn || mbElevatorPowerOn == false && mbElevatorCrashed == false)
+			{
+				SetElevatorDoorOpen(cString_GetNumericSuffixInt(asParent), true);
+				MovingButton_SetSwitchedOn("ElevatorButton_1_" + mlElevatorLevel, true, true);
+			}
+			
+			return true;
+		}
+				
+		//-------------------------------------------------------
+
+		//} END Event B *Enter the ELEVATOR*
+		
+		/////////////////////////////////////////
+		// Event C *Pull the ELEVATOR LEVER*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 4, Event C here.*/
+		
+		bool mbElevatorCrashed = false;
+		int mlElevatorLevel = 1;
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 4, Event C here.*/
+		
+		void OnConnectionStateChange_ElevatorLever(const tString &in asEntity, int alState)
+		{
+			if (Entity_IsInteractedWith(asEntity) == false)
+				return;
+			
+			if (mbElevatorCrashed && mbElevatorPowerOn == false)
+				Voice_PlayDelayed("Dialogue_ElevatorCrash", 2.f);
+				
+			if (alState != 1 || mlElevatorLevel == 2) 
+				return;
+			
+			////////////////////
+			// Ride to top!
+			bool bElevatorAscending = false;
+			if (mbElevatorPowerOn)
+			{
+				bElevatorAscending = true;
+				
+				Map_AddTimer("Timer_ElevatorRideToTop", 3.f, "OnTimer_ElevatorRideToTop");				
+				Voice_PlayDelayed("Dialogue_ElevatorRide", 0.5f);
+				
+				// So cable physics stops
+				Prop_SetStaticPhysics("PowerCable_*", true);
+				Entity_SetActive("PowerCable_*", false);
+				
+				FearHandler_SetPermaFailEnabled(false);
+				
+				// Hide roof particles that look weird from above
+				ParticleSystem_SetVisible("PS_27", false);
+				ParticleSystem_SetVisible("PS_3", false);
+				ParticleSystem_SetVisible("PS_40", false);
+				ParticleSystem_SetVisible("PS_38", false);
+				ParticleSystem_SetVisible("PS_39", false);
+			}
+			
+			////////////////////
+			// Do crash sequence!
+			else if (mbElevatorCrashed == false)
+			{
+				mbElevatorCrashed = true;
+				bElevatorAscending = true;
+				
+				Seq_ElevatorCrash("");
+			}				
+			
+			if (bElevatorAscending)
+			{
+				SetElevatorDoorOpen(1, false);
+				Prop_SetStaticPhysics("Elevator_1_Hatch", true);
+
+				Lever_SetStuckState("ElevatorLever", alState, true);
+				Lever_SetInteractionDisablesStuck("ElevatorLever", false);
+			}				
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ElevatorRideToTop(const tString &in asTimer)
+		{
+			Prop_MoveLinearTo("Elevator_1", "Elevator_1_Goal", 0.5f, 4.f, 1.f, false, "OnMoveLinear_ElevatorPowerOn");
+			
+			Sound_CreateAtEntity("Sound_ElevatorStart", "04_03_undercity/elevator/elevator_start", "Elevator_1");
+			Sound_CreateAtEntity("Sound_ElevatorMove", "04_03_undercity/elevator/elevator_loop", "Elevator_1");
+			
+			Map_AddTimer("Timer_PlayElevatorMicroflashes", 7.f, "OnTimer_PlayElevatorMicroflashes");
+			Map_AddTimer("Timer_FadeInElevatorClouds", 7.f, "OnTimer_FadeInElevatorClouds");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PlayElevatorMicroflashes(const tString  &in asTimer)
+		{
+			Sketchbook_Microflash("Dialogue_ElevatorRideWaiting", "OnVoiceEnd_ElevatorRideWaiting", -1, 0.4f);
+			Map_AddTimer("Timer_StopMicroflashEffects", 4.f, "OnTimer_StopMicroflashEffects");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_FadeInElevatorClouds(const tString &in asTimer)
+		{
+			Prop_SetActiveAndFade("ElevatorClouds", true, 8.f);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_StopMicroflashEffects(const tString &in asTimer)
+		{
+			Sketchbook_StopMicroflashEffects();
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnVoiceEnd_ElevatorRideWaiting(const tString &in asScene, const tString &in asSubject)
+		{
+			Map_AddTimer("Timer_PlayAfterElevatorRideDialogue", 4.5f, "OnTimer_PlayAfterElevatorRideDialogue");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PlayAfterElevatorRideDialogue(const tString &in asTimer)
+		{
+			Voice_StopAll();
+			Voice_Play("Dialogue_AfterElevatorRideWaiting");
+		}
+				
+		//-------------------------------------------------------
+		
+		bool OnTrigger_SoundElevatorCreak(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Sound_CreateAtEntity("Sound_ElevatorCreak", "04_03_undercity/elevator/player_arrive_creak", "Elevator_1");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnMoveLinear_ElevatorPowerOn(const tString &in asProp)
+		{
+			mlElevatorLevel = 2;
+			
+			Entity_CallEntityInteract("ElevatorButton_1_2");
+			
+			Lever_SetStuckState("ElevatorLever", 1, true);
+			Lever_SetInteractionDisablesStuck("ElevatorLever", false);
+			
+			Lamp_SetLit("Elevator_2_Lamp*", false, false);
+			
+			Sound_Stop("Sound_ElevatorMove", 2.f);
+			Sound_CreateAtEntity("Sound_ElevatorEnd", "04_03_undercity/elevator/elevator_stop", "Elevator_1");
+			Sound_CreateAtEntity("Sound_ElevatorStop", "04_03_undercity/elevator/player_arrive", "Elevator_1");
+			Sound_Play("Sound_ElevatorArriveVerb", 1.0f);
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event C *Pull the ELEVATOR LEVER*
+		
+		/////////////////////////////////////////
+		// Event D *The ELEVATOR crashes down*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 4, Event D here.*/
+		
+		bool mbAllowOpenElevatorHatch = false;
+		bool mbElevatorHatchOpened = false;
+		bool mbSetElevatorDoorOpen = false;
+		int mlElevatorDoorId = 1;
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 4, Event D here.*/
+		
+		cSequenceStatesData mSeqDataElevatorCrash;
+		void Seq_ElevatorCrash(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_ElevatorCrash", mSeqDataElevatorCrash);
+			Sequence_Wait(3.f);
+			if (Sequence_DoStepAndWait(0.3f))
+			{
+				Sound_CreateAtEntity("Sound_ElevatorDrop", "04_03_undercity/elevator/elevator_drop", "Elevator_1");
+			}
+			else if (Sequence_DoStepAndWait(4.f))
+			{						
+				Voice_PlayDelayed("Dialogue_ElevatorStarts", 1.f);
+				Prop_MoveLinearTo("Elevator_1", "Elevator_1_Goal", 0.125f, 3.6f, 1.f, false);
+				
+				FootPlacement_SetActive(PlayerBody_GetEntityName(), false);
+			}
+			else if (Sequence_DoStepAndPause(0.f))
+			{
+				Effect_Shake_Start(0.02f, 0.35f, 0.f, 0.25f);
+				Sound_CreateAtEntity("Sound_ElevatorStop", "03_05_vitae_station/TEMP/stomping_gate_stop", "Elevator_1");			
+				
+				Prop_MoveLinearTo("Elevator_1", "Elevator_1_CrashGoal", 10.f, 20.f, 0.5f, true, "OnMoveLinear_ElevatorCrash");
+				
+				Voice_PlayDelayed("Dialogue_ElevatorFall", 0.5f);
+			}
+			else if (Sequence_DoStepAndWait(2.f))
+			{
+				Lamp_SetLit("Elevator_1_*", false, true);
+				
+				Effect_Shake_Start(0.05f, 0.35f, 0.f, 0.25f);
+				
+				Player_ChangeStateToNormal();
+				
+				//////////////////////////
+				// Play land anim
+				if (Entity_GetCollide("player", "Area_ElevatorInteriorSafe"))
+				{
+					float fDist = 0.f;
+					cVector3f vNrm = 0.f;
+					cVector3f vPos = cLux_GetPlayer().GetCharacterBody().GetFeetPosition() + cVector3f(0.f, 0.5f, 0.f);
+					 
+					cLux_GetClosestBody(vPos, cVector3f_Down, 3.f, fDist, vNrm);
+					vPos -= cVector3f(0.f, fDist, 0.f);
+					
+					if (fDist > 3.f)
+						PlayerBody_PlayCutsceneAnimation("fall_and_get_up_slow", false, 0.3f, "OnAnimENd_ElevatorFall");
+					else
+						PlayerBody_PlayCutsceneAnimation("fall_and_get_up_slow", false, 0.3f, "OnAnimENd_ElevatorFall", 1.f, 0.f, true, vPos, cLux_GetPlayer().GetCharacterBody().GetYaw());
+				}
+				else
+				{
+					FootPlacement_SetActive(PlayerBody_GetEntityName(), true);
+				}				
+				
+				Pregnancy_SetStage(ePregStage_BornRecovered);
+				
+				MovingButton_SetLocked("ElevatorButton_1_1", true, true);
+				Lamp_SetLit("ElevatorBottomLamp_1_*", false, true);
+				Lamp_SetLit("Lamp_Shaft_Right_*", false, true);
+				
+				Lamp_SetLit("ElevatorLamp_1_*", false, true);
+				Entity_SetEffectsActive("Elevator_1", false, true);
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{
+				Lamp_SetLit("HatchLamp", true, true);
+				Lever_SetInteractionDisablesStuck("HatchLever", true);
+				mbAllowOpenElevatorHatch = true;
+			}
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnAnimENd_ElevatorFall(const tString &in asAnim)
+		{
+			FootPlacement_SetActive(PlayerBody_GetEntityName(), true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnMoveLinear_ElevatorCrash(const tString &in asProp)
+		{
+			Sound_Stop("Sound_ElevatorMove", 1.f);
+			Sound_CreateAtEntity("Sound_ElevatorCrash", "03_03_herberts_hq/level_complete_events/pillar_room_complete/pillar_break_land", "Elevator_1");
+			
+			SequenceStates_Resume("Seq_ElevatorCrash");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnConnectionStateChange_HatchLever(const tString &in asEntity, int alState)
+		{
+			if (mbAllowOpenElevatorHatch == false || alState != 1)
+				return;
+				
+			mbAllowOpenElevatorHatch = false;
+			
+			Lamp_SetLit("HatchLamp", false, true);
+			Lever_SetInteractionDisablesStuck("HatchLever", false);
+			SetElevatorHatchOpen(true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void SetElevatorHatchOpen(bool abX)
+		{
+			if (abX == false && mbElevatorHatchOpened == false)
+				return;
+			
+			mbElevatorHatchOpened = abX;
+			
+			Entity_SetCollide("Elevator_1_Hatch", !abX);
+			Entity_SetCollide("HatchLever", !abX);
+			Prop_SetStaticPhysics("HatchLever", abX);
+			Entity_SetCollideCharacter("Elevator_1_Hatch", !abX);
+			Entity_SetCollideCharacter("HatchLever", !abX);			
+			
+			tString sTarget = abX ? "Elevator_1_Hatch_Open" : "Elevator_1_Hatch_Closed";
+			Prop_AlignRotation("Elevator_1_Hatch", sTarget, 1.f, 1.f, 0.05f, true, "OnElevatorHatchOpen", "Area_HatchRotation");
+			
+			if (abX == false)
+			{
+				Entity_PlayProcAnimation("Elevator_1_Hatch", "Open", -1.f, false);
+				Entity_SetActive("Ladder_Hatch", false);
+				Entity_SetActive("InteractAux_Ladder_Hatch", false);
+			}
+			
+			Sound_CreateAtEntity("Sound_HatchUnlock", "04_03_undercity/elevator_hatch/unlock", "Elevator_1_Hatch");
+			Sound_CreateAtEntity("Sound_HatchOpen", "04_03_undercity/elevator_hatch/open", "Elevator_1_Hatch");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnElevatorHatchOpen(const tString &in asPropName)
+		{
+			Map_AddTimer("Timer_StopHatchRotate", 0.f, "OnTimer_StopHatchRotate");
+			Map_SetTimerUserVarInt("Timer_StopHatchRotate", mbElevatorHatchOpened ? 1 : -1);
+		}
+				
+		//-------------------------------------------------------
+		
+		void OnTimer_StopHatchRotate(const tString &in asTimer)
+		{
+			Prop_StopMovement("Elevator_1_Hatch");
+			Sound_Stop("Sound_HatchMove", 1.f);
+			
+			if (Map_GetTimerUserVarInt(asTimer) == 1)
+				Entity_PlayProcAnimation("Elevator_1_Hatch", "Open", 1.f, false);
+				
+			Entity_SetCollide("Elevator_1_Hatch", true);
+			Entity_SetCollide("HatchLever", true);
+			Map_AddTimer("Timer_SetHatchCharCollision", 0.f, "OnTimer_SetHatchCharCollision");
+			
+			Lever_SetStuckState("HatchLever", -1, false);
+			
+			Entity_SetInteractionDisabled("Ladder_Hatch", false);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_SetHatchCharCollision(const tString &in asTimer)
+		{
+			if (Entity_GetCollide("player", "Area_BelowElevatorHatch") == false)
+			{
+				Entity_SetCollideCharacter("Elevator_1_Hatch", true);
+				Entity_SetCollideCharacter("HatchLever", true);
+			}
+			else
+			{
+				Map_AddTimer("Timer_SetHatchCharCollision", 0.1f, "OnTimer_SetHatchCharCollision");
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_ElevatorButton(const tString &in asEntity)
+		{
+			if (mbElevatorCrashed == false)
+				Voice_PlayDelayed("Dialogue_ElevatorButton", 0.75f);			
+			if (mbElevatorCrashed && mbElevatorPowerOn == false)
+				Voice_PlayDelayed("Dialogue_TryBrokenElevator", 2.f);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnConnectionStateChange_ElevatorButton(const tString &in asEntity, int alState)
+		{
+			int lId = cString_ToInt(cString_Sub(asEntity, 15, 1), -1);
+			SetElevatorDoorOpen(lId, alState == 1);
+		}
+		
+		//-------------------------------------------------------
+		
+		void SetElevatorDoorOpen(int alId, bool abX, bool abInstant = false)
+		{
+			mlElevatorDoorId = alId;
+			mbSetElevatorDoorOpen = abX;
+			
+			if (abInstant)
+			{
+				SlideDoor_SetClosed("Elevator_" + alId + "_Door_*", abX == false, true);
+				
+				tString sAnim = mlElevatorLevel == 2 ? "OpenBack" : "OpenFront"; 
+				float fLength = mbSetElevatorDoorOpen ? 0.01f : -0.01f;
+				Entity_PlayProcAnimation("Elevator_" + mlElevatorDoorId, sAnim, fLength);
+				return;
+			}
+			
+			float fInnerDoorTime = 1.5f;
+			float fOuterDoorTime = 0.f;
+			
+			Map_RemoveTimer("Timer_SetInnerDoorOpen");
+			Map_RemoveTimer("Timer_SetOuterDoorOpen");
+			Map_AddTimer("Timer_SetInnerDoorOpen", fInnerDoorTime, "OnTimer_SetInnerDoorOpen");
+			Map_AddTimer("Timer_SetOuterDoorOpen", fOuterDoorTime, "OnTimer_SetOuterDoorOpen");
+			
+			if (abX == false && alId == 1)
+			{
+				tString sEnt = mlElevatorLevel == 2 ? "Blockbox_Elevator_Back" : "Blockbox_Elevator_Front";
+				Entity_SetActive(sEnt, abX == false);
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_SetInnerDoorOpen(const tString &in asTimer)
+		{
+			tString sAnim = mlElevatorLevel == 2 ? "OpenBack" : "OpenFront"; 
+			float fLength = mbSetElevatorDoorOpen ? 1.5f : -1.5f;
+			Entity_PlayProcAnimation("Elevator_" + mlElevatorDoorId, sAnim, fLength);
+			
+			float fAnimTime = Map_GetEntity("Elevator_" + mlElevatorDoorId, eLuxEntityType_Prop).GetMeshEntity().GetProcAnimationFromName(sAnim).GetTime();
+			if (mbSetElevatorDoorOpen && fAnimTime < 1.f || mbSetElevatorDoorOpen == false && fAnimTime > 0.f)
+			{
+				tString sSound = "level_entity_shared/doors/DW_slide_door/" + (mbSetElevatorDoorOpen ? "open" : "close");
+				Sound_CreateAtEntity("Sound_ElevatorDoorStart_" + mlElevatorDoorId, sSound, "Elevator_" + mlElevatorDoorId + "_Door_" + mlElevatorLevel + "_1");
+				Sound_Stop("Sound_ElevatorDoorStop_" + mlElevatorDoorId, 0.3f);
+				
+				Map_RemoveTimer("Timer_PlayElevatorDoorStopSound");
+				Map_AddTimer("Timer_PlayElevatorDoorStopSound", cMath_Abs(fLength) - 0.3f, "OnTimer_PlayElevatorDoorStopSound");
+			}
+			
+			if (mlElevatorDoorId == 1)
+			{
+				tString sEnt = mlElevatorLevel == 2 ? "Blockbox_Elevator_Back" : "Blockbox_Elevator_Front";
+				Entity_SetActive(sEnt, mbSetElevatorDoorOpen == false);
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PlayElevatorDoorStopSound(const tString &in asTimer)
+		{
+			tString sSound = "level_entity_shared/doors/DW_slide_door/" + (mbSetElevatorDoorOpen ? "open_stop" : "close_stop");
+			Sound_CreateAtEntity("Sound_ElevatorDoorStop_" + mlElevatorDoorId, sSound, "Elevator_" + mlElevatorDoorId + "_Door_" + mlElevatorLevel + "_1");
+			Sound_Stop("Sound_ElevatorDoorStart_" + mlElevatorDoorId, 0.3f);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_SetOuterDoorOpen(const tString &in asTimer)
+		{
+			SlideDoor_SetClosed("Elevator_" + mlElevatorDoorId + "_Door_*", mbSetElevatorDoorOpen == false);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_PlayPipeDialogue(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Sketchbook_Microflash(Entity_GetVarString(asParent, ""));
+			return false;
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event D *The ELEVATOR crashes down*
+	 
+	//} END SCENE 4
+}

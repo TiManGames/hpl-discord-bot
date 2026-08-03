@@ -1,0 +1,478 @@
+#include "custom/props/Prop_Rigid.hps"
+#include "props/Prop_Push.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_game.hps"
+
+#include "custom/helpers/helper_particle_settings.hps"
+
+//------------------------------------------------------------
+
+const float gfGasCanister_TimeUntilSpread = 5.f;
+const float gfGasCanister_SpreadDist = 4.f;
+const float gfGasCanister_CloudDuration = 60.f * 0.25f;
+const int glGasCanister_SpreadDirNum = 6;
+const float gfAreaSize = 4.f;
+const tString gsGasCanister_GasLoopSound = "weapons/throwables/smoke_canister/smoke_loop";
+const tString gsGasCanister_Particles = "gas_grenade_smoke.ps";
+const tString gsGasCanister_ParticlesSpread = "gas_grenade_smoke_spread.ps";
+
+//------------------------------------------------------------
+
+enum eGasCanisterState
+{
+	eGasCanisterState_Normal,
+	eGasCanisterState_PreRelease,
+	eGasCanisterState_Release,
+	eGasCanisterState_Empty
+}
+
+//------------------------------------------------------------
+
+class cGasCloud
+{
+	cGasCloud(){}
+	
+	tID mID = tID_Invalid;
+	float mfDuration = 0.f;
+	
+	cVector3f mvMin;
+	cVector3f mvMax;
+
+	cGasCloud(iLuxEntity@ apParentEntity)
+	{
+		cVector3f vPosition = apParentEntity.GetPosition() + cVector3f(0.f, 0.75f, 0.f);
+		CreateCloud(apParentEntity, vPosition);
+	}
+	
+	cGasCloud(iLuxEntity@ apParentEntity, cVector3f avPosition)
+	{
+		CreateCloud(apParentEntity, avPosition);
+	}
+	
+	void CreateCloud(iLuxEntity@ apParentEntity, cVector3f avPosition)
+	{
+		//cLux_AddDebugMessage("[Prop_GasCanister] Creating new gas cloud!");
+		
+//		cParticleSystem@ pPS = apParentEntity.CreateParticleSystem("PS_GasSpread", gsGasCanister_ParticlesSpread, true, false);
+		cParticleSystem@ pPS = ParticleSetting_CreateParticleSystemFromSetting(cast<iLuxEntity@>(apParentEntity), "PS_GasSpread", gsGasCanister_ParticlesSpread, true, false);
+
+		if (pPS !is null)
+		{
+			mID =  pPS.GetID();
+			mfDuration = gfGasCanister_CloudDuration;
+			
+			cVector3f vPos = avPosition;
+			cVector3f vSize = gfAreaSize;
+			
+			///////////////
+			// Do raycasts to check if damage area needs to be smaller
+			float fDistPos;
+			float fDistNeg;
+			cVector3f vNrm;
+			cVector3f vStart = vPos;
+			
+			cLux_GetClosestBody(vStart, cVector3f_Forward, gfAreaSize, fDistPos, vNrm);
+			cLux_GetClosestBody(vStart, cVector3f_Back, gfAreaSize, fDistNeg, vNrm);
+			if (fDistPos < gfAreaSize*0.5 || fDistNeg < gfAreaSize*0.5)
+			{
+				////////////////////
+				// Area fits between the walls, just push it away from the intersecting one
+				if (fDistPos+fDistNeg > gfAreaSize)
+				{
+					if (fDistPos < gfAreaSize*0.5) vPos.z -= gfAreaSize*0.5-fDistPos;
+					if (fDistNeg < gfAreaSize*0.5) vPos.z += gfAreaSize*0.5-fDistNeg;
+				}
+				
+				////////////////////
+				// Resize area to fit between the walls
+				else
+				{
+					vPos.z = ((vPos.z+fDistPos)+(vPos.z-fDistNeg))*0.5f;
+					vSize.z = fDistPos+fDistNeg;
+				}
+			}
+			
+			cLux_GetClosestBody(vStart, cVector3f_Right, gfAreaSize, fDistPos, vNrm);
+			cLux_GetClosestBody(vStart, cVector3f_Left, gfAreaSize, fDistNeg, vNrm);
+			if (fDistPos < gfAreaSize*0.5 || fDistNeg < gfAreaSize*0.5)
+			{
+				////////////////////
+				// Area fits between the walls, just push it away from the intersecting one
+				if (fDistPos+fDistNeg > gfAreaSize)
+				{
+					if (fDistPos < gfAreaSize*0.5) vPos.x -= gfAreaSize*0.5-fDistPos;
+					if (fDistNeg < gfAreaSize*0.5) vPos.x += gfAreaSize*0.5-fDistNeg;
+				}
+				
+				////////////////////
+				// Resize area to fit between the walls
+				else
+				{
+					vPos.x = ((vPos.x+fDistPos)+(vPos.x-fDistNeg))*0.5f;
+					vSize.x = fDistPos+fDistNeg;
+				}
+			}
+			
+			pPS.SetWorldPosition(vPos);
+			
+			mvMin = vPos - vSize / 2;
+			mvMax = vPos + vSize / 2;
+			
+			EnvironmentalDamage_AddGasArea(mID, mvMin, mvMax, false);
+			
+			//cLux_AddDebugMessage("[Prop_GasCanister] Gas cloud " + mID + " succesfully created!");
+		}
+	}
+	
+	void Kill(bool abInstantly = false)
+	{
+		if (mID == tID_Invalid)
+		{
+			Error("[Prop_GasCanister] Gas cloud is invalid and can't be killed!");
+		}
+		
+		cParticleSystem@ pPS = cLux_ID_ParticleSystem(mID);
+		if (pPS !is null)
+		{
+			if (abInstantly)	pPS.KillInstantly();
+			else				pPS.Kill();
+			
+			EnvironmentalDamage_RemoveArea(mID);
+		}
+	}
+}
+
+//------------------------------------------------------------
+
+class cScrPropGasCanister : cScrPropPush
+{
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// INIT
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+
+	void Init()
+	{
+		cScrPropPush::Init();
+		mvGasClouds.resize(0);
+		mvOldGasClouds.resize(0);
+		mlSpreadDirId = 0;
+		mfSpreadCount = 0.f;
+		mfEmptyCount = 0.f;
+		m_idSoundLoop = tID_Invalid;
+		mState = eGasCanisterState_Normal;
+		mvLastGasSpreadStartPosition = mBaseObj.GetPosition();
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld@ apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		cScrPropPush::SetupAfterLoad(apWorld, apVars, apInstanceVars);
+		//mBaseObj.SetAutoSleep(false);
+		
+		//////////
+		// Preload
+		ParticleSetting_PreloadParticles(gsGasCanister_Particles);
+		ParticleSetting_PreloadParticles(gsGasCanister_ParticlesSpread);
+	}
+	
+	//------------------------------------------------------------
+
+	void OnMapEnter()
+	{
+		///////////////
+		// Setup damage
+		for (int i = 0; i<mvGasClouds.size(); i++)
+		{
+			EnvironmentalDamage_AddGasArea(mvGasClouds[i].mID, mvGasClouds[i].mvMin, mvGasClouds[i].mvMax, false);
+		}
+
+		for (int i = 0; i<mvOldGasClouds.size(); i++)
+		{
+			EnvironmentalDamage_AddGasArea(mvOldGasClouds[i].mID, mvOldGasClouds[i].mvMin, mvOldGasClouds[i].mvMax, false);
+		}
+		
+		if (mBaseObj.IsActive() && 
+			(mState == eGasCanisterState_PreRelease || mState == eGasCanisterState_Release))
+		{
+			mfEmptyCount += MapTransfer_GetTimeElapsed(mlTimeStamp);
+			
+			const float fTimeUntilEmpty = GameDifficulty_GetSettingValueByID_Float(eGameDifficultySetting_GasDuration) * 3.f;
+			if (mfEmptyCount >= fTimeUntilEmpty)
+			{
+				//////////////
+				// Setup state
+				mState = eGasCanisterState_Empty;
+				mBaseObj.SetAutoSleep(true);
+				
+				StopAllEffects(true);
+			}
+		}
+	}
+
+	void OnMapLeave()
+	{
+		mlTimeStamp = MapTransfer_GetTimeStamp();
+		m_idSoundLoop = tID_Invalid;
+	}
+
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// GENERAL
+	///////////////////////////////
+		
+	//------------------------------------------------------------
+	
+	void OnVariableUpdate(float afDeltaTime)
+	{
+		if (mvOldGasClouds.size()<=0 && mState == eGasCanisterState_Empty)
+		{
+			mBaseObj.SetAutoSleep(true);
+		}
+		
+		///////////////////////
+		// Fade away gas clouds
+		for (int i = 0; i<mvOldGasClouds.size(); i++)
+		{
+			mvOldGasClouds[i].mfDuration -= afDeltaTime;
+			
+			if (mvOldGasClouds[i].mfDuration > 0.f)
+				continue;
+				
+			mvOldGasClouds[i].Kill();
+			mvOldGasClouds.removeAt(i);
+		}
+			
+		///////////////////////////////
+		// Skip if not leaking or empty
+		if (mState == eGasCanisterState_Normal || mState == eGasCanisterState_Empty)
+			return;
+		
+		//////////////
+		// Setup vars
+		cLuxMap@ pMap = mBaseObj.GetMap();
+		if (pMap is null) return;
+				
+		////////////////////
+		// Pre release
+		if (mState == eGasCanisterState_PreRelease)
+		{
+			mState = eGasCanisterState_Release;
+			mBaseObj.SetVarBool("GasCanisterTriggered", true);
+					
+			//////////////
+			// Sound
+			if (m_idSoundLoop == tID_Invalid)
+			{
+				cSoundEntity@ pLoop = mBaseObj.PlaySound("Sound_GasLoop", gsGasCanister_GasLoopSound, true, false);
+				if (pLoop !is null)
+					m_idSoundLoop = pLoop.GetID();
+			}
+							
+			//////////////
+			// Particles
+			if (m_idBaseParticle == tID_Invalid)
+			{
+				cParticleSystem@ pPSBase = mBaseObj.CreateParticleSystem("PS_Gas", gsGasCanister_Particles, true, true);
+				if (pPSBase !is null)
+					m_idBaseParticle = pPSBase.GetID();
+			}
+			
+			cGasCloud@ pGasCloud = cGasCloud(mBaseObj);
+			if (pGasCloud !is null /*&& pGasCloud.mID != tID_Invalid*/)
+				mvGasClouds.push_back(pGasCloud);
+			
+			mvLastGasSpreadStartPosition = mBaseObj.GetPosition();
+		}
+		
+		////////////////////
+		// Release
+		else if (mState == eGasCanisterState_Release)
+		{
+			//////////////
+			// Stop if empty
+			mfEmptyCount += afDeltaTime;
+			
+			const float fTimeUntilEmpty = GameDifficulty_GetSettingValueByID_Float(eGameDifficultySetting_GasDuration) * 3.f;
+			if (mfEmptyCount >= fTimeUntilEmpty)
+			{
+				mState = eGasCanisterState_Empty;
+				StopLeakingEffects();
+				ResetGasCloudsPos();
+				return;
+			}
+			
+			/////////////////
+			// Make sure sound plays
+			cSoundEntity@ pLoop = cLux_ID_SoundEntity(m_idSoundLoop);
+			if (pLoop is null)
+			{
+				@pLoop = mBaseObj.PlaySound("Sound_GasLoop", gsGasCanister_GasLoopSound, true, false);
+				if (pLoop !is null)
+					m_idSoundLoop = pLoop.GetID();
+			}
+			else
+			{
+				pLoop.SetWorldPosition(mBaseObj.GetPosition());
+			}
+			
+			/////////////////
+			// Reset if moved
+			if (cMath_Vector3DistSqr(mvLastGasSpreadStartPosition, mBaseObj.GetPosition()) > gfAreaSize * gfAreaSize)
+			{				
+				ResetGasCloudsPos();
+				
+				mlSpreadDirId = 0;
+				mfSpreadCount = 0;
+				
+				mState = eGasCanisterState_PreRelease;
+				return;
+			}
+			
+			/////////////
+			// Spread gas
+			mfSpreadCount += afDeltaTime;
+			if (mfSpreadCount >= gfGasCanister_TimeUntilSpread && mlSpreadDirId < glGasCanister_SpreadDirNum)
+			{
+				///////////////
+				// Get dir
+				cMatrixf mtxRot = cMath_MatrixRotateY((cMath_PiMul2 / glGasCanister_SpreadDirNum) * mlSpreadDirId);
+				cVector3f vSpreadDir = cMath_MatrixMul(mtxRot, cVector3f_Forward);
+				
+				///////////////
+				// Do raycast
+				float fDist;
+				cVector3f vNrm;
+				cVector3f vStart = mBaseObj.GetPosition() + cVector3f_Up * 0.75f;
+				
+				iPhysicsBody@ pBody = cLux_GetClosestBody(vStart, vSpreadDir, gfGasCanister_SpreadDist, fDist, vNrm);
+				if (pBody is null) fDist = gfGasCanister_SpreadDist;
+				
+				///////////////
+				// Can spread in dir?
+				if (fDist > gfAreaSize*0.5)
+				{
+					cVector3f vCloudPos = vStart + cMath_Vector3Normalize(vSpreadDir) * fDist * 0.75f;
+					cGasCloud@ pGasCloud = cGasCloud(mBaseObj, vCloudPos);
+					if (pGasCloud !is null /*&& pGasCloud.mID != tID_Invalid*/)
+						mvGasClouds.push_back(pGasCloud);
+				}
+				
+				///////////////
+				// Prepare next spread
+				++mlSpreadDirId;
+				mfSpreadCount = gfGasCanister_TimeUntilSpread * cMath_RandRectf(0.35f, 0.75f);
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+
+	void GiveDamage(iPhysicsBody@ apBodyHit, const cVector3f&in avOrigin, const cVector3f&in avHitPos, cLuxDamageProperties@ apDamageProps)
+	{
+		///////////////////
+		// Already leaking?
+		if (mState != eGasCanisterState_Normal)
+			return;
+		
+		///////////////////////////
+		// Take damage and leak gas
+		if (apDamageProps.mDamageType != eDamageType_Gun && apDamageProps.mDamageType != eDamageType_Grenade)
+			return;
+			
+		mState = eGasCanisterState_PreRelease;
+		mBaseObj.SetAutoSleep(false);
+		
+		//cLux_AddDebugMessage("[Prop_GasCanister] Taking damage");
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnSetActive(bool abX) 
+	{
+		if (abX == false)
+			StopAllEffects();
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPERS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void ResetGasCloudsPos()
+	{
+		for (int i = 0; i<mvGasClouds.size(); i++)
+			mvOldGasClouds.push_back(mvGasClouds[i]);
+			
+		mvGasClouds.resize(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void StopLeakingEffects(bool abInstant = false)
+	{
+		cSoundEntity@ pLoop = cLux_ID_SoundEntity(m_idSoundLoop);
+		 if (pLoop !is null)
+			 pLoop.Stop(true);
+			 
+		cParticleSystem@ pBasePS = cLux_ID_ParticleSystem(m_idBaseParticle);
+		if (pBasePS !is null)
+		{
+			if (abInstant) 	pBasePS.KillInstantly();
+			else 			pBasePS.Kill();
+		}
+		
+		for (int i = 0; i<mvGasClouds.size(); i++)
+			mvGasClouds[i].Kill(abInstant);
+			
+		mvGasClouds.resize(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void StopAllEffects(bool abInstant = false)
+	{
+		StopLeakingEffects(abInstant);
+		
+		for (int i = 0; i<mvOldGasClouds.size(); i++)
+			mvOldGasClouds[i].Kill(abInstant);
+		
+		mvOldGasClouds.resize(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// PROPERTIES
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	int mlTimeStamp = 0;
+	int mlSpreadDirId = 0;
+	float mfSpreadCount = 0.f;
+	float mfEmptyCount = 0.f;
+	tID m_idSoundLoop = tID_Invalid;
+	array<cGasCloud> mvGasClouds;
+	array<cGasCloud> mvOldGasClouds;
+	tID m_idBaseParticle = tID_Invalid;
+	eGasCanisterState mState = eGasCanisterState_Normal;
+	cVector3f mvLastGasSpreadStartPosition;
+	
+	//------------------------------------------------------------
+}

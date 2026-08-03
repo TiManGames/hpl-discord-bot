@@ -1,0 +1,212 @@
+#include "player/PlayerState_Normal.hps"
+
+#include "custom/helpers/helper_items.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+#include "custom/helpers/PlayerTypes_Custom.hps"
+#include "custom/modules/ModuleInterfaces_Custom.hps"
+#include "utilities/Utility_Throw.hps"
+#include "helpers/helper_imgui.hps"
+#include "custom/helpers/helper_player_custom.hps"
+
+//------------------------------------------------------------
+
+class cScrPlayerState_Normal_Custom : cScrPlayerState_Normal
+{	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Reset() override
+	{
+		cScrPlayerState_Normal::Reset();
+		
+		mThrow.Reset();
+		mfDisallowAmuletToggleCount = 0.f;
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnEnterState(int alPrevStateId) override
+	{
+		if (alPrevStateId == ePlayerState_Custom_Struggle)
+			mfDisallowAmuletToggleCount = 1.f;
+		
+		cScrPlayerState_Normal::OnEnterState(alPrevStateId);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnLeaveState(int alNextStateId) override
+	{
+		cScrPlayerState_Normal::OnLeaveState(alNextStateId);
+	}
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep) override
+	{
+		if (mfDisallowAmuletToggleCount > 0.f)
+			mfDisallowAmuletToggleCount -= afTimeStep;
+		
+		cScrPlayerState_Normal::Update(afTimeStep);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool OnAction(int alAction, bool abPressed) override
+	{
+		if (!mbInteractionAllowed)
+			return true;
+
+		if (Sketchbook_IsOpen())
+			return true;
+		
+		if (abPressed)
+		{
+            /////////////////////////
+            // Light source
+            if (alAction == eAction_Flashlight && abPressed)
+            {
+                if (IsSpecialStateActive()) return false;
+                if (Player_GetCanUseLightSource() == false) return false;
+                    
+                Player_ToggleLightSource();
+                return false;
+            }
+            
+            /////////
+            // Amulet
+            if (abPressed && 
+				alAction == eAction_Amulet && 
+				mfDisallowAmuletToggleCount <= 0.f &&
+				Item_GetHidden(ItemType_GetFirstInInventory("CurseMedallion")) == false)
+            {
+				Item_ToggleHeldItem("CurseMedallion");
+                return false;
+            }
+            
+            //////////
+            // Matches
+			if (alAction==eAction_Match)
+			{
+				if (IsSpecialStateActive() || Player_GetCanUseLightSource()==false) return false;
+				
+				if (Item_GetHeldType(eItemHandlerHand_Left)!="Match" && Matches_GetCount()==0)
+					Item_ShowMatchCount(true);
+					
+				if (Player_GetUnderwater()) 
+				{
+					Item_ToggleHeldItem("Match", eItemHandlerHand(Match_GetHand()));
+					return false;
+				}
+				
+				Item_ToggleMatch();
+				
+				return false;
+			}
+		}
+			
+		if (Item_IsHeld())
+		{
+			if (!mbToolInteractionAllowed)
+				return true;
+				
+			if (abPressed)
+			{
+				if (alAction == eAction_Interact)
+				{	
+					if (UseItem())
+					{
+						if (Item_IsPickingUp())
+							CancelPuttingAway();
+						return false;
+					}
+					else if (Item_GetUsesArmAnimation()==false)
+					{
+						Item_PutAway();
+						return false;
+					}
+				}
+
+				if (alAction == eAction_InteractCancel && cLux_GetInputHandler().GetGamepadWasLastDeviceUsed()==false)
+				{
+					Item_PutAway();
+					return false;
+				}
+			}
+		}
+		
+		// Default behaviour
+		return cScrPlayerState_Normal::OnAction(alAction,abPressed);
+	}
+    
+	//------------------------------------------------------------
+    
+    bool IsSpecialStateActive()
+    {
+        return DreamHandler_GetIsActive() || 
+            cLux_GetPlayer().GetCurrentMoveState().GetId()==eMoveState_Swim || 
+            cLux_GetPlayer().GetCurrentMoveState().GetId()==eMoveState_Animated;
+    }
+    
+	//------------------------------------------------------------
+	
+	void CancelPuttingAway()
+	{
+		iScrItemHandler_Interface @pHandler = cast<iScrItemHandler_Interface>( cLux_GetUserModuleFromID(eModuleType_Custom_ItemHandler) );
+		pHandler.CancelPuttingAway(eItemHandlerHand_Right);
+	}
+	
+	//------------------------------------------------------------
+	
+	bool UseItem()
+	{
+		iScrItemHandler_Interface @pHandler = cast<iScrItemHandler_Interface>( cLux_GetUserModuleFromID(eModuleType_Custom_ItemHandler) );
+		
+		///////////////////////////////////////////////
+		// If the item can be used on things in the map
+		cCamera @pCam = mBaseObj.mpPlayer.GetCamera();
+		if(mPickBasics.UpdatePickCheck(pCam, true))
+		{
+			if (pHandler.CanUseHeldItemOnWorld(eItemHandlerHand_Right, mPickBasics.GetFocusedEntity().GetName()))
+			{
+				Item_UseHeldOnWorld(eItemHandlerHand_Right, mPickBasics.GetFocusedEntity().GetName());
+				return true;
+			}
+		}
+		
+		//////////////////////////////////////////////
+		// If the item can be used on you
+		if (pHandler.CanUseHeldItemOnSelf(eItemHandlerHand_Right))
+		{
+			Item_UseHeldOnSelf(eItemHandlerHand_Right);
+			return true;
+		}
+		
+		return false;
+	}
+
+	//------------------------------------------------------------
+
+	void OnGui(float afTimeStep)
+	{
+		mThrow.DrawGuiMeter(afTimeStep);
+	}
+	
+	//------------------------------------------------------------
+	
+	cUtility_Throw mThrow;
+	float mfDisallowAmuletToggleCount;
+	
+	//------------------------------------------------------------
+}

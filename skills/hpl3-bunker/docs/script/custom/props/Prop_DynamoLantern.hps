@@ -1,0 +1,866 @@
+#include "custom/props/Prop_Pickup.hps"
+#include "custom/helpers/helper_player_custom.hps"
+#include "helpers/helper_player.hps"
+#include "helpers/helper_modules.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+#include "helpers/helper_game.hps"
+
+//------------------------------------------------------------
+
+const float gfDynamoLantern_DefaultChargeDecreaseRate = (1.f / 40.f);
+const float gfDynamoLantern_FirstChargeAdd = 0.35f;
+const float gfDynamoLantern_ChargeAdd = 0.7f;
+const float gfDynamoLantern_ChargeSoundEventRadius = 15.f;
+
+const float gfDynamoLantern_EffectsOffThreshold = 0.3f;
+
+const float gfDynamoLantern_MechanismDeacc = 2.22f;
+const float[] gfDynamoLantern_MaxMechanismSpeed = { 20.f, 18.f, 16.f };
+const float [] gfDynamoLantern_ChargeSoundDurations = { 2.1f, 2.5f, 4.75f };
+
+const float gfDynamoLantern_MinFlickerTimeStart = 0.1f;
+const float gfDynamoLantern_MaxFlickerTimeStart = 0.2f;
+const float gfDynamoLantern_MinFlickerTimeEnd = 0.5f;
+const float gfDynamoLantern_MaxFlickerTimeEnd = 3.f;
+
+const tString gsDynamoLantern_LoopSound = "player/tools/magnetlampe/lamp_loop";
+const tString gsDynamoLantern_LampOnSound = "player/tools/magnetlampe/lamp_on";
+const tString gsDynamoLantern_LampOffSound = "player/tools/magnetlampe/lamp_loop_end";
+
+const tString[] gvDynamoLantern_ChargeSounds = { "player/tools/magnetlampe/lamp_charge_soft",
+												 "player/tools/magnetlampe/lamp_charge_med",
+												 "player/tools/magnetlampe/lamp_charge_hard" };
+
+const tString gsDynamoLantern_IdleAnim = "magnetlampe_idle";
+const tString gsDynamiLantern_SpinnerBone = "j_magnet";
+const tString gsDynamiLantern_CogBone_A = "j_cog_1";
+const tString gsDynamiLantern_CogBone_B = "j_cog_2";
+
+//------------------------------------------------------------
+
+class cScrPropDynamoLantern : cScrPropPickup
+{			
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// INIT
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		mBaseObj.SetAnimationCallbackActive(true);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld@ apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		cScrPropPickup::SetupAfterLoad(apWorld, apVars, apInstanceVars);		
+		
+		//////////////////
+		// Setup effects
+		iLight@ pLightA = mBaseObj.GetLightFromName("Light_Flicker_1");
+		iLight@ pLightB = mBaseObj.GetLightFromName("Light_Flicker_2");
+		iLight@ pSpotA = mBaseObj.GetLightFromName("SpotLight_1");
+		iLight@ pSpotB = mBaseObj.GetLightFromName("Spotlight_noshadows");
+		cBillboard@ pBillboard = mBaseObj.GetBillboardFromName("billboard_spinning_blur");
+		
+		if (pLightA !is null && pLightB !is null)
+		{
+			m_idFlickerLights[0] = pLightA.GetID();
+			m_idFlickerLights[1] = pLightB.GetID();
+		}
+		
+		if (pSpotA !is null && pSpotB !is null)
+		{
+			m_idSpotlights[0] = pSpotA.GetID();
+			m_idSpotlights[1] = pSpotB.GetID();
+			m_mtxSpotlights[0] = pSpotA.GetLocalMatrix();
+			m_mtxSpotlights[1] = pSpotB.GetLocalMatrix();			
+		}		
+		
+		if (pBillboard !is null)
+		{
+			m_idBillboardBlur = pBillboard.GetID();
+		}
+		
+		mBaseObj.SetEffectsActive(false, false);
+		
+		//////////////////
+		// Play anim
+		mBaseObj.PlayAnimation(gsDynamoLantern_IdleAnim, 0.f, true);
+	}
+	
+	//------------------------------------------------------------
+	
+	void BeforeEntityDestruction() override
+	{
+		cSoundEntity@ pLoop = cLux_ID_SoundEntity(m_idDynamoSound);
+		if (pLoop !is null && pLoop.IsFadingOut() == false)
+		{
+			pLoop.FadeOut(0.7f);
+		}
+		
+		cScrPropPickup::BeforeEntityDestruction();
+	}
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// GLOBAL
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+
+	void _Global_OnMapLeave()
+	{
+		Save();
+		m_idDynamoSound = tID_Invalid;
+	}
+
+	//------------------------------------------------------------
+
+	void _Global_OnMapEnter()
+	{
+		Load();
+		m_idDynamoSound = tID_Invalid;
+	}
+
+	//------------------------------------------------------------
+	
+	void Save()
+	{
+		MapTransfer_SaveState_DynamoLantern(mfCharge, mfPrevCharge, mfEffectT, mlPutAwayTimeStamp);
+	}
+
+	//------------------------------------------------------------
+	
+	void Load()
+	{
+		MapTransfer_LoadState_DynamoLantern(mfCharge, mfPrevCharge, mfEffectT, mlPutAwayTimeStamp);
+	}
+
+	//------------------------------------------------------------
+	
+	void _Global_CopyFromItemEntity() override
+	{
+		cScrPropPickup::_Global_CopyFromItemEntity();		
+		tString sSource = cScript_GetGlobalArgString(0);
+		
+		cScript_SetGlobalArgFloat(0, mfCharge);
+		cScript_SetGlobalArgFloat(1, mfPrevCharge);
+		cScript_SetGlobalArgFloat(2, mfEffectT);
+		cScript_SetGlobalArgInt(3, mlPutAwayTimeStamp);
+		cScript_SetGlobalArgFloat(4, mfInsideLightFlickerCount);
+		cScript_SetGlobalArgFloat(5, mfInsideLightFlickerTime);
+		cScript_RunGlobalFunc(sSource, "cScrPropDynamoLantern", "_Global_CopyValues");
+	}
+	
+	//------------------------------------------------------------
+	
+	// Called to transfer values from another of these entities
+	// e.g. when spawning something from the inventory
+	
+	void _Global_CopyValues()
+	{
+		mfCharge = cScript_GetGlobalArgFloat(0);
+		mfPrevCharge = cScript_GetGlobalArgFloat(1);
+		mfEffectT = cScript_GetGlobalArgFloat(2);
+		mlPutAwayTimeStamp = cScript_GetGlobalArgInt(3);
+		mfInsideLightFlickerCount = cScript_GetGlobalArgFloat(4);
+		mfInsideLightFlickerTime = cScript_GetGlobalArgFloat(5);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_OnItemTakenOut()
+	{
+		Load();
+		
+		mbIsBeingLowered = false;
+		
+		//////////////
+		// Adjust charge based on time put away
+		float fElapsedTime = 0;
+		
+		if (mlPutAwayTimeStamp != -1)
+			fElapsedTime = MapTransfer_GetTimeElapsed(mlPutAwayTimeStamp);
+		
+		mfCharge -= fElapsedTime * GetChargeDecreaseRate();
+		mfEffectT = 0.f;
+		
+		//////////////
+		// Ignore light
+		for (int i = 0; i < mBaseObj.GetLightNum(); i++)
+		{
+			iLight@ pLight = mBaseObj.GetLight(i);
+			if (pLight.GetName() != "SpotLight_1")
+				Player_IgnoreLightInLightLevel(pLight.GetName());
+		}		
+		
+		//////////////
+		// Not visible in reflections
+		cMeshEntity@ pMeshEnt = mBaseObj.GetMeshEntity();
+		if (pMeshEnt !is null)
+		{
+			pMeshEnt.SetRenderFlagBit(eRenderableFlag_VisibleInReflection, false);
+			pMeshEnt.SetRenderFlagBit(eRenderableFlag_VisibleInNonReflection, true);
+			pMeshEnt.SetRenderFlagBit(eRenderableFlag_ShadowCaster, true);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_OnItemStartPutAway()
+	{
+		mbIsBeingLowered = true;
+		
+		//////////////
+		// Stop effects
+		mBaseObj.FadeEffectBaseColor(cColor(0.f), 0.75f);
+		
+		cSoundEntity@ pSound = cLux_ID_SoundEntity(m_idDynamoSound);
+		if (pSound !is null)
+			Sound_Stop(pSound.GetName(), 0.7f);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_OnItemPutAway()
+	{
+		mbIsBeingLowered = false;		
+		mlPutAwayTimeStamp = MapTransfer_GetTimeStamp();
+		
+		//////////////
+		// Call player func
+		cScript_RunGlobalFunc("LuxPlayer", "", "_Global_LanternOff");
+		
+		//////////////
+		// Unignore light
+		for (int i = 0; i < mBaseObj.GetLightNum(); i++)
+		{
+			iLight@ pLight = mBaseObj.GetLight(i);
+			if (pLight.GetName() != "SpotLight_1")
+				Player_UnignoreLightInLightLevel(pLight.GetName());
+		}
+		
+		Save();
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetCanBeHighlighted()
+	{
+		cScript_SetGlobalReturnBool(true);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_Charge()
+	{
+		//////////////
+		// Add charge
+		float fPrevCharge = mfCharge;
+		float fChargeAdd = mfCharge <= 0.f ? gfDynamoLantern_FirstChargeAdd : gfDynamoLantern_ChargeAdd;
+		mfCharge = cMath_Clamp(mfCharge + fChargeAdd, 0.f, 1.f);
+		
+		mfBurnTime = 0.f;
+		mfStopChargeDecreaseCount = 1.f;
+		
+		//////////////
+		// Play sound
+		int lSoundId = -1;		
+		if (fPrevCharge < 0.2f) 		lSoundId = 0;
+		else if (fPrevCharge < 0.7f) 	lSoundId = 1;
+		else							lSoundId = 2;
+		
+		tString sSoundName = "Sound_DynamoLanternCharge";
+		tString sSound = gvDynamoLantern_ChargeSounds[lSoundId];
+		Sound_CreateAtEntity(sSoundName, sSound, mBaseObj.GetName());
+		
+		/////////////////
+		// Setup effects
+		mfMechanismDeacc[0] = gfDynamoLantern_MechanismDeacc;
+		mfMechanismDeacc[1] = 0.f;
+		mfMechanismDeacc[2] = 0.f;
+		
+		mfChargeSoundTime = gfDynamoLantern_ChargeSoundDurations[lSoundId];
+		
+		mfInsideLightFlickerCount = 0.f;
+		mfInsideLightFlickerTime = cMath_Max(mfChargeSoundTime - 0.5f, 2.5f);
+		
+		//////////////
+		// AI sound event!
+		float fRadiusMul = cMath_Easing(eEasing_QuadOut, float(lSoundId + 1.f) / 3.f);
+		float fRadius = gfDynamoLantern_ChargeSoundEventRadius * fRadiusMul;
+		mBaseObj.GetMap().BroadcastSoundHeardEvent("DynamoLanternCharge", mBaseObj.GetPosition(), fRadius, 2, false, true);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetCharge()
+	{
+		cScript_SetGlobalReturnFloat(mfCharge);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetAnimationName() override
+	{
+		tString sAnim = "magnetlampe";
+		
+		if (Item_GetHeldEntity(eItemHandlerHand_Left) == mBaseObj.GetName() &&
+			Item_GetHeldState(eItemHandlerHand_Left) == 3 &&
+			cLux_GetPlayer().GetCharacterBody().GetMoveSpeed(eCharDir_Forward) > 3.f &&
+			Player_GetRunning())
+		{
+			sAnim += "_run";
+		}
+		
+		cScript_SetGlobalReturnString(sAnim);
+	}
+	
+	//------------------------------------------------------------
+
+	void _Global_OnHeldItemDrop()
+	{
+		Save();
+	}
+	
+	//------------------------------------------------------------
+	
+	float GetChargeDecreaseRate()
+	{
+		uint lFlashlightDurationLevel = GameDifficulty_GetSettingValueByID_Int(eGameDifficultySetting_FlashlightChargeDuration);
+		if (lFlashlightDurationLevel==0)
+			return gfDynamoLantern_DefaultChargeDecreaseRate * 2.f;
+		else if (lFlashlightDurationLevel==2)
+			return gfDynamoLantern_DefaultChargeDecreaseRate * 0.5f;
+		
+		return gfDynamoLantern_DefaultChargeDecreaseRate;
+	}
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// GENERAL
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnUpdate(float afTimeStep)
+	{
+		//////////////
+		// Update base
+		cScrPropPickup::OnUpdate(afTimeStep);
+		
+		//////////////
+		// Setup vars
+		cLightSpot@ pSpot = cast<cLightSpot>(mBaseObj.GetLightFromName("SpotLight_1"));
+		if (pSpot is null)
+			return;
+		
+		//////////////
+		// Update shadow casting
+		bool bShadowsActive = cLux_GetUserConfig().GetBool("Graphics", "LanternShadowsActive", true);
+		if(Platform_IsXboxOne() || Platform_IsPS4()) bShadowsActive = false;
+
+		pSpot.SetCastShadows(bShadowsActive);
+
+		//////////////
+		// Update state
+		bool bEffectsActive = mBaseObj.GetEffectsActive();
+
+		if (bEffectsActive == false && mbPrevEffectsActive) 
+			cScript_RunGlobalFunc("LuxPlayer", "", "_Global_LanternOff");
+		else if (bEffectsActive && mbPrevEffectsActive == false)
+			cScript_RunGlobalFunc("LuxPlayer", "", "_Global_LanternOn");
+		
+		mbPrevEffectsActive = bEffectsActive;
+		
+		//////////////
+		// Update charge
+		mfStopChargeDecreaseCount -= afTimeStep;
+		if (mfStopChargeDecreaseCount <= 0.f)
+		{
+			mfStopChargeDecreaseCount = 0.f;
+			
+			mfCharge -= afTimeStep * GetChargeDecreaseRate();
+			
+			if (mfCharge > 0.f)
+				mfBurnTime += afTimeStep;
+			if (mfCharge <= 0.f)
+				mfCharge = 0.f;
+		}		
+		
+		//////////////
+		// Update
+		if (mbIsBeingLowered == false)
+		{
+			UpdateLight(afTimeStep);
+			UpdateSound(afTimeStep);
+			UpdateShineOnAgent(pSpot, afTimeStep);
+			UpdateAgentSeesGobo(pSpot, afTimeStep);
+		}
+		
+		UpdateMechanism(afTimeStep);
+		
+		//////////////
+		// Update prev
+		mfPrevCharge = mfCharge;
+	}
+	
+	//-------------------------------------
+	
+	void UpdateLight(float afTimeStep)
+	{			
+		//////////////
+		// Update flicker
+		float fPrevFlickerDelay = mfFlickerDelay;
+		float fFlickerDelayDecreaseRate = (1.f - mfCharge);
+		mfFlickerDelay -= afTimeStep * fFlickerDelayDecreaseRate;
+				
+		if (mfFlickerDelay <= 0.f)
+		{
+			mfFlickerDelay = 0.f;
+			
+			if (fPrevFlickerDelay > 0.f)
+				mfFlickerCount = cMath_RandRectf(0.05f, 0.1f);
+			
+			mfFlickerCount -= afTimeStep;
+			if (mfFlickerCount <= 0.f)
+			{
+				mfFlickerCount = 0.f;
+				mfFlickerDelay = cMath_RandRectf(0.1f, 1.5f);
+			}
+		}
+
+		//////////////
+		// Update inside flicker		
+		mfInsideLightFlickerCount = cMath_IncreaseTo(mfInsideLightFlickerCount, afTimeStep, mfInsideLightFlickerTime);
+		float fInsideFlickerT = cMath_Easing(eEasing_ExpoIn, mfInsideLightFlickerCount / cMath_Max(mfInsideLightFlickerTime, 0.001f));
+		
+		for (int i = 0; i < m_idFlickerLights.length(); ++i)
+		{
+			iLight@ pLight = cLux_ID_Light(m_idFlickerLights[i]);
+			if (pLight is null) continue;
+			
+			bool bFlickerActive = fInsideFlickerT < 1.f && mfInsideLightFlickerTime >= 0.f;
+			pLight.SetFlickerActive(bFlickerActive);
+			
+			if (bFlickerActive)
+			{
+				float fMinFickerTime = cMath_InterpolateLinear(gfDynamoLantern_MinFlickerTimeStart, gfDynamoLantern_MinFlickerTimeEnd, fInsideFlickerT);
+				float fMaxFlickerTime = cMath_InterpolateLinear(gfDynamoLantern_MaxFlickerTimeStart, gfDynamoLantern_MaxFlickerTimeEnd, fInsideFlickerT);
+				
+				pLight.SetFlickerOnMinLength(fMinFickerTime);
+				pLight.SetFlickerOnMaxLength(fMaxFlickerTime);
+				pLight.SetFlickerOffMinLength(fMinFickerTime * 0.5f);
+				pLight.SetFlickerOffMaxLength(fMaxFlickerTime * 0.5f);
+				pLight.SetFlickerOnFadeMinLength(fMinFickerTime * 0.25f);
+				pLight.SetFlickerOnFadeMaxLength(fMaxFlickerTime * 0.25f);
+				pLight.SetFlickerOffFadeMinLength(fMinFickerTime * 0.125f);
+				pLight.SetFlickerOffFadeMaxLength(fMaxFlickerTime * 0.125f);
+			}
+			else
+			{
+				pLight.SetDiffuseColor(pLight.GetFlickerOffColor());
+			}
+		}
+		
+		//////////////
+		// Get fade goal and speed
+		float fEffectTGoal = mfCharge;
+		float fFadeSpeed = 1.5f;
+		
+		if (mfFlickerCount > 0.f)
+		{
+			fEffectTGoal = mfCharge * 0.75f;
+			fFadeSpeed = 2.5f;
+		}
+		
+		// Fade out completely when at very low charge
+		if (mfCharge < gfDynamoLantern_EffectsOffThreshold)
+		{
+			mfCharge = 0.f;			
+			fEffectTGoal = 0.f;
+			fFadeSpeed = 0.5f;
+		}
+		
+		//////////////
+		// Effect T
+		mfEffectT = cMath_IncreaseTo(mfEffectT, afTimeStep * fFadeSpeed, fEffectTGoal);		
+		float fEffectT = cMath_Easing(eEasing_SineOut, mfEffectT);
+		
+		//////////////
+		// Update effects
+		mBaseObj.SetEffectBaseColor(fEffectT);
+		mBaseObj.SetEffectsActive(fEffectT > 0.f, false);
+				
+		//////////////
+		// Update billboard
+		// (Needs to be faded using alpha)
+		cBillboard@ pBillboard = cLux_ID_Billboard(m_idBillboardBlur);
+		if (pBillboard !is null)
+		{
+			float fAlpha = cMath_Clamp((fEffectT - 0.4f) / (1.f - 0.4f), 0.f, 1.f);
+			pBillboard.SetColor(cColor(1.f, 1.f, 1.f, fAlpha));
+		}
+	}
+	
+	//-------------------------------------
+	
+	void UpdateSound(float afTimeStep)
+	{
+		//////////////
+		// Setup vars
+		cSoundEntity@ pSound = cLux_ID_SoundEntity(m_idDynamoSound);
+		
+		bool bTurnedOn = mfCharge > gfDynamoLantern_EffectsOffThreshold && 
+						 mfPrevCharge <= gfDynamoLantern_EffectsOffThreshold;
+		bool bTurnedOff = mfCharge <= gfDynamoLantern_EffectsOffThreshold &&
+						  mfPrevCharge > gfDynamoLantern_EffectsOffThreshold;
+							  
+		//////////////
+		// Start sound?
+		if ((bTurnedOn || (m_idDynamoSound == tID_Invalid && mfCharge > gfDynamoLantern_EffectsOffThreshold)) && pSound is null)
+		{
+			@pSound = mBaseObj.PlaySound("Sound_DynamoLanternLoop", gsDynamoLantern_LoopSound, true, true);
+			m_idDynamoSound = pSound.GetID();
+			
+			mBaseObj.PlaySound("Sound_DynamoLampOn", gsDynamoLantern_LampOnSound, true, true);
+		}
+		
+		//////////////
+		// Stop sound?
+		else if (bTurnedOff && pSound !is null)
+		{
+			pSound.Stop(true);
+			m_idDynamoSound = tID_Invalid;
+			
+			mBaseObj.PlaySound("Sound_DynamoLampOff", gsDynamoLantern_LampOffSound, true, true);
+		}
+	}
+	
+	//-------------------------------------
+	
+	void UpdateShineOnAgent(cLightSpot@ apSpot, float afTimeStep)
+	{
+		//////////////
+		// Update interval
+		mfFlashLightUpdateShineOnAgentCount -= afTimeStep;
+		if (mfFlashLightUpdateShineOnAgentCount > 0.f) return;
+		
+		mfFlashLightUpdateShineOnAgentCount = cMath_RandRectf(0.1f, 0.2f);
+		
+		//////////////
+		// Make sure light is shining
+		if (mBaseObj.GetEffectsActive() == false) 
+			return;
+			
+		//////////////
+		// Iterate sensors
+		cLuxEntityComponentIterator@ pIt = mBaseObj.GetMap().GetEntityComponentIterator(eLuxEntityComponentType_LightSensor);
+		while (pIt.HasNext())
+		{
+			iLuxEntityComponent@ pComp = pIt.Next();
+			cLuxLightSensor@ pSensor = cast<cLuxLightSensor>(pComp);
+				
+			//////////////
+			// Sensor active?
+			if (pSensor.IsSensoring() == false) continue;
+			if (pSensor.GetSensitivityLevel() <= 0.f) continue;
+				
+			//////////////
+			// Collides?
+			iLuxEntity@ pEnt = pComp.GetEntity();				
+			iPhysicsBody@ pBody = pEnt.GetMainBody();
+				
+			eCollision coll = apSpot.GetFrustum().CollideAABB(pBody.GetBoundingVolume().GetMin(), 
+															 pBody.GetBoundingVolume().GetMax(), 6);
+                    
+			if (coll == eCollision_Outside) continue;
+			if (pEnt.CheckIsOnScreen(true) == false) continue;
+				
+			//////////////
+			// Broadcast!
+			pEnt.BroadcastMessage(eCustomEntityMessage_HitByFlashlight, null, mBaseObj.GetPosition(), 0);
+		}
+	}
+	
+	//-------------------------------------
+	
+	void UpdateAgentSeesGobo(cLightSpot@ apSpot, float afTimeStep)
+	{	
+		//////////////
+		// Update interval
+		mfFlashlightCheckAgentSeesGoboCount -= afTimeStep;
+		if (mfFlashlightCheckAgentSeesGoboCount > 0.f) return;
+		
+		mfFlashlightCheckAgentSeesGoboCount = cMath_RandRectf(0.1f, 0.2f);
+		
+		//////////////
+		// Make sure light is shining
+		if (mBaseObj.GetEffectsActive() == false) 
+			return;
+		
+		//////////////
+		// Setup vars
+		cCamera@ pCam = cLux_GetPlayer().GetCamera();		
+		array<cVector3f> vFlashlightGoboPositions;
+		array<cVector3f> vFlashlightRaycastDirs;
+		
+		bool bCheckIfAgentSeesGobo = false;
+				
+		//////////////
+		// Set 5 raycast offsets
+		float fAngle = apSpot.GetFOV() * 0.5f * 0.5f;
+		vFlashlightRaycastDirs.push_back(cVector3f(0, 0, 0));
+		vFlashlightRaycastDirs.push_back(cVector3f(fAngle, 0, 0));
+		vFlashlightRaycastDirs.push_back(cVector3f(-fAngle, 0, 0));
+		vFlashlightRaycastDirs.push_back(cVector3f(0, fAngle, 0));
+		vFlashlightRaycastDirs.push_back(cVector3f(0, -fAngle, 0));
+				
+		//////////////
+		// Set 5 raycast offsets
+		for (int i = 0; i < vFlashlightRaycastDirs.size(); ++i)
+		{
+			cVector3f vFwd = cVector3f(pCam.GetPitch(), pCam.GetYaw(), pCam.GetRoll());
+			cMatrixf mtxRot = cMath_MatrixRotateZXY(vFwd + vFlashlightRaycastDirs[i]);
+			cVector3f vRaycastDir = cMath_MatrixMul(mtxRot, cVector3f(0,0,-1));
+					
+			float fDist;
+			cVector3f vNrm;
+			if (cLux_GetClosestBody(pCam.GetPosition(), vRaycastDir, apSpot.GetRadius() * 0.8f, fDist, vNrm) !is null)
+			{
+				bCheckIfAgentSeesGobo = true;
+				
+				cVector3f vPos = pCam.GetPosition() + vRaycastDir * (fDist - 0.3f);						
+				vFlashlightGoboPositions.push_back(vPos);
+			}
+		}
+			
+		//////////////
+		// Update agent see gobo LOS check
+		if (bCheckIfAgentSeesGobo == false)
+			return;
+		
+		//////////////
+		// Iterate sensors
+		cLuxEntityComponentIterator@ pIt = mBaseObj.GetMap().GetEntityComponentIterator(eLuxEntityComponentType_LightSensor);
+		while (pIt.HasNext())
+		{
+			iLuxEntityComponent@ pComp = pIt.Next();
+			cLuxLightSensor@ pSensor = cast<cLuxLightSensor>(pComp);
+			iLuxEntity@ pEnt = pComp.GetEntity();
+					
+			if (pSensor.IsSensoring() == false) continue;
+			if (pEnt.GetEntityType() != eLuxEntityType_Agent) continue;
+					
+			cLuxAgent@ pAgent = cLux_ToAgent(pEnt);					
+			cVector3f vEyePos = pAgent.GetEyePostion();
+					
+			for (int i = 0; i < vFlashlightGoboPositions.size(); ++i)
+			{
+				cVector3f vPos = vFlashlightGoboPositions[i];
+						
+				//////////////
+				// Distance
+				if (cMath_Vector3Dist(vPos, pAgent.GetEyePostion()) > pAgent.GetSightRange() *pAgent.GetSightRangeMul())
+					continue;
+						
+				//////////////
+				// FOV
+				if (pAgent.GetPointIsInFOV(vPos, pAgent.GetFOV() * pAgent.GetFOVMul(), pAgent.GetCharBody().GetForward())==false)
+					continue;
+						
+				//////////////
+				// Line of sight
+				if (cLux_CheckLineOfSight(vEyePos, vPos, false, false))
+				{
+					pEnt.BroadcastMessage(eCustomEntityMessage_SeeFlashlightGobo, null, vPos, 0);
+					break;
+				}
+			}
+		}
+	}
+	
+	//-------------------------------------
+	
+	void UpdateMechanism(float afTimeStep)
+	{
+		//////////////////
+		// Setup vars
+		cMeshEntity@ pMeshEnt = mBaseObj.GetMeshEntity();
+		if (pMeshEnt is null) return;
+		
+		cBoneState@[] pBones = { pMeshEnt.GetBoneStateFromName(gsDynamiLantern_SpinnerBone),
+								 pMeshEnt.GetBoneStateFromName(gsDynamiLantern_CogBone_A),
+								 pMeshEnt.GetBoneStateFromName(gsDynamiLantern_CogBone_B) };			
+		
+		float fSpeed = cMath_Easing(eEasing_SineOut, mfEffectT);		
+		
+		//////////////////
+		// Update motion
+		{						
+			for (int i = 0; i < pBones.length(); ++i)
+			{			
+				cBoneState@ pBone = pBones[i];
+				
+				//////////////////
+				// Speed
+				float fMaxSpeed = fSpeed * gfDynamoLantern_MaxMechanismSpeed[i];				
+				bool bIncreaseSpeed = (i == 0 && fMaxSpeed > mfMechanismSpeed[i]) || 
+									  mfStopChargeDecreaseCount > 0.75f;
+				
+				if (bIncreaseSpeed)
+				{
+					mfMechanismSpeed[i] = fMaxSpeed;
+				}
+				else
+				{			
+					//////////////////
+					// Sync with sound?
+					if (i != 0 && 
+						mfMechanismDeacc[i] == 0.f && 
+						mfChargeSoundTime > 0.f)
+					{
+						mfMechanismDeacc[i] = mfMechanismSpeed[i] / mfChargeSoundTime;
+					}
+					
+					//////////////////
+					// Update speed
+					mfMechanismSpeed[i] = cMath_IncreaseTo(mfMechanismSpeed[i], afTimeStep * mfMechanismDeacc[i], 0.f);
+				}
+				
+				//////////////////
+				// Rotation
+				if (i == 2)		mfMechanismAngle[i] -= mfMechanismSpeed[i] * afTimeStep;
+				else			mfMechanismAngle[i] += mfMechanismSpeed[i] * afTimeStep;
+				
+				mfMechanismAngle[i] = mfMechanismAngle[i] % cMath_PiMul2;
+								
+				cMatrixf mtxRot = cMath_MatrixRotateZ(mfMechanismAngle[i]);
+				pBone.SetUsePreTransform(true);
+				pBone.SetPreTransform(mtxRot);
+			}
+		}
+	}
+    
+    //-------------------------------------
+	
+	void OnAfterAnimationUpdate(cMeshEntity@ apFunctions, float afTimeStep)
+	{
+		/////////////////
+		// Setup vars
+		cCamera@ pCam = cLux_GetPlayer().GetCamera();
+		cAnimationState@ pAnim = mBaseObj.GetCurrentAnimationState();
+		tString sAnim = pAnim !is null ? cString_ToLowerCase(pAnim.GetName()) : "";	
+		
+		if (pCam is null) return;
+		if (pAnim is null) return;
+		
+		cMatrixf mtxCamera = pCam.GetMatrix();		
+		bool bChargeAnimPlaying = cString_GetFirstStringPos(sAnim, "charge") != -1 &&
+								  cString_GetFirstStringPos(sAnim, "end") == -1;
+		
+		/////////////////
+		// Weight
+		float fWeightGoal = bChargeAnimPlaying ? 0.f : 1.f;
+		mfSpotlightCameraAlignmentWeight = cMath_IncreaseTo(mfSpotlightCameraAlignmentWeight, afTimeStep * 2.f, fWeightGoal);
+		
+		float fT = cMath_Easing(eEasing_ExpoInOut, mfSpotlightCameraAlignmentWeight);
+		
+		/////////////////
+		// Update rotation
+		for (int i = 0; i < m_idSpotlights.length(); ++i)
+		{
+			iLight@ pLight = cLux_ID_Light(m_idSpotlights[i]);
+			if (pLight is null) continue;
+			
+			cMatrixf mtxStart = m_mtxSpotlights[i];
+			cMatrixf mtxParentInv = cMath_MatrixInverse(mBaseObj.GetMatrix());
+			cMatrixf mtxGoal = cMath_MatrixMul(mtxParentInv, mtxCamera);	
+			
+			cQuaternion qStart = cMath_QuaternionMatrix(mtxStart.GetRotation());
+			cQuaternion qGoal = cMath_QuaternionMatrix(mtxGoal.GetRotation());
+			cQuaternion qRot = cMath_QuaternionSlerp(fT, qStart, qGoal, true);
+			
+			cMatrixf mtxNew = cMath_MatrixQuaternion(qRot);			
+			mtxNew.SetTranslation(mtxStart.GetTranslation());			
+			
+			pLight.SetMatrix(mtxNew);	
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// DEBUG
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	float DrawDebugOutput(cGuiSet@ apSet, iFontData@ apFont,float afY)
+	{
+		cAnimationState@ pAnim = mBaseObj.GetCurrentAnimationState();
+		tString sAnim = pAnim !is null ? pAnim.GetName() : "";
+		
+		afY = cLux_DrawDebugText("--------- Dynamo Lantern ---------", afY);
+		afY = cLux_DrawDebugText("Charge: " + mfCharge, afY);
+		afY = cLux_DrawDebugText("BurnTime: " + mfBurnTime, afY);
+		afY = cLux_DrawDebugText("StopChargeDecreaseCount: " + mfStopChargeDecreaseCount, afY);
+		afY = cLux_DrawDebugText("Animation: " + sAnim, afY);
+		
+		if (pAnim !is null)
+			afY = cLux_DrawDebugText("Animation time: " + pAnim.GetRelativeTimePosition(), afY);
+		
+		return afY;
+	}
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// PROPERTIES
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	float mfBurnTime = 0;	
+	int mlPutAwayTimeStamp = 0;
+	
+	float mfCharge = 0.f;
+	float mfPrevCharge = 0.f;	
+	float mfEffectT = 0.f;
+	float mfStopChargeDecreaseCount = 0.f;
+	float mfChargeSoundTime = 0.f;
+	
+	float mfFlickerCount = 0.f;
+	float mfFlickerDelay = 0.f;	
+	float mfFlashlightCheckAgentSeesGoboCount = 0.f;
+	float mfFlashLightUpdateShineOnAgentCount = 0.05f;	
+	
+	float[] mfMechanismAngle = { 0.f, 0.f, 0.f };
+	float[] mfMechanismSpeed = { 0.f, 0.f, 0.f };
+	float[] mfMechanismDeacc = { 0.f, 0.f, 0.f };
+	
+	float mfInsideLightFlickerCount = 0.f;
+	float mfInsideLightFlickerTime = -1.f;
+	
+	bool mbIsBeingLowered = false;
+	bool mbPrevEffectsActive = false;
+	bool mbFlashlightCheckAgentSeesGoboRaysFired = false;
+	
+	tID m_idDynamoSound = tID_Invalid;
+	tID m_idBillboardBlur = tID_Invalid;
+	tID[] m_idFlickerLights = { tID_Invalid, tID_Invalid };
+	
+	float mfSpotlightCameraAlignmentWeight = 1.f;
+	
+	tID[] m_idSpotlights = {tID_Invalid, tID_Invalid };
+	cMatrixf[] m_mtxSpotlights = { cMatrixf_Identity, cMatrixf_Identity };
+	
+	//------------------------------------------------------------
+}

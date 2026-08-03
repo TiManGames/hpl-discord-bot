@@ -1,0 +1,441 @@
+#include "custom/props/Prop_Pickup.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+#include "helpers/helper_modules.hps"
+
+//------------------------------------------------------------
+
+enum ePocketWatchState
+{
+	ePocketWatchState_Stopped = 0,
+	ePocketWatchState_Running = 1,
+	ePocketWatchState_Winding = 2
+}
+
+//------------------------------------------------------------
+
+const tString gsPocketWatch_HandSecondBone = "j_dial_main";
+
+const tString gsPocketWatch_StartSound = "player/tools/stopwatch/stopwatch_start";
+const tString gsPocketWatch_StopSound = "player/tools/stopwatch/stopwatch_stop";
+const tString gsPocketWatch_LoopSound = "player/tools/stopwatch/stopwatch_tick";
+
+const float gfWindingStartTime_1 = 1.f;
+const float gfWindingDuration_1 = 0.35f;
+const float gfWindingStartTime_2 = 1.7f;
+const float gfWindingDuration_2 = 0.35f;
+const float gfWindingStartTime_3 = 2.4f;
+const float gfWindingDuration_3 = 1.f;
+
+//------------------------------------------------------------
+
+class cScrPropPocketWatch : cScrPropPickup
+{
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// INIT
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+
+	void Init()
+	{
+		cScrPropPickup::Init();
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		cScrPropPickup::SetupAfterLoad(apWorld, apVars, apInstanceVars);
+	}
+	
+	//------------------------------------------------------------
+			
+	void BeforeEntityDestruction()
+	{
+		///////////////////
+		// Temp fix so state is saved between maps
+		// TODO: Remove this!
+		cScript_SetGlobalVarInt("PocketWatch_State", int(mState));
+		cScript_SetGlobalVarString("PocketWatch_LastMapStateSave", mBaseObj.GetMap().GetName());
+		StopTickingSound();
+	}
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// GLOBAL
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_CopyFromItemEntity() override
+	{
+		cScrPropPickup::_Global_CopyFromItemEntity();		
+		tString sSource = cScript_GetGlobalArgString(0);
+		
+		//////////////////
+		// Save data
+		cScript_SetGlobalArgInt(0, int(mState));
+		cScript_SetGlobalArgFloat(1, mfHandSecondAngle);
+		cScript_SetGlobalArgFloat(2, mfTimeLeftBeforeStopped);
+		
+		cScript_RunGlobalFunc(sSource, "cScrPropPocketWatch", "_Global_CopyValues");
+	}
+	
+	//------------------------------------------------------------
+	
+	// Called to transfer values from another of these entities
+	// e.g. when spawning something from the inventory
+	
+	void _Global_CopyValues()
+	{
+		//////////////////
+		// Get data
+		mState = ePocketWatchState(cScript_GetGlobalArgInt(0));
+		mfHandSecondAngle = cScript_GetGlobalArgFloat(1);
+		mfTimeLeftBeforeStopped = cScript_GetGlobalArgFloat(2);
+		
+		///////////////////
+		// Temp fix so state is saved between maps
+		// TODO: Remove this!
+		tString sMap = mBaseObj.GetMap().GetName();
+		tString sLastMap = cScript_GetGlobalVarString("PocketWatch_LastMapStateSave");
+		
+		if (sMap != sLastMap && sLastMap != "")
+			mState = ePocketWatchState(cScript_GetGlobalVarInt("PocketWatch_State"));
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_IsBeingPutAway()
+	{
+		StopTickingSound();
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_OnItemTakenOut()
+	{
+		//////////////////
+		// Enable anim callback
+		//mBaseObj.SetAnimationCallbackActive(true);
+				
+		//////////////////
+		// Don't float magically in the air!
+		cMeshEntity@ pMeshEnt = mBaseObj.GetMeshEntity();
+		if (pMeshEnt !is null)
+		{
+			pMeshEnt.SetRenderFlagBit(eRenderableFlag_VisibleInReflection, false);
+			pMeshEnt.SetRenderFlagBit(eRenderableFlag_VisibleInNonReflection, true);
+			pMeshEnt.SetRenderFlagBit(eRenderableFlag_ShadowCaster, true);
+		}
+		
+		mBaseObj.StopAllAnimations(0.01f);
+		
+		//if (mbEquippedOnce)
+		//{
+			mState = Generator_GetState() == eGeneratorState_On ? ePocketWatchState_Running : ePocketWatchState_Stopped;
+		//}
+		//else
+		//{
+			//PocketWatch_WindUp(false);
+			//mbEquippedOnce = true;
+		//}
+		
+		float fFullness = Generator_GetFullness();
+		if (mfTimeLeftBeforeStopped > fFullness)
+			mfTimeLeftBeforeStopped = fFullness;
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_OnItemStartPutAway()
+	{
+		StopTickingSound();
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_StopPocketWatch()
+	{
+		StopPocketWatch();
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_WindUpPocketWatch()
+	{
+		WindUpPocketWatch(cScript_GetGlobalArgBool(0));
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_ResetPocketWatch()
+	{
+		ResetPocketWatch();
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetIsRunning()
+	{
+		cScript_SetGlobalReturnBool(mState == ePocketWatchState_Running);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_Run()
+	{
+		mState = ePocketWatchState_Running;
+	}
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// GENERAL
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnAfterAnimationUpdate(cMeshEntity@ apFunctions, float afTimeStep)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnVariableUpdate(float afTimeStep)
+	{
+		float fCountDownTime = Generator_GetFullness();
+		
+		/////////////////////
+		// Winding
+		if (mState == ePocketWatchState_Winding)
+		{
+			mfWindingTime += afTimeStep;
+			
+			///////////////////////
+			// Setup winding stages
+			float fToGoal = fCountDownTime - mfTimeLeftBeforeStopped;
+			float fOneThirdOfGoal = fToGoal / 3.f;
+			float fGoal = 0.f;
+			float fStart = 0.f;
+			float fCurrWindingDuration = 0.f;
+			float fCurrWindingStartTime = 0.f;
+			
+			if (mlWindUpCount == 0)
+			{
+				fStart = mfTimeLeftBeforeStopped;
+				fGoal = mfTimeLeftBeforeStopped + fOneThirdOfGoal;
+				fCurrWindingDuration = gfWindingDuration_1;
+				fCurrWindingStartTime = gfWindingStartTime_1;
+			}
+			else if (mlWindUpCount == 1)
+			{
+				fStart = mfTimeLeftBeforeStopped + fOneThirdOfGoal;
+				fGoal = mfTimeLeftBeforeStopped + fOneThirdOfGoal * 2.f;
+				fCurrWindingDuration = gfWindingDuration_2;
+				fCurrWindingStartTime = gfWindingStartTime_2;
+			}
+			else if (mlWindUpCount == 2)
+			{
+				fStart = mfTimeLeftBeforeStopped + fOneThirdOfGoal * 2.f;
+				fGoal = fCountDownTime;
+				fCurrWindingDuration = gfWindingDuration_3;
+				fCurrWindingStartTime = gfWindingStartTime_3;
+			}
+			
+			///////////////////
+			// Perform winding
+			bool bStartWinding = mfWindingTime >= fCurrWindingStartTime;
+			
+			if (bStartWinding)
+			{
+				float fMinT = fCurrWindingStartTime;
+				float fMaxT = fCurrWindingStartTime + fCurrWindingDuration;
+				float fT = cMath_Clamp((mfWindingTime - fMinT) / (fMaxT - fMinT), 0.f, 1.f);
+					
+				mfCurrWindingPosition = fStart + (fGoal - fStart) * fT;					
+				
+				if (fT >= 1.f)
+				{
+					//////////////////////
+					// More winding needed to reach goal
+					if (mlWindUpCount < 2 && mfCurrWindingPosition <= fCountDownTime)
+						mlWindUpCount++;
+						
+					////////////////
+					// All done
+					else if (Generator_GetRunForever()==false)
+						mState = ePocketWatchState_Running;
+				}
+			}
+			
+			mfHandSecondAngle = mfCurrWindingPosition * cMath_ToRad(360.f) * -1.f;
+			SetHandAngle(mfHandSecondAngle);
+			return;
+		}
+		
+		/////////////////////
+		// Running
+		mlFramesUntilNextHandUpdate++;
+		if (PocketWatch_GetWindUpNeeded())
+		{
+			mState = ePocketWatchState_Stopped;
+			PocketWatch_ForceWindUp();
+		}
+		else if (mState == ePocketWatchState_Running && mlFramesUntilNextHandUpdate < 10)
+		{
+			////////////////
+			// Stop
+			if (fCountDownTime <= 0.f)
+			{
+				mState = ePocketWatchState_Stopped;
+			}
+			else
+			{
+				//////////////
+				// Start sound
+				cSoundEntity@ pSound = cLux_ID_SoundEntity(m_idSoundLoop);
+				if (pSound is null)
+				{
+					//cLux_AddDebugMessage("[Prop_PocketWatch] Start Ticking");
+					@pSound = mBaseObj.PlaySound("Sound_PocketWatchLoop", gsPocketWatch_LoopSound, true, true);
+					m_idSoundLoop = pSound.GetID();
+				}
+			}
+			
+			mfTimeLeftBeforeStopped = fCountDownTime;
+			mfHandSecondAngle = fCountDownTime * cMath_ToRad(360.f) * -1.f;
+		}
+		
+		//////////////
+		// Stopped
+		else if (mState == ePocketWatchState_Stopped)
+		{
+			StopTickingSound();			
+			mfHandSecondAngle = mfTimeLeftBeforeStopped * cMath_ToRad(360.f) * -1.f;
+		}
+		
+		////////////////////////
+		// Update the timer hand
+		SetHandAngle(mfHandSecondAngle);
+		
+		mlFramesUntilNextHandUpdate = 0.f;
+	}
+	
+	//------------------------------------------------------------
+	
+	void StopTickingSound()
+	{
+		cSoundEntity@ pSound = cLux_ID_SoundEntity(m_idSoundLoop);
+		if (pSound !is null)
+		{
+			//cLux_AddDebugMessage("[Prop_PocketWatch] Stop Ticking");
+			pSound.Stop(false);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnSetActive(bool abX)
+	{
+		//if (abX==false)
+			//StopTickingSound();
+	}
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPERS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetHandAngle(float afAngle)
+	{
+		//////////////
+		// Setup
+		cMeshEntity@ pMeshEnt = mBaseObj.GetMeshEntity();
+		cBoneState@ pHand = pMeshEnt !is null ? pMeshEnt.GetBoneStateFromName(gsPocketWatch_HandSecondBone) : null;
+		if (pHand is null)
+			return;
+		
+		//////////////
+		// Set angle
+		cMatrixf mtxHand = pHand.GetLocalMatrix();
+		mtxHand.SetRotation(cMath_MatrixRotateZ(afAngle));
+		pHand.SetMatrix(mtxHand);
+	}
+	
+	//------------------------------------------------------------
+	
+	void StopPocketWatch()
+	{
+		StopTickingSound();
+		
+		mState = ePocketWatchState_Stopped;
+	}
+	
+	//------------------------------------------------------------
+	
+	void WindUpPocketWatch(bool abInstant=true)
+	{
+		//////////////
+		// Instant
+		if (abInstant)
+		{
+			bool bRun = Generator_GetFullness() > 0.f && Generator_GetState() == eGeneratorState_On && Generator_GetRunForever()==false;
+			mState = bRun ? ePocketWatchState_Running : ePocketWatchState_Stopped;
+		}
+		else
+		{
+			mState = ePocketWatchState_Winding;
+		}
+		
+		////////////
+		// Wind up
+		mlWindUpCount = 0;
+		mfWindingTime = 0.f;
+		mfCurrWindingPosition = mfTimeLeftBeforeStopped;
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetPocketWatch()
+	{
+		mState = ePocketWatchState_Stopped;
+		mfCurrWindingPosition = 0.f;
+		mlWindUpCount = 0;
+		mfWindingTime = 0.f;
+	}
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// PROPERTIES
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	tID m_idSoundLoop = tID_Invalid;
+	ePocketWatchState mState = ePocketWatchState_Stopped;
+	int mlFramesUntilNextHandUpdate = 0.f;
+	
+	float mfCurrWindingPosition = 0.f;
+	int mlWindUpCount = 0;
+	float mfWindingTime = 0.f;
+	float mfHandSecondAngle = 0.f;
+	float mfTimeLeftBeforeStopped = 0.f;
+	
+	bool mbEquippedOnce = false;
+	
+	//------------------------------------------------------------
+}

@@ -1,0 +1,251 @@
+////////////////////////////////////////////////////////
+// Deferred Light Box - Fragment Shader
+//
+// Fragment program to draw a light box. 
+////////////////////////////////////////////////////////
+
+////////////////////
+//Textures
+uniform cTexture2D  aDiffuseMap : 0;
+uniform cTexture2D  aNormalMap : 1;
+uniform cTexture2D  aSpecularMap_RG : 2;
+uniform cTexture2D  aSpecularMap_B_Pow : 3;
+uniform cTexture2D  aDepthMap : 4;
+
+////////////////////
+//Uniform varaibles
+cBuffer cLightArguments : 0
+{
+	cMatrixf a_mtxViewProjection;
+	cMatrixf a_mtxProjection;
+	cMatrixf a_mtxView;
+	cMatrixf a_mtxInvViewProjection;
+	cMatrixf a_mtxInvProjection;
+	cMatrixf a_mtxInvView;
+		
+	float afFarPlane;
+	float afNearPlane;
+	float afNearByFarPlane;
+	float afInvFarPlane;
+
+	cVector4f avScreenToFarPlane;
+	cVector2f avInvScreenSize;
+
+	cVector2f avFogStartAndLength;
+	cVector4f avFogColor;
+
+	cVector3f avViewSpaceUp;
+	float afFogFalloffExp;
+		
+	cVector4f avShadowParams;
+	cVector2f avShadowMapSize;
+	int alInstanceOffset;
+	int alInstanceStride;
+};
+
+@ifdef UseIrradiance
+	cVector3f GetSH(cVector3f avDir, in cVector4f avBands[7])
+	{  
+		cVector3f vX[3]; 
+		
+		cVector4f vA = cVector4f(avDir, 1.0);
+
+		vX[0].r = dot(avBands[0], vA); 
+		vX[0].g = dot(avBands[1], vA); 
+		vX[0].b = dot(avBands[2], vA); 
+								  
+		@ifdef Use4BandSH
+			return vX[0];
+		@endif
+					
+		cVector4f vB = avDir.xyzz * avDir.yzzx;    
+		float vC = avDir.x * avDir.x - avDir.y * avDir.y; 
+					  
+		vX[1].r = dot(avBands[3], vB); 
+		vX[1].g = dot(avBands[4], vB); 
+		vX[1].b = dot(avBands[5], vB); 
+
+		vX[2] = avBands[6].rgb * vC;  
+
+		return vX[0] + vX[1] + vX[2]; 
+	}
+	
+	cVector3f GetReflectedSH(cVector3f avDir, float afSpecularPow, in cVector4f avBands[7])
+	{
+		cVector3f vX[3]; 
+		cVector3f vRoughness = clamp((cVector3f(0.5, 0.75, 1.0) - cVector3f(afSpecularPow, afSpecularPow, afSpecularPow)) * 4.0, cVector3f(0.0, 0.0, 0.0), cVector3f(1.0, 1.0, 1.0));
+				
+		cVector4f vA = cVector4f(avDir * vRoughness.y, vRoughness.x);
+		
+		vX[0].r = dot(avBands[0], vA); 
+		vX[0].g = dot(avBands[1], vA); 
+		vX[0].b = dot(avBands[2], vA); 
+								  
+		@ifdef Use4BandSH
+			return vX[0] * avBands[6].a;
+		@endif
+
+		cVector4f vB = avDir.xyzz * avDir.yzzx * vRoughness.z;    
+		float vC = (avDir.x * avDir.x - avDir.y * avDir.y) * vRoughness.z; 
+						  
+		vX[1].r = dot(avBands[3], vB); 
+		vX[1].g = dot(avBands[4], vB); 
+		vX[1].b = dot(avBands[5], vB); 
+
+		vX[2] = avBands[6].rgb * vC;  
+
+		return (vX[0] + vX[1] + vX[2]) * avBands[6].a; // specular amount stored in alpha
+	}
+	
+@endif
+
+cVector3f Fresnel(in cVector3f avSpecColor, float afEoH)
+{
+	float fFresnel = pow(1.0 - afEoH, 5.0);
+	return avSpecColor * (1.0 - fFresnel) + fFresnel * clamp(avSpecColor.g * 50.0, 0.0, 1.0);
+}
+
+float EnvBRDF(in cVector3f avDiffuse, in cVector3f avSpec)
+{
+	/////////////
+	// Limit specular if diffuse is low
+	const cVector3f kvOne = cVector3f(1.0, 1.0, 1.0);
+	float fDiffuse = dot(avDiffuse, kvOne);
+	float fSpec = dot(avSpec, kvOne);
+
+	return fDiffuse / (fDiffuse + fSpec + 0.000001f);
+}
+
+void main(in cVector4f px_vPosition,
+		  in cVector3f px_vBoxCenter,
+		  in cVector3f px_vBoxExtent,
+@ifdef UseIrradiance
+		  in cVector4f px_vBands[7],
+@else
+		  in cVector4f px_vSkyColor,
+		  in cVector4f px_vGroundColor,
+@endif
+@ifdef Blend_Replace || Blend_Add || Blend_Blend
+		  in float px_fFalloff,
+		  in float px_fBevel,
+		  in float px_fWeight,
+@endif
+@ifdef DebugComplexity
+		  in float px_fComplexity,
+@endif
+		  out cVector4f out_vColor : 0)
+{
+	cVector2l vMapCoords = cVector2l(px_vPosition.xy);
+	float fDepth = load(aDepthMap, vMapCoords, 0).x; 
+	
+	if(fDepth == 1.0) discard;
+
+	cVector4f vNormalVal = load(aNormalMap, vMapCoords, 0);
+
+	cVector3f vPos = cVector3f(px_vPosition.xy * avScreenToFarPlane.xy + avScreenToFarPlane.zw, -afFarPlane) * fDepth;
+	cVector3f vWorldView = mul(a_mtxInvView, cVector4f(vPos, 0.0)).xyz;
+	cVector3f vBox = (px_vBoxCenter - vWorldView) / px_vBoxExtent;
+	cVector3f vOffset = vBox;
+	
+	@ifdef Blend_Replace || Blend_Add || Blend_Blend
+		////////////////
+		// Falloff
+		vBox = abs(vBox);
+
+		//////////////
+		// Get the spherical and box falloff
+		float fSphereFalloff = length(vBox);
+
+		vBox = max(cVector3f(0.0, 0.0, 0.0), cVector3f(1.0, 1.0, 1.0) - vBox);
+		cVector3f vBoxFalloff = cVector3f(1.0, 1.0, 1.0) / vBox;
+		float fBoxFalloff = sqrt(1.0 / (vBoxFalloff.x + vBoxFalloff.y + vBoxFalloff.y));
+		float fCutoff = min(min(vBox.x, vBox.y), vBox.z);
+
+		//////////
+		// Perform smoothstep and add spherical and box togehter
+		cVector3f vFalloff = smoothstep(cVector3f(0.0, 0.0, px_fBevel), 
+										cVector3f(1.0, 0.125, 0.0), cVector3f(fBoxFalloff, fCutoff, fSphereFalloff));
+		vFalloff.xz *= vFalloff.xz;
+
+		float fWeight = vFalloff.x * vFalloff.y * vFalloff.z;
+		float fFalloff = pow(fWeight, px_fFalloff+1e-5f) * px_fWeight;
+		
+		@ifdef DebugComplexity
+			//always show this with complexity
+			float fComplexityMul = (fFalloff <= 0.0 || isnan(fFalloff)) ? 0.25f : 1.0f;
+		@else
+			if(fFalloff <= 0.0 || isnan(fFalloff)) discard;
+		@endif
+	@endif
+
+	cVector4f vColorVal = sample(aDiffuseMap, px_vPosition.xy * avInvScreenSize);
+
+	@ifdef UseIrradiance && UseSpecularIrradiance
+		cVector4f vSpecVal;
+		vSpecVal.xy = sample(aSpecularMap_RG, px_vPosition.xy * avInvScreenSize).xy;
+		vSpecVal.zw = sample(aSpecularMap_B_Pow, px_vPosition.xy * avInvScreenSize).xy;
+	@endif
+
+	/////////////////////////////////
+	//Unpack normal and normalize (if needed)
+	cVector3f vNormal = vNormalVal.xyz * 2.0 - 1.0;
+	
+	///////////////////////////////
+	// Calculate color
+	@ifdef UseIrradiance
+		////////////////
+		// Caluclate SH color
+		cVector3f vWorldNormal = mul(a_mtxInvView, cVector4f(vNormal,0.0)).xyz;
+		vWorldView = normalize(vWorldView);
+
+		//////////////
+		// Calculate normal SH
+		cVector3f vSH = max(cVector3f(0.0, 0.0, 0.0), GetSH(normalize(vWorldNormal + vOffset * 0.25), px_vBands)); //slightly skew the normal toward the edge of the box for more detail
+		
+		@ifdef UseSpecularIrradiance
+			//////////////
+			// Calculate specular SH
+			cVector3f vReflected = reflect(vWorldView, vWorldNormal);
+			float fNoE = clamp(abs(dot(vWorldNormal.xyz, vWorldView.xyz)) + 1e-5f, 0.0, 1.0);
+
+			cVector3f vSHSpec = max(cVector3f(0.0, 0.0, 0.0), GetReflectedSH(vReflected, vSpecVal.a, px_vBands));
+		
+			cVector3f vFresnel = Fresnel(vSpecVal.xyz, fNoE) * (1.0 - 0.5 * vSpecVal.a);
+			float fEnvBrdf = EnvBRDF(vSH, vSHSpec);
+
+			out_vColor.xyz = (vSH * vColorVal.xyz + vSHSpec * vFresnel * fEnvBrdf) * 8.0;
+		@else
+			out_vColor.xyz = vSH * vColorVal.xyz * 8.0;
+		@endif
+	@else
+		float fUpAmount = dot( avViewSpaceUp, vNormal.xyz)*0.5 + 0.5;
+		cVector4f vLightColor = mix(px_vGroundColor, px_vSkyColor, fUpAmount);
+
+		out_vColor.xyz = vColorVal.xyz * vLightColor.xyz * 8.0;
+
+		@ifdef UseUnderwaterFog
+			out_vColor.xyz *= avFogColor.xyz;
+		@endif
+	@endif
+
+	@ifdef Blend_Replace
+		out_vColor.xyz *= fFalloff * fFalloff;
+		out_vColor.w = fFalloff;
+	@elseif Blend_Add
+		out_vColor.xyz *= fFalloff;
+		out_vColor.w = 0;
+	@elseif Blend_Blend
+		out_vColor.xyz *= fFalloff * fWeight;
+		out_vColor.w = fWeight * px_fWeight;
+	@endif
+	
+	@ifdef DebugComplexity
+		@ifdef UseIrradiance
+			out_vColor.xyz = out_vColor.xyz * 1e-5f + cVector3f(px_fComplexity * fComplexityMul, px_fComplexity * fComplexityMul, px_fComplexity * fComplexityMul);
+			out_vColor.w = 1.0;
+		@else
+			out_vColor.xyz = out_vColor.xyz * 1e-5f + cVector3f(px_fComplexity * fComplexityMul, px_fComplexity * fComplexityMul, px_fComplexity * fComplexityMul);
+			out_vColor.w = 1.0;
+		@endif
+	@endif
+}

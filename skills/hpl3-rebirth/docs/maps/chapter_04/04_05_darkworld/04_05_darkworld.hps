@@ -1,0 +1,700 @@
+#include "interfaces/Map_Interface.hps"
+#include "base/Inputhandler_Types.hps"
+
+#include "helpers/helper_map.hps"
+#include "helpers/helper_props.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_audio.hps"
+#include "helpers/helper_imgui.hps"
+#include "helpers/helper_sequences.hps"
+#include "helpers/helper_game.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_areas.hps"
+#include "helpers/helper_ai.hps"
+#include "helpers/helper_modules_custom.hps"
+#include "custom/helpers/helper_menu.hps"
+#include "helpers/helper_player.hps"
+#include "custom/helpers/helper_props_custom.hps"
+#include "helpers/helper_player_custom.hps"
+#include "base/AchievementHandler_Types.hps"
+
+//--------------------------------------------------
+ 
+/*Place any global values here. These must be const variables as they will not be saved*/
+/*This is also the place for enums and classes, but these should be avoided whenever possible*/
+ 
+//--------------------------------------------------
+ 
+class cScrMap : iScrMap
+{
+	//--------------------------------------------
+ 
+	bool mbIsGhoulEnding = true;
+	
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN CALLBACKS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+ 
+	////////////////////////////
+	// Set up map environment
+	void Setup()
+	{
+		// Put display name entry in english.lang / Levels
+		GetBase().SetDisplayNameEntry("04-05-darkworld");
+		
+		// Set up color grading etc.
+		Effect_Bloom_FadeBrightPass(0.3f, 3);
+        Effect_Bloom_FadeBloomWidth(128, 1);
+        Effect_Bloom_FadeBloomFalloff(1.5f, 2);
+        Effect_Bloom_FadeBloomTint(1, 1, 1, 2);
+				
+		Pregnancy_SetStage(ePregStage_BornRecovered);
+		Pregnancy_SetBarksActive(false);
+		Pregnancy_SetBabyKicksEnabled(false);
+		Pregnancy_SetBabyTalkStage(eBabyTalkStage_Born);
+		GhoulProgression_SetBarkStage(eGhoulBarkStage_BecomingMonster);
+		Player_SetAllowCheckBaby(false);
+		Player_SetCrouching(false, true, true);
+		FearHandler_SetWhispersActive(false);
+		PlayerBody_ResetCutscenePitchYawLimits();
+		
+		Map_Preset_SetupDirLight("Preset_LightningOn", true, cColor(1,1.5,2,1), 20, cVector3f(-0.913, -0.407, -0.009), cColor(0.092,0.069,0.069,1), cColor(0.092,0.069,0.069,1));
+		Map_Preset_SetupBloom("Preset_LightningOn", 10, 0.02f, 1.5f, cColor(1, 2, 2, 1));
+		
+		Map_Preset_SetupDirLight("Preset_LightningOff", false, cColor(0.269,0.339,0.35,1), 0.f, cVector3f(-0.644, -0.462, 0.61), cColor(0.222,0.289,0.299,1), cColor(0.101,0.171,0.182,1));
+		Map_Preset_SetupBloom("Preset_LightningOff", 128.f, 0.75f, 0.5f, cColor(1.f));
+		
+		Map_Preset_Fade("Preset_LightningOff", 1.f);
+		Map_SetSkyboxRotation(cVector3f(0, 90, 0));
+		
+		StruggleFlashHandler_SetActive(false);
+		StruggleFlashHandler_PreloadFlashGroupTextures(7);
+		StruggleFlashHandler_SetProgression(7);
+		
+		ParticleSystem_SetActive("PS_Destruction*", false);
+        ParticleSystem_SetActive("PS_BigExplo*", false);
+        ParticleSystem_SetActive("PS_window_explo_*", false);
+
+		Entity_SetEffectsActive("dark_world_tower_debris*", false, false);
+		Prop_SetStaticPhysics("dark_world_tower_debris*", true);
+		
+		Player_SetAutoTeleportWhenBelowAltitude(-50.f);
+	}
+	
+	//-------------------------------------------------------
+		
+	void PreloadData()
+	{
+		Sound_PreloadEvent("new_sounds/undercity_ending/ghoul_ending");
+		Sound_PreloadEvent("04_05_paris/dw_endings/destruction_ending");
+		
+		/////////////////
+		// Preload gui
+		//ImGui_PreloadImage("some_image");
+
+		///////////////
+		// Preload particles
+		//ParticleSystem_Preload("some_particle.ps");
+
+		//////////////
+		// Preload screen effects
+		//Material_Preload("some_material.mat");
+	}
+	
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run first time starting map
+	void OnStart()
+	{
+		GhoulProgression_SetLimit(20);
+				
+		//cScript_SetGlobalVarBool("HideAmuletBracelet", true);
+		Item_RemoveFromInventory(ItemType_GetFirstInInventory("CurseMedallion"));
+		
+		// Any general setup of script / entities
+		Entity_AttachToSocket("Sketchbook_Screen", "Sketchbook_Body", "BookSocket", true, false);
+		
+		/////////////////////////
+		// Debug
+		if(cLux_ScriptDebugOn())
+		{
+		}
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when entering map
+	void OnEnter()
+	{	
+		cLux_ClearAllMapSaveData();
+		
+		Player_SetVertigoActive(false);
+		Player_SetCameraFarPlane(9000.f);		
+		
+		FearHandler_SetActive(true);
+		FearHandler_SetPermaFailEnabled(true);	
+		FearHandler_SetWakeUpSoundsAllowed(false);
+		
+		PlayerBody_SetModel("player6.ent");
+		PlayerBody_SetActive(true);
+		Heat_SetActive(false);
+		
+		FearHandler_SetPermafailBabySceneEnabled(false, false);
+		Entity_SetActive("Monkey",false);
+		Entity_SetActive("Sketchbook_*", false);
+		
+		mbIsGhoulEnding = !cScript_GetGlobalVarBool("Ending_Destruction");
+		
+		Player_SetCrossHairEnabled(false);
+ 
+		////////////////////
+		// Setup ghoul ending			
+		if (cLux_ScriptDebugOn() == false)
+		{
+			if (mbIsGhoulEnding)
+				Seq_FetishEnd();
+			else
+				Seq_DestructionEnd();
+		}
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when leaving map
+	void OnLeave()
+	{
+		Player_RestoreClipPlane();
+		Player_SetCrossHairEnabled(true);
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnPermaFail()
+	{
+		Sound_FadeGlobalVolume(1.f, 1.f, eSoundEntryType_All);
+			
+		FearHandler_AddPermaFailScene("player_ghoul_ending", "Trigger_FetishAnim", "Sketchbook_Body", "sketchbook_ghoul_ending", 33.266f, false);
+		Entity_PlayAnimation("Monkey", "monkey_ghoul_ending", 0.0f, false);
+		SequenceStates_Resume("Seq_FetishEnd");
+		return true;		
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnPermaFailRespawn()
+	{
+		FearHandler_SetVolumeResetOnCustomPermaFail(false);
+		Map_AddTimer("Timer_EndLevel", 0.01f, "OnTimer_EndLevel");
+		return false;
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// To get when player makes input (mostly used for debug)
+	void OnAction(int alAction, bool abPressed) 
+	{
+		if (abPressed==false) return;
+		
+		if (alAction == eAction_Test1)
+		{
+			mbIsGhoulEnding = false;
+			Seq_DestructionEnd();
+		}
+		
+		if (alAction == eAction_Test2)
+		{
+			mbIsGhoulEnding = true;
+			Seq_FetishEnd();
+		}
+		
+		if (alAction == eAction_Test3)
+		{
+			Player_SetCrouching(false, true, true);
+		}
+		
+		if (alAction == eAction_Test4)
+		{
+			ShadowFlesh_Spawn("Shadowflesh_1", "", 2.0f,2.0f,true,0.0f,0.0f);
+		}
+		
+		if (alAction == eAction_Test5)
+		{
+			mbIsGhoulEnding = true;
+			cScript_SetGlobalVarBool("Undercity_LeftDoll", true);
+			OnTimer_EndLevel();
+		}
+		if (alAction == eAction_Test6)
+		{
+			mbIsGhoulEnding = true;
+			cScript_SetGlobalVarBool("Undercity_LeftDoll", false);
+			OnTimer_EndLevel();
+		}
+		if (alAction == eAction_Test7)
+		{
+			mbIsGhoulEnding = false;
+			OnTimer_EndLevel();
+		}
+		if (alAction == eAction_Test8)
+		{
+			Credits_Start("Credits.cfg","OnEndOfCredits", "ending_3", cVector3f(-0.15,-0.1,1.75f), "A2_AlternativeEnding,A2_Ending");
+			MainMenu_Sketchbook_SetSketch("ending_3");
+		}
+		if (alAction == eAction_Test9)
+		{
+			Credits_Start("Credits.cfg","OnEndOfCredits", "ending_4", cVector3f(-0.15,-0.1,1.75f), "A2_AlternativeEnding,A2_Ending");
+			MainMenu_Sketchbook_SetSketch("ending_4");
+		}
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// This only used for pure debug purposes when info needs to printed.
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afY)
+	{
+		//afY = cLux_DrawDebugText("My Debug value:"+..., afY);
+		return afY;
+	}
+ 
+	//-------------------------------------------------------
+ 
+	//} END MAIN CALLBACKS
+ 
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN FUNCTIONS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+ 
+	/*Put any variables that are used in more than one scene here.*/
+ 
+	//-------------------------------------------------------
+ 
+	/*Put any functions that are used in more than one scene here.*/
+ 
+	//-------------------------------------------------------
+ 
+	//} END MAIN FUNCTIONS
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 1 *Ghoul ending*
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+ 
+		/////////////////////////////////////////
+		// General
+		//{//////////////////////////////////////
+		 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are used by many events in Scene X here.*/
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are used in more than one event in Scene X here.*/
+	 
+		//-------------------------------------------------------
+		
+		//} END General	
+	 
+		/////////////////////////////////////////
+		// Event *Build the fetish and spot the Tower*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene X, Event X here.*/
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene X, Event X here.*/
+
+		cSequenceStatesData mSeqDataFetishEnd;
+		void Seq_FetishEnd(const tString &in asTimer="")
+		{
+			Sequence_Begin("Seq_FetishEnd", mSeqDataFetishEnd);
+			if (Sequence_DoStepAndWait(0.0f))
+			{
+				Entity_SetActive("Pod", false);
+				Effect_Fade_Out(0.0f);
+				Sound_FadeGlobalVolume(0.0f,0.0f);
+				Music_FadeVolumeMul(0.0f,0.0f);
+				Sound_FadeGlobalVolume(1.f, 1.f, eSoundEntryType_WorldAll);
+				Music_FadeVolumeMul(1.0f,1.0f);
+				Entity_SetActive("Sketchbook_*", true);
+				Entity_SetActive("Monkey", !cScript_GetGlobalVarBool("Undercity_LeftDoll"));
+			}
+			else if (Sequence_DoStepAndPause(3.f))
+			{
+				Player_ChangeStateToNormal();
+				Player_Teleport("Start_Fetish", true);
+				
+				FearHandler_TriggerPermaFail(false);
+			}
+			else if (Sequence_DoStepAndWait(2.f))
+			{
+				Sound_FadeGlobalVolume(1.0f,0.5f);
+				Music_Play("A2_4_3_Ghoul_Ending.ogg", 0.35f, false, eMusicPrio_SceneAmb);
+			}
+			else if (Sequence_DoStepAndWait(10.f))
+			{
+				Seq_DarkWorldLightning("");
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{
+				FearHandler_FadeLevelTo(0.1f, 5.f);
+				FearHandler_SetForcedAddFearRate(0.f, 10.f, false);
+								
+				Sound_FadeGuiVolume("player/UI/permafail/permafail_ghoul_breathing_test", 0.f, 3.f);
+			}
+			else if (Sequence_DoStepAndWait(5.5f))
+			{
+			}
+			else if (Sequence_DoStepAndWait(2.5f))
+			{
+				Seq_DarkWorldLightning("");
+				
+				StruggleFlashHandler_SetActive(true);
+				StruggleFlashHandler_DoFlash(0.15f,0.0f);
+			}
+			else if (Sequence_DoStepAndWait(2.f))
+			{				
+				FearHandler_FadeLevelTo(1.f, 2.f);
+				FearHandler_SetForcedAddFearRate(1.f, 10.f, false);
+				
+				Sound_FadeGuiVolume("player/UI/permafail/permafail_ghoul_breathing_test", 1.f, 2.f);
+			}
+			else if (Sequence_DoStepAndWait(0.75f))
+			{
+				StruggleFlashHandler_SetActive(false);						
+			}
+			else if (Sequence_DoStepAndWait(2.f))
+			{
+				Music_StopAll(1.f);
+			}
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSeqDataDarkWorldLightning;	
+	    void Seq_DarkWorldLightning(const tString &in asTimer="")
+        {
+	        Sequence_Begin("Seq_DarkWorldLightning", mSeqDataDarkWorldLightning);
+	        if (Sequence_DoStepAndWait(0.1f))
+		    {
+				Sound_Play("Sound_ThunderStrike", 0.0f);
+				Sound_Play("Sound_ThunderStrike_2", 3.0f);
+		    }
+		    else if (Sequence_DoStepAndWait(0.06f))
+		    {
+		    	Map_Preset_Fade("Preset_LightningOn", 0.1f);
+		    }
+		    else if (Sequence_DoStepAndWait(1.f))
+		    {
+		    	Map_Preset_Fade("Preset_LightningOff", 1.f);
+		    }
+	        Sequence_End();
+        }
+	
+		//------------------------------------------------------
+	
+		void SketchbookPage_OnGui(const tString&in asEntityName, float afTimeStep)
+		{
+			ImGui_SetModColorMul(cColor(1,0.85f));
+			ImGui_SetAlignment(eImGuiAlign_TopLeft);
+			ImGui_GroupBegin(ImGui_NrmPosGroup(0.0,0.0,0.5), ImGui_NrmSizeGroup(1));
+			const float imageZ = 5.0f;
+			cImGuiGfx image("loadscreen_1aa.dds", eGuiMaterial_Modulative, eImGuiGfx_Texture);
+			ImGui_DoImageCorrectAspect(image, 
+				ImGui_NrmPosGroup(0.0f,0.0f,imageZ), ImGui_NrmSizeGroup(1.0f,1.0f));
+			ImGui_GroupEnd();
+			ImGui_ResetModifiers();
+		}
+		
+		//------------------------------------------------------
+		
+		void OnTimer_EndLevel(const tString &in asTimer="")
+		{
+			Effect_Fade_Out(0.0f);
+			
+			if (mbIsGhoulEnding)
+			{
+				cLux_GetPlayer().ChangeState(ePlayerState_Null);
+				FearHandler_SetActive(false);
+				Sound_FadeGlobalVolume(0.f, 0.f, eSoundEntryType_All);
+				cLux_GetPlayer().SetActive(false);
+			}
+			
+			if (Game_BeatenDevPlaytime())
+				Achievement_Unlock(eAchievement_Speedster);
+			
+			Achievement_Unlock(eAchievement_Tasi);
+			
+			if (mbIsGhoulEnding)
+			{
+				Achievement_Unlock(eAchievement_Harvester);
+				if (cScript_GetGlobalVarBool("Undercity_LeftDoll"))
+				{
+					Credits_Start("Credits.cfg","OnEndOfCredits", "ending_1", cVector3f(-0.15,-0.3,1.75f), "A2_Ending,A2_AlternativeEnding");
+					MainMenu_Sketchbook_SetSketch("ending_1");
+				}
+				else
+				{
+					Credits_Start("Credits.cfg","OnEndOfCredits", "ending_1_nodoll", cVector3f(-0.15,-0.3,1.75f), "A2_Ending,A2_AlternativeEnding");
+					MainMenu_Sketchbook_SetSketch("ending_1_nodoll");
+				}
+			}
+			else
+			{				
+				if (GhoulProgression_GetProgression()<GHOUL_PROGRESSION_DARKWORLD_HIGH)
+					Achievement_Unlock(eAchievement_Stoic);
+				Achievement_Unlock(eAchievement_Iconoclast);
+		
+				Credits_Start("Credits.cfg","OnEndOfCredits", "ending_2", cVector3f(-0.15,-0.15,1.75f), "A2_Ending,A2_AlternativeEnding");
+				MainMenu_Sketchbook_SetSketch("ending_2");
+			}
+		}
+		
+		//------------------------------------------------------
+		
+		void OnEndOfCredits()
+		{
+			if (!cLux_ScriptDebugOn())
+			{
+				Map_ChangeMap("main_menu.hpm","PlayerStartArea_1","","",false);
+			}
+		}
+
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSeqDestructionEnd;
+		void Seq_DestructionEnd(const tString &in asTimer="")
+		{
+			Sequence_Begin("Seq_DestructionEnd", mSeqDestructionEnd);
+			if (Sequence_DoStepAndWait(1.0f))
+		    {
+				FearHandler_SetActive(false);
+				Effect_Fade_Out(0.0f);
+				PlayerBody_SetActive(false);
+				Player_SetActive(false);
+				
+				Sound_FadeGlobalVolume(0.f, 0.f, eSoundEntryType_WorldAll);
+				Music_FadeVolumeMul(0.0f,0.0f);
+	
+				Seq_DarkWorldLightning();
+				
+				//////////////
+				// Setup lighting
+				cColor vitaeColor = cColor(1,0.067,0.067,1);
+				Entity_SetEffectBaseColor("darkworld_FactoryPipe*", vitaeColor);
+				Entity_SetEffectBaseColor("dwf_tower_vitaepipe*", vitaeColor * 1.3f);
+				Entity_SetColorMul("Tower_Pipes", vitaeColor);
+				Entity_SetEffectBaseColor("Mask", vitaeColor * 2);
+				Light_FadeTo("Tower_Spot_1", vitaeColor*0.5f, -1, 0.0f);
+				Light_FadeBrightnessTo("Tower_Light_Destruction_1", 10.0f,0.0f);
+				Entity_FadeEffectBaseColor("dwf_factory_01_low_*", vitaeColor * 1.2, 1.5f);
+				
+				////////////////////////
+				// Control speed of zoom
+				CameraAnimationNode_SetAutoMove("CameraAnimation*", 0.01f);
+		    }
+			else if (Sequence_DoStepAndWait(1.0f))
+			{
+				Sound_FadeGlobalVolume(1.f, 5.f, eSoundEntryType_WorldAll);
+				Music_FadeVolumeMul(1.0f,1.0f);
+			}
+			else if (Sequence_DoStepAndWait(8.0f))
+			{
+				Effect_Fade_In(4.0f);
+				CameraAnimation_Begin("CameraAnimation", "", false);
+				
+				Sound_Play("Sound_DestructionEnd", 0.0f);
+			}
+			else if (Sequence_DoStepAndWait(2.f))
+			{
+				/////////////
+				// Turn on the tower lights
+				Light_FadeBrightnessTo("Tower_Light_Window_Destruction_1", 8, 5.f);
+				Light_FadeBrightnessTo("Tower_Light_Window_Destruction_2", 12, 4.f);
+				Light_FadeBrightnessTo("Tower_Light_Window_Destruction_3", 32, 3.f);
+				Prop_SetActiveAndFade("dw_ending_windows_1", true, 3.f);
+				Prop_SetActiveAndFade("dw_ending_windows_2", true, 4.f);
+				Prop_SetActiveAndFade("dw_ending_windows_3", true, 5.f);
+				Prop_SetActiveAndFade("dw_ending_windows_4", true, 6.f);
+				
+				////////////////
+				// Make the vitae pipes brighter
+				cColor vitaeColor = cColor(1,0.067,0.067,1);
+				Entity_FadeEffectBaseColor("dwf_tower_vitaepipe*", vitaeColor * 2, 3.f);
+			}
+			else if (Sequence_DoStepAndWait(0.8f))
+			{
+				//////////
+				// Thunderstrike
+				ParticleSystem_SetActive("PS_Destruction_Gem", true);
+			}
+			else if (Sequence_DoStepAndWait(1.4f))
+			{
+				////////////
+				// Implosion particles
+                ParticleSystem_SetActive("PS_window_explo_01", true);
+                ParticleSystem_SetActive("PS_BigExplo_00", true);
+                ParticleSystem_SetActive("PS_Destruction_Mask_1", true);
+                ParticleSystem_SetActive("PS_Destruction_Tower_*", true);
+			}
+			else if (Sequence_DoStepAndWait(0.5f))
+			{
+				ParticleSystem_SetActive("PS_Destruction_Mask_2", true);
+			}
+			else if (Sequence_DoStepAndWait(1.0f))
+			{
+				/////////
+				// break off the mask
+                ParticleSystem_SetActive("PS_BigExplo_01", true);
+				Prop_MoveLinearTo("Mask", "Mask_Target_2", 20.0f, 100.0f, 0.0f, false);
+				Prop_AlignRotation("Mask", "Mask_Target_2", 0.25f, 0.25f, 0.0f, false);
+				Entity_SetEffectBaseColor("Mask", cColor(0));
+				ParticleSystem_SetActive("PS_Destruction_Mask_3", true);
+			}
+			else if (Sequence_DoStepAndWait(1.0f))
+			{
+                ParticleSystem_SetActive("PS_window_explo_02", true);
+                ParticleSystem_SetActive("PS_BigExplo_02", true);
+                ParticleSystem_SetActive("PS_BigExplo_03", true);
+			}
+			else if (Sequence_DoStepAndWait(0.05f))
+            {
+                ParticleSystem_SetActive("PS_window_explo_03", true);
+            }
+			else if (Sequence_DoStepAndWait(1.0f))
+			{
+				//////////////////
+				// turn off the vitae pipes
+				Entity_FadeEffectBaseColor("dwf_tower_vitaepipe*", cColor(0), 4.f);
+				
+				////////////
+				// Turn off the tower lights
+				Light_FadeBrightnessTo("Tower_Spot_*", 0.0f, 5.0f);
+				Light_FadeBrightnessTo("Tower_Light_Destruction_*", 0.0f,5.0f);
+				
+				Light_FadeBrightnessTo("Tower_Light_Window_Destruction_1", 0, 5.f);
+				Light_FadeBrightnessTo("Tower_Light_Window_Destruction_2", 0, 4.f);
+				Light_FadeBrightnessTo("Tower_Light_Window_Destruction_3", 0, 3.f);
+				Prop_SetActiveAndFade("dw_ending_windows_1", false, 3.f);
+				Prop_SetActiveAndFade("dw_ending_windows_2", false, 4.f);
+				Prop_SetActiveAndFade("dw_ending_windows_3", false, 5.f);
+				Prop_SetActiveAndFade("dw_ending_windows_4", false, 6.f);
+				
+				///////////////
+				// Mask debris
+				StartDebris("dark_world_tower_debris01_11");
+				StartDebris("dark_world_tower_debris01_24");
+				StartDebris("dark_world_tower_debris01_19");
+				StartDebris("dark_world_tower_debris01_25");
+			}
+			else if (Sequence_DoStepAndWait(2.0f))
+			{
+				StartDebris("dark_world_tower_debris01_15");
+			}
+			else if (Sequence_DoStepAndWait(1.0f))
+			{
+				cColor vitaeColor = cColor(1,0.067,0.067,1);
+				Entity_FadeEffectBaseColor("dwf_factory_01_low_1_*", vitaeColor * 2, 2.f);
+			}
+			else if (Sequence_DoStepAndWait(2.0f))
+			{
+				cColor vitaeColor = cColor(1,0.067,0.067,1);
+				Entity_FadeEffectBaseColor("dwf_factory_01_low_2_*", vitaeColor * 2, 5.f);
+			}
+			else if (Sequence_DoStepAndWait(2.5f))
+			{
+				cColor vitaeColor = cColor(1,0.067,0.067,1);
+				Entity_FadeEffectBaseColor("dwf_factory_01_low_3_*", vitaeColor * 2, 1.5f);
+                Entity_FadeEffectBaseColor("dw_ending_clouds_lighting_03_*", vitaeColor * 2, 1.5f);
+
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{
+				Entity_FadeEffectBaseColor("dwf_factory_01_low_1_*", cColor(0), 0.1f);
+                Prop_SetActiveAndFade("dw_ending_clouds_lighting_01_*", false, 2.f);
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{
+				Entity_FadeEffectBaseColor("dwf_factory_01_low_2_*", cColor(0), 0.1f);
+                Prop_SetActiveAndFade("dw_ending_clouds_lighting_02_*", false, 2.f);
+			}
+			else if (Sequence_DoStepAndWait(1.5f))
+			{
+				Entity_FadeEffectBaseColor("dwf_factory_01_low_3_*", cColor(0), 0.1f);
+                Prop_SetActiveAndFade("dw_ending_clouds_lighting_03_*", false, 2.f);
+			}
+			else if (Sequence_DoStepAndWait(1.0f))
+			{
+				Light_FadeBrightnessTo("Shadowflesh_Light_1",5.0f,3.0f);
+				ShadowFlesh_Spawn("Shadowflesh_1", "", 2.0f,2.0f,true,0.0f,0.0f);
+				ShadowFlesh_Spawn("Shadowflesh_2", "", 2.0f,2.0f,false,0.0f,0.0f);
+			}
+			else if (Sequence_DoStepAndWait(6.5f))
+			{
+				ShadowFlesh_Spawn("Shadowflesh_3", "", 2.0f,2.0f,false,0.0f,0.0f);
+				ShadowFlesh_Spawn("Shadowflesh_4", "", 2.0f,2.0f,false,0.0f,0.0f);
+			}
+			else if (Sequence_DoStepAndWait(12.5f))
+			{
+				Entity_FadeEffectBaseColor("dwf_tower_vitaepipe*", cColor(0), 4.f);
+				TorturePod_Kill("Pod");
+			}
+			/*else if (Sequence_DoStepAndPause())
+			{
+				
+			}*/
+			else if (Sequence_DoStepAndWait(5.0f))
+			{
+				Effect_Fade_Out(5.0f);
+				Sound_FadeGlobalVolume(0.f, 5.f, eSoundEntryType_All);
+			}
+			else if (Sequence_DoStepAndContinue())
+			{
+				OnTimer_EndLevel();
+			}
+			Sequence_End();
+		}
+		
+		void StartDebris(const tString &in asEntity)
+		{
+			Entity_SetEffectsActive(asEntity, true, false);
+			Prop_MoveLinearTo(asEntity, asEntity+"_target1", cMath_RandRectf(20.0f,40.0f), cMath_RandRectf(70.0f, 75.0f), 0.0f, false, "OnDebris_Target1");
+			Prop_AlignRotation(asEntity, asEntity+"_target1", 1.0f, 2.0f, 0.0f, false);
+		}
+		
+		void OnDebris_Target1(const tString &in asEntity)
+		{
+			Prop_MoveLinearTo(asEntity, asEntity+"_target2", cMath_RandRectf(20.0f,40.0f), cMath_RandRectf(70.0f, 75.0f), 0.0f, false);
+			Prop_AlignRotation(asEntity, asEntity+"_target2", 1.0f, 2.0f, 0.0f, false);
+		}
+		
+		bool OnCamAnim_End(const tString &in asEntity, int alDirection)
+		{
+			SequenceStates_Resume("Seq_DestructionEnd");
+			return true;
+		}
+		
+		//} END Event *Name Of Event*
+	 
+	//} END SCENE X
+ 
+}

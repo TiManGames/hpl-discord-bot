@@ -1,0 +1,138 @@
+#include "player/MoveState_Normal.hps"
+#include "helper_effects.hps"
+
+//------------------------------------------------------------
+
+cVector2f gvLowHealthBobSize = cVector2f(0.1f,0.105f);
+
+//------------------------------------------------------------
+
+class cScrMoveState_Normal_Custom : cScrMoveState_Normal
+{
+	void Update(float afTimeStep) override
+	{
+		////////////////////////
+		// Setup vars
+		iCharacterBody@ pCharBody = mBaseObj.mpPlayer.GetCharacterBody();
+		
+		////////////////////////
+		// Delay the landing effects until gravity collide material has been updated
+		if (mfLandingVelocityY >= 0 && pCharBody.GetGravityCollideMaterial() != null)
+		{
+			CharBody_HitGround_Delayed(pCharBody);
+			mfLandingVelocityY = -1;
+		}		
+		
+		////////////////////////
+		// Call base
+		cScrMoveState_Normal::Update(afTimeStep);
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateCustomHeadBob(cVector3f &out avCustomExtraBob, float &out afCustomExtraRoll, float &out afCustomMul) override
+	{
+		afCustomMul = 1.0f;
+		
+		// Add extra bob from walking on sand
+		if (cScript_GetGlobalVarBool("PlayerOnSand")==false)
+		{
+			mfSandHeadBobMul = 1.0f;
+			return;
+		}
+		
+		// The steeper the slow, the greater the head bob
+		float fSlopeDot = GetSlopeDot(mBaseObj.mpPlayer.GetCharacterBody());
+		float fBobMul = cMath_Clamp(1.0f-((fSlopeDot-0.5)/0.5f), 0.0f, 1.0f);
+		float fBobMulTarget = 1.5f + 3.75f*fBobMul*fBobMul;
+		
+		//Reduce the headbob effect when hurt since the hurt headbob can be rather extreme
+		fBobMulTarget = cMath_InterpolateLinear(1.0f, fBobMulTarget, Player_GetHealth()); 
+		
+		mfSandHeadBobMul = cMath_InterpolateLinear(mfSandHeadBobMul, fBobMulTarget, 0.07); // fade
+		afCustomMul = mfSandHeadBobMul;
+	}
+
+	//------------------------------------------------------------
+	
+	void CharBody_HitGround(iCharacterBody@ apCharBody,const cVector3f &in avVel) override
+	{
+		mfLandingVelocityY = avVel.y*-1.0f;
+	}
+
+	//------------------------------------------------------------
+	
+	void CharBody_HitGround_Delayed(iCharacterBody@ apCharBody)
+	{
+		bool bPrevBounceActive=mbHeadGroundBounceActive;
+		cScrMoveState_Normal::CharBody_HitGround(apCharBody, cVector3f_Down*mfLandingVelocityY);
+		
+		if (bPrevBounceActive || mbHeadGroundBounceActive==false) return;
+		
+		if (cScript_GetGlobalVarBool("PlayerOnSand")==false) return;
+		
+		// Landing bounce started on sand
+		
+		float fVelMin = 4.75;
+		float fVelMax = 12.75;
+		float fVelocityMul = cMath_Clamp((mfLandingVelocityY-fVelMin)/(fVelMax-fVelMin), 0.0f, 1.0f);
+		
+		float fBounceSizeMin = 1.75;
+		float fBounceSizeMax = 3.0f;
+		float fBounceSpeedMin = 0.75;
+		float fBounceSpeedMax = 0.4f;
+		float fShakeSizeMin = 0;
+		float fShakeSizeMax = 0.25;
+		float fShakeDurationMin = 0;
+		float fShakeDurationMax = 0.2;
+		
+		mfBounceSizeMul = cMath_InterpolateLinear(fBounceSizeMin, fBounceSizeMax, fVelocityMul);
+		mfBounceSpeedMul = cMath_InterpolateLinear(fBounceSpeedMin, fBounceSpeedMax, fVelocityMul);
+		float fShakeSize = cMath_InterpolateLinear(fShakeSizeMin, fShakeSizeMax, fVelocityMul*fVelocityMul);
+		float fShakeDuration = cMath_InterpolateLinear(fShakeDurationMin, fShakeDurationMax, fVelocityMul*fVelocityMul);
+		Effect_Shake_Start(fShakeSize, fShakeDuration, 0, fShakeDuration, cVector3f(1, 1, 1), 10);
+	}
+	
+	//------------------------------------------------------------
+	
+	float CustomJumpForceMod(float afCurrentForce) override
+	{
+		if (cScript_GetGlobalVarBool("PlayerOnSand")) 
+			return afCurrentForce * 0.8f;
+			
+		float fLiquidHeight = mBaseObj.mpPlayer.GetLiquidHeight();
+		if (fLiquidHeight > 0.f)
+			return afCurrentForce * cMath_Clamp(1.f - (fLiquidHeight / 1.f), 0.5f, 1.f);
+			
+		return afCurrentForce;
+	}
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPERS
+	/////////////////////////////////////////
+
+	//------------------------------------------------------------
+	
+	float GetSlopeDot(iCharacterBody@ apCharBody)
+	{
+		cVector3f vGroundNrm = apCharBody.GetLastGroundNormal();
+		return cMath_Vector3Dot(vGroundNrm, cVector3f_Up);
+	}
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float mfSandHeadBobMul = 1.0f;
+	float mfLandingVelocityY = -1;
+	
+	//------------------------------------------------------------
+}
+
+//------------------------------------------------------------

@@ -1,0 +1,159 @@
+////////////////////////////////////////////////////////
+// Deferred Terrain GBuffer - Fragment Shader
+//
+//
+////////////////////////////////////////////////////////
+
+
+////////////////////
+//Textures
+uniform cTexture2D aHeightMap : 0;
+uniform cTexture2DArray aDiffuseMap : 1;
+uniform cTexture2DArray aNormalMap : 2;
+uniform cTexture2DArray aSpecularMap : 3;
+uniform cTexture2DArray aDetailMap : 4;
+uniform cTexture2DArray aBumpMap : 5;
+
+@ifdef UseWallMapping
+	uniform cTexture2D aWallMapDiffuse : 9;
+	uniform cTexture2D aWallMapNormal : 10;
+@endif
+@ifdef TerrainDetailMaps
+	uniform cTexture2D aDetailMap0 : 6;
+	uniform cTexture2D aDetailMap1 : 7;
+	uniform cTexture2D aDetailMap2 : 8;
+@endif	
+
+@ifdef TerrainHoles
+	uniform cTexture2D aTerrainHoleMap : 11;
+@endif
+
+@include helper_type_arguments.hpsl
+@include helper_normal_packing.hpsl
+@include helper_terrain.hpsl
+@include helper_matrix.hpsl
+
+//------------------------------------------------
+
+
+///////////////////////////////
+// Main program
+void main(in cVector4f px_vPosition,
+		  in cVector2f px_vHeightCoord,
+@ifdef UseLinearDepth
+		  in float px_fLinearDepth,
+@endif
+		  in cVector4f px_vWorldPos,
+@ifdef TerrainDebug	
+		  in cVector4f px_vColor,
+@endif
+		  out cVector4f out_vDiffuse : 0,		//diffuse rgb, translucency a
+		  out cVector4f out_vNormal : 1,		//normal xyz
+		  out cVector4f out_vSpecular : 2,		//spec color rgb, spec power a
+		  out cVector4f out_vDepth : 3)			//depth x
+{
+	cVector3f vDiffuse, vDetailAmount, vNormal, vSpecular;
+	vDiffuse = vDetailAmount = vNormal = vSpecular = cVector3f(0, 0, 0);
+	
+	@ifdef TerrainDetailMaps
+		float fDetailMul = 1.0 - clamp( (px_fLinearDepth-avDetailFade.x) / avDetailFade.y, 0.0, 1.0);
+		bool bDetail = fDetailMul > 0.0;
+	@else
+		bool bDetail = false;
+	@endif
+
+	@ifdef TerrainHoles
+		///////////////
+		// Check if this pixels is
+		cVector2f vHoleUV = px_vWorldPos.xz * avHoleOffsetScale.z + avHoleOffsetScale.xy;
+		float fHole = sample(aTerrainHoleMap, vHoleUV)[alHoleChannel];
+
+		if(fHole > 0.5) discard;
+	@endif
+
+
+	/////////////
+	// Get terrain material from mega texture
+	GetTerrainMaterial(px_vWorldPos.xyz, avCamera.xyz, vDiffuse, vNormal, vSpecular, vDetailAmount, bDetail);
+
+	//////////////
+	// Normal
+	cVector3f vTangent, vBinormal, vWorldNormal;
+	GetTangentSpace(px_vHeightCoord, 0.5, vWorldNormal, vTangent, vBinormal);
+
+	cVector3f vScreenNormal = (vNormal.x * vTangent + vNormal.y * vBinormal + vNormal.z * vWorldNormal);
+	cVector3f vBaseNormal = vWorldNormal;
+
+	//////////////////////////////////
+	// Detail
+	@ifdef TerrainDetailMaps
+		if(bDetail)
+		{
+			float fAmountLength = length(vDetailAmount);
+			cVector3f vNormalizedAmount = vDetailAmount / (fAmountLength + 0.0001);
+
+			/////////////////
+			// sample the detail textures
+			cVector4f vDetail0 = sample(aDetailMap0, px_vWorldPos.xz * avDetailMapScale.x);
+			cVector4f vDetail1 = sample(aDetailMap1, px_vWorldPos.xz * avDetailMapScale.y);
+			cVector4f vDetail2 = sample(aDetailMap2, px_vWorldPos.xz * avDetailMapScale.z);
+
+			cVector4f vDetailColor = sqrt(vDetail0 * vNormalizedAmount.x +
+										  vDetail1 * vNormalizedAmount.y +
+										  vDetail2 * vNormalizedAmount.z);
+
+			vDiffuse = sqrt(vDiffuse) * mix(cVector3f(1.0, 1.0, 1.0), vDetailColor.xyz*2, fDetailMul*fAmountLength);
+			vDiffuse *= vDiffuse;
+		}
+	@endif	
+
+	//////////////
+	// Wall map
+	@ifdef UseWallMapping
+		////////////////
+		// Calculate blend weight
+		cVector3f vBlendWeight = abs(vBaseNormal * cVector3f(1, avWallTextureParams.y, 1));
+		vBlendWeight = max(cVector3f(0.0, 0.0, 0.0), vBlendWeight - max(vBlendWeight.x, max(vBlendWeight.y, vBlendWeight.z)) * 0.75);
+		vBlendWeight /= dot(cVector3f(1.0, 1.0, 1.0), vBlendWeight);
+		cVector3f vWallUV = (px_vWorldPos * avWallTextureParams.x).xyz;
+
+		if(vBlendWeight.x + vBlendWeight.z > 0.0)
+		{
+			///////////////////
+			// sample diffuse wall texture and blend it with the terrain diffuse
+			vDiffuse =	sample(aWallMapDiffuse, vWallUV.xy).rgb * vBlendWeight.z +
+						sample(aWallMapDiffuse, vWallUV.zy).rgb * vBlendWeight.x +
+						vDiffuse * vBlendWeight.y;
+
+			@ifdef UseCheapMaterial
+			@else
+				///////////////
+				// Get normal and transform to view space and blend with the terrain normal
+				cVector3f vNormalXY = UnpackNormalmapYW(sample(aWallMapNormal, vWallUV.xy));
+				cVector3f vNormalZY = UnpackNormalmapYW(sample(aWallMapNormal, vWallUV.zy));
+
+				cVector3f vWallNormal = (vNormalXY.z * vBaseNormal - cVector3f(vNormalXY.x, 0, 0) - cVector3f(0, vNormalXY.y, 0)) * vBlendWeight.z + 
+								   (vNormalZY.z * vBaseNormal - cVector3f(0, 0, vNormalZY.x) - cVector3f(0, vNormalZY.y, 0)) * vBlendWeight.x;
+
+				//////////////
+				// Blend using overlay
+				vScreenNormal = mix(vWallNormal, vScreenNormal, vBlendWeight.y) + 2.0 * sign(vScreenNormal) * vScreenNormal * vWallNormal * vBlendWeight.y * (1.0 - vBlendWeight.y);
+				vScreenNormal = normalize(vScreenNormal);
+			@endif
+		}
+	@endif
+
+	//////////////////////////////////
+	//Debug
+	@ifdef TerrainDebug	
+		vDiffuseColor *= px_vColor;
+	@endif
+	
+	out_vDiffuse.xyz = vDiffuse.xyz;
+	out_vDiffuse.w = 0; //translucency always 0 for terrain!
+
+	out_vNormal.xyz = mul(ToMatrix3f(a_mtxView), vScreenNormal);
+	out_vDepth.x = px_fLinearDepth;
+	out_vSpecular.xyz = vSpecular;
+	out_vSpecular.w = afSpecularPower;
+}		

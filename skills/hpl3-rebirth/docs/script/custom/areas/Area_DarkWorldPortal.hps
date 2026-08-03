@@ -1,0 +1,304 @@
+#include "interfaces/Area_Interface.hps"
+#include "custom/modules/ModuleInterfaces_Custom.hps"
+#include "helpers/helper_areas.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_map.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+#include "helpers/helper_audio.hps"
+
+const float gfLucidityMeterDefaultChangeRate=0.25f;
+const float gfEffectChange=0.1f;
+const float gfDefaultTransitionTime=10.0f;
+
+class cScrAreaDarkWorldPortal : iScrArea, iScrArea_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		KillEffects();
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject @apVars)
+	{
+		mBaseObj.SetCheckCollision(false);
+		
+		msDestMap = apVars.GetVarString("DestMap","");
+		msDestPlayerStart = apVars.GetVarString("DestPlayerStart","");
+		mbToDarkWorld = apVars.GetVarBool("ToDarkWorld",false);
+		mfLucidityMeterChangeRate = apVars.GetVarFloat("DarkMeterChangeRate",-1.0f);
+		mfTransitionTime = apVars.GetVarFloat("TransitionTime",-1.0f);
+		if (mfLucidityMeterChangeRate<0.0f)
+			mfLucidityMeterChangeRate = gfLucidityMeterDefaultChangeRate;
+		if (mfTransitionTime<0.0f)
+			mfTransitionTime = gfDefaultTransitionTime;
+	}
+	
+	//------------------------------------------------------------
+		
+	void OnAfterWorldLoad()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool OnUpdateAutoSleep()
+	{
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnVariableUpdate(float afDeltaTime)
+	{			
+		bool bCollision = mBaseObj.CollidesWithPlayer();
+		if (bCollision&&!mbColliding)
+		{
+			mbColliding = true;
+			mfCurrentTransitionTime = mfTransitionTime;
+			cLux_AddDebugMessage("[Dark World Portal] Enter");
+		}
+		else if (!bCollision&&mbColliding)
+		{
+			mfCurrentTransitionTime = mfTransitionTime;
+			cLux_AddDebugMessage("[Dark World Portal] Exit");
+			mbColliding = false;
+		}
+
+		if (mbColliding)
+		{
+			mfCurrentTransitionTime-=afDeltaTime;
+			if (mbToDarkWorld)
+			{
+				LucidityMeter_Decrease(afDeltaTime*mfLucidityMeterChangeRate);
+				if (mfCurrentTransitionTime<0.0f)
+				{
+					LucidityMeter_SetLevel(1.0f);
+					ChangeMap();
+				}
+			}
+			else
+			{
+				LucidityMeter_Decrease(-afDeltaTime*mfLucidityMeterChangeRate);
+				if (mfCurrentTransitionTime<0.0f)
+				{
+					LucidityMeter_SetLevel(0.0f);
+					ChangeMap();
+				}
+			}
+		}
+		
+		///////////////////////////
+		// Local area effect
+		///////////////////////////
+		float fLastEffectLevel = mfEffectLevel;
+		
+		if (mbColliding)
+		{
+			mfEffectLevel+=afDeltaTime*gfEffectChange;
+			mfEffectLevel=cMath_Clamp(mfEffectLevel,0.0f,1.0f);
+			
+			if (mlEffectID==-1)
+				mlEffectID = Effect_LucidityMeter_Start(0.1f,10000.0f,1.0f,1.0f,mbToDarkWorld?eLucidityMeterEffectType_RealWorldDark:eLucidityMeterEffectType_DarkWorldLight,1.0f);
+				
+			mfEffectTime+=afDeltaTime;
+			float fCurrentLevel = (cMath_Sin(cMath_ToRad(mfEffectTime*180*mfEffectLevel))+1.0f)*0.5f*mfEffectLevel;
+			if (mlEffectID!=-1)
+			{
+				Effect_LucidityMeter_SetMaxAmount(mlEffectID,fCurrentLevel);
+			}
+			
+			if (!Sound_Exists("PortalLoop"+mBaseObj.GetName()))
+			{
+				Sound_CreateAtEntity("PortalLoop"+mBaseObj.GetName(), "darkworld/intensity/mid/storm/amb_magma_movement","player",0.01f);
+			}
+			Sound_Fade("PortalLoop"+mBaseObj.GetName(), fCurrentLevel,0.01f);
+		}
+		else
+		{
+			if (mlEffectID!=-1)
+			{
+				Effect_LucidityMeter_FadeOut(mlEffectID,1.0f);
+				mlEffectID = -1;
+			}
+			mfEffectTime = 0.0f;
+			mfEffectLevel=0.0f;
+			
+			if (Sound_Exists("PortalLoop"+mBaseObj.GetName()))
+			{
+				Sound_Stop("PortalLoop"+mBaseObj.GetName(), 2.0f);
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetProperties()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void BeforeEntityDestruction()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void ChangeMap()
+	{
+		if (msDestMap=="")
+		{
+			return;
+		}
+		
+		KillEffects();
+		
+		cLux_AddDebugMessage("MAP CHANGE:"+msDestMap);
+		if (!cLux_ScriptDebugOn())
+			Map_ChangeMap(msDestMap, msDestPlayerStart,"","");
+	}
+	
+	//------------------------------------------------------------
+	
+	void KillEffects()
+	{
+		mfEffectLevel = 0.0f;
+		mfEffectTime = 0.0f;
+		if (mlEffectID!=-1)
+		{
+			Effect_LucidityMeter_FadeOut(mlEffectID,1.0f);
+		}
+		mlEffectID = -1;
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INTERACTION
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	bool CanInteract(int alType, iPhysicsBody@ apBody)
+	{
+		return false;
+	}
+	
+	//------------------------------------------------------------
+		
+	bool OnInteract(int alType, iPhysicsBody@ apBody, const cVector3f &in avFocusPos, const tString&in asData)
+	{
+		return false;
+	}
+	//------------------------------------------------------------
+	
+	int GetInteractIconId(int alType, iPhysicsBody@ apBody)
+	{
+		return 0;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// COLLISIONS
+	/////////////////////////////////////////
+	
+	//-----------------------------------------------------------------------
+
+	bool OnStartCheckCollision(float afTimeStep, float afTimeSinceCheck)
+	{
+		return false;
+	}
+	
+	//-----------------------------------------------------------------------
+
+	bool OnCheckCollision(iPhysicsBody@ apBody, iLuxEntity@ apEntity)
+	{
+		return true;
+	}
+	
+	//-----------------------------------------------------------------------
+
+	void OnEndCheckCollision(float afTimeStep)
+	{
+	}
+	
+	//-----------------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//-----------------------------------------------------------------------
+	
+	void OnSetActive(bool abX)
+	{
+	}
+	
+	//-----------------------------------------------------------------------
+	
+	
+	void OnConnectionStateChange(iLuxEntity@ apEntity,int alState)
+	{
+	}
+	
+	//-----------------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL
+	/////////////////////////////////////////
+	
+	//-----------------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	bool mbColliding = false;
+	tString msDestMap;
+	tString msDestPlayerStart;
+	bool mbToDarkWorld=false;
+	float mfLucidityMeterChangeRate = gfLucidityMeterDefaultChangeRate;
+	float mfTransitionTime = gfDefaultTransitionTime;
+	
+	float mfCurrentTransitionTime=gfDefaultTransitionTime;
+	float mfEffectLevel = 0.0f;
+	float mfEffectTime = 0.0f;
+	int mlEffectID = -1;
+	
+	//------------------------------------------------------------
+}	

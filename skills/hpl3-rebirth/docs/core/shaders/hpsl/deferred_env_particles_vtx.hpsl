@@ -1,0 +1,210 @@
+////////////////////////////////////////////////////////
+// Deferred Environment Particles - Vertex Shader
+//
+//
+///////////////////////////////////////////////////////
+
+@ifdef UseSpotLight && UseSpotLightShadow
+	@include helper_shadow_filter.hpsl
+@endif
+
+cBuffer cVertexArguments
+{
+	//////////////
+	// Default input
+	cMatrixf a_mtxProjection;
+	cMatrixf a_mtxModelViewProjection;
+	cMatrixf a_mtxModelView;
+	cMatrixf a_mtxUV;
+	cMatrixf a_mtxModel;
+	cMatrixf a_mtxNormal;
+};
+
+uniform cVector3f avCameraUp;
+uniform cVector3f avCameraRight;
+
+uniform cVector3f avOffset;
+uniform cMatrixf a_mtxRotation;
+uniform cVector3f avBoxSize;
+uniform cVector3f avBoxWorldPos;
+uniform cVector4f avColor;
+uniform cVector4f avFadeProp; //x=in start, y=in length, z=out start, w=out length
+
+uniform cVector3f avLightProbePositions[3];
+uniform cVector3f avLightProbeLevels;
+
+uniform cVector4f avDepthOfFieldParams;
+
+@ifdef UseSpotLight
+	uniform cMatrixf a_mtxLightViewProj;
+	uniform cVector4f avLightPosScale;
+	uniform cVector4f avLightColor;
+	uniform float afLightFalloff;
+	uniform float afSpotFalloffPow;
+
+	@ifdef UseSpotLightShadow
+		uniform cVector4f avShadowParams;
+		uniform cVector2f avShadowMapSize;
+		uniform cTexture2D aShadowMap : 6;	
+	@endif
+@endif
+
+@ifdef UseClipping
+	@ifdef IntersectClip
+		uniform cMatrixf a_mtxIntersectClip[$kNumIntersect];
+	@endif
+
+	@ifdef SubtractClip
+		uniform cMatrixf a_mtxSubtractClip[$kNumSubtract];
+	@endif
+@endif
+
+//---------------------------------------------
+
+///////////////////////////////
+// Main program
+void main(in cVector4f vtx_vPosition,
+		  in cVector4f vtx_vTexCoord0,
+		  in cVector4f vtx_vTexCoord1,
+		  in cVector4f vtx_vColor,
+		  out cVector4f px_vTexCoord0,
+		  out cVector4f px_vColor,
+		  out cVector4f px_vPosition)
+{	
+	cVector4f vVtxPos = cVector4f(vtx_vPosition.xyz, 1);
+	
+	/////////////////////////////
+	// Calculate the position
+	
+	//Rotate the particle (around center of box)
+	vVtxPos = mul(a_mtxRotation, (vVtxPos - cVector4f(avBoxSize*0.5, 0)));
+	vVtxPos.xyz += avBoxSize*0.5; //Move back
+	
+	//Move the particles according to current movement
+	vVtxPos.xyz += avOffset;
+	
+	//update according to th world position of the box
+	vVtxPos.xyz -= avBoxWorldPos;
+	
+	//clamp the particles inside the box
+	vVtxPos.xyz = mod(vVtxPos.xyz, avBoxSize);
+	
+	//Put the particle intro world position
+	vVtxPos.xyz += avBoxWorldPos;
+	
+	/////////////////////////////
+	// Color
+	cVector4f vColor = avColor;
+
+	float fZ = mul(a_mtxModelViewProjection, vVtxPos).z;
+	
+	//Fade in
+	float fFadeAlpha = clamp( (fZ - avFadeProp.x)  / avFadeProp.y, 0, 1);
+	//Fade out
+	fFadeAlpha *= 1 - clamp( (fZ - avFadeProp.z)  / avFadeProp.w, 0, 1);
+
+	
+	//Gather light probes
+	@ifdef UseLightProbes
+		cVector3f vProbeDistances= cVector3f(	distance(vVtxPos.xyz, avLightProbePositions[0]),
+									distance(vVtxPos.xyz, avLightProbePositions[1]),
+									distance(vVtxPos.xyz, avLightProbePositions[2]));
+		
+		vProbeDistances = avBoxSize - vProbeDistances;//Invert the distances.
+						
+		float fTotalLightAmount = dot(avLightProbeLevels, vProbeDistances);
+		
+		fFadeAlpha *= fTotalLightAmount / dot(vProbeDistances, cVector3f(1,1,1));
+	@endif
+
+	// Check direct spot light
+	@ifdef UseSpotLight
+		float fDistance = distance(avLightPosScale.xyz, vVtxPos.xyz);
+		float fAttenuatuion =  pow(1.0 - min(fDistance * avLightPosScale.w, 1.0), afLightFalloff);	
+		
+		cVector4f vProjectedUv = mul(a_mtxLightViewProj, cVector4f(vVtxPos.xyz,1.0));
+		vProjectedUv = cVector4f(vProjectedUv.xyz, 1.0) / vProjectedUv.w;
+		fAttenuatuion *= pow(max(0.0, 1.0 - distance(vProjectedUv.xy, cVector2f(0.5, 0.5)) * 2.0), afSpotFalloffPow);
+		fAttenuatuion *=	clamp(vProjectedUv.z * 128.0, 0.0, 1.0) * 
+							clamp((1.0 - vProjectedUv.z) * 128.0, 0.0, 1.0);
+
+		@ifdef UseSpotLightShadow
+			fAttenuatuion *= PCF2x2(aShadowMap, vProjectedUv.xy, vProjectedUv.z, avShadowMapSize, avShadowParams);
+		@endif
+
+		vColor.xyz *= cVector3f(1.0, 1.0, 1.0) + avLightColor.xyz * fAttenuatuion / vColor.w;
+
+		fFadeAlpha = min(1.0f, fFadeAlpha * (1.0f + fAttenuatuion));
+	@endif
+
+	/////////////////
+	//DoF
+	@ifdef UseDepthOfField
+		float fDoFAlpha = clamp((avDepthOfFieldParams.x - fZ) * avDepthOfFieldParams.y, 0.0, 1.0);
+		fFadeAlpha *= avDepthOfFieldParams.z + avDepthOfFieldParams.w * fDoFAlpha;
+	@endif
+	
+	///////////////
+	// Clip particle against bound boxes
+	@ifdef UseClipping
+		@ifdef IntersectClip
+			/////////////
+			// Test the position against all intersect boxes and hide if it is outside all of them
+			float fIntersectAlpha = 0.0;
+
+			for(int i = 0; i < $kNumIntersect; ++i)
+			{
+				cVector3f vBox = abs(mul(a_mtxIntersectClip[i], cVector4f(vVtxPos.xyz, 1.0)).xyz);
+				float fMax = max(vBox.x, max(vBox.y, vBox.z));
+				
+				if(fMax < 1.0) fIntersectAlpha = 1.0;
+			}
+
+			fFadeAlpha *= fIntersectAlpha;
+		@endif
+
+		@ifdef SubtractClip
+			/////////////
+			// Test position against subtract boxes and hide if it is inside one of them
+			float fSubtractAlpha = 1.0;
+
+			for(int i = 0; i < $kNumSubtract; ++i)
+			{
+				cVector3f vBox = abs(mul(a_mtxSubtractClip[i], cVector4f(vVtxPos.xyz, 1.0)).xyz);
+				float fMax = max(vBox.x, max(vBox.y, vBox.z));
+				
+				if(fMax < 1.0) fSubtractAlpha = 0.0;
+			}
+			
+			fFadeAlpha *= fSubtractAlpha;
+		@endif
+	@endif
+
+	fFadeAlpha *= vColor.w;
+
+	if(fFadeAlpha <= 0.0)
+	{
+		///////////////
+		// Discard
+		px_vPosition = cVector4f(-10000, -10000, -10000, 1);
+	}
+	else
+	{
+		/////////////////////////////
+		// Make the vertex forward facing
+		cVector2f vDirMul = vtx_vTexCoord1.xy;
+		vVtxPos.xyz += avCameraRight*vDirMul.x + avCameraUp*vDirMul.y;
+	
+		/////////////////////////////
+		// Final positon projection
+		cVector4f vProjPos = mul(a_mtxModelViewProjection, vVtxPos);
+		px_vPosition = vProjPos;	
+	}
+	
+	/////////////////////////////
+	// Texture coords and color
+	px_vTexCoord0 = vtx_vTexCoord0;	
+
+	//Set final color
+	px_vColor = cVector4f(vColor.xyz * 8.0, fFadeAlpha);
+}

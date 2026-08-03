@@ -1,0 +1,397 @@
+#include "custom/props/Prop_Rigid.hps"
+#include "base/Base_Types.hps"
+#include "custom/player/PlayerTypes_Custom.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_game.hps"
+#include "player/Player_Types.hps"
+#include "custom/helpers/helper_player_custom.hps"
+#include "custom/helpers/helper_gun.hps"
+#include "helpers/helper_audio.hps"
+
+#include "custom/helpers/helper_particle_settings.hps"
+
+//------------------------------------------------------------
+
+const float gfGrenade_TimeUntilExplosion = 4.f;
+const float gfGrenade_CollisionCallbackInterval = 1.f;
+const float gfGrenade_Radius = 4.f;
+const float gfGrenade_Damage = 100.f;
+const float gfGrenade_PlayerDamage = 3.f;
+const float gfGrenade_PlayerKillRadius = 2.6667f;
+const float gfGrenade_Force = 500.f;
+const float gfGrenade_MaxImpulse = 7.f;
+const float glGrenade_Strength = 1.f;
+const float gfGrenade_HitSpeed = 6.f;
+const int glGrenade_MaxAffectedBodies = 8;
+
+const tString gsGrenade_ExplosionParticles = "grenade_explosion.ps";
+const tString gsGrenade_ExplosionSplashParticles = "grenade_explosion_water.ps";
+const tString gsGrenade_ExplosionSmallRoomSound = "weapons/throwables/grenade/small_room_explode";
+const tString gsGrenade_ExplosionMediumRoomSound = "weapons/throwables/grenade/med_room_explode";
+const tString gsGrenade_ExplosionLargeRoomSound = "weapons/throwables/grenade/large_room_explode";
+const tString gsGrenade_ExplosionExteriorSound = "weapons/throwables/grenade/exterior_explode";
+const tString gsGrenade_ExplosionEarRingSound = "weapons/revolver/ear_ring";
+
+//------------------------------------------------------------
+
+class cScrPropGrenade : cScrPropRigid
+{
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// INIT
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+
+	void Init()
+	{
+		cScrPropRigid::Init();
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld@ apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		cScrPropRigid::SetupAfterLoad(apWorld, apVars, apInstanceVars);
+		
+		mBaseObj.SetAutoSleep(false);
+		mBaseObj.SetScriptCollisionCallbackActive(true);
+
+		//////////
+		// Preload
+		ParticleSetting_PreloadParticles(gsGrenade_ExplosionParticles);
+		ParticleSetting_PreloadParticles(gsGrenade_ExplosionSplashParticles);
+	}	
+	
+	//------------------------------------------------------------
+	
+	void BeforeEntityDestruction()
+	{
+		if (mpExplosionShape !is null)
+		{
+			mBaseObj.GetMap().GetPhysicsWorld().DestroyShape(mpExplosionShape);
+			@mpExplosionShape = null;
+		}	
+	}
+
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// GENERAL
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnUpdate(float afTimeStep)
+	{
+		//////////////
+		// Explode?
+		if (mbExploded) return;
+			
+		mfExplosionCount -= afTimeStep;
+		if (mfExplosionCount <= 0.0f)
+		{
+			mBaseObj.Break();
+		}
+		
+		//////////////
+		// Collision callback count
+		mfCollisionCallbackCount += afTimeStep;
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnPhysicsCollision(iPhysicsBody@ apBody, iPhysicsBody@ apCollideBody, cPhysicsContactData &in apContactData)
+	{
+		///////////////
+		// Checks
+		if (mfCollisionCallbackCount < gfGrenade_CollisionCallbackInterval)
+			return;
+		
+		mfCollisionCallbackCount = 0.f;
+
+		if (apBody.GetLinearVelocity().Length() < 0.1f)
+			return;
+		
+		///////////////
+		// Broadcast message
+		array<iLuxEntity@> vAgents;
+		mBaseObj.GetMap().GetEntityArray("*", eLuxEntityType_Agent, "", vAgents);
+		
+		for (int i = 0; i < vAgents.size(); ++i)
+		{
+			vAgents[i].BroadcastMessage(eCustomEntityMessage_GrenadeImpact, null, mBaseObj.GetPosition(), -1);
+		}
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnSetActive(bool abX) {}
+	
+	//------------------------------------------------------------
+	
+	void OnCustomBreak()
+	{
+		//////////////
+		// Setup vars
+		mbExploded = true;
+		
+		cLuxMap@ pMap = mBaseObj.GetMap();
+		iPhysicsWorld@ pPhysicsWorld = pMap !is null ? pMap.GetPhysicsWorld() : null;
+			
+		if (pMap is null || pPhysicsWorld is null) 
+			return;
+			
+		//////////////
+		// Do damage!
+		if (mpExplosionShape is null)
+			@mpExplosionShape = pPhysicsWorld.CreateSphereShape(gfGrenade_Radius, cMatrixf_Identity);
+		
+		cLux_ShapeDamage_AddPriorityEntityClass("cScrPropSwingDoor");
+		cLux_ShapeDamage_AddPriorityEntityClass("cScrPropPadlock");
+		cLux_ShapeDamage_AddPriorityEntityClass("cScrAgentRat");
+		cLux_ShapeDamage_AddPriorityEntityClass("cScrAgentStalker");
+		cLux_ShapeDamage_AddPriorityEntityClass("cScrAgentShotgunner");
+		cLux_ShapeDamage_AddPriorityEntityClass("cScrAgentPrisoner");
+		cLux_ShapeDamage_AddPriorityEntityClass("cScrPropGasCanister");
+		cLux_ShapeDamage_AddPriorityEntityClass("cScrPropExplosiveBarrel");
+		cLux_ShapeDamage_AddPriorityEntityClass("cScrPropFuelSpill");
+		cLux_ShapeDamage_AddPriorityEntityClass("cScrPropAnimationHitbox");
+		cLux_ShapeDamage_AddPriorityEntityClass("cScrPropTrap");
+		
+		array<iLuxEntity@> vFuelSpills;
+		pMap.GetEntityArray("*", eLuxEntityType_Prop, "cScrPropFuelSpill", vFuelSpills);
+		SetHitboxesActive(vFuelSpills);
+		
+		int lAttackID = pMap.GetNewAttackInstanceID();
+		cLux_ShapeDamage(mpExplosionShape, cMath_MatrixTranslate(mBaseObj.GetPosition()), mBaseObj.GetPosition(), gfGrenade_Damage, 
+						 gfGrenade_Force, gfGrenade_MaxImpulse, glGrenade_Strength, gfGrenade_HitSpeed, 
+						 eDamageType_Grenade, true, false, true, glGrenade_MaxAffectedBodies, false, false, true, 
+						 mBaseObj.GetID(), lAttackID);
+		
+		cLuxPlayer@ pPlayer = cLux_GetPlayer();
+		float fPlayerDist = (pPlayer.GetCharacterBody().GetPosition() - mBaseObj.GetPosition()).Length();
+		if (fPlayerDist < GameDifficulty_GetSettingValueByID_Float(eGameDifficultySetting_GrenadePlayerDamageRadius) && 
+			(cLux_CheckLineOfSight(pPlayer.GetCharacterBody().GetPosition(), mBaseObj.GetPosition(), false, false) ||
+			cLux_CheckLineOfSight(pPlayer.GetCamera().GetPosition(), mBaseObj.GetPosition(), false, false)))
+		{
+			float fDamage = GetPlayerDamageForDistance(fPlayerDist);
+			pPlayer.GiveDamage(fDamage, glGrenade_Strength, eDamageType_Grenade, 0, mBaseObj.GetID(), lAttackID);
+		}
+		
+		///////////////
+		// Check if underwater
+		iPhysicsBody@ pBody = mBaseObj.GetMainBody();
+		bool bBuoyancyActive = pBody !is null && pBody.GetBuoyancyActive();
+		
+		//////////////
+		// Sound
+		tString sSound;
+		tString sPrefix = cLux_GetSoundscapeHandler().GetCurrentSoundPrefix();
+		eSoundEntryType soundType = eSoundEntryType_GuiWorld;
+			
+		if (sPrefix == "small_room")			sSound = gsGrenade_ExplosionSmallRoomSound;
+		else if (sPrefix == "medium_room")		sSound = gsGrenade_ExplosionMediumRoomSound;
+		else if (sPrefix == "large_room")		sSound = gsGrenade_ExplosionLargeRoomSound;
+		else if (sPrefix == "exterior")			sSound = gsGrenade_ExplosionExteriorSound;
+			
+		mBaseObj.PlaySound("Sound_GrenadeExplosion", sSound, true, false);
+		
+		if (sPrefix!="exterior" && bBuoyancyActive==false)
+		{
+			// TODO: Make a proper gun effect instead of using the hide mode one!
+			Gun_ActivateMuffledEffect(7.f);
+		}
+		
+		//////////////
+		// AI sound event
+		pMap.BroadcastSoundHeardEvent("GrenadeExplosion", mBaseObj.GetPosition(), 500.f, 5); 
+			
+		//////////////
+		// Particles
+		
+		const tString sPS = pBody !is null && pBody.GetBuoyancyActive() ? gsGrenade_ExplosionSplashParticles : gsGrenade_ExplosionParticles;
+		//cParticleSystem@ pExplosionPS = mBaseObj.CreateParticleSystem("PS_GrenadeExplosion", sPS, true, false);
+		cParticleSystem@ pExplosionPS = ParticleSetting_CreateParticleSystemFromSetting(cast<iLuxEntity@>(mBaseObj), "PS_GrenadeExplosion", sPS, true, false);
+		if (bBuoyancyActive)
+		{
+			float fHeight = pBody.GetBuoyancySurface().b + 0.2f;
+			pExplosionPS.SetWorldPosition(pExplosionPS.GetWorldPosition() + cVector3f(0, fHeight, 0));
+		}
+		
+		//////////////
+		// Light flash
+		LightFlash_Add(0.f, 0.1f, 0.05f, mBaseObj.GetPosition(), cColor(1,0.645,0,1), 1.f, 10.f);
+		
+		//////////////
+		// Shake
+		int lShakeId = Effect_Shake_Start(0.3f, 0.05f, 0.2f, 0.6f);
+		Effect_Shake_SetSourceEntity(lShakeId, mBaseObj.GetName(), 0.f, 20.f, eEasing_Linear);
+		
+		///////////////
+		// Map callback
+		tString sCallback = "void OnExplosion(const tString &in asEntity)";
+		if (pMap.ScriptMethodExists(sCallback) && pMap.ScriptPrepare(sCallback))
+		{
+			tString sName = mBaseObj.GetName();
+			pMap.SetArgString(0, sName);
+			pMap.ScriptExecute();
+		}
+		
+		//////////////
+		// Broadcast message
+		array<iLuxEntity@> vAgents;
+		pMap.GetEntityArray("*", eLuxEntityType_Agent, "", vAgents);
+		
+		for (int i = 0; i < vAgents.size(); ++i)
+		{
+			cLuxAgent@ pAgent = cLux_ToAgent(vAgents[i]);
+			if (pAgent is null) continue;
+			
+			pAgent.BroadcastMessage(eCustomEntityMessage_Explosion, null, mBaseObj.GetPosition(), -1);
+		}
+		
+		//////////////
+		// Hide prop before destroying it
+		mBaseObj.SetInteractionDisabled(true);
+		mBaseObj.GetMeshEntity().SetVisible(false);
+		
+		for (int i = 0; i < mBaseObj.GetBodyNum(); ++i)
+		{
+			iPhysicsBody@ pBody = mBaseObj.GetBody(i);
+			
+			pBody.SetActive(false);
+			pBody.SetCollide(false);
+		}
+		
+		//////////////
+		// Destroy prop (delay so its position can be used for the shake)
+		mBaseObj.Timer_Add(0, 2.f, "OnTimer_DestroyProp", false, false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnTimer_DestroyProp(uint64 alId)
+	{
+		mBaseObj.GetMap().DestroyEntity(mBaseObj);
+	}
+
+	//------------------------------------------------------------
+	
+	float GetPlayerDamageForDistance(float afDist)
+	{
+		if (mbDamagePlayer == false) return 0;
+		
+		float fPlayerRadius = GameDifficulty_GetSettingValueByID_Float(eGameDifficultySetting_GrenadePlayerDamageRadius);
+		
+		if (fPlayerRadius <= gfGrenade_Radius)
+			return gfGrenade_PlayerDamage * (1.0f-afDist/fPlayerRadius);
+		
+		if (afDist < gfGrenade_PlayerKillRadius)
+			return 2.0f;
+			
+        return cMath_Max(1.0f - (afDist - gfGrenade_PlayerKillRadius) / (fPlayerRadius - gfGrenade_PlayerKillRadius), 0.0f);
+	}
+
+	//------------------------------------------------------------
+	
+	void SetHitboxesActive(const array<iLuxEntity@> &in avFuelSpills)
+	{
+		///////////////////////
+		// Fuel Spills
+		for (int i = 0; i < avFuelSpills.size(); ++i)
+		{
+			cLuxProp@ pFuelSpill = cLux_ToProp(avFuelSpills[i]);
+			
+			if (pFuelSpill is null) continue;
+			if (pFuelSpill.IsActive() == false) continue;
+			
+			pFuelSpill.GetMainBody().SetCollide(true);
+			pFuelSpill.Timer_Add("DeactivateHitbox", 0.00f, "OnTimer_DeactivateHitbox", false);
+		}
+	}
+	
+
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// GLOBAL
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetCustomFuseTime()
+	{
+		mfExplosionCount = cScript_GetGlobalArgFloat(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetDamagePlayer()
+	{
+		mbDamagePlayer = cScript_GetGlobalArgBool(0);
+	}
+
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// DEBUG
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnRenderSolid(cRendererCallbackFunctions@ apFunctions)
+	{	
+		return;
+		
+		////////////////
+		// Binary search for kill zone instead of calculating it. Makes it easier to change the damage formula later.
+		float fPlayerDamageRadius = GameDifficulty_GetSettingValueByID_Float(eGameDifficultySetting_GrenadePlayerDamageRadius);
+		float fMinDist = 0;
+		float fMaxDist = fPlayerDamageRadius;
+		float fKillRange = fMaxDist;
+		float fDamage = GetPlayerDamageForDistance(fKillRange);
+		int lLoops = 0;
+		while (cMath_Abs(fDamage-1.0f) > 0.005)
+		{
+			lLoops++;
+				
+			if (fDamage > 1.0f)
+				fMinDist = fKillRange;
+			else
+				fMaxDist = fKillRange;
+			
+			fKillRange = (fMinDist+fMaxDist)*0.5f;
+			fDamage = GetPlayerDamageForDistance(fKillRange);
+			
+			if (lLoops > 10) break;
+		}
+		apFunctions.GetLowLevelGfx().DrawSphere(mBaseObj.GetPosition(), fKillRange, cColor_Red * 2.f);
+		apFunctions.GetLowLevelGfx().DrawSphere(mBaseObj.GetPosition(), fPlayerDamageRadius, cColor(0, 2.0f, 2.0f));
+	}
+
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// PROPERTIES
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool mbExploded = false;
+	float mfExplosionCount = gfGrenade_TimeUntilExplosion;
+	float mfCollisionCallbackCount = gfGrenade_CollisionCallbackInterval;
+	[nosave] iCollideShape@ mpExplosionShape = null;
+	
+	bool mbDamagePlayer = true;
+	
+	//------------------------------------------------------------
+}

@@ -1,0 +1,819 @@
+#include "custom/props/Prop_Pickup.hps"
+#include "helper_modules_custom.hps"
+#include "helper_modules.hps"
+#include "helpers/helper_player.hps"
+#include "helpers/helper_audio.hps"
+#include "custom/helpers/helper_props_custom.hps"
+#include "helpers/helper_props.hps"
+
+//------------------------------------------------------------
+
+const float gfAmuletAutoPutAwayTime = 40.f;
+const float gfAmuletActivationFlashTime = 1.5f;
+
+const cColor gAmuletEffectColor_Default = cColor(0.5, 0.75, 1);
+const cColor gAmuletEffectColor_OpenRift = cColor(0.6, 1.0, 0.4) * 1.4f;
+
+const tString[] gsAmuletDialBones = { "j_big_dial", "j_dial_1", "j_dial_2", "j_dial_3", "j_dial_4" };
+const float[] gfAmuletDialRotationSpeed = { 6.f, 1.25f, 2.25f, 3.75f, 3.f };
+
+const tString gsAmuletTrackingSound = "player/tools/amulet/amulet/amulet_glow_loop";
+const tString gsAmuletReminderSound = "player/tools/amulet/amulet/amulet_alert";
+
+//------------------------------------------------------------
+
+class cScrPropCurseMedallion : cScrPropPickup
+{
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// INIT
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+
+	void Init()
+	{
+		cScrPropPickup::Init();
+		
+		mbEquipped = false;
+		mbInDreamSequence = false;		
+		mbTrackingActive = false;
+		mbTrackingSpecificTarget = false;
+		mbTutorialActive = false;
+		
+		mfEquippedCount = 0.f;	
+		mfIlluminationMul = 0.f;
+		mfActivationFlashCount = 0.f;
+		mfEffectMul = 1.f;
+		
+		mlReminderPlayedCount = 0;
+		mfReminderCount = 10.f;
+		
+		mlRunAnimState = -1;
+		mlAutoPutAwayState = -1;
+		mfAutoPutAwayCount = 0.f;
+		mbPlayerRunning = false;
+		
+		mfProximity = 0.f;
+		mfDialIntensity = 0.f;
+		mfActivationFlashCount = 0.f;
+		mfActivationFlashT = 0.f;
+	    		
+		m_idTrackingTargetId = tID_Invalid;
+		m_idTrackingSoundId = tID_Invalid;
+		m_idForceFieldId = tID_Invalid;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		cScrPropPickup::SetupAfterLoad(apWorld, apVars, apInstanceVars);	
+		
+		mlReminderPlayedCount = 0;
+		mfReminderCount = 10.f;
+		
+		mBaseObj.SetIlluminationBaseColor(cColor(5.f, 5.f, 5.f, 1.f));
+		mBaseObj.SetEffectBaseColor(0.f);
+	}
+		
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// GLOBAL
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_CopyFromItemEntity() override
+	{
+		cScrPropPickup::_Global_CopyFromItemEntity();
+		
+		tString sSource = cScript_GetGlobalArgString(0);
+		cScript_SetGlobalArgID(0, m_idTrackingTargetId);
+		cScript_SetGlobalArgID(1, m_idForceFieldId);
+		cScript_SetGlobalArgBool(2, mbTrackingActive);
+		cScript_SetGlobalArgBool(3, mbTrackingSpecificTarget);
+		cScript_SetGlobalArgBool(4, mbEquipped);
+		cScript_SetGlobalArgFloat(5, mfEffectMul);
+		cScript_SetGlobalArgBool(6, mbInDreamSequence);
+		
+		cScript_RunGlobalFunc(sSource, "cScrPropCurseMedallion", "_Global_CopyValues");
+	}
+	
+	//------------------------------------------------------------
+	
+	// Called to transfer values from another of these entities
+	// e.g. when spawning something from the inventory
+	
+	void _Global_CopyValues()
+	{
+		m_idTrackingTargetId = cScript_GetGlobalArgID(0);
+		m_idForceFieldId = cScript_GetGlobalArgID(1);
+		mbTrackingActive = cScript_GetGlobalArgBool(2);
+		mbTrackingSpecificTarget = cScript_GetGlobalArgBool(3);
+		mbEquipped = cScript_GetGlobalArgBool(4);
+		mfEffectMul = cScript_GetGlobalArgFloat(5);
+		mbInDreamSequence = cScript_GetGlobalArgBool(6);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_StartTracking()
+	{
+		StartTracking(cScript_GetGlobalArgBool(0), cScript_GetGlobalArgID(1), cScript_GetGlobalArgFloat(2));
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_StopTracking()
+	{
+		StopTracking();
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetTrackTarget()
+	{
+		tID id = mbPlayerRunning ? tID_Invalid : m_idTrackingTargetId;
+		cScript_SetGlobalReturnID(id);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_OnItemStartPutAway()
+	{		
+		mbEquipped = false;
+		
+		cSoundEntity@ pSound = cLux_ID_SoundEntity(m_idTrackingSoundId);
+		if (pSound !is null)
+			pSound.FadeOut(1.f);
+		
+		cForceField@ pForceField = cLux_ID_ForceField(m_idForceFieldId);
+		if (pForceField !is null)
+			pForceField.FadeOut(0.1f);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_IsBeingPutAway()
+	{
+		cScript_SetGlobalReturnBool(mbEquipped == false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_OnItemTakenOut()
+	{		
+		mbEquipped = true;
+		mfEquippedCount = 0.f;
+		mfIlluminationMul = 0.f;
+		
+		mBaseObj.SetAnimationCallbackActive(true);
+		
+		cMeshEntity@ pMeshEnt = mBaseObj.GetMeshEntity();
+		if (pMeshEnt !is null)
+		{
+			pMeshEnt.SetRenderFlagBit(eRenderableFlag_VisibleInReflection, false);
+			pMeshEnt.SetRenderFlagBit(eRenderableFlag_VisibleInNonReflection, true);
+			pMeshEnt.SetRenderFlagBit(eRenderableFlag_ShadowCaster, true);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetEffectMul()
+	{
+		mfEffectMul = cScript_GetGlobalArgFloat(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetInDreamSequence()
+	{
+		mbInDreamSequence = cScript_GetGlobalArgBool(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetAnimationName() override
+	{
+		cScrPropPickup::_Global_GetAnimationName();
+		tString sAnim = cScript_GetGlobalReturnString();
+		
+		//////////////
+		// Play normal anim
+		if (Item_GetHeld(eItemHandlerHand_Right) != ItemType_GetFirstInInventory("CurseMedallion"))
+		{
+			sAnim = "amulet";
+			mlRunAnimState = -1;
+		}
+		//////////////
+		// Play running anims
+		else
+		{
+			if (mlRunAnimState == -1)
+			{
+				sAnim = "amulet";
+					
+				if (mbPlayerRunning)
+					mlRunAnimState = 0;
+			}
+			else if (mlRunAnimState == 0)
+			{
+				sAnim = "amulet_run_start";
+					
+				cAnimationState@ pState = PlayerBody_GetAnimationState("tool_" + sAnim + "_idle");
+				if (pState.IsActive() && pState.GetRelativeTimePosition() >= 0.9f)
+				{
+					mlRunAnimState = 1;
+					pState.SetLoop(false);
+				}
+			}
+			else if (mlRunAnimState == 1)
+			{
+				sAnim = "amulet_run_loop";
+						
+				if (mbPlayerRunning == false)
+					mlRunAnimState = 2;
+			}
+			else if (mlRunAnimState == 2)
+			{
+				sAnim = "amulet_run_end";
+				
+				cAnimationState@ pState = PlayerBody_GetAnimationState("tool_" + sAnim + "_idle");
+				if (pState.IsActive() && pState.GetRelativeTimePosition() >= 0.9f)
+				{
+					mlRunAnimState = -1;
+					pState.SetLoop(false);
+				}
+			}
+		}
+		
+		cScript_SetGlobalReturnString(sAnim);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetTutorialActive()
+	{
+		mbTutorialActive = cScript_GetGlobalArgBool(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// GENERAL
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnVariableUpdate(float afDeltaTime)
+	{
+		UpdateTimers(afDeltaTime);
+		UpdateForcefield();
+		UpdateTrackTarget();
+		UpdateEffects(afDeltaTime);
+		UpdateAutoPutAway(afDeltaTime);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnAfterAnimationUpdate(cMeshEntity@ apFunctions, float afTimeStep)
+	{
+		// Only update dials when an animation is active, i.e the amulet is held
+		UpdateDials(afTimeStep);
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateTimers(float afDeltaTime)
+	{
+		if (mfEquippedCount < 99999999.f)
+			mfEquippedCount += afDeltaTime;			
+		
+		if (mfActivationFlashCount > 0.f)
+		{
+			mfActivationFlashCount -= afDeltaTime;
+			mfActivationFlashT = (gfAmuletActivationFlashTime - cMath_Max(mfActivationFlashCount, 0.f)) / gfAmuletActivationFlashTime;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateForcefield()
+	{
+		//////////////////////
+		// Setup
+		cForceField@ pForceField = cLux_ID_ForceField(m_idForceFieldId);
+		
+		if (pForceField is null)
+		{
+			@pForceField = mBaseObj.GetMap().GetWorld().CreateForceField("AmuletForceField", false, false);			
+			
+			pForceField.SetForce(4.f);
+			pForceField.SetRadius(3.1f);
+			pForceField.SetFreq(1.2f);
+			pForceField.FadeOut(0.001f);
+			pForceField.SetScriptableIsSaved(false);
+			
+			m_idForceFieldId = pForceField.GetID();
+			@pForceField = cLux_ID_ForceField(m_idForceFieldId);
+		}
+		
+		//////////////////////
+		// Update behaviour		
+		pForceField.SetPosition(mBaseObj.GetPosition());
+		
+		bool bFadeOut = mbEquipped == false || mBaseObj.IsInteractedWith() == false;
+		if (bFadeOut)		pForceField.FadeOut(4.f);
+		else				pForceField.FadeTo(1.f, 1.f);
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateTrackTarget()
+	{
+		if (mbTrackingActive == false || mbTrackingSpecificTarget)
+			return;
+		
+		/////////////////////////
+		// Find the best rift to track!
+		cCamera@ pCam = cLux_GetPlayer().GetCamera();
+		iLuxEntity@ pFovRift = null;
+		iLuxEntity@ pDistRift = null;
+		
+		float fHighestFovScore = -1.f;
+		float fHighestDistScore = -1.f;
+		
+		cLuxEntityComponentIterator@ pIt = cLux_GetCurrentMap().GetEntityComponentIterator(eComponentType_Custom_RiftComponent);
+		while (pIt.HasNext())
+		{
+			iLuxEntity@ pEnt = pIt.Next().GetEntity();
+			iScrRiftComponent_Interface@ pRift = UserComponent_Rift_Get(pEnt);			
+
+			if (pEnt.IsActive() == false)
+				continue;
+			
+			cVector3f vDelta = pRift.GetClosestTrackingPoint() - pCam.GetPosition();
+			float fDistSqr = vDelta.SqrLength();
+			float fTrackingDist = pRift.GetTrackingDistance();
+			
+			if (fDistSqr > fTrackingDist * fTrackingDist)
+				continue;
+			
+			/////////////////////
+			// Scores
+			float fDistScore = 1.f - (fDistSqr / (fTrackingDist * fTrackingDist));
+			if (fDistScore > fHighestDistScore)
+			{
+				fHighestDistScore = fDistScore;
+				@pDistRift = pEnt;
+			}
+			
+			float fFovScore = cMath_Vector3Dot(pCam.GetForward(), cMath_Vector3Normalize(vDelta));
+			if (fFovScore > fHighestFovScore && fFovScore > 0.2f)
+			{
+				fHighestFovScore = fFovScore;
+				@pFovRift = pEnt;
+			}
+			
+			/////////////////////
+			// Stop checking if within opening distance
+			float fOpenDist = pRift.GetStartOpeningDistance();
+			if (fDistSqr < fOpenDist * fOpenDist)
+				break;
+		}
+		
+		/////////////////////////
+		// No rift found, nothing to track!
+		if (pFovRift is null && pDistRift is null) 
+		{
+			m_idTrackingTargetId = tID_Invalid;		
+			return;
+		}
+		
+		/////////////////////////
+		// Track rift!
+		iLuxEntity@ pTarget = null;
+		if (pFovRift !is null)			@pTarget = pFovRift;
+		else if (pDistRift !is null)	@pTarget = pDistRift;
+			
+		if (pTarget.GetID() != m_idTrackingTargetId)
+		{
+			StartTracking(m_idTrackingTargetId == tID_Invalid, pTarget.GetID(), UserComponent_Rift_Get(pTarget).GetTrackingDistance());
+			mbTrackingSpecificTarget = false;
+		}
+	}
+	
+	//------------------------------------------------------------
+
+	void UpdateEffects(float afDeltaTime)
+	{
+		////////////////////
+		// Setup vars
+		cCamera@ pCam = cLux_GetPlayer().GetCamera();
+		iLuxEntity@ pTarget = cLux_ID_Entity(m_idTrackingTargetId);
+		
+		float fDot = 0.f;
+		float fDist = 100.f;
+		float fRiftOpenAmount = 0.f;
+		float fRiftStartOpenDist = -1.f;
+		float fRiftTrackingDistance = 100.f;
+		bool bPlayerInsideRift = false;
+		
+		if (pTarget !is null)
+		{
+			iScrRiftComponent_Interface@ pRift = UserComponent_Rift_Get(pTarget);
+			
+			cVector3f vPlayerFwd = cLux_GetPlayer().GetCharacterBody().GetForward();
+			cVector3f vDelta = (pRift.GetClosestTrackingPoint() - pCam.GetPosition());
+			
+			fDot = cMath_Vector3Dot(vPlayerFwd, cMath_Vector3Normalize(vDelta));
+			fDist = vDelta.Length();
+			
+			if (mbTutorialActive)
+				fDot = cMath_Max(fDot, 0.6f);
+			if (fDist < 1.5f) 
+				fDot = 1.f;			
+				
+			fRiftOpenAmount = pRift.GetOpenAmount();
+			if (fRiftOpenAmount == -1.f)
+				fRiftOpenAmount = 0.f;
+				
+			fRiftStartOpenDist = pRift.GetStartOpeningDistance();
+			bPlayerInsideRift = pRift.GetPlayerIsInside();
+			fRiftTrackingDistance = pRift.GetTrackingDistance();			
+		}
+		
+		mfProximity = cMath_Clamp(1.f - (cMath_Max(fDist - 3.f, 0.f) / fRiftTrackingDistance), 0.f, 1.f);
+		
+		////////////////////
+		// Illumination
+		float fIlluminationSpeed = 1.f;			
+		float fIlluminationGoal = fRiftOpenAmount * 0.2f + cMath_Easing(eEasing_CubicOut, fDot) * 0.8f;
+		fIlluminationGoal = cMath_Max(fIlluminationGoal, 0.f);
+		
+		if (fDot > 0.9f)
+			fIlluminationGoal += 0.5f;
+		
+		if (mbEquipped == false)				fIlluminationGoal = 0.f;
+		if (mbTrackingActive == false)			fIlluminationGoal = 0.f;
+		if (fRiftOpenAmount >= 1.f)				fIlluminationGoal = 1.15f;
+		
+		 // Dream/inside rift pulse
+		if (mbInDreamSequence || bPlayerInsideRift)							
+			fIlluminationGoal = cMath_Abs(cMath_Sin(mfEquippedCount * 1.25f)) * 0.3f;
+		
+		// Unequipped pulse
+		if (mbEquipped == false && mbTrackingActive && pTarget !is null)	
+			fIlluminationGoal = 0.4f + cMath_Abs(cMath_Sin(mfEquippedCount * 2.f)) * 0.2f;
+		
+		// Activation pulse
+		if (mfActivationFlashCount > 0.f)
+			fIlluminationGoal = cMath_Min(fIlluminationGoal + cMath_Sin(mfActivationFlashT * cMath_Pi) * 1.15f, 1.15f);
+		
+		mfIlluminationMul = cMath_IncreaseTo(mfIlluminationMul, fIlluminationSpeed, cMath_Clamp(fIlluminationGoal, 0.f, 1.15f));
+		
+		cColor illumColorGoal = gAmuletEffectColor_Default;
+		float fIllumIntensity = fRiftOpenAmount >= 1.f ? 1.f : fRiftOpenAmount * 0.6f;
+
+		if (cMath_RandRectf(0.f, 1.f) < fIllumIntensity)
+			illumColorGoal = gAmuletEffectColor_OpenRift;
+			
+		illumColorGoal = illumColorGoal * mfIlluminationMul * mfEffectMul;
+		illumColorGoal.a = 1.f;
+		
+		mBaseObj.FadeEffectBaseColor(illumColorGoal, 0.1f);
+		
+		////////////////////
+		// Tracking loop
+		if (mbEquipped && mbTrackingActive)
+		{
+			cSoundEntity@ pSound = cLux_ID_SoundEntity(m_idTrackingSoundId);
+			if (pSound is null)
+			{	
+				@pSound = mBaseObj.PlaySound("Sound_AmuletTracking", gsAmuletTrackingSound, true, true);
+				m_idTrackingSoundId = pSound.GetID();
+			}
+			
+			// Param is based on how much the dial is spinning
+			float fParam = mbTrackingActive ? 1.f - cMath_Clamp(cMath_Abs(mfDialAngleAdd[1]) / cMath_Pi, 0.f, 1.f) : 1.f;
+			pSound.SetParam(0, fParam);
+		}
+		
+		/////////////////////////////
+		// Reminder sound
+		if (pTarget !is null && mbEquipped == false)
+		{
+			mfReminderCount -= afDeltaTime;
+			if (mfReminderCount <= 0.f)
+			{
+				++mlReminderPlayedCount;
+				
+				mfActivationFlashCount = gfAmuletActivationFlashTime;				
+				mBaseObj.PlaySound("Sound_AmuletReminder", gsAmuletReminderSound, true, true);
+				
+				ResetReminderCount();
+			}
+		}		
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateDials(float afDeltaTime)
+	{			
+		//////////////////////
+		// Setup vars
+		float fRiftOpenAmount = 0.f;
+		bool bPlayerInsideRift = false;
+		cVector3f vTargetPos = 0.f;
+		iLuxEntity@ pTarget = cLux_ID_Entity(m_idTrackingTargetId);		
+		
+		if (pTarget !is null)
+		{
+			iScrRiftComponent_Interface@ pRift = UserComponent_Rift_Get(pTarget);		
+			fRiftOpenAmount = pRift.GetOpenAmount();
+			bPlayerInsideRift = pRift.GetPlayerIsInside();
+			vTargetPos = pRift.GetClosestTrackingPoint();
+		}
+		
+		mfDialIntensity = mfIlluminationMul * cMath_Easing(eEasing_QuadIn, mfProximity);
+		mfDialIntensity = cMath_Easing(eEasing_CubicIn, cMath_Clamp(mfDialIntensity, 0.f, 1.f));
+		
+		if (mfActivationFlashCount > 0.f)
+			mfDialIntensity = 1.f;
+		if (mbInDreamSequence || bPlayerInsideRift)
+			mfDialIntensity = mfIlluminationMul;
+		
+		//////////////////////
+		// Move dials
+		for (int i = 0; i < gsAmuletDialBones.length(); ++i)
+		{				
+			//////////////////////
+			// Setup vars				
+			cBoneState@ pBone = mBaseObj.GetMeshEntity().GetBoneStateFromName(gsAmuletDialBones[i]);
+			
+			// Mul with rotation from previous frame (since the animation has reset the bone rotation)
+			cMatrixf mtxBone = cMath_MatrixMul(pBone.GetWorldMatrix(), mtxPrevDialRotation[i]);
+			cMatrixf mtxBoneTranspose = mtxBone.GetTranspose();
+			
+			float fAngleAddGoal = 0.f;	
+			
+			//////////////////////
+			// Main dial
+			if (i == 0)
+			{
+				// Get angle toward rift (if any)
+				if (vTargetPos.SqrLength() > 0.f)
+				{
+					cVector3f vDir = cMath_Vector3Normalize(vTargetPos - pBone.GetWorldPosition());
+					cVector3f vNrm = cMath_Vector3Normalize(mtxBoneTranspose.GetForward());
+					cVector3f vUp = cMath_Vector3Normalize(mtxBoneTranspose.GetUp());
+					cVector3f vWantedUp = cMath_Vector3Normalize(cMath_Vector3ProjectOnPlane(vDir, vNrm));
+					
+					fAngleAddGoal = cMath_Vector3Angle(vUp, vWantedUp);
+					fAngleAddGoal *= cMath_Sign(cMath_Vector3Dot(vNrm, cMath_Vector3Cross(vUp, vWantedUp)));
+					
+					// Add an offset since Tasi is holding the amulet at an angle
+					float fAngleA = cMath_ATan2(vDir.y, cMath_Sqrt(vDir.x * vDir.x + vDir.z * vDir.z));
+					float fAngleB = cLux_GetPlayer().GetCamera().GetPitch();
+					float fAngleOffsetMul = cMath_Clamp(1.f - cMath_Abs(fAngleA - fAngleB), 0.f, 1.f);
+					float fAngleOffset = cMath_ToRad(-37.5f) * fAngleOffsetMul;
+					
+					fAngleAddGoal += fAngleOffset;
+				}
+				// Otherwise just spin slowly
+				else
+				{
+					fAngleAddGoal = 0.025f;
+				}
+				
+				float fNoiseMul = bPlayerInsideRift ? 5.f : 0.75f;
+				float fAngleNoise = cMath_Sin(mfEquippedCount * (30.f * mfDialIntensity)) * mfDialIntensity * fNoiseMul;
+				fAngleAddGoal += fAngleNoise;
+				
+				// Spin alot if rift is fully open
+				if (fRiftOpenAmount >= 1.f && bPlayerInsideRift == false)
+					fAngleAddGoal = cMath_Pi * 0.65f;
+			}
+			
+			//////////////////////
+			// Other dials
+			else
+			{
+				fAngleAddGoal = (i % 2 == 0 ? 1.f : -1.f) * cMath_Pi;
+				fAngleAddGoal = cMath_Max(cMath_Abs(fAngleAddGoal * mfDialIntensity), 0.025f) * cMath_Sign(fAngleAddGoal);
+				
+				if (fRiftOpenAmount >= 1.f)
+					fAngleAddGoal *= 2.f;
+			}
+			
+			//////////////////////
+			// Angle add			
+			float fAngleAddFadeSpeed = i == 0 ? 3.f : 1.f;
+			if (mfActivationFlashCount > 0.f)
+				fAngleAddFadeSpeed *= cMath_Sin(mfActivationFlashT * cMath_Pi) * 1.5f;
+			
+			mfDialAngleAdd[i] = cMath_IncreaseTo(mfDialAngleAdd[i], fAngleAddFadeSpeed * afDeltaTime, fAngleAddGoal);
+			
+			if (cMath_IsValid(mfDialAngleAdd[i]) == false)
+				continue;
+			
+			//////////////////////
+			// Apply rotation
+			cMatrixf mtxRotation = cMath_MatrixRotateZ(mfDialAngleAdd[i] * gfAmuletDialRotationSpeed[i] * afDeltaTime);
+			cMatrixf mtxNew = cMath_MatrixMul(mtxBone, mtxRotation);			
+			pBone.SetWorldMatrix(mtxNew);
+			
+			// Store the rotation so we can use it as a base next frame
+			mtxPrevDialRotation[i] = cMath_MatrixMul(mtxPrevDialRotation[i], mtxRotation);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateAutoPutAway(float afDeltaTime)
+	{
+		//////////////////////
+		// Setup vars
+		int lPutAwayType = -1;
+		float fPutAwayTime = gfAmuletAutoPutAwayTime;
+		
+		//////////////////////
+		// Interacting?
+		int lState = cLux_GetPlayer().GetCurrentStateId();
+		if (mbEquipped &&
+			(lState == ePlayerState_Grab || 
+			lState == ePlayerState_Tear || 
+			lState == ePlayerState_Lever || 
+			lState == ePlayerState_Push || 
+			lState == ePlayerState_Slide ||
+			lState == ePlayerState_SwingDoor ||
+			lState == ePlayerState_Wheel ||
+			lState == ePlayerState_MovingButton))
+		{
+			lPutAwayType = 0;
+			fPutAwayTime = 0.f;
+			
+			if (mlAutoPutAwayState != 0)
+				mfAutoPutAwayCount = 0.f;
+			
+			mlAutoPutAwayState = 0;
+		}
+		//////////////////////
+		// Running?
+		else if (mbEquipped && Player_GetRunning() && Player_GetRunSpeedMul() > 0.5f)
+		{
+			lPutAwayType = 1;
+			fPutAwayTime = 1.5f;
+			
+			if (mlAutoPutAwayState != 1)
+				mfAutoPutAwayCount = 0.f;
+			
+			mlAutoPutAwayState = 1;
+		}
+		//////////////////////
+		// Nothing to track?
+		else if (mbEquipped && mbTrackingActive == false)
+		{
+			lPutAwayType = 0;
+			mlAutoPutAwayState = 2;
+		}
+		
+		//////////////////////
+		// Put away!
+		if (lPutAwayType != -1)
+		{
+			mfAutoPutAwayCount += afDeltaTime;		
+			if (mfAutoPutAwayCount >= fPutAwayTime)
+			{
+				mfAutoPutAwayCount = 0.f;
+				
+				//////////////////////
+				// Unequip
+				if (lPutAwayType == 0)
+				{
+					Item_PutAway(eItemHandlerHand_Right);
+				}
+				//////////////////////
+				// Player running
+				else if (lPutAwayType == 1)
+				{
+					mbPlayerRunning = true;
+				}
+			}
+		}
+		else
+		{
+			mfAutoPutAwayCount = 0.f;
+			mlAutoPutAwayState = -1;
+		}
+		
+		// Reset player running!
+		if (mlAutoPutAwayState != 1)
+			mbPlayerRunning = false;
+	}
+	
+	//------------------------------------------------------------
+	
+	void StartTracking(bool abEffects, tID a_idTarget = tID_Invalid, float afTrackingDistance = -1.f)
+	{
+		mbTrackingActive = true;
+		mbTrackingSpecificTarget = a_idTarget != tID_Invalid;
+		m_idTrackingTargetId = a_idTarget;
+		
+		if (abEffects)
+		{
+			mfReminderCount = 0.f;
+			mfActivationFlashCount = gfAmuletActivationFlashTime;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void StopTracking()
+	{
+		mbTrackingActive = false;
+		mbTrackingSpecificTarget = false;
+		m_idTrackingTargetId = tID_Invalid;
+		
+		cSoundEntity@ pSound = cLux_ID_SoundEntity(m_idTrackingSoundId);
+		if (pSound !is null)
+			pSound.FadeOut(1.f);
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetReminderCount()
+	{
+		mfReminderCount = cMath_Clamp(10.f + (10.f * (float(mlReminderPlayedCount) * 0.5f)), 0.f, 90.f);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnSetActive(bool abX)
+	{
+		if (abX && mbEquipped == false)
+			ResetReminderCount();
+	}
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// DEBUG
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afY)
+	{
+		return afY;
+	}
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// PROPERTIES
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	bool mbEquipped;
+	bool mbInDreamSequence;
+	bool mbTrackingActive;
+	bool mbTrackingSpecificTarget;
+	bool mbTutorialActive;
+	
+	float mfEquippedCount;
+	float mfIlluminationMul;
+	float mfActivationFlashCount;
+	float mfEffectMul;
+	float mfProximity;
+	float mfDialIntensity;
+	float mfActivationFlashT;
+	
+	int mlRunAnimState;
+	int mlReminderPlayedCount;
+	float mfReminderCount;
+	
+	int mlAutoPutAwayState;
+	float mfAutoPutAwayCount;
+	bool mbPlayerRunning;
+	
+	tID m_idTrackingTargetId;
+	tID m_idTrackingSoundId;	
+	tID m_idForceFieldId;	
+	
+	float[] mfDialAngleAdd(5, 0);
+	cMatrixf[] mtxPrevDialRotation(5, cMatrixf_Identity);
+	
+	//------------------------------------------------------------
+}

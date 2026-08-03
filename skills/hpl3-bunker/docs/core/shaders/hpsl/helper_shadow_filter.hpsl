@@ -1,0 +1,334 @@
+//-----------------------------------------
+///////////////////////////////
+// Gather 4 shadow values
+
+
+float LinearZ(float afZ, in cVector4f avShadowParams)
+{
+	@ifdef LightType_Spot
+		return 2.0 * avShadowParams.x * avShadowParams.y / (avShadowParams.y + avShadowParams.x - (afZ * 2.0 - 1.0) * (avShadowParams.y - avShadowParams.x));
+	@else
+		return afZ * avShadowParams.y;
+	@endif
+}
+
+cVector4f LinearZ(in cVector4f avZ, in cVector4f avShadowParams)
+{
+	@ifdef LightType_Spot
+		return 2.0 * avShadowParams.xxxx / (avShadowParams.yyyy + avShadowParams.xxxx - (avZ * 2.0 - 1.0) * (avShadowParams.yyyy - avShadowParams.xxxx));
+	@else
+		return avZ;
+	@endif
+}
+
+cVector4f ShadowOcclusion(in cVector4f avShadowValue, in cVector4f avCmpZ, float afTransitionScale)
+{
+	//////////////
+	// Normal transition with a little smoothness to remove jaggies
+	return clamp(1.0 + (avShadowValue - avCmpZ) * afTransitionScale, 0.0, 1.0);
+}
+
+cVector2f Filter(in cVector2f avUV, out cVector2f avFrac)
+{
+	cVector2f vUV = avUV - 0.5;
+	avFrac.xy = fract(vUV);
+
+	return floor(vUV) + 0.5;
+}
+
+float PCF2x2(cTexture2D aShadowMap, in cVector2f avUV, float afCmpZ, in cVector2f avShadowMapSize, in cVector4f avShadowParams)
+{
+	cVector4f vCmpZ = cVector4f(afCmpZ, afCmpZ, afCmpZ, afCmpZ);
+
+	///////////
+	// Get filter and center pos
+	cVector2f vF;
+	cVector2f vCenter = Filter(avUV * avShadowMapSize, vF) / avShadowMapSize; 
+	
+	cVector4f vShadow = sampleGather(aShadowMap, vCenter, cVector2l(0, 0));
+
+	cVector4f vOcc = ShadowOcclusion(vShadow, vCmpZ, avShadowParams.z);
+
+	cVector2f vH = mix(vOcc.wx, vOcc.zy, vF.x);
+
+	return mix(vH.x, vH.y, vF.y);
+}
+
+float PCF4x4(cTexture2D aShadowMap, in cVector2f avUV, float afCmpZ, in cVector2f avShadowMapSize, in cVector4f avShadowParams)
+{
+	///////////
+	// Get filter and center pos
+	cVector2f vF;
+	cVector2f vCenter = Filter(avUV * avShadowMapSize, vF) / avShadowMapSize; 
+	cVector2f vI = 1.0 - vF;
+	
+	// Get shadow for the 16 texels in counter clockwise order
+	cVector4f vCmpZ = cVector4f(afCmpZ, afCmpZ, afCmpZ, afCmpZ);
+
+	cVector4f vShadow01 = sampleGather(aShadowMap, vCenter, cVector2l(-1, 1));
+	cVector4f vShadow11 = sampleGather(aShadowMap, vCenter, cVector2l( 1, 1));
+	cVector4f vShadow10 = sampleGather(aShadowMap, vCenter, cVector2l( 1,-1));
+	cVector4f vShadow00 = sampleGather(aShadowMap, vCenter, cVector2l(-1,-1));
+
+	// Get occlusion of original point
+	cVector4f vOcc01 = ShadowOcclusion(vShadow01, vCmpZ, avShadowParams.z);
+	cVector4f vOcc11 = ShadowOcclusion(vShadow11, vCmpZ, avShadowParams.z);
+	cVector4f vOcc10 = ShadowOcclusion(vShadow10, vCmpZ, avShadowParams.z);
+	cVector4f vOcc00 = ShadowOcclusion(vShadow00, vCmpZ, avShadowParams.z);
+
+	// Get weight
+	cVector4f vWeight01 = cVector4f(vI.x * vF.y, vF.y, 1, vI.x);
+	cVector4f vWeight11 = cVector4f(vF.y, vF.x * vF.y, vF.x, 1);
+	cVector4f vWeight00 = cVector4f(vI.x, 1, vI.y, vI.x * vI.y);
+	cVector4f vWeight10 = cVector4f(1, vF.x, vF.x * vI.y, vI.y);
+
+	// Add together with the filter values
+	cVector4f vOcc = vOcc01 * vWeight01 + vOcc11 * vWeight11 + 
+					 vOcc00 * vWeight00 + vOcc10 * vWeight10;
+			
+	float fAmount = dot(vOcc, cVector4f(1.0 / 9.0, 1.0 / 9.0, 1.0 / 9.0, 1.0 / 9.0));		
+	
+	return fAmount * fAmount * (3.0 - 2.0 * fAmount);
+}
+
+float PCF6x6(cTexture2D aShadowMap, in cVector2f avUV, float afCmpZ, in cVector2f avShadowMapSize, in cVector4f avShadowParams)
+{
+	///////////
+	// Get filter and center pos
+	cVector2f vF;
+	cVector2f vCenter = Filter(avUV * avShadowMapSize, vF) / avShadowMapSize; 
+	cVector2f vI = 1.0 - vF;
+	
+	// Get shadow for the 24 texels in counter clockwise order
+	cVector4f vCmpZ = cVector4f(afCmpZ, afCmpZ, afCmpZ, afCmpZ);
+
+	cVector4f vShadow02 = sampleGather(aShadowMap, vCenter, cVector2l(-2, 2));
+	cVector4f vShadow12 = sampleGather(aShadowMap, vCenter, cVector2l( 0, 2));
+	cVector4f vShadow22 = sampleGather(aShadowMap, vCenter, cVector2l( 2, 2));
+	
+	cVector4f vShadow21 = sampleGather(aShadowMap, vCenter, cVector2l( 2, 0));
+	cVector4f vShadow11 = sampleGather(aShadowMap, vCenter, cVector2l( 0, 0));
+	cVector4f vShadow01 = sampleGather(aShadowMap, vCenter, cVector2l(-2, 0));
+
+	cVector4f vShadow00 = sampleGather(aShadowMap, vCenter, cVector2l(-2,-2));
+	cVector4f vShadow10 = sampleGather(aShadowMap, vCenter, cVector2l( 0,-2));
+	cVector4f vShadow20 = sampleGather(aShadowMap, vCenter, cVector2l( 2,-2));
+	
+	// Apply occlusion
+	cVector4f vOcc02 = ShadowOcclusion(vShadow02, vCmpZ, avShadowParams.z);
+	cVector4f vOcc12 = ShadowOcclusion(vShadow12, vCmpZ, avShadowParams.z);
+	cVector4f vOcc22 = ShadowOcclusion(vShadow22, vCmpZ, avShadowParams.z);
+	
+	cVector4f vOcc21 = ShadowOcclusion(vShadow21, vCmpZ, avShadowParams.z);
+	cVector4f vOcc11 = ShadowOcclusion(vShadow11, vCmpZ, avShadowParams.z);
+	cVector4f vOcc01 = ShadowOcclusion(vShadow01, vCmpZ, avShadowParams.z);
+
+	cVector4f vOcc00 = ShadowOcclusion(vShadow00, vCmpZ, avShadowParams.z);
+	cVector4f vOcc10 = ShadowOcclusion(vShadow10, vCmpZ, avShadowParams.z);
+	cVector4f vOcc20 = ShadowOcclusion(vShadow20, vCmpZ, avShadowParams.z);
+
+	// Get weights per sample
+	cVector4f vWeight02 = cVector4f(vI.x * vF.y, vF.y, 1, vI.x);
+	cVector4f vWeight22 = cVector4f(vF.y, vF.x * vF.y, vF.x, 1);
+	cVector4f vWeight00 = cVector4f(vI.x, 1, vI.y, vI.x * vI.y);
+	cVector4f vWeight20 = cVector4f(1, vF.x, vF.x * vI.y, vI.y);
+	cVector4f vWeight12 = cVector4f(vF.y, vF.y, 1, 1);
+	cVector4f vWeight21 = cVector4f(1, vF.x, vF.x, 1);
+	cVector4f vWeight01 = cVector4f(vI.x, 1, 1, vI.x);
+	cVector4f vWeight10 = cVector4f(1, 1, vI.y, vI.y);
+
+	// Add together with the filter values
+	cVector4f vOcc =	vOcc02 * vWeight02 + vOcc22 * vWeight22 + 
+						vOcc00 * vWeight00 + vOcc20 * vWeight20 +
+						vOcc12 * vWeight12 + vOcc21 * vWeight21 +
+						vOcc01 * vWeight01 + vOcc10 * vWeight10 +
+						vOcc11;
+	
+	float fAmount = dot(vOcc, cVector4f(1.0 / 25.0, 1.0 / 25.0, 1.0 / 25.0, 1.0 / 25.0));
+	fAmount = fAmount * fAmount * (3.0 - 2.0 * fAmount);
+
+	return fAmount;
+}
+
+float PCF8x8(cTexture2D aShadowMap, in cVector2f avUV, float afCmpZ, in cVector2f avShadowMapSize, in cVector4f avShadowParams)
+{
+	///////////
+	// Get filter and center pos
+	cVector2f vF;
+	cVector2f vCenter = Filter(avUV * avShadowMapSize, vF) / avShadowMapSize; 
+	cVector2f vI = 1.0 - vF;
+	
+	// Get sahdow for the 24 texels in counter clockwise order
+	cVector4f vCmpZ = cVector4f(afCmpZ, afCmpZ, afCmpZ, afCmpZ);
+
+	cVector4f vShadow03 = sampleGather(aShadowMap, vCenter, cVector2l(-3, 3));
+	cVector4f vShadow13 = sampleGather(aShadowMap, vCenter, cVector2l(-1, 3));
+	cVector4f vShadow23 = sampleGather(aShadowMap, vCenter, cVector2l( 1, 3));
+	cVector4f vShadow33 = sampleGather(aShadowMap, vCenter, cVector2l( 3, 3));
+
+	cVector4f vShadow32 = sampleGather(aShadowMap, vCenter, cVector2l( 3, 1));
+	cVector4f vShadow22 = sampleGather(aShadowMap, vCenter, cVector2l( 1, 1));
+	cVector4f vShadow12 = sampleGather(aShadowMap, vCenter, cVector2l(-1, 1));
+	cVector4f vShadow02 = sampleGather(aShadowMap, vCenter, cVector2l(-3, 1));
+
+	cVector4f vShadow01 = sampleGather(aShadowMap, vCenter, cVector2l(-3,-1));
+	cVector4f vShadow11 = sampleGather(aShadowMap, vCenter, cVector2l(-1,-1));
+	cVector4f vShadow21 = sampleGather(aShadowMap, vCenter, cVector2l( 1,-1));
+	cVector4f vShadow31 = sampleGather(aShadowMap, vCenter, cVector2l( 3,-1));
+
+	cVector4f vShadow30 = sampleGather(aShadowMap, vCenter, cVector2l( 3,-3));
+	cVector4f vShadow20 = sampleGather(aShadowMap, vCenter, cVector2l( 1,-3));
+	cVector4f vShadow10 = sampleGather(aShadowMap, vCenter, cVector2l(-1,-3));
+	cVector4f vShadow00 = sampleGather(aShadowMap, vCenter, cVector2l(-3,-3));
+
+	// Apply occlusion
+	cVector4f vOcc03 = ShadowOcclusion(vShadow03, vCmpZ, avShadowParams.z);
+	cVector4f vOcc13 = ShadowOcclusion(vShadow13, vCmpZ, avShadowParams.z);
+	cVector4f vOcc23 = ShadowOcclusion(vShadow23, vCmpZ, avShadowParams.z);
+	cVector4f vOcc33 = ShadowOcclusion(vShadow33, vCmpZ, avShadowParams.z);
+									  
+	cVector4f vOcc32 = ShadowOcclusion(vShadow32, vCmpZ, avShadowParams.z);
+	cVector4f vOcc22 = ShadowOcclusion(vShadow22, vCmpZ, avShadowParams.z);
+	cVector4f vOcc12 = ShadowOcclusion(vShadow12, vCmpZ, avShadowParams.z);
+	cVector4f vOcc02 = ShadowOcclusion(vShadow02, vCmpZ, avShadowParams.z);
+									   
+	cVector4f vOcc01 = ShadowOcclusion(vShadow01, vCmpZ, avShadowParams.z);
+	cVector4f vOcc11 = ShadowOcclusion(vShadow11, vCmpZ, avShadowParams.z);
+	cVector4f vOcc21 = ShadowOcclusion(vShadow21, vCmpZ, avShadowParams.z);
+	cVector4f vOcc31 = ShadowOcclusion(vShadow31, vCmpZ, avShadowParams.z);
+									   
+	cVector4f vOcc30 = ShadowOcclusion(vShadow30, vCmpZ, avShadowParams.z);
+	cVector4f vOcc20 = ShadowOcclusion(vShadow20, vCmpZ, avShadowParams.z);
+	cVector4f vOcc10 = ShadowOcclusion(vShadow10, vCmpZ, avShadowParams.z);
+	cVector4f vOcc00 = ShadowOcclusion(vShadow00, vCmpZ, avShadowParams.z);
+
+	// Get weights for samples
+	cVector4f vWeight03 = cVector4f(vI.x * vF.y, vF.y, 1, vI.x);
+	cVector4f vWeight33 = cVector4f(vF.y, vF.x * vF.y, vF.x, 1);
+	cVector4f vWeight00 = cVector4f(vI.x, 1, vI.y, vI.x * vI.y);
+	cVector4f vWeight30 = cVector4f(1, vF.x, vF.x * vI.y, vI.y);
+	cVector4f vWeight1323 = cVector4f(vF.y, vF.y, 1, 1);
+	cVector4f vWeight3231 = cVector4f(1, vF.x, vF.x, 1);
+	cVector4f vWeight0102 = cVector4f(vI.x, 1, 1, vI.x);
+	cVector4f vWeight1020 = cVector4f(1, 1, vI.y, vI.y);
+
+	// Add together with the filter values
+	cVector4f vOcc =	vOcc03 * vWeight03 + vOcc33 * vWeight33 + 
+						vOcc00 * vWeight00 + vOcc30 * vWeight30;
+
+	vOcc +=				(vOcc13 + vOcc23) * vWeight1323 + (vOcc32 + vOcc31) * vWeight3231 +
+						(vOcc01 + vOcc02) * vWeight0102 + (vOcc10 + vOcc20) * vWeight1020 +
+						vOcc21 + vOcc22 + vOcc12 + vOcc11;
+
+	float fAmount = dot(vOcc, cVector4f(1.0 / 52.0, 1.0 / 52.0, 1.0 / 52.0, 1.0 / 52.0));
+	
+	return fAmount * fAmount * (3.0 - 2.0 * fAmount);
+}
+
+float ShadowDistance(cTexture2D aShadowMap, in cVector2f avUV, float afCmpZ, in cVector2f avShadowMapSize, in cVector4f avShadowParams)
+{
+	@ifdef LightType_Spot
+		const float kfEpsilon = 0.001;
+		const float kfOffset = 0.0025;
+	@else		
+		const float kfEpsilon = 0.005;
+		const float kfOffset = 0.0075;
+	@endif
+
+	cVector4f vCmpZ = LinearZ(cVector4f(afCmpZ, afCmpZ, afCmpZ, afCmpZ), avShadowParams) * avShadowParams.y + kfOffset;
+	
+	///////////
+	// Get filter and center pos
+	cVector2f vF;
+	cVector2f vCenter = Filter(avUV * avShadowMapSize, vF) / avShadowMapSize; 
+	
+	cVector4f vShadow = LinearZ(sampleGather(aShadowMap, vCenter, cVector2l(0, 0)), avShadowParams) * avShadowParams.y;
+
+	cVector2f vH = mix(vShadow.wx, vShadow.zy, vF.x);
+	float fShadow = mix(vH.x, vH.y, vF.y); 
+
+	return max(kfEpsilon, vCmpZ.x - fShadow);
+	/*
+	///////////
+	// Get filter and center pos
+	cVector2f vF;
+	cVector2f vCenter = Filter(avUV * avShadowMapSize, vF) / avShadowMapSize; 
+	cVector4f vShadow = LinearZ(sampleGather(aShadowMap, vCenter, cVector2l(0)), avShadowParams) * avShadowParams.y;
+	
+	cVector4f vDelta = max(cVector4f(kfEpsilon, kfEpsilon, kfEpsilon, kfEpsilon), vCmpZ - vShadow);
+	vDelta = exp2(-vDelta * vDelta);
+
+	cVector2f vH = mix(vDelta.wx, vDelta.zy, vF.x);
+	float fDist = mix(vH.x, vH.y, vF.y); 
+	float fAverage = sqrt(abs(log2(fDist)));
+
+	return fAverage;
+	*/
+}
+
+
+
+
+
+
+
+
+	/*
+	
+	if(afSkinShading == 1.0)
+	{
+		return exp(-512.0 * (1.0-fAmount) * (1.0-fAmount) / (avSubsurfaceColor * afTranslucencyAmount));
+	}
+	else
+	{
+		return fAmount * avSubsurfaceColor;
+	}
+
+	// OLD TRSNALUCENTY
+	cVector4f vOcc01 = max(cVector4f(0.0), (vCmpZ - LinearZ(sampleGather(aShadowMap, vCenter, cVector2l(-1, 1)), avShadowParams)));
+	cVector4f vOcc11 = max(cVector4f(0.0), (vCmpZ - LinearZ(sampleGather(aShadowMap, vCenter, cVector2l( 1, 1)), avShadowParams)));
+	cVector4f vOcc10 = max(cVector4f(0.0), (vCmpZ - LinearZ(sampleGather(aShadowMap, vCenter, cVector2l( 1,-1)), avShadowParams)));
+	cVector4f vOcc00 = max(cVector4f(0.0), (vCmpZ - LinearZ(sampleGather(aShadowMap, vCenter, cVector2l(-1,-1)), avShadowParams)));
+	
+	float fDensity = -32.0 * (1.05 - sqrt(afTranslucencyAmount)) * avShadowParams.y;
+		
+	if(afSkinShading > 0.0)										    
+	{					
+		////////////////
+		// Colored blend										    
+		cVector3f vSkinDensity = fDensity * 256.0 / avSubsurfaceColor * sqrt(avShadowParams.y);
+		cVector3f vSum = cVector3f(0, 0, 0);
+		
+		vOcc01 = vOcc01 * sqrt(vOcc01);
+		vOcc11 = vOcc11 * sqrt(vOcc11);
+		vOcc10 = vOcc10 * sqrt(vOcc10);
+		vOcc00 = vOcc00 * sqrt(vOcc00);
+
+		//todo, lookup table?
+		for(int i = 0; i < 4; ++i)
+		{
+			vSum += exp(vOcc00[i] * vSkinDensity) * vWeight00[i];
+			vSum += exp(vOcc01[i] * vSkinDensity) * vWeight01[i];
+			vSum += exp(vOcc11[i] * vSkinDensity) * vWeight11[i];
+			vSum += exp(vOcc10[i] * vSkinDensity) * vWeight10[i];
+		}
+
+		return vSum / 9.0;
+	}
+	else
+	{
+		////////////////
+		// Grayscale blend
+		vOcc01 = exp(vOcc01 * fDensity);
+		vOcc11 = exp(vOcc11 * fDensity);
+		vOcc10 = exp(vOcc10 * fDensity);
+		vOcc00 = exp(vOcc00 * fDensity);
+		
+		cVector4f vOcc = vOcc01 * vWeight01 + vOcc11 * vWeight11 + 
+						 vOcc00 * vWeight00 + vOcc10 * vWeight10;
+			
+		float fAmount = dot(vOcc, cVector4f(1.0 / 9.0));		 
+		return fAmount * fAmount * (3.0 - 2.0 * fAmount) * avSubsurfaceColor;
+	}
+
+	*/

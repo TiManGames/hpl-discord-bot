@@ -1,0 +1,275 @@
+#include "effect/Effects.hps"
+#include "custom/effects/Effects_Custom.hps"
+#include "custom/helpers/helper_effects_custom.hps"
+#include "player/Player_Types.hps"
+#include "custom/player/PlayerTypes_Custom.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_audio.hps"
+#include "helpers/helper_modules_custom.hps"
+
+//------------------------------------------------------------
+
+/////////////////////////////////////////
+// BABY KICK
+/////////////////////////////////////////
+
+//------------------------------------------------------------
+
+const float gfBabyKickFadeInTime = 0.3f;
+const float gfBabyKickFadeOutTime = 0.5f;
+
+//------------------------------------------------------------
+
+class cScrEffect_BabyKick : iScrEffect, iScrEffect_Interface, iScrEffect_BabyKick
+{
+
+	//----------------------------------
+	
+	void Init()
+	{
+		mlStage = 0;
+		mlBlurId = -1;
+		mlScreenId = -1;
+		mfStageCount = 4.f;
+		mfFovMul = 1.f;
+		mfIntensity = 1.f;
+		mbPlayGasp = false;
+		mbPlayHeartbeat = false;
+		mbShake = true;
+	}
+
+	//----------------------------------
+	
+	void OnDestroy() {}
+	
+	//----------------------------------
+	
+	/////////////////////////////////////////
+	// PUBLIC METHODS
+	/////////////////////////////////////////
+	
+	//----------------------------------
+	
+	void Start(float afIntensity = 1.f, bool abPlayGasp = true, bool abShake = true)
+	{
+		if (mBaseObj.IsActive()) 
+			return;
+		
+		//////////////////
+		// Setup vars
+		mlStage = 0;
+		mfStageCount = gfBabyKickFadeInTime;
+		mbPlayGasp = abPlayGasp;
+		mbPlayHeartbeat = true;
+		mfIntensity = afIntensity;
+		mbShake = abShake;
+		
+		mlPulseCount =0;
+		
+		//////////////////
+		// Screen effects
+		cVector2f vSize = cVector2f(1.375, 0.775);
+		mlScreenId = Effect_Screen_Start("babykick_screen.mat", cVector2f(0.5f, 0.5f), vSize, 0.f, 0.f, 10.f, 0.f, -10);
+		
+		Effect_FearTentacles_FadeMul(0.8f, 0.35f);
+		
+		mlBlurId = Effect_RadialBlur_Start(0.7f, 1.f, 0.6f, 0.15f);
+		
+		//////////////////
+		// Start effect
+		mBaseObj.SetActive(true);
+	}
+	
+	//----------------------------------
+	
+	void Stop()
+	{
+		Effect_RadialBlur_FadeOut(mlBlurId, 1.f);
+		Effect_Screen_FadeOut(mlScreenId, 1.f);
+		Effect_FearTentacles_FadeMul(1.f, 1.f);
+		
+		cLux_GetPlayer().SetCameraFOVMul(ePlayerFOVMul_Script, 1.f);
+		
+		mBaseObj.SetActive(false);
+	}
+	
+	//----------------------------------
+	
+	bool IsActive()
+	{
+		return mBaseObj.IsActive();
+	}
+
+	//----------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL CALLBACKS
+	/////////////////////////////////////////
+	
+	//----------------------------------
+	
+	void OnStart() {}
+
+	//----------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+		if (mBaseObj.IsActive())
+			Stop();
+	}
+	
+	//----------------------------------
+	
+	void OnMapLeave(cLuxMap @apMap) {}
+	void Reset() {}
+
+	//----------------------------------
+	
+	void Update(float afTimeStep)
+	{
+		//////////////////
+		// Setup vars
+		cLuxPlayer@ pPlayer = cLux_GetPlayer();
+		float fFovMul = 0.1f * mfIntensity;
+		
+		float fTimeSpeedMul = 1.0f;
+		if(mlPulseCount==0)
+		{
+			fFovMul *=0.5f;
+			fTimeSpeedMul = 3.0f;
+		}
+		
+		//////////////////
+		// Time
+		mfStageCount -= afTimeStep*fTimeSpeedMul;		
+		if (mfStageCount < 0.f)
+			mfStageCount = 0.f;
+		
+		//////////////////
+		// Fade in		
+		if (mlStage == 0)
+		{	
+			float fT = (gfBabyKickFadeInTime - mfStageCount) / gfBabyKickFadeInTime;
+			
+			//////////////////
+			// Fov
+			mfFovMul = 1.f - cMath_Easing(eEasing_ElasticInOut, fT) * fFovMul;
+			pPlayer.SetCameraFOVMul(ePlayerFOVMul_Script, mfFovMul);
+			
+			//////////////////
+			// Screen effects
+			Effect_Screen_SetAlpha(mlScreenId, cMath_Easing(eEasing_ElasticInOut, fT) * mfIntensity);
+			
+			///////////////////////////////////
+			// Rumble and shake
+			if (mbShake && mfStageCount < 0.3f)
+			{
+				mbShake = false;
+				Effect_Shake_Start(0.025f * mfIntensity, 0.2f, 0.f, 0.1f);
+				
+				if(mlPulseCount==0)
+					Effect_Rumble_Start(mfIntensity*1.5f, 0.1f, 0.f, 0.f);
+				else 
+					Effect_Rumble_Start(mfIntensity*2, 0.1f, 0.f, 0.f);
+			}
+			
+			//////////////////
+			// Sounds
+			if (mbPlayGasp && mfStageCount < 0.5f)
+			{
+				mbPlayGasp = false;
+				PlayerEmotion_PlaySound(eEmotionPlaylistType_Breathing, eEmotionSoundType_OneShotEvent, 2, "player/emotes/baby_kick", -1, 0.1, 1);
+				cLux_AddTodoMessage(" Replace temp baby kick sound!");				
+			}
+			
+			if (mbPlayHeartbeat && mfStageCount < 0.6f && pPlayer.GetCurrentStateId() != ePlayerState_Custom_CheckBaby)
+			{
+				mbPlayHeartbeat = false;
+				Sound_CreateAtEntity("Sound_BabyKickHeartbeat", "player/baby/heartbeat", "player", 1.f);
+				//cLux_AddTodoMessage(" Replace temp baby kick heartbeat sound!");	
+			}
+
+			//////////////////
+			// Change state		
+			if (mfStageCount <= 0.f)
+			{
+				mlStage++;
+				mfStageCount = gfBabyKickFadeOutTime;
+				
+				//Sound_Stop("Sound_BabyKickHeartbeat", cMath_RandRectf(1.25f, 1.75f));
+				
+				Effect_RadialBlur_FadeOut(mlBlurId, 1.f);			
+			}
+		}
+		//////////////////
+		// Fade out
+		else if (mlStage == 1)
+		{			
+			float fT = (gfBabyKickFadeOutTime - mfStageCount) / gfBabyKickFadeOutTime;	
+			
+			//////////////////
+			// Fov
+			mfFovMul = (1.f - fFovMul) + cMath_Easing(eEasing_QuadInOut, fT) * fFovMul;
+			pPlayer.SetCameraFOVMul(ePlayerFOVMul_Script, mfFovMul);
+			
+			//////////////////
+			// Screen effects
+			Effect_Screen_SetAlpha(mlScreenId, (1-fT) * mfIntensity);
+			
+			//////////////////
+			// End effect
+			if (mfStageCount <= 0.f)
+			{
+				mlPulseCount++;
+				
+				//////////////////////////////
+				// Pulses over
+				if(mlPulseCount>1)
+				{
+					mlStage = -1;
+					mBaseObj.SetActive(false);
+					
+					Effect_Screen_FadeOut(mlScreenId, 1.0f);
+					Effect_FearTentacles_FadeMul(1.f, 2.5f);
+				}
+				//////////////////////////////
+				// Play another pulse.
+				else
+				{
+					mbShake = true;
+									
+					mlBlurId = Effect_RadialBlur_Start(0.7f, 1.f, 0.6f, 0.15f);
+					mlStage = 0;
+					mfStageCount = gfBabyKickFadeInTime;
+				}
+			}
+			
+		}
+	}
+	
+	//----------------------------------
+	
+	void OnDraw(float afFrameTime) {}
+	
+	//----------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//----------------------------------
+	
+	int mlStage;
+	int mlBlurId;
+	int mlScreenId;
+	float mfStageCount;
+	float mfFovMul;
+	float mfIntensity;
+	bool mbPlayGasp;
+	bool mbPlayHeartbeat;
+	bool mbShake;
+	
+	int mlPulseCount=0;
+	
+	//----------------------------------
+}

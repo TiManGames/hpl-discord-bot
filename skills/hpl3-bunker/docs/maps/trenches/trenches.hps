@@ -1,0 +1,2273 @@
+#include "interfaces/Map_Interface.hps"
+#include "base/Inputhandler_Types.hps"
+
+#include "helpers/helper_map.hps"
+#include "helpers/helper_props.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_audio.hps"
+#include "helpers/helper_imgui.hps"
+#include "helpers/helper_sequences.hps"
+#include "helpers/helper_game.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_ai.hps"
+#include "helpers/helper_agent.hps"
+#include "helpers/helper_player.hps"
+#include "helpers/helper_imgui.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+#include "custom/helpers/helper_gun.hps"
+#include "custom/helpers/helper_props_custom.hps"
+#include "helpers/helper_components.hps"
+#include "custom/helpers/helper_player_custom.hps"
+
+//--------------------------------------------------
+ 
+/*Place any global values here. These must be const variables as they will not be saved*/
+/*This is also the place for enums and classes, but these should be avoided whenever possible*/
+
+//--------------------------------------------------
+
+enum eShootGermanState
+{
+	eShootGermanState_Hide,
+	eShootGermanState_Wait,
+	eShootGermanState_Shoot,
+}
+
+//--------------------------------------------------
+ 
+class cScrMap : iScrMap
+{
+	//--------------------------------------------
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN CALLBACKS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+ 
+	////////////////////////////
+	// Set up map environment
+	void Setup()
+	{
+		// Put display name entry in english.lang / Levels
+		GetBase().SetDisplayNameEntry("trenches");
+		
+		// Set up color grading etc.
+		  Effect_Bloom_FadeBrightPass(0.2f, 1);
+                  Effect_Bloom_FadeBloomWidth(128, 0.6);
+                  Effect_Bloom_FadeBloomFalloff(1.5f, 1);
+                  Effect_Bloom_FadeBloomTint(1.3, 1, 1, 1);
+	}
+	
+	//-------------------------------------------------------
+		
+	void PreloadData()
+	{
+		//////////////
+		// Preload materials
+		Material_Preload("player_body_soldier_body_clean_wound.mat");
+		Material_Preload("player_body_soldier_body_clean.mat");
+		
+		//////////////
+		// Preload entities
+		Entity_Preload("player_bunker.ent");
+		Entity_Preload("player_bunker_clean.ent");
+		Entity_Preload("concrete_block.ent");
+		Entity_Preload("grenade_pickup.ent");
+		Entity_Preload("ammo_bullets.ent");
+	}
+	
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run first time starting map
+	void OnStart()
+	{
+		/////////////////////////
+		// Debug
+		if(cLux_ScriptDebugOn())
+		{
+		}
+		
+		/////////////////////////
+		// Add gun
+		if (ItemType_GetCountInInventory("Gun") == 0)
+		{
+			Item_AddToInventory("Gun");
+		}
+		
+		/////////////////////////
+		// Setup hints
+		Hint_Block("Hints", "HintGrabThrow");
+		Hint_Block("Hints", "HintGrabRotate");
+		Hint_Block("Hints", "HintGrabMove");
+		Hint_Block("Hints", "HintInjuredCreatures");
+		Hint_Block("Hints", "HintInjuredCreaturesAltOne");
+		Hint_Block("Hints", "HintInjuredCreaturesAltTwo");
+		
+		///////////////////
+		// Setup germans
+		mBaseObj.GetEntityArrayID("ShootGerman_*", eLuxEntityType_Prop, "", mvShootGermans);
+		
+		for (int i = 0; i < mvShootGermans.size(); ++i)
+		{
+			tString sGerman = "ShootGerman_" + (i + 1);
+			SetShootGermanState(sGerman, eShootGermanState_Wait);
+			Entity_SetVarBool(sGerman, "DoAgentBulletImpact", true);
+			
+			mvAliveShootGermans.push_back(sGerman);
+		}
+		
+		Decal_SetDynamicVisible("Decal_AmbushGermanBlood", false);
+				
+		///////////////////
+		// Setup gas sequence
+		ParticleSystem_SetActive("PS_ExtraGas_*", false);
+		ParticleSystem_SetVisible("PS_ExtraGas_*", false);
+				
+		////////////////////
+		// Setup player
+		Player_SetCheckHealthAllowed(false);
+		
+		///////////////////
+		// Intro sequence
+		if (cLux_ScriptDebugOn())
+		{
+			mbIntroTextDone = true;
+		}
+		else
+		{
+			mbIntroTextDone = false;
+			
+			Effect_Fade_Out(0.f);
+			Sound_FadeGlobalVolume(0.f, 0.f, eSoundEntryType_WorldAll);
+			Sound_PlayGui("trenches/dream/quote_start", 1.0);
+			
+			Player_SetActive(false);
+		}
+
+		cLux_PreloadMap("no_mans_land.hpm");
+	}
+	
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when entering map
+	void OnEnter()
+	{	
+		////////////////////////
+		// Set rich presence
+		RichPresence_SetCurrent(eRichPresence_Trenches);
+		
+		///////////////////////
+		// Setup player body
+		if (PlayerBody_IsActive() == false)
+		{
+			PlayerBody_SetActive(true);
+			PlayerBody_SetModel("player_bunker_clean.ent");
+		}
+		
+		///////////////////////////////
+		// Setup low height auto-teleport
+		Player_SetAutoTeleportWhenBelowAltitude(-20.f);
+		
+		Player_AttachHelmet("PlayerHelmet");
+
+		/////////////////////////
+		// Audio
+		//Sound_Play("Sound_War*", 1.0f);
+		Sound_Play("Sound_Amb*", 1.0f);	
+		
+		////////////////
+		// Setup bombing effect
+		BombingHandler_SetActive(false);
+		
+		///////////////////
+		// Setup save game info hint
+		SaveRoom_SetSaveHintActive(false);
+		
+		if (cLux_ScriptDebugOn()==false)
+			Sketchbook_SetCanOpen(false);
+			
+		Sketchbook_SetInventoryEnabled(false);
+		
+		//if (mbIntroTextDone)
+		//	SaveRoom_SaveGame(false, false);
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when leaving map
+	void OnLeave()
+	{
+		/////////////////////////
+		// Reset player
+		Player_SetHealthRegenSpeedMul(1.f);
+		Player_SetJumpForceMul(1.f);
+		Player_SetIgnoreGasDamage(false);
+		//Player_SetFallDamageActive(true);
+		Player_SetMoveSpeedMul(1.f);
+		Player_SetLookSpeedMul(1.f);
+		Player_SetRunSpeedMul(1.f);
+		Player_SetCheckHealthAllowed(true);
+		Player_SetBleedingActive(true);
+		PlayerBody_ClearCustomBoneOffsets();
+		Sketchbook_SetInventoryEnabled(true);
+		EnvironmentalDamage_SetNoDeathDamageActive(false);
+		
+		/////////////////////////
+		// Unblock hints
+		Hint_Unblock("Hints", "HintGrabThrow");
+		Hint_Unblock("Hints", "HintGrabRotate");
+		Hint_Unblock("Hints", "HintGrabMove");
+		Hint_Unblock("Hints", "HintInjuredCreatures");
+		Hint_Unblock("Hints", "HintInjuredCreaturesAltOne");
+		Hint_Unblock("Hints", "HintInjuredCreaturesAltTwo");
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// To get when player makes input (mostly used for debug)
+	void OnAction(int alAction, bool abPressed) 
+	{
+		if (abPressed==false) return;
+		
+		/////////////////////
+		// Test keys
+		if (alAction == eAction_Test0)
+		{
+			cVector3f vStart = cLux_GetViewport().GetCamera().GetPosition();
+			cVector3f vDir = cLux_GetViewport().GetCamera().GetForward();
+			BulletHandler_AddBullet(vStart, vDir, eBulletType_Shotgun, tID_Invalid);
+		}
+		
+		if (alAction == eAction_Test1)
+		{
+			GameDifficulty_SetSettingValueIdByID(eGameDifficultySetting_HardcoreHealthSystem, 1);
+		}
+		
+		if (alAction == eAction_Test2)
+		{
+			Entity_PlayAnimation("german_soldier_1", "kneel", 0.3f, true, true);
+		}
+		
+		if (alAction == eAction_Test3)
+		{			
+			//Prop_SetCustomMaterial(PlayerBody_GetEntityName(), "player_body_soldier_body_clean_wound.mat", "player_body_soldier_body");
+			Prop_SetCustomMaterial(PlayerBody_GetEntityName(), "player_body_soldier_body_clean.mat", "player_body_soldier_body");
+		}
+		
+		if (alAction == eAction_Test4)
+		{
+			StartEndSequence();
+		}
+		
+		if (alAction == eAction_Test5)
+		{
+			Seq_EnterTrenches("");
+		}
+		
+		if (alAction == eAction_Test6)
+		{
+			Entity_SetActive("ShootGerman_1", true);
+			Entity_PlayAnimation("ShootGerman_1", "die_fall", 0.f, false);
+		}
+		
+		if (alAction == eAction_Test7)
+		{
+			cLux_AddTodoMessage(""+mvAliveShootGermans.size());
+		}
+		
+		if (alAction == eAction_Test8)
+		{
+			GermanRunTo("RunGerman_5", 5.2f, "Area_RunGermanGas_Goal");
+		}
+		
+		if (alAction == eAction_Test9)
+		{
+			//ThrowGasGrenade("GasGrenade_5");
+			Player_PlaceAtEntity("Area_GasCutscene", true, true);
+			StartEndSequence();
+		}
+		
+		if (alAction == eAction_TestMinus)
+		{
+			Player_FadeDreamLights(0.f, 3.f);
+		}
+		
+		if (alAction == eAction_TestPlus)
+		{
+			Effect_Fade_Out(1.f);
+			Player_FadeDreamLights(1.f, 3.f);
+			Player_SetupDreamLightsSound("trenches/dream/dice", "Comments", 0.8f);
+			
+			Sound_PlayGui("trenches/dream/dice", 1.0f);
+			Voice_PlayDelayed("Dialogue_DiceGame", 2.5f);
+		}
+	}
+	
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// This only used for pure debug purposes when info needs to printed.
+	float DrawDebugOutput(cGuiSet@ apSet, iFontData@ apFont, float afY)
+	{
+		//afY = cLux_DrawDebugText("My Debug value:"+..., afY);
+		return afY;
+	}
+	
+	//-------------------------------------------------------
+ 
+	//} END MAIN CALLBACKS
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN FUNCTIONS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+		
+	//-------------------------------------------------------
+	
+	bool mbIntroTextDone = false;
+	float mfIntroTextCount = 0.f;
+	float mfIntroTextAlpha = 0.f;
+	float mfTempAudioPromptAlpha = 0.f;
+	
+	//-------------------------------------------------------
+	
+	void OnGui(float afTimeStep)
+	{		
+		//////////////////////
+		// Intro text
+		if (mbIntroTextDone == false &&
+			cLux_ScriptDebugOn() == false)
+		{		
+			float fPrevIntroTextCount = mfIntroTextCount;
+			mfIntroTextCount += afTimeStep;				
+			
+			if (mfIntroTextCount > 3.f)
+			{
+				if (fPrevIntroTextCount <= 3.0f)
+					Sound_AddClosedCaption("GeneralClosedCaptions", "Trenches_IntroGunfire", 10);
+					
+				bool bFadeOut = mfIntroTextCount > 14.f;							
+				float fAlphaGoal = bFadeOut ? 0.f : 1.f;
+				float fFadeSpeed = bFadeOut ? 5.f : 5.f;
+					
+				mfIntroTextAlpha = cMath_IncreaseTo(mfIntroTextAlpha, (1.f / fFadeSpeed) * afTimeStep, fAlphaGoal);
+				
+				if (fPrevIntroTextCount < 16.f && mfIntroTextCount >= 16.f)
+				{
+					Player_FadeDreamLights(1.f, 7.f);
+					Player_SetupDreamLightsSound("trenches/dream/quote_start", "", 1.f);
+				}				
+				
+				///////////////////
+				// Start intro?
+				if (bFadeOut && mfIntroTextAlpha <= 0.f)
+				{
+					mbIntroTextDone = true;					
+					Seq_EnterTrenches("");
+					Sound_PlayGui("trenches/dream/run_sweet", 0.9);
+				}
+					
+				///////////////
+				// Draw text
+				ImGui_LayoutBegin(eImGuiLayout_Y, ImGui_NrmPos(0.f, 0.f, 1.f), ImGui_NrmSize(0.5f, 0.5f));
+					
+					cImGuiTextFrameData textData = ImGui_GetDefaultTextFrame();
+					textData.mFont.SetFile(FontHandler_GetFont(eFontType_MainMenu, 72));
+					textData.mFontAlign = eFontAlign_Left;
+					textData.mFont.mvSize = cVector2f(20.f);
+					textData.mbUseBackgroundGfx = false;
+					textData.mFont.mColor = cColor_White;
+
+					ImGui_SetAlignment(eImGuiAlign_CenterCenter);				
+					ImGui_SetModColorMul(cColor(1.f, 1.f, 1.f, mfIntroTextAlpha));				
+					ImGui_SetTransCategory("BunkerTest");
+					ImGui_DoTextFrameExt("IntroText", cVector2f_Zero, 0.f, 0.f, textData, ImGui_NrmPosGroup(0.25f, 0.4f, 0.1f), ImGui_NrmSizeGroup(0.5));
+					ImGui_SetTransCategory("");
+						
+					ImGui_SetAlignment(eImGuiAlign_TopLeft);
+					ImGui_ResetModifiers();
+					
+				ImGui_LayoutEnd();
+			}
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void Update(float afTimeStep)
+	{
+		//////////////////////
+		// Germans aim at player
+		cVector3f vPlayerPos = cLux_GetPlayer().GetCharacterBody().GetPosition();
+		
+		for (int i = 0; i < mvShootGermans.size(); ++i)
+		{
+			cLuxProp@ pProp = cLux_ID_Prop(mvShootGermans[i]);
+			cMeshEntity@ pMeshEnt = pProp !is null ? pProp.GetMeshEntity() : null;
+			cBoneState@ pRoot = pMeshEnt !is null ? pMeshEnt.GetBoneStateFromName("j_BaseRoot") : null;
+			cBoneState@ pSpine = pMeshEnt !is null ? pMeshEnt.GetBoneStateFromName("j_Spine_03") : null;
+			
+			if (pProp is null) continue;
+			if (pMeshEnt is null) continue;
+			if (pRoot is null) continue;
+			if (pSpine is null) continue;
+			if (pProp.GetVarBool("Dead"))
+			{
+				pSpine.SetUsePreTransform(false);
+				continue;
+			}
+			
+			//////////////////////
+			// Get angles
+			cMatrixf mtxRootTranspose = pRoot.GetWorldMatrix().GetTranspose();
+			cVector3f vPos = pRoot.GetWorldPosition();
+			cVector3f vFwd = cMath_Vector3Normalize(mtxRootTranspose.GetForward());
+			cVector3f vRight = cMath_Vector3Normalize(mtxRootTranspose.GetRight());
+			cVector3f vToPlayer = cMath_Vector3Normalize(vPlayerPos - vPos);
+				
+			float fAngleStartY = cMath_GetAngleFromPoints3D(0.f, vFwd).y;
+			float fAngleGoalY = cMath_GetAngleFromPoints3D(0.f, vToPlayer).y;
+			float fAngleY = cMath_GetAngleDistanceRad(fAngleStartY, fAngleGoalY);
+			fAngleY -= cMath_ToRad(15.f);
+				
+			cVector3f vPlaneX = cMath_Vector3ProjectOnPlane(vToPlayer, vRight);
+			float fAngleX = cMath_Vector3Angle(vFwd, vPlaneX) * cMath_Sign(vPlaneX.y) * -1.f;
+			fAngleX = cMath_Clamp(fAngleX, -cMath_ToRad(10.f), cMath_ToRad(27.f));
+			
+			//////////////////////
+			// Update bone rotation
+			pSpine.SetUsePreTransform(true);
+			pSpine.SetPreTransform(cMath_MatrixRotateXYZ(cVector3f(fAngleX, fAngleY, 0.f)));
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnDamageTaken(const tString &in asSource, int alType)
+	{
+		/////////////////////
+		// Take gas damage, start end seq
+		if (alType == eDamageType_Gas && 
+			mbEndSequenceStarted == false)
+		{
+			++mlGasDamageTakenCount;
+			mlGasDamageTimeStamp = mBaseObj.GetTimeStamp();
+			
+			if (mlGasDamageTakenCount >= 2 && mbExtraGasAdded)
+			{
+				StartEndSequence();
+			}
+		}
+		
+		/////////////////////
+		// Gun damage, switch to wounded player texture
+		else if (alType == eDamageType_Gun && 
+				 mbPlayerHurtInAmbush == false)
+		{
+			mbPlayerHurtInAmbush = true;
+			Prop_SetCustomMaterial(PlayerBody_GetEntityName(), "player_body_soldier_body_clean_wound.mat", "player_body_soldier_body");
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnPlayerHeal(float afAmount)
+	{
+		if (mbPlayerHurtInAmbush)
+		{
+			Prop_SetCustomMaterial(PlayerBody_GetEntityName(), "player_body_soldier_body_clean.mat", "player_body_soldier_body");
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnGunshot()
+	{
+		Map_AddTimer("Timer_SpawnBullet", 1.f, "OnTimer_SpawnBullet");
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnExplosion(const tString&in asEntity)
+	{
+		Map_AddTimer("Timer_SpawnGrenade", 1.f, "OnTimer_SpawnGrenade");
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnPlayerBulletHit(const tString &in asEntity, const tString &in asBody)
+	{
+		HitGerman(asEntity, asBody);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnFriendBulletHit(const tString &in asEntity, const tString &in asBody)
+	{
+		tString sGerman = asEntity;
+		if (sGerman != "")
+			HitGerman(sGerman, asBody);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnGermanBulletHit(const tString &in asEntity, const tString &in asBody)
+	{
+		if (asEntity == "Player")
+		{
+			mbPlayerShotByGermans = true;
+		}
+	}
+	
+	//-------------------------------------------------------
+		
+	void OnGasMaskEquip()
+	{
+		ResumeEndSequence();
+	}
+	
+	//-------------------------------------------------------
+		
+	void OnTimer_PlaySubjectLine(const tString &in asTimer)
+	{
+		Voice_Play(asTimer, Map_GetTimerUserVarInt(asTimer));
+	}
+	
+	//-------------------------------------------------------
+ 
+	//} END MAIN FUNCTIONS
+	
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// MAP STREAMING
+	//////////////////////////////////////////////////////////////////////////////////////////
+
+	//-------------------------------------------------------
+
+	//-------------------------------------------------------
+ 
+	//} END MAP STREAMING
+	
+	//-------------------------------------------------------
+
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// EVENTS
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+		
+		////////////////////////////////////////////////////////////
+		// Event: Enter trenches
+		//{/////////////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		cVector3f mvPlayerStartPos = cVector3f(0.f);
+		cVector3f mvPlayerStartCameraRot = cVector3f(0.f);
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSeqDataEnterTrenches;
+		void Seq_EnterTrenches(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_EnterTrenches", mSeqDataEnterTrenches);
+			Sequence_Wait(1.f);
+			if (Sequence_DoStepAndWait(3.0f))
+			{
+				Sound_AddClosedCaption("GeneralClosedCaptions", "Trenches_IntroBreathing");
+			}
+			else if (Sequence_DoStepAndWait(0.1f))
+			{
+				Player_SetActive(true);
+				FootPlacement_SetActive(PlayerBody_GetEntityName(), false);
+				
+				cVector3f vPos(-1.094f, 0.f, 16.014f);
+				float fAngle = cMath_Pi;				
+				PlayerBody_PlayCutsceneAnimation("enter_trenches", false, 0.f, "OnAnimEnd_EnterTrenches", 1.f, 0.f, true, vPos, fAngle, false, false);
+				PlayerBody_SetCutsceneMaxPitch(5.f);
+				PlayerBody_SetCutsceneMaxYaw(5.f);
+				
+				Sketchbook_SetCanOpen(false);
+				Hint_SetCanShowHints(false);
+				
+				Sound_PlayGui("trenches/dream/run_start", 1.0);
+				
+				Player_FadeDreamLights(0.f, 0.1f);
+			}
+			else if (Sequence_DoStepAndWait(1.75f))
+			{
+				Effect_Fade_In(0.1f);
+				Sound_FadeGlobalVolume(1.f, 0.1f, eSoundEntryType_WorldAll);
+				
+				Effect_Rumble_Start(0.5, 0.25);
+				
+				Map_AddTimer("Area_IntroBulletEnd_1", 0.5f, "OnTimer_DoIntroBullet");
+				Map_AddTimer("Area_IntroBulletEnd_2", 0.8f, "OnTimer_DoIntroBullet");
+				Map_AddTimer("Area_IntroBulletEnd_2", 1.4f, "OnTimer_DoIntroBullet");
+				
+				Voice_SetSource("AugustinLambert", "Area_IntroLambertVoice", 5.f, 70.f, true);
+				Map_AddTimer("Dialogue_TakeCover", 1.5f, "OnTimer_PlaySubjectLine");
+				Map_SetTimerUserVarInt("Dialogue_TakeCover", 0);
+				
+				Sound_AddClosedCaption("GeneralClosedCaptions", "Trenches_Gunfire");
+			}
+			else if (Sequence_DoStepAndWait(0.25f))
+			{
+				Map_AddTimer("Dialogue_TakeCover", 6.f, "OnTimer_PlaySubjectLine");
+				Map_SetTimerUserVarInt("Dialogue_TakeCover", 1);
+			}
+			else if (Sequence_DoStepAndPause(0.f))
+			{
+				ParticleSystem_SetVisible("rifle_fire_intro", false);
+				Map_AddTimer("Timer_LandingRumble", 0.7f, "OnTimer_LandingRumble");
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{
+				Sketchbook_SetCanOpen(true);
+				Hint_SetCanShowHints(true);
+				
+				mvPlayerStartPos = Player_GetPosition();
+				mvPlayerStartCameraRot = Player_GetCameraYawPitchRoll();
+				
+				Map_AddTimer("Timer_SaveGameProgress", 1.f, "OnTimer_SaveGameProgress");
+				
+				Map_AddTimer("Timer_ShowLookHint", 4.f, "OnTimer_ShowLookHint");
+				Map_AddTimer("Timer_ShowMoveHint", 10.f, "OnTimer_ShowMoveHint");
+				
+				Sound_Play("Sound_War*", 0.1f);
+				
+				Map_AddTimer("Timer_WarSoundStop", 10.0f, "OnTimer_StopWarSounds");
+			}
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_SaveGameProgress(const tString&in asTimer)
+		{
+			/////////////////
+			// Save game after we take control
+			SaveRoom_SaveGame(false, false);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_LandingRumble(const tString&in asTimer)
+		{
+			Effect_Rumble_Start(0.25, 0.5);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_DoIntroBullet(const tString &in asTimer)
+		{
+			cVector3f vStart = Map_GetEntity("Area_IntroBulletStart", eLuxEntityType_Area).GetPosition();
+			cVector3f vDir = Entity_GetDeltaToEntity("Area_IntroBulletStart", asTimer);		
+	
+			BulletHandler_AddBullet(vStart, vDir, eBulletType_Revolver, tID_Invalid);
+			
+			Sound_CreateAtEntity("Sound_Bullet", "trenches/enemy/fire", "Area_IntroBulletStart");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnAnimEnd_EnterTrenches(const tString &in asTimer)
+		{
+			SequenceStates_Resume("Seq_EnterTrenches");
+			FootPlacement_SetActive(PlayerBody_GetEntityName(), true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ShowLookHint(const tString &in asTimer)
+		{
+			cVector3f vDiff = Player_GetCameraYawPitchRoll() - mvPlayerStartCameraRot;
+			if (vDiff.Length() < 0.05f)
+			{
+				Hint_StopHint();
+				Hint_ShowHint_Hold("Hints", "HintLookAround", true, 1.5f, true, 15.f);
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ShowMoveHint(const tString &in asTimer)
+		{
+			cVector3f vDiff = Player_GetPosition() - mvPlayerStartPos;
+			if (vDiff.Length() < 0.05f)
+			{
+				Hint_StopHint();
+				Hint_ShowHint_Hold("Hints", "HintMoveAround", true, 1.5f, true, 15.f);
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_StopWarSounds(const tString &in asTimer)
+		{
+			Sound_Stop("Sound_Mach_WarNear_*", 5.0f);
+			Sound_Stop("Sound_WarNear_*", 10.0f);
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event: Enter trenches
+		
+		////////////////////////////////////////////////////////////
+		// Event: Show gun hint
+		//{/////////////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_ShowGunHint(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Map_AddTimer("Timer_ShowGunHint", 0.5f, "OnTimer_ShowGunHint");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ShowGunHint(const tString &in asTimer)
+		{
+			Hint_StopHint();
+			Hint_ShowHint_Hold("Hints", "HintEquipGun", true, 1.5f, true, 15.f);
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event: Show gun hint
+		
+		////////////////////////////////////////////////////////////
+		// Event: Show lean hint
+		//{/////////////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+	
+		bool OnTrigger_Player_ShowLeanHint(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Hint_StopHint();
+			
+			tString sHint = "HintLean";			
+			int lMode = cLux_GetUserConfig().GetInt("Accessibility", "LeanMode", 0);
+			if (lMode == 1) sHint += "_Toggle";
+			
+			Hint_ShowHint_Hold("Hints", sHint, true, 1.5f, true, 15.f, false, false);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event: Show lean hint
+		
+		////////////////////////////////////////////////////////////
+		// Event: Show run hint
+		//{/////////////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_ShowRunHint(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Map_AddTimer("Timer_ShowRunHint", 0.5f, "OnTimer_ShowRunHint");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ShowRunHint(const tString &in asTimer)
+		{
+			if (Player_GetRunning()) return;
+			
+			Hint_StopHint();
+			
+			tString sHint = "HintRun";			
+			int lSprintMode = cLux_GetUserConfig().GetInt("Accessibility", "SprintMode", 0);
+			if 		(lSprintMode == 1) sHint = "HintRunAlt";
+			else if (lSprintMode == 2) sHint = "HintRunAlt_Toggle";
+			
+			Hint_ShowHint_Hold("Hints", sHint, true, 1.5f, true, 15.f, false, false);
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event: Show run hint
+		
+		////////////////////////////////////////////////////////////
+		// Event: Start random war cries
+		//{/////////////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_StartRandomWarCries(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Map_AddTimer("Timer_PlayRandomWarCry", 1.f, "OnTimer_PlayRandomWarCry");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PlayRandomWarCry(const tString &in asTimer)
+		{
+			bool bPlay = true;
+			
+			if (Voice_AnySceneIsActive())
+				bPlay = false;
+			if (mbGermanAmbushActive)
+				bPlay = false;
+			if (mbGasRescueActive)
+				bPlay = false;
+			
+			if (bPlay)
+			{
+				float fDist = cMath_RandRectf(45.f, 60.f);
+				float fAngle = cMath_RandRectf(0.f, cMath_PiMul2);
+				cVector3f vDir = cMath_MatrixMul(cMath_MatrixRotateY(fAngle), cVector3f_Forward);
+				
+				iLuxEntity@ pEnt = Map_GetEntity("Area_WarCryVoice", eLuxEntityType_Area);
+				if (pEnt !is null)
+				{
+					pEnt.SetPosition(Player_GetPosition() + vDir * fDist);
+					Voice_SetSource("FrenchSoldiers", pEnt.GetName(), 1.f, 65.f, true);
+				}		
+				
+				Voice_Play("Dialogue_WarCries_English");
+			}
+			
+			float fTime = cMath_RandRectf(40.f, 60.f);
+			if (bPlay == false) fTime *= 0.5f;
+			
+			Map_AddTimer("Timer_PlayRandomWarCry", fTime, "OnTimer_PlayRandomWarCry");
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event: Start random war cries
+		
+		////////////////////////////////////////////////////////////
+		// Event: Throw brick on GATE
+		//{/////////////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		cMatrixf m_mtxBrickOnLoad = cMatrixf_Identity;
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_Brick(const tString &in asEntity)
+		{
+			cLuxProp@ pProp = Map_GetProp(asEntity);
+			if (pProp !is null)
+			{
+				m_mtxBrickOnLoad = pProp.GetOnLoadTransform();
+			}			
+			
+			Hint_ReleaseAll();
+			Hint_Block("Hints", "HintGrabHowTo");
+			Hint_Block("Hints", "HintGrabHowTo_Toggle");
+			
+			Map_AddTimer("Timer_ShowThrowHint", 0.5f, "OnTimer_ShowThrowHint");
+			Map_AddTimer("Timer_RespawnBrick", 0.1f, "OnTimer_RespawnBrick");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ShowThrowHint(const tString &in asTimer)
+		{			
+			Hint_Unblock("Hints", "HintGrabThrow");
+			Hint_Unblock("Hints", "HintGrabHowTo");
+			Hint_Unblock("Hints", "HintGrabHowTo_Toggle");
+			
+			if (Hint_GetCurrentEntry() != "HintGrabThrow")
+			{
+				Hint_StopHint();
+				Hint_ShowHint_Hold("Hints", "HintGrabThrow", true, 1.5f, false, 15.f, false, true);
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_RespawnBrick(const tString &in asTimer)
+		{
+			/////////////////////////
+			// Setup vars
+			bool bRespawn = false;			
+			
+			cLuxProp@ pProp = Map_GetProp("Brick");
+			cLuxArea@ pArea = cLux_ToArea(Map_GetEntity("Area_BrickLimits", eLuxEntityType_Area));
+			cBoundingVolume@ pBounds = pArea !is null ? pArea.GetAreaBody().GetBoundingVolume() : null;			
+			
+			/////////////////////////
+			// Out of bounds or been deactivated?
+			if (pProp is null)
+			{
+				bRespawn = true;
+			}
+			else if (pProp.GetMainBody().IsActive() == false)
+			{
+				bRespawn = true;
+			}
+			else if (pBounds !is null)
+			{
+				cVector3f vPos = pProp.GetPosition();
+				cVector3f vFwd = pArea.GetMatrix().GetTranspose().GetForward();
+				cVector3f vToBrick = cMath_Vector3Normalize(vPos - pArea.GetPosition());
+				
+				if (vPos.y > pBounds.GetMax().y && pProp.IsSleeping())
+				{
+					bRespawn = true;
+				}
+				else if (vPos.y < pBounds.GetMin().y)
+				{
+					bRespawn = true;
+				}
+				else if (cMath_Vector3Dot(vFwd, vToBrick) > 0.f && pProp.IsSleeping())
+				{
+					bRespawn = true;
+				}
+			}
+			
+			/////////////////////////
+			// Respawn!
+			if (bRespawn)
+			{
+				if (pProp !is null)
+				{
+					mBaseObj.DestroyEntity(pProp);
+				}
+				
+				mBaseObj.CreateEntity("Brick", "concrete_block.ent", m_mtxBrickOnLoad, cVector3f(1.f));
+			}
+			
+			Map_RestartCurrentTimer();
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnBreak_Gate(const tString &in asEntity)
+		{
+			Map_RemoveTimer("Timer_RespawnBrick");
+			
+			cLuxProp@ pProp = Map_GetProp("Brick");
+			if (pProp !is null)
+			{
+				pProp.SetDisableBreakable(false);
+				pProp.Break();
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event: Throw brick on GATE
+		
+		////////////////////////////////////////////////////////////
+		// Event: Crawl under debris
+		//{/////////////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_ShowCrouchHint(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Map_AddTimer("Trigger_ShowCrouchHint", 0.1f, "OnTimer_ShowCrouchHint");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ShowCrouchHint(const tString &in asTimer)
+		{
+			Hint_StopHint();
+			Hint_ShowHint_Hold("Hints", "HintCrouch", true, 1.5f, true, 15.f, false, false);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_PlayWarGuns(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Sound_Play("Sound_Mach_WarNear_*", 1.0f);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event: Crawl under debris
+		
+		////////////////////////////////////////////////////////////
+		// Event: Ambushed by germans
+		//{/////////////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		int mlTotalGermanShootCount = 0;
+		int mlShotGermanCount = 0;
+		int mlGermanShootMissCount = 2;
+		bool mbPlayerShotByGermans = false;
+		bool mbGermanRunnersStarted = false;
+		bool mbGermanAmbushStarted = false;		
+		bool mbForceHitPlayer = false;
+		bool mbGermanAmbushActive = false;
+		array<tID> mvShootGermans;
+		array<tString> mvAliveShootGermans;
+		
+		//-------------------------------------------------------
+		
+		void OnLookAt_StartGermanRunners(const tString &in asEntity, int alState)
+		{
+			StartGermanRunners();
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_StartGermanRunners(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			StartGermanRunners();
+			Sound_Play("Sound_WarNear_*", 1.0f);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void StartGermanRunners()
+		{
+			if (mbGermanRunnersStarted)
+				return;
+				
+			mbGermanRunnersStarted = true;
+			
+			GermanRunTo("RunGerman_1", 5.4f, "Area_RunGerman_Goal");
+			GermanRunTo("RunGerman_2", 5.2f, "Area_RunGerman_Goal");
+			GermanRunTo("RunGerman_3", 5.f, "Area_RunGerman_Goal");
+			GermanRunTo("RunGerman_4", 5.2f, "Area_RunGerman_Goal");
+			
+			Voice_PlayDelayed("Dialogue_GermanSoldiersAttack_Intro", 0.2f, 0);
+			Voice_SetSource("GermanSoldier_4", "RunGerman_1", 1.f, 40.f, true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnLookAt_StartGermanAmbush(const tString &in asEntity, int alState)
+		{
+			StartGermanAmbush();
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_StartGermanAmbush(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			mlGermanShootMissCount = 0; // Always hit player if they've entered this trigger
+			StartGermanAmbush();
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void StartGermanAmbush()
+		{
+			if (mbGermanAmbushStarted)
+				return;
+
+			mbGermanAmbushStarted = true;
+			mbGermanAmbushActive = true;
+			
+			Player_SetJumpForceMul(0.8f);
+			
+			Map_AddTimer("ShootGerman_1", 0.8f, "OnTimer_GermanStartShoot");
+			Map_AddTimer("ShootGerman_2", 0.2f, "OnTimer_GermanStartShoot");
+			Map_AddTimer("ShootGerman_3", 1.4f, "OnTimer_GermanStartShoot");
+			Map_AddTimer("ShootGerman_4", 0.4f, "OnTimer_GermanStartShoot");
+			
+			Map_AddTimer("Timer_FriendEndsAmbush", 20.f, "OnTimer_FriendEndsAmbush");
+			Map_AddTimer("Timer_PlayAmbushDialogue", 10.f, "OnTimer_PlayAmbushDialogue");
+			
+			Voice_SetSource("GermanSoldier_1", "Area_ShootGermanVoice", 1.f, 50.f, true);
+			Voice_SetSource("GermanSoldier_2", "Area_ShootGermanVoice", 1.f, 50.f, true);
+			Voice_PlayDelayed("Dialogue_GermanSoldiersAttack_SpotPlayer", 0.3f, 0);	
+			Voice_PlayDelayed("Dialogue_GermanSoldiersAttack_Intro", 1.7f, 1);
+
+			for (int i = 1; i < 5; ++i)
+				Player_AddAimAssistTarget(Entity_GetID("ShootGerman_" + i), "j_Spine_03", "Dead", cVector3f(0.f, 0.25f, 0.f), 1.f, 35.f, -1.f, false, true, -1);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PlayAmbushDialogue(const tString &in asTimer)
+		{
+			if (mvAliveShootGermans.size() <= 2) return;
+			
+			tString sDialogue;
+			int lLineId;
+			cVector3f vStart = Entity_GetPosition("Area_AmbushPlayerLosCheck");
+			cVector3f vEnd = Player_GetCameraPosition();
+			
+			if (cLux_CheckLineOfSight(vStart, vEnd, false, false, null))
+			{
+				sDialogue = "Dialogue_GermanSoldiersAttack_SpotPlayer";
+				lLineId = 1;
+			}
+			else
+			{
+				sDialogue = "Dialogue_GermanSoldiersAttack_PlayerHiding";
+				lLineId = 0;
+			}
+			
+			Voice_SetSource("GermanSoldier_2", "Area_ShootGermanVoice", 1.f, 50.f, true);
+			Voice_Play(sDialogue, lLineId);
+		}
+		
+		//-------------------------------------------------------
+		
+		void HitGerman(const tString &in asEntity, const tString &in asBody)
+		{
+			//////////////////////
+			// Hit a german?
+			if (Entity_IsActive(asEntity) && 
+				Entity_GetVarBool(asEntity, "Dead") == false &&
+				cString_GetFirstStringPos(asEntity, "ShootGerman") != -1)
+			{			
+				++mlShotGermanCount;				
+				Map_RemoveTimer(asEntity);
+				
+				tString sDeathAnim;
+				int lSuffix = cString_GetNumericSuffixInt(asEntity);
+				
+				switch (lSuffix)
+				{
+					case 1: sDeathAnim = "die_fall"; break;
+					case 2: sDeathAnim = "die_3"; 	 break;
+					case 3: sDeathAnim = "die_1"; 	 break;
+					case 4: sDeathAnim = "die_2"; 	 break;
+				}
+				
+				Entity_PlayAnimation(asEntity, sDeathAnim, 0.1f);
+				Entity_SetVarBool(asEntity, "Dead", true);
+				Entity_SetCollide(asEntity, false);
+				
+				int lId = mvAliveShootGermans.find(asEntity);
+				if (lId != -1)
+					mvAliveShootGermans.removeAt(lId);
+					
+				if (sDeathAnim == "die_fall")
+					Map_AddTimer("Timer_ActivateAmbushGermanBlood", 2.f, "OnTimer_ActivateAmbushGermanBlood");
+				
+				Player_RemoveAimAssistTarget(Entity_GetID(asEntity));
+				
+				//////////////////////
+				// Start friend seq?
+				if (mlShotGermanCount >= 2)
+				{
+					StartSeqFriendEndsAmbush();
+				}
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ActivateAmbushGermanBlood(const tString &in asTimer)
+		{
+			Decal_SetDynamicVisible("Decal_AmbushGermanBlood", true);
+			Entity_SetActive("BlockBox_FallAmbushGerman", true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void GermanRunTo(const tString &in asGerman, float afSpeed, const tString &in asGoal)
+		{
+			int lAnimId = cString_GetNumericSuffixInt(asGerman) % 2 == 0 ? 1 : 2;
+			tString sAnim = "run_" + lAnimId;
+			
+			Entity_SetActive(asGerman, true);			
+			Entity_PlayAnimation(asGerman, sAnim, 0.f, true);
+			Entity_SetAnimationRelativeTimePosition(asGerman, sAnim, cMath_RandRectf(0.f, 1.f));
+			
+			Prop_MoveLinearTo(asGerman, asGoal, 100.f, afSpeed, 0.1f, true, "OnMoveLinear_GermanMove");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnMoveLinear_GermanMove(const tString &in asProp)
+		{
+			SetGermanSoldierActive(asProp, false);
+		}
+		
+		//-------------------------------------------------------
+		
+		void SetShootGermanState(const tString &in asGerman, eShootGermanState aState)
+		{		
+			/////////////////
+			// Setup vars
+			cLuxProp@ pProp = Map_GetProp(asGerman);
+			cAnimationState@ pAnim = pProp !is null ? pProp.GetCurrentAnimationState() : null;
+			
+			if (pProp is null) return;
+			if (pProp.IsActive() == false) return;
+			if (pProp.GetVarBool("Dead")) return;
+			
+			/////////////////
+			// Hide
+			if (aState == eShootGermanState_Hide ||
+				aState == eShootGermanState_Wait)
+			{
+				Entity_PlayAnimation(asGerman, "prone", 0.1f, true);
+				SetShootGermanHitboxActive(asGerman, false, 0.3f);
+				
+				if (aState != eShootGermanState_Wait)
+					Map_AddTimer(asGerman, cMath_RandRectf(3.f, 6.f), "OnTimer_GermanStartShoot");
+			}
+			
+			/////////////////
+			// Shoot
+			else if (aState == eShootGermanState_Shoot)
+			{
+				if (pAnim is null || 
+					(pAnim.GetName() != "kneel" &&
+					 pAnim.GetName() != "shoot_1" &&
+					 pAnim.GetName() != "shoot_2"))
+				{
+					Entity_PlayAnimation(asGerman, "kneel", 0.1f, true);
+					SetShootGermanHitboxActive(asGerman, true, 0.3f);
+					
+					if (SequenceStates_IsActive("Seq_FriendEndsAmbush"))
+						return;
+			
+					Map_AddTimer(asGerman, cMath_RandRectf(1.f, 1.2f), "OnTimer_GermanShoot");
+					Map_SetTimerUserVarInt(asGerman, 0);
+				}				
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void SetShootGermanHitboxActive(const tString &in asGerman, bool abX, float afDelay)
+		{
+			Map_AddTimer("Timer_SetShootGermanHitboxActive", afDelay, "OnTimer_SetShootGermanHitboxActive");
+			Map_SetTimerUserVarString("Timer_SetShootGermanHitboxActive", asGerman);
+			Map_SetTimerUserVarInt("Timer_SetShootGermanHitboxActive", abX ? 1 : 0);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_SetShootGermanHitboxActive(const tString &in asTimer)
+		{
+			tString sGerman = Map_GetTimerUserVarString(asTimer);
+			bool bCollide = Map_GetTimerUserVarInt(asTimer) == 1;
+			iLuxEntity@ pGerman = Map_GetEntity(sGerman, eLuxEntityType_Prop);
+			
+			if (pGerman !is null)
+			{
+				pGerman.GetBodyFromName("Body_2").SetCollide(bCollide);
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void SetGermanSoldierActive(const tString &in asEntity, bool abX)
+		{
+			Entity_SetActive(asEntity, abX);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_GermanStartShoot(const tString &in asTimer)
+		{
+			SetShootGermanState(asTimer, eShootGermanState_Shoot);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_GermanShoot(const tString &in asTimer)
+		{
+			iLuxEntity@ pEnt = Map_GetEntity(asTimer, eLuxEntityType_Prop);
+			cNode3D@ pSocket = pEnt !is null ? pEnt.GetMeshEntity().GetSocket("RifleSocket") : null;
+			
+			if (pEnt is null) 				return;
+			if (pEnt.IsActive() == false) 	return;
+			if (pSocket is null) 			return;
+			
+			///////////////////
+			// Shot enough?
+			int lMaxShots = cMath_RandRectl(1, 4);
+			int lShotCount = Map_GetTimerUserVarInt(asTimer);
+			
+			if (lShotCount >= lMaxShots && mbFriendEndsAmbush == false)
+			{
+				SetShootGermanState(asTimer, eShootGermanState_Hide);
+				return;
+			}
+			
+			///////////////////
+			// Shoot
+			++mlTotalGermanShootCount;
+			
+			bool bMiss = mlTotalGermanShootCount < mlGermanShootMissCount;
+			bool bForceHit = mbForceHitPlayer ||
+							 (mbPlayerShotByGermans == false &&
+							  (mlTotalGermanShootCount >= mlGermanShootMissCount || Player_GetRunning()));
+			
+			cVector3f vStart = pSocket.GetWorldPosition();
+			
+			// Offset for the one on the side, so he doesn't shoot into the sand bags
+			if (asTimer == "ShootGerman_4")
+			{
+				cMatrixf mtxSocketTranspose = pSocket.GetWorldMatrix().GetTranspose();
+				vStart += mtxSocketTranspose.GetForward() * 0.5f + mtxSocketTranspose.GetRight() * -0.5f;
+			}
+			
+			cVector3f vGoalPos = bForceHit ? Player_GetCameraPosition() : Player_GetPosition();
+			cVector3f vDir = cMath_Vector3Normalize(vGoalPos - vStart);				
+				
+			if (bForceHit == false)
+			{	
+				float fAccuracyOffsetY = cMath_ToRad(cMath_RandRectf(-8.f, 8.f));
+				float fAccuracyOffsetX = cMath_ToRad(cMath_RandRectf(0.f, 8.f));
+				
+				if (bMiss)
+					fAccuracyOffsetX = cMath_Clamp(fAccuracyOffsetX * 2.f, 8.f, 16.f);
+				
+				fAccuracyOffsetX *= cMath_Sign(cMath_RandRectf(-1.f, 1.f));
+				
+				cVector3f vAccuracyOffset = cVector3f(fAccuracyOffsetX, fAccuracyOffsetY, 0.f);					
+				vDir = cMath_Vector3Normalize(cMath_MatrixMul(cMath_MatrixRotateXYZ(vAccuracyOffset), vDir));
+			}
+			
+			int lBulletId = BulletHandler_AddBullet(vStart, vDir, eBulletType_Shotgun, tID_Invalid, "OnGermanBulletHit");
+			BulletHandler_SetMinPlayerHealth(lBulletId, 0.5f);
+				
+			///////////////////
+			// Effects
+			tString sShootAnim = "shoot_" + cMath_RandRectl(1, 2);
+			Entity_PlayAnimation(asTimer, sShootAnim, 0.1f, false, false, "OnAnimEnd_GermanShoot");
+			
+			Sound_CreateAtEntity("Sound_GermanGunfire", "trenches/enemy/fire", asTimer);
+			Sound_AddClosedCaption("GeneralClosedCaptions", "Trenches_Gunfire", -1, true, vStart);
+				
+			cParticleSystem@ pPS = ParticleSystem_CreateAtEntity("PS_GermanGunfire", "rifle_fire.ps", pEnt.GetName(), false);			
+			pPS.SetWorldMatrix(pSocket.GetWorldMatrix());
+			
+			///////////////////
+			// Shoot again
+			Map_RestartCurrentTimer(cMath_RandRectf(0.5f, 1.f));
+			Map_IncTimerUserVarInt(asTimer, 1);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnAnimEnd_GermanShoot(const tString &in asEntity, const tString &in asAnim)
+		{
+			Entity_PlayAnimation(asEntity, "kneel", 0.1f, true);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_ForceHitPlayer(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState == 1) return true;
+			
+			mbForceHitPlayer = Entity_PlayerIsInFront(asParent);
+			
+			if (mbForceHitPlayer)
+			{
+				for (int i = 1; i < 5; ++i)
+				{
+					tString sGerman = "ShootGerman_" + i;
+					
+					if (Entity_IsActive(sGerman))
+					{
+						Map_RemoveTimer(sGerman);
+						SetShootGermanState(sGerman, eShootGermanState_Shoot);
+						break;
+					}
+				}
+			}
+			
+			return true;
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event: Ambushed by germans
+		
+		//-------------------------------------------------------
+		
+		////////////////////////////////////////////////////////////
+		// Event: Friend ends ambush
+		//{/////////////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		int mlFriendShotCount = 5;
+		bool mbFriendEndsAmbush = false;
+		bool mbPlayerSawFriend = false;
+		bool mbPlayerNearAmbushExit = false;
+		bool mbGetPlayerAttentionDialoguePlayed = false;
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_StartSeqFriendEndsAmbush(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			mbPlayerNearAmbushExit = true;
+			StartSeqFriendEndsAmbush();
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_FriendEndsAmbush(const tString &in asTimer)
+		{
+			StartSeqFriendEndsAmbush();
+		}
+		
+		//-------------------------------------------------------
+		
+		void StartSeqFriendEndsAmbush()
+		{
+			if (mbFriendEndsAmbush) return;
+			
+			mbFriendEndsAmbush = true;
+			Seq_FriendEndsAmbush("");
+			
+			Voice_SetSource("AugustinLambert", "Friend_Ambush", 5.f, 50.f, true);
+		}
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSeqDataFriendEndsAmbush;
+		void Seq_FriendEndsAmbush(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_FriendEndsAmbush", mSeqDataFriendEndsAmbush);
+			if (Sequence_DoStepAndWait(3.5f))
+			{
+				Voice_SetSource("GermanSoldier_1", "Area_ShootGermanVoice", 1.f, 50.f, true);
+				Voice_SetSource("GermanSoldier_2", "Area_ShootGermanVoice", 1.f, 50.f, true);
+				
+				Voice_Play("Dialogue_GermanSoldiersAmbushed", 0);
+								
+				Map_AddTimer("Miss", 0.55f, "OnTimer_FriendShoot");
+				Map_AddTimer("HitGerman", 0.9f, "OnTimer_FriendShoot");
+				Map_AddTimer("Miss", 1.6f, "OnTimer_FriendShoot");
+				Map_AddTimer("Miss", 2.f, "OnTimer_FriendShoot");
+				Map_AddTimer("HitGerman", 2.6f, "OnTimer_FriendShoot");
+				Map_AddTimer("HitGerman", 2.9f, "OnTimer_FriendShoot");
+				Map_AddTimer("Miss", 3.5f, "OnTimer_FriendShoot");
+				Map_AddTimer("HitGerman", 3.9f, "OnTimer_FriendShoot");
+				Map_AddTimer("Miss", 4.5f, "OnTimer_FriendShoot");
+			}
+			else if (Sequence_DoStepAndWait(3.5f))
+			{
+				if (mvAliveShootGermans.size() > 0)
+					Voice_Play("Dialogue_GermanSoldiersAmbushed", 1);
+			}
+			else if (Sequence_DoStepAndPause(0.f))
+			{
+				Entity_SetActive("Friend_Ambush", true);		
+				Entity_SetActive("FriendRifle_Ambush", true);
+				Entity_AlignSocketWithParentRotation("Friend_Ambush", "RightHandSocket");
+				Entity_AttachToSocket("FriendRifle_Ambush", "Friend_Ambush", "RightHandSocket", true, true);
+				Entity_PlayAnimation("Friend_Ambush", "lambert_run_to_bridge", 0.f, false, false, "OnAnimEnd_FriendRunToBridge");
+				
+				Map_AddTimer("Timer_PlayGetAttentionDialogue", 0.75f, "OnTimer_PlayGetAttentionDialogue");
+			}
+			else if (Sequence_DoStepAndPause(1.5f))
+			{
+				Player_SetJumpForceMul(1.f);
+				
+				bool bWaitUntilSeen = mbPlayerNearAmbushExit == false;
+				if (bWaitUntilSeen)
+				{
+					Entity_SetActive("Trigger_LookAtFriend", true);
+					Map_AddTimer("Timer_ForceResumeFriendEndsAmbushSeq", 10.f, "OnTimer_ForceResumeFriendEndsAmbushSeq");
+				}
+				else
+				{
+					Map_AddTimer("Timer_ForceResumeFriendEndsAmbushSeq", 1.f, "OnTimer_ForceResumeFriendEndsAmbushSeq");
+				}
+			}
+			else if (Sequence_DoStepAndPause(0.f))
+			{
+				int lLineId = mbGetPlayerAttentionDialoguePlayed ? 1 : -1;
+				Voice_StopScenesWithCharacter("AugustinLambert");
+				Voice_Play("Dialogue_FriendPostAmbushPushForward", lLineId, "OnVoiceEnd_FriendPostAmbushPushForward");
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{
+				Entity_PlayAnimation("Friend_Ambush", "lambert_run_from_bridge", 0.3f, false, false, "OnAnimEnd_FriendRunFromBridge");
+				mbGermanAmbushActive = false;
+			}
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_FriendShoot(const tString &in asTimer)
+		{
+			bool bHitGerman = asTimer == "HitGerman";
+			
+			/////////////////////
+			// Make the soldier pop up before getting shot!
+			if (bHitGerman)
+			{
+				--mlFriendShotCount;
+				
+				tString sGerman = "ShootGerman_" + mlFriendShotCount;
+				
+				if (Entity_GetVarBool(sGerman, "Dead") == false)
+				{
+					Map_RemoveTimer(sGerman);
+					
+					SetShootGermanState(sGerman, eShootGermanState_Shoot);
+					
+					Map_AddTimer(sGerman, cMath_RandRectf(1.f, 1.2f), "OnTimer_GermanShoot");
+					Map_SetTimerUserVarInt(sGerman, 0);
+				}
+			}		
+			
+			/////////////////////
+			// Shoot
+			Map_AddTimer(asTimer + "_" + mlFriendShotCount, 0.9f, "OnTimer_DoFriendBullet");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_DoFriendBullet(const tString &in asTimer)
+		{
+			int lCount = cString_GetNumericSuffixInt(asTimer);
+			bool bHitGerman = cString_GetFirstStringPos(asTimer, "HitGerman") != -1;
+			tString sGerman = bHitGerman ? "ShootGerman_" + lCount : "Area_FriendAmbushMissGoal";
+			tString sCallback = bHitGerman ? "OnFriendBulletHit" : "";
+			
+			iLuxEntity@ pStartEnt = Map_GetEntity("Area_FriendBulletStart", eLuxEntityType_Area);
+			iLuxEntity@ pGerman = Map_GetEntity(sGerman);
+			
+			if (pStartEnt is null) return;
+			if (pGerman is null) return;
+			
+			cVector3f vStart = pStartEnt.GetPosition();			
+			cVector3f vDir;	
+			
+			if (bHitGerman) vDir = pGerman.GetBodyFromName("Body_2").GetWorldPosition() - vStart;
+			else			vDir = pGerman.GetPosition() - vStart;
+			
+			BulletHandler_AddBullet(vStart, vDir, eBulletType_Revolver, tID_Invalid, sCallback);
+			Sound_CreateAtEntity("Sound_Bullet", "trenches/enemy/lambert_fire", "Area_FriendBulletStart");
+			Sound_AddClosedCaption("GeneralClosedCaptions", "Trenches_Gunfire", -1, true, vStart);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnAnimEnd_FriendRunToBridge(const tString &in asEntity, const tString &in asAnim)
+		{
+			Entity_PlayAnimation("Friend_Ambush", "lambert_bridge_idle", 0.f, true);
+			SequenceStates_Resume("Seq_FriendEndsAmbush");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PlayGetAttentionDialogue(const tString &in asTimer)
+		{
+			mbGetPlayerAttentionDialoguePlayed = true;
+			Voice_Play("Dialogue_FriendPostAmbushPushForward", 0);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ForceResumeFriendEndsAmbushSeq(const tString &in asTimer)
+		{
+			if (mbPlayerSawFriend == false)
+			{
+				SequenceStates_Resume("Seq_FriendEndsAmbush");
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnLookAt_Friend(const tString &in asEntity, int alState)
+		{
+			if (alState == -1) return;
+			if (SequenceStates_IsActive("Seq_FriendEndsAmbush") == false) return;
+			
+			mbPlayerSawFriend = true;
+			Entity_SetActive(asEntity, false);
+			
+			Map_RemoveTimer("Timer_PlayGetAttentionDialogue");
+			SequenceStates_Resume("Seq_FriendEndsAmbush");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnVoiceEnd_FriendPostAmbushPushForward(const tString &in asSubject, const tString &in asScene)
+		{
+			SequenceStates_Resume("Seq_FriendEndsAmbush");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnAnimEnd_FriendRunFromBridge(const tString &in asEntity, const tString &in asAnim)
+		{
+			Entity_SetActive("Friend_Ambush", false);
+			Entity_SetActive("FriendRifle_Ambush", true);
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event: Friend ends ambush
+		
+		//-------------------------------------------------------
+		
+		////////////////////////////////////////////////////////////
+		// Event: Show injured hint
+		//{/////////////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		bool mbPlayerHurtInAmbush = false;
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_LockDoor(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			SwingDoor_SetBlocked(Entity_GetVarString(asChild, ""), alState == 1, true);
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_ShowInjuredHint(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Map_AddTimer("Timer_ShowInjuredHint", 0.2f, "OnTimer_ShowInjuredHint");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ShowInjuredHint(const tString &in asTimer)
+		{
+			Player_SetCheckHealthAllowed(true);
+			
+			tString sHint = "HintInjured";
+			if (GameDifficulty_GetSettingValueByID_Bool(eGameDifficultySetting_HardcoreHealthSystem))
+				sHint = "HintInjuredAlt";
+				
+			if (cLux_GetUserConfig().GetInt("Accessibility", "CheckHealthMode", 0) == 1)
+				sHint += "_Toggle";
+				
+			if (Hint_IsGiven("Hints", sHint))
+				return;
+			
+			Hint_StopHint();
+			Hint_ShowHint_Hold("Hints", sHint, true, 1.5f, true, 15.f, true, true);
+			
+			Hint_AddAsGiven("Hints", "HintInjured");
+			Hint_AddAsGiven("Hints", "HintInjured_Toggle");
+			Hint_AddAsGiven("Hints", "HintInjuredAlt");
+			Hint_AddAsGiven("Hints", "HintInjuredAlt_Toggle");
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event: Show injured hint
+		
+		//-------------------------------------------------------
+		
+		////////////////////////////////////////////////////////////
+		// Event: Shell impact
+		//{/////////////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_ShellImpact(const tString &in asParent, const tString &in asChild, int alState)
+        {
+		   Seq_BombHit("");
+	       return false;
+        }
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSeq_Bomb;		
+		void Seq_BombHit(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_BombHit", mSeq_Bomb);
+			if (Sequence_DoStepAndWait(1.5f))
+			{
+				Sound_CreateAtEntity("Sound_BombHit", "trenches/enemy/bomb_hit", "ps_area_falling_dirt_grenaderoom_01");
+			}
+			else if (Sequence_DoStepAndContinue())
+			{
+				Sound_AddClosedCaption("GeneralClosedCaptions", "Explosion");
+				Entity_AddImpulse("hanging_lamp_01", cVector3f(0.f, 0.f, -1.5f), true, true);
+				ParticleSystem_CreateAtEntity("falling_dirt_grenaderoom", "falling_dust_explosion_01.ps", "ps_area_falling_dirt_grenaderoom_01", false);
+				Effect_Shake_Start(0.6f, 0.25f, 0.1f, 1.f, 0.2f, 64.f);
+			}
+			
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event: Shell impact
+		
+		//-------------------------------------------------------
+		
+		////////////////////////////////////////////////////////////
+		// Event: Enable Inventory
+		//{/////////////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_EnableInventory(const tString &in asEntity)
+		{
+			Sketchbook_SetInventoryEnabled(true);
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event: Enable Inventory
+		
+		//-------------------------------------------------------
+		
+		////////////////////////////////////////////////////////////
+		// Event: Blow up wooden door
+		//{/////////////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		cMatrixf m_mtxGrenadeOnLoad = cMatrixf_Identity;
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_Grenade(const tString &in asEntity)
+		{
+			Sketchbook_SetInventoryEnabled(true);
+			iLuxEntity@ pEnt = Map_GetEntity(asEntity, eLuxEntityType_Prop);
+			m_mtxGrenadeOnLoad = pEnt !is null ? pEnt.GetOnLoadTransform() : cMatrixf_Identity;
+		}
+				
+		//-------------------------------------------------------
+		
+		void OnTimer_SpawnGrenade(const tString &in asTimer)
+		{
+			array<iLuxEntity@> vGrenades;
+			mBaseObj.GetEntityArray("Grenade_*", eLuxEntityType_Prop, "", vGrenades);
+				
+			bool bSpawn = Entity_Exists("WoodenDoor") && 
+						  vGrenades.size() == 0 &&
+						  ItemType_GetCountInInventory("Grenade") == 0;
+				
+			if (bSpawn)
+			{
+				mBaseObj.CreateEntity("Grenade_4", "grenade_pickup.ent", m_mtxGrenadeOnLoad, cVector3f(1.f));
+			}
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event: Blow up wooden door
+		
+		//-------------------------------------------------------
+		
+		////////////////////////////////////////////////////////////
+		// Event: Blow up explosive barrel
+		//{/////////////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		cMatrixf m_mtxExplosiveBarrelBulletOnLoad = cMatrixf_Identity;
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_ExplosiveBarrelBullet(const tString &in asEntity)
+		{
+			iLuxEntity@ pEnt = Map_GetEntity(asEntity, eLuxEntityType_Prop);
+			m_mtxExplosiveBarrelBulletOnLoad = pEnt !is null ? pEnt.GetOnLoadTransform() : cMatrixf_Identity;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_SpawnBullet(const tString &in asTimer)
+		{			
+			bool bSpawn = Entity_Exists("ExplosiveBarrelBullet") == false &&
+						  Entity_Exists("ExplosiveBarrel") && 
+						  ItemType_GetCountInInventory("Ammunition") == 0 &&
+						  Revolver_GetUnspentBulletCount() == 0;
+			
+			if (bSpawn)
+			{
+				mBaseObj.CreateEntity("ExplosiveBarrelBullet", "ammo_bullets.ent", m_mtxExplosiveBarrelBulletOnLoad, cVector3f(1.f));
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void ExplosiveBarrel_Callback(const tString &in asEntity)
+		{
+			Sound_Stop("Sound_BlockWire", 1.0f);
+			Light_FadeBrightnessTo("Light_ExplosiveBarrel", 0.f, 0.2f);
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event: Blow up explosive barrel
+		
+		////////////////////////////////////////////////////////////
+		// Event: Trapped by gas grenades
+		//{/////////////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		bool mbGasRescueActive = false;
+		bool mbExtraGasAdded = false;
+		array<tID> mvAddedExtraGas;
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_GasGermanRunsBy(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Voice_SetSource("GermanSoldier_1", "RunGerman_5", 1.f, 50.f, true);
+			Voice_Play("Dialogue_GermanSoldiersAttack_Grenade");
+			GermanRunTo("RunGerman_5", 5.2f, "Area_RunGermanGas_Goal");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_StartSeqTrappedInGas(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Seq_TrappedInGas("");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSeqDataTrappedInGas;
+		void Seq_TrappedInGas(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_TrappedInGas", mSeqDataTrappedInGas);
+			if (Sequence_DoStepAndWait(2.5f))
+			{
+				mbGasRescueActive = true;
+				EnvironmentalDamage_SetNoDeathDamageActive(true); // Don't kill the player
+				
+				Entity_SetActive("Blocker_GasDeadEnd", true);
+				
+				ThrowGasGrenade("GasGrenade_3");
+				GasGrenade_SetFuseTime("GasGrenade_3", 2.f);
+				
+				if (Player_GetHealth() <= 0.3f)
+				{
+					Player_SetIgnoreGasDamage(true);
+					//Player_SetFallDamageActive(false);
+				}
+				
+				if (GameDifficulty_GetSettingValueByID_Bool(eGameDifficultySetting_HardcoreHealthSystem))
+				{
+					Player_StopBleeding();
+					Player_SetBleedingActive(false);
+				}
+			}
+			if (Sequence_DoStepAndWait(1.f))
+			{
+				ThrowGasGrenade("GasGrenade_4");				
+				Music_PlayExt("Bunker_Gas_Loop.ogg", true, 0.4f, 1.0f, 12.0f, 1.0f, eMusicPrio_SceneAmb, false);				
+			}
+			else if (Sequence_DoStepAndWait(0.75f))
+			{
+				ThrowGasGrenade("GasGrenade_5");
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{
+				ThrowGasGrenade("GasGrenade_2");
+				
+				Voice_SetSource("AugustinLambert", "Area_GasSequenceLambertVoice", 1.f, 70.f, true);
+				Voice_PlayDelayed("Dialogue_FriendGasWarning", 2.f);
+			}
+			else if (Sequence_DoStepAndWait(9.f))
+			{
+				ThrowGasGrenade("GasGrenade_1");				
+				Voice_PlayDelayed("Dialogue_FriendLookingForPlayer", 6.f);
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{
+				AddExtraGas();
+			}
+			
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		void ThrowGasGrenade(const tString &in asEntity)
+		{
+			iLuxEntity@ pEnt = Map_GetEntity(asEntity, eLuxEntityType_Prop);
+			iPhysicsBody@ pBody = pEnt !is null ? pEnt.GetMainBody() : null;
+					
+			if (pEnt !is null && pBody !is null)
+			{
+				cVector3f vTorque = cMath_RandomSphereSurfacePoint(1.f);
+				cVector3f vImpulse = cVector3f_Forward * 5.5f + cVector3f_Up * 3.5f;
+				vImpulse = cMath_MatrixMul(pEnt.GetMatrix().GetRotation(), vImpulse);
+						
+				pEnt.SetActive(true);
+				pBody.AddTorque(vTorque);
+				pBody.AddImpulse(vImpulse);
+			}
+			
+			Entity_SetEffectsActive(asEntity, false, true);
+			GasGrenade_SetParticleSuffix(asEntity, "_cutscene");
+		}
+		
+		//-------------------------------------------------------
+		
+		void AddExtraGas()
+		{
+			////////////////
+			// Setup vars
+			mbExtraGasAdded = true;
+			
+			array<tID> vGasAreas = EnvironmentalDamage_GetDamageAreasOfType(eDamageType_Gas);
+			array<iLuxEntity@> vExtraGasAreas;
+			mBaseObj.GetEntityArray("Area_ExtraGas_*", eLuxEntityType_Area, "", vExtraGasAreas);
+			
+			////////////////
+			// Add gas in areas not already filled
+			for (int i = 0; i < vExtraGasAreas.size(); ++i)
+			{
+				bool bAddExtraGas = true;			
+				iLuxEntity@ pExtraArea = vExtraGasAreas[i];
+				cBoundingVolume@ pExtraAreaBounds = pExtraArea.GetMainBody().GetBoundingVolume();
+				
+				if (pExtraArea is null) continue;
+				if (pExtraAreaBounds is null) continue;
+				
+				for (int j = 0; j < vGasAreas.size(); ++j)
+				{
+					iLuxEntity@ pArea = cLux_ID_Entity(vGasAreas[j]);
+					cBoundingVolume@ pAreaBounds = pArea.GetMainBody().GetBoundingVolume();
+					
+					if (pArea is null) continue;
+					if (pAreaBounds is null) continue;
+									
+					if (cMath_CheckPointInAABBIntersection(pExtraArea.GetPosition(), pAreaBounds.GetMin(), pAreaBounds.GetMax()))
+					{
+						bAddExtraGas = false;
+						break;
+					}
+				}
+				
+				if (bAddExtraGas)
+				{
+					int lId = cString_GetNumericSuffixInt(pExtraArea.GetName());				
+					cParticleSystem@ pPS = mBaseObj.GetWorld().GetParticleSystem("PS_ExtraGas_" + lId);
+						
+					if (pPS !is null)
+					{
+						pPS.SetActive(true);
+						pPS.SetVisible(true);
+						
+						EnvironmentalDamage_AddGasArea(pPS.GetID(), pExtraAreaBounds.GetMin(), pExtraAreaBounds.GetMax(), false);
+						
+						mvAddedExtraGas.push_back(pPS.GetID());
+					}
+				}				
+			}
+			
+			////////////////////
+			// Start end sequence
+			StartEndSequence();
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event: Trapped by gas grenades
+		
+		////////////////////////////////////////////////////////////
+		// Event: Resuced by friend
+		//{/////////////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		bool mbEndSequenceStarted = false;
+		int mlGasDamageTakenCount = 0;
+		int mlGasDamageTimeStamp = 0;
+		int mlBlurId = -1;
+		int mlImageTrailId = -1;
+		cVector3f mvGasCutsceneStartPos(0.f);
+		
+		//-------------------------------------------------------
+		
+		void StartEndSequence()
+		{
+			if (mbEndSequenceStarted) return;
+			
+			mbEndSequenceStarted = true;
+			
+			Player_SetIgnoreGasDamage(true);
+			//Player_SetFallDamageActive(false);
+			
+			float fTime = mBaseObj.GetElapsedTime(mlGasDamageTimeStamp);
+			float fDelay = 3.5f - cMath_Min(fTime, 3.5f);
+			
+			Map_AddTimer("", fDelay, "Seq_RescuedByFriend");
+		}
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSeqDataRescuedByFriend;
+		void Seq_RescuedByFriend(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_RescuedByFriend", mSeqDataRescuedByFriend);
+			if (mlGasDamageTakenCount < 2 && Sequence_DoStepAndWait(3.f)) 
+			{
+				Player_GiveDamage(0.5f, 0.3f, eDamageType_Gas, "");
+			}
+			else if (Sequence_DoStepAndWait(0.3f)) 
+			{
+				Player_GiveDamage(0.5f, 0.3f, eDamageType_Gas, "");
+				
+				mlImageTrailId = Effect_ImageTrail_Start(1.5f, 3.f, 20.f, 2.f);
+				mlBlurId = Effect_Blur_Start(1.f, 3.f);
+				
+				Effect_Bloom_SetActive(false);
+			}
+			else if (Sequence_DoStepAndWait(2.965))
+			{
+				///////////////////////
+				// Play play anim
+				mvGasCutsceneStartPos = Player_GetFeetPosition() + Player_GetForward() * -0.5f;
+				float fAngle = cLux_GetPlayer().GetCharacterBody().GetYaw();
+				
+				PlayerBody_PlayCutsceneAnimation("player_intro_gas_cough", false, 0.3f, "OnAnimEnd_GasCough", 1.f, 0.f, true, mvGasCutsceneStartPos, fAngle);
+				PlayerBody_SetCutsceneMaxPitch(5.f);
+				PlayerBody_SetCutsceneMaxYaw(5.f);
+				PlayerBody_SetShowCrossHairIconsOnCutsceneEnd(false);
+				
+				Map_AddTimer("Timer_FadeInHandBlood", 2.f, "OnTimer_FadeInHandBlood");
+				
+				///////////////////////
+				// Place gas at player
+				cParticleSystem@ pClosestPS = null;
+				float fMinDistSqr = 1000.f * 1000.f;
+				
+				for (int i = 0; i < mvAddedExtraGas.size(); ++i)
+				{
+					cParticleSystem@ pPS = cLux_ID_ParticleSystem(mvAddedExtraGas[i]);
+					if (pPS is null) continue;
+					
+					float fDistSqr = (pPS.GetWorldPosition() - mvGasCutsceneStartPos).SqrLength();
+					if (fDistSqr < fMinDistSqr)
+					{
+						fMinDistSqr = fDistSqr;
+						@pClosestPS = pPS;
+					}
+				}
+				
+				if (pClosestPS !is null)
+				{
+					pClosestPS.SetWorldPosition(mvGasCutsceneStartPos);
+					pClosestPS.SetFadeAtDistance(false);
+				}
+			}
+			else if (Sequence_DoStepAndWait(0.4f))
+			{
+				Effect_Fade_Out(0.25);
+			}
+			else if (Sequence_DoStepAndWait(1.6f))
+			{		
+				Effect_Fade_In(0.5);
+			}
+			else if (Sequence_DoStepAndWait(0.5f))
+			{
+				Effect_Blur_FadeAmount(mlBlurId, 5.f, 1.f);
+				Effect_ImageTrail_FadeInstanceAmount(mlImageTrailId, 3.f, 1.f);
+			}
+			else if (Sequence_DoStepAndWait(0.5f))
+			{
+				Effect_Fade_Out(0.4);
+			}
+			else if (Sequence_DoStepAndWait(0.3f))
+			{		
+				Effect_Blur_FadeOut(mlBlurId, 1.f);
+				Effect_ImageTrail_FadeInstanceAmount(mlImageTrailId, 0.5f, 3.f);
+				
+				///////////////////
+				// Get animaton position and angle
+				iLuxEntity@ pArea = Map_GetEntity("Area_GasCutscene", eLuxEntityType_Area);
+				iLuxEntity@ pFriend = Map_GetEntity("Friend_End", eLuxEntityType_Prop);
+				
+				if (pArea is null) return;
+				if (pFriend is null) return;
+				
+				cVector3f vPos = pArea.GetPosition();
+				cVector3f vFwd = pArea.GetMatrix().GetTranspose().GetForward();
+				float fAngle = -cMath_ATan2(vFwd.x, -vFwd.z);
+				
+				///////////////////
+				// Position player and friend
+				PlayerBody_SetCameraAnimationPositionAndYaw(true, vPos, fAngle, 0.f);
+				
+				pFriend.SetActive(true);
+					
+				cMatrixf mtxFriend = pFriend.GetMatrix();
+				mtxFriend.SetRotation(cMath_MatrixRotateY(fAngle + cMath_Pi));
+				mtxFriend.SetTranslation(vPos);
+				pFriend.SetMatrix(mtxFriend);									
+				
+				Player_SetCameraNearPlane(0.001f);
+				
+				///////////////////
+				// Play friend anims
+				Entity_SetActive("GasMaskFriend", true);
+				Entity_AlignSocketWithParentRotation("Friend_End", "GasMaskSocket");
+				Entity_AttachToSocket("GasMaskFriend", "Friend_End", "GasMaskSocket", true, true);
+				
+				Entity_SetActive("FriendRifle_GasRescue", true);				
+				Entity_AlignSocketWithParentRotation("Friend_End", "RightHandSocket");
+				Entity_AttachToSocket("FriendRifle_GasRescue", "Friend_End", "RightHandSocket", true, true);
+				
+				Entity_PlayAnimation("Friend_End", "lambert_intro_gas_give_gas_mask", 0.f, false, false, "OnAnimEnd_GiveGasMask");				
+				Entity_PlayAnimation("GasMaskFriend", "gas_mask_npc_lambert_intro_gas_give_gas_mask", 0.f, false);
+				
+				Entity_SetActive("GasMaskEnd", true);
+				Entity_AlignSocketWithParentRotation("Friend_End", "LeftHandSocket");
+				Entity_AttachToSocket("GasMaskEnd", "Friend_End", "LeftHandSocket", true, true);
+				Entity_PlayAnimation("GasMaskEnd", "gas_mask_intro_hand_over", 0.f, false);
+				
+				Music_Stop(2.0f, eMusicPrio_SceneAmb);
+				Music_Play("Bunker_Gas_Rescue.ogg", 0.95f, false, eMusicPrio_MinorEvent);
+				
+				Voice_SetSource("AugustinLambert", "Friend_End", 1.f, 50.f, true);
+				Voice_PlayDelayed("Dialogue_FriendSavesPlayer_Alt", 0.25f);
+				
+				///////////////////
+				// Move grenades and particles to hide the jump
+				cVector3f vPosDiff = vPos - mvGasCutsceneStartPos;
+				
+				array<iLuxEntity@> vGrenades;
+				mBaseObj.GetEntityArray("GasGrenade_*", eLuxEntityType_Prop, "", vGrenades);
+				
+				for (int i = 0; i < vGrenades.size(); ++i)
+				{
+					cLuxProp@ pGrenade = cLux_ToProp(vGrenades[i]);
+					if (pGrenade is null) continue;
+					
+					pGrenade.SetStaticPhysics(true);
+					pGrenade.SetPosition(pGrenade.GetPosition() + vPosDiff);
+				}
+				
+				for (int i = 0; i < mvAddedExtraGas.size(); ++i)
+				{
+					cParticleSystem@ pPS = cLux_ID_ParticleSystem(mvAddedExtraGas[i]);
+					if (pPS is null) continue;
+					pPS.SetWorldPosition(pPS.GetWorldPosition() + vPosDiff);
+				}
+			}
+			else if (Sequence_DoStepAndPause(0.f))
+			{
+				Effect_Fade_In(0.5);
+			}
+			else if (Sequence_DoStepAndWait(3.3f))
+			{
+				Effect_ImageTrail_FadeOut(mlImageTrailId, 5.f);
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{				
+				Effect_Fade_Out(1.f);
+				Sound_FadeGlobalVolume(0.f, 3.f, eSoundEntryType_WorldAll);
+			}
+			else if (Sequence_DoStepAndWait(3.7f))
+			{
+				PlayerBody_FadeLiquidAmountTo(0.f, 0.3f);
+				
+				Player_SetHealth(1.f);
+				Player_SetHealthRegenSpeedMul(1.f);
+				Player_RestoreClipPlane();
+				Player_SetActive(false);
+				
+				Effect_Bloom_SetActive(true);
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{
+				Player_UnequipGasMaskInstantly();				
+				
+				Player_FadeDreamLights(1.f, 3.f);
+				Player_SetupDreamLightsSound("trenches/dream/dice", "Comments", 0.8f);
+			}
+			else if (Sequence_DoStepAndWait(6.5f))
+			{
+				Sound_PlayGui("trenches/dream/dice", 1.0f);
+				Voice_PlayDelayed("Dialogue_DiceGame", 2.5f);
+			}
+			else if (Sequence_DoStepAndWait(12.0f))
+			{
+				Sound_AddClosedCaption("GeneralClosedCaptions", "Trenches_Dice");
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{
+				mbGasRescueActive = false;
+				
+				if (cLux_ScriptDebugOn() == false)
+					Map_ChangeMap("no_mans_land.hpm", "", "", "", false, true);
+			}
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_FadeInHandBlood(const tString &in asTimer)
+		{
+			PlayerBody_FadeLiquidAmountTo(0.6f, 0.3f);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnAnimEnd_GasCough(const tString &in asAnim)
+		{
+			Entity_SetActive("GasMaskEnd", false);
+			
+			Player_SetMoveSpeedMul(0.f);
+			Player_SetLookSpeedMul(0.f);
+			cLux_GetPlayer().ChangeState(ePlayerState_Null);
+			
+			cLux_GetPlayer().GetCharacterBody().SetActive(false);
+			Player_SetEquipGasMask(true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnAnimEnd_GiveGasMask(const tString &in asEntity, const tString &in asAnim)
+		{
+			Entity_PlayAnimation("Friend_End", "lambert_intro_gas_idle", 0.f, true);
+			Entity_PlayAnimation("GasMaskFriend", "gas_mask_npc_lambert_intro_gas_idle", 0.f, false);
+		}
+		
+		//-------------------------------------------------------
+		
+		void ResumeEndSequence()
+		{
+			PlayerBody_PlayCutsceneAnimation("player_intro_gas_look_at_and_follow_friend", false, 0.3f);
+			PlayerBody_SetCutsceneMaxPitch(5.f);
+			PlayerBody_SetCutsceneMaxYaw(5.f);
+			
+			Entity_PlayAnimation("Friend_End", "lambert_intro_gas_walk_past_and_run", 0.3f, false);
+			Entity_PlayAnimation("GasMaskFriend", "gas_mask_npc_lambert_intro_gas_walk_past_and_run", 0.3f, false);
+			
+			SequenceStates_Resume("Seq_RescuedByFriend");
+			
+			Player_SetHealthRegenActive(true, true);
+			Player_SetHealthRegenSpeedMul(100.f);
+			//reset bloom setting to default
+			Effect_Bloom_FadeBloomTint(1, 1, 1, 1);
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event: Rescued by friend
+	 
+	 //-------------------------------------------------------
+	 
+	//} END EVENTS
+	
+	//-------------------------------------------------------
+}

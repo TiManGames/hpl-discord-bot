@@ -1,0 +1,268 @@
+////////////////////////////////////////////////////////
+// Deferred Diffuse Decal - Fragment Shader
+//
+// A decal shader where light is applied
+////////////////////////////////////////////////////////
+
+@ifdef UseNormalMapping
+	@include helper_normal_packing.hpsl
+@endif
+
+@ifdef UseEnvMap
+	@include helper_reflection.hpsl
+@endif
+
+@ifdef UseParallax
+	@include helper_parallax.hpsl
+@endif
+
+///////////////////////
+// Variables
+///////////////////////
+
+//--------------------------------------------
+
+#define eMaterialBlendMode_None 0
+#define eMaterialBlendMode_Add 1
+#define eMaterialBlendMode_Mul 2
+#define eMaterialBlendMode_MulX2 3
+#define eMaterialBlendMode_Alpha 4
+#define eMaterialBlendMode_PremulAlpha 5
+#define eMaterialBlendMode_Modulate 6
+#define eMaterialBlendMode_ModulateAdd 7
+#define eMaterialBlendMode_ModulateSource 8
+#define eMaterialBlendMode_Min 9 
+#define eMaterialBlendMode_Max 10
+
+
+// This contains all constant buffers and chooses the correct one based on MaterialType
+@include helper_type_arguments.hpsl
+
+//--------------------------------------------
+
+
+///////////////////////
+// samplers
+///////////////////////
+
+uniform cTexture2D aDiffuseMap : 0;
+
+@ifdef UseNormalMapping
+	uniform cTexture2D aNormalMap : 1;
+@endif
+
+@ifdef UseSpecular
+	uniform cTexture2D aSpecularMap : 2;
+@endif
+
+@ifdef UseParallax
+	uniform cTexture2D aHeightMap : 3;
+@endif
+
+@ifdef UseDetailMap
+	uniform cTexture2D aDetailMap : 4;
+@endif
+
+@ifdef UseEnvMap
+	uniform cTextureCube aEnvMap : 5;
+@endif
+	
+@ifdef UseProject
+	uniform cTexture2D aDepthMap : 14;
+@endif
+
+void main(in cVector4f px_vPosition,
+		  in cVector4f px_vTexCoord0,
+
+@ifdef UseNormals || UseNormalMapping
+		  in cVector3f px_vNormal,
+@endif
+
+@ifdef UseNormalMapping
+		  in cVector3f px_vTangent,
+		  in cVector3f px_vBinormal,
+@endif
+		  in cVector4f px_vColor,
+@ifdef UseDetailMap || UseLinearDepth
+		  in float px_fLinearDepth,
+@endif
+@ifdef UseEnvMap
+@ifdef UseProject
+@else
+		  in cVector3f px_vVertexPos,
+@endif
+@endif
+@ifdef UseParallax
+		  in cVector3f px_vTangentEyePos,
+@endif
+@ifdef UseProject
+		  in cMatrixf px_mtxViewToModel,
+@ifdef UseUv && UseUvAnimation
+		  in cMatrixf px_mtxUV,
+@endif
+@endif
+		  out cVector4f out_vDiffuse : 0,			//diffuse rgb, translucency a
+		  out cVector4f out_vNormal : 1,			//normal xyz
+		  out cVector4f out_vSpecular_RG : 2,		//spec color rg
+		  out cVector4f out_vSpecular_B_Pow : 3)	//spec color b, spec power a
+{
+	//////////////////////////////////
+	// Get UV coords
+	@ifdef UseProject
+		float fSceneDepth = sample(aDepthMap, cVector2f(px_vPosition.xy) * avInvScreenSize).x;
+		cVector3f vPos = cVector3f(px_vPosition.xy * avScreenToFarPlane.xy + avScreenToFarPlane.zw, -afFarPlane) * fSceneDepth;
+		cVector4f vLocal = mul(px_mtxViewToModel, cVector4f(vPos, 1.f));
+		
+		cVector3f vAbsPos = abs(vLocal.xyz);
+		if(max(max(vAbsPos.x, vAbsPos.y), vAbsPos.z) > 1.0)
+			discard;
+
+		cVector2f vTexCoord = cVector2f(vLocal.xy * cVector2f(0.5, -0.5) + 0.5);
+		vTexCoord *= px_vTexCoord0.zw;
+		vTexCoord += px_vTexCoord0.xy * px_vTexCoord0.zw;
+		
+		@ifdef UseUv && UseUvAnimation
+			vTexCoord = mul(px_mtxUV, cVector4f(vTexCoord.xy, 0.f, 1.f)).xy;
+		@endif
+
+		cVector2f vUVDx = dFdx(vTexCoord);
+		cVector2f vUVDy = dFdy(vTexCoord);
+	@else
+		cVector2f vTexCoord = px_vTexCoord0.xy;
+		cVector2f vUVDx = dFdx(px_vTexCoord0.xy);
+		cVector2f vUVDy = dFdy(px_vTexCoord0.xy);
+	@endif
+
+	//////////////////////////////////
+	// Get UV coords
+	@ifdef UseParallax
+
+		vTexCoord = GetParallaxUV(aHeightMap,3, vTexCoord, px_vTangentEyePos, avHeightMapScaleAndBias);
+		
+		@ifdef UseProject
+		
+		@else
+		//The height should drop off at the edges!
+		//Not totally accurate, but it works!
+			float fHeightAlpha = sampleGrad(aDiffuseMap, vTexCoord, vUVDx, vUVDy).w;
+			vTexCoord = mix(px_vTexCoord0.xy,vTexCoord,fHeightAlpha);
+		@endif
+	@endif
+	
+	////////////////////
+	//Diffuse 
+	cVector4f vDiffuse = sampleGrad(aDiffuseMap, vTexCoord, vUVDx, vUVDy);
+	@ifdef UseProject && UseParallax
+		//vDiffuse = cVector4f(px_vTangentEyePos.xyz, 1);
+	@endif
+	////////////////////
+	//Detail
+	@ifdef UseDetailMap
+		float afDetailMul = afDetailWeight * clamp(1 - (px_fLinearDepth * afFarPlane-avDetailProperties.x) / avDetailProperties.y, 0.0, 1.0);
+		
+		if(afDetailMul > 0.0)
+		{
+			cVector4f vDetailColor = sampleGrad(aDetailMap, vTexCoord*avDetailProperties.zw, vUVDx*avDetailProperties.zw, vUVDy*avDetailProperties.zw);
+			vDiffuse.xyz *= mix(cVector3f(1.0, 1.0, 1.0), vDetailColor.xyz*2, afDetailMul);
+		}
+	@endif
+		
+	float fAlpha = vDiffuse.w * px_vColor.w;
+
+	@ifdef UseProject
+		fAlpha *= 1.0 - vAbsPos.z;
+	@endif
+	
+	if(fAlpha <= 0.01) 	discard;
+
+	//////////////////////////////////
+	//Environment Map
+	@ifdef UseEnvMap && UseNormalMapping
+	cVector3f vEnvMap = cVector3f(0.0, 0.0, 0.0);
+	{
+		cVector3f vNormal = UnpackNormalmapYW(sampleGrad(aNormalMap,vTexCoord, vUVDx, vUVDy));
+		cVector3f vScreenNormal = normalize(vNormal.x * px_vTangent + vNormal.y * px_vBinormal + vNormal.z * px_vNormal);
+
+		@ifdef UseProject
+			cVector3f vCameraSpaceEyeVec = normalize(vPos);
+		@else
+			cVector3f vCameraSpaceEyeVec = normalize(px_vVertexPos);
+		@endif
+		
+		cVector3f vEnvUv = reflect(vCameraSpaceEyeVec, vScreenNormal);
+		vEnvUv = mul(a_mtxInvView, cVector4f(vEnvUv,0)).xyz;
+		
+		cVector4f vReflectionColor = sampleLod(aEnvMap, vEnvUv, 0.0);
+	
+		float afEDotN = max(dot(-vCameraSpaceEyeVec, vScreenNormal),0.0);
+		float fFresnel = Fresnel(afEDotN, avFrenselBiasPow.x, avFrenselBiasPow.y);
+		
+		vEnvMap = vReflectionColor.rgb * fFresnel;
+	}
+	@endif
+
+	out_vDiffuse = vDiffuse * px_vColor;
+
+	@ifdef UseFullBuffer
+	
+		//////////////////////////////////
+		//Normal
+		@ifdef UseNormalMapping
+			cVector3f vNormal = UnpackNormalmapYW(sampleGrad(aNormalMap,vTexCoord, vUVDx, vUVDy));
+					
+			cVector3f vScreenNormal = normalize(vNormal.x * px_vTangent + vNormal.y * px_vBinormal + vNormal.z * px_vNormal);
+			out_vNormal.xyz = vScreenNormal * fAlpha * 0.5;
+			out_vNormal.w = fAlpha;
+
+			//Scale normal based on mode
+			switch(alBlendMode)
+			{
+			case eMaterialBlendMode_None:
+			case eMaterialBlendMode_Alpha:
+			case eMaterialBlendMode_PremulAlpha:
+			case eMaterialBlendMode_MulX2:
+			case eMaterialBlendMode_Min:
+			case eMaterialBlendMode_Max:
+				out_vNormal.xyz += 0.5;
+				break;
+			case eMaterialBlendMode_Mul:
+			case eMaterialBlendMode_Modulate:
+			case eMaterialBlendMode_ModulateAdd:
+			case eMaterialBlendMode_ModulateSource:
+				out_vNormal.xyz += 1.0;
+			default:
+			case eMaterialBlendMode_Add:
+				break;
+			}
+		@else
+			out_vNormal = avClearColor;
+		@endif
+		
+		/////////////////////////////////
+		//Specular
+		@ifdef UseSpecular
+			cVector4f vSpec = sampleGrad(aSpecularMap, vTexCoord, vUVDx, vUVDy);
+			out_vSpecular_RG.xy = vSpec.xy;
+			out_vSpecular_RG.z = 0.f;
+			out_vSpecular_RG.w = fAlpha;
+
+			out_vSpecular_B_Pow.xy = vSpec.zw;
+			out_vSpecular_B_Pow.z = 0.f;
+			out_vSpecular_B_Pow.w = fAlpha;
+		@else
+			out_vSpecular_RG = avClearColor;
+			out_vSpecular_B_Pow = avClearColor;
+		@endif
+
+		
+	@else
+		out_vNormal = avClearColor;
+		out_vSpecular_RG = avClearColor;
+		out_vSpecular_B_Pow = avClearColor;
+	@endif
+
+	
+	@ifdef UseEnvMap && UseNormalMapping
+		out_vDiffuse.rgb += vEnvMap;
+	@endif
+}

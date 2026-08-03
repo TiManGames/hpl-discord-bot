@@ -1,0 +1,296 @@
+#include "interfaces/PlayerState_Interface.hps"
+#include "custom/player/PlayerState_UsingItem_Base.hps"
+#include "base/InputHandler_Types.hps"
+#include "player/Player_Types.hps"
+#include "custom/helpers/helper_items.hps"
+
+//------------------------------------------------------------
+
+const float gfUsingPocketWatch_ToggleDelay = 0.3f;
+const float gfUsingPocketWatch_MinPitch = cMath_ToRad(-70.f);
+const float gfUsingPocketWatch_MaxPitch = cMath_ToRad(30.f);
+const float gfUsingPocketWatch_PitchFadeTime = 1.f;
+
+////////////
+// RTU Anims
+const tString gsUsingPocketWatch_PlayerPocketWatchClickAnim = "tool_stopwatch_focus_click_rarm";
+const tString gsUsingPocketWatch_PlayerPocketWatchFocusIntroAnim = "tool_stopwatch_focus_start_rarm";
+
+////////////////
+// Wind up anims
+const tString gsUsingPocketWatch_PlayerPocketWatchFocusWindupAnimR = "tool_stopwatch_wind_and_click_rarm";
+const tString gsUsingPocketWatch_PlayerPocketWatchFocusWindupAnimL = "tool_stopwatch_wind_and_click_larm";
+
+const tString gsUsingPocketWatch_PlayerPocketWatchFocusClickAnim = "tool_stopwatch_focus_click_rarm";
+
+/////////////
+// Item Anims
+const tString gsUsingPocketWatch_PocketWatchFocusWindupAnim = "wind_and_click";
+const tString gsUsingPocketWatch_PocketWatchFocusClickAnim = "focus_click";
+
+//------------------------------------------------------------
+
+enum eUsingPocketWatchAnimState
+{
+	eUsingPocketWatchAnimState_WindUp = eUsingItemAnimState_LastEnum
+}
+
+//------------------------------------------------------------
+
+class cScrPlayerState_UsingPocketWatch : iScrPlayerState_UsingItem_Base, iScrPlayerState_Interface
+{
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		iScrPlayerState_UsingItem_Base::Init();
+		
+		msFocusLoopAnim_R = "tool_stopwatch_focus_idle_rarm";
+		msFocusOutroAnim_R = "tool_stopwatch_focus_end_rarm";
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnEnterState(int alPrevStateId)
+	{		
+		////////////////
+		// Setup vars
+		mbSingleFrame = false;
+		mbUsesOtherHandAnims = mbWindUp;
+		
+		////////////////
+		// Enter base
+		iScrPlayerState_UsingItem_Base::OnEnterState(alPrevStateId);
+		
+		
+		////////////////
+		// Setup pitch
+		SetupPitchFade(gfUsingPocketWatch_MinPitch, gfUsingPocketWatch_MaxPitch, gfUsingPocketWatch_PitchFadeTime, false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnLeaveState(int alNextStateId)
+	{				
+		////////////////
+		// Leave base
+		iScrPlayerState_UsingItem_Base::OnLeaveState(alNextStateId);
+		
+		mbWindUp = false;
+		mbSingleFrame = false;
+		mbClick = false;
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateAnimationStates(float afTimeStep) override
+	{	
+		////////////////
+		// Intro
+		if (mlAnimState == eUsingItemAnimState_Intro)
+		{
+			///////////////
+			// Update state
+			int lState = UpdateStateAnims(gsUsingPocketWatch_PlayerPocketWatchFocusIntroAnim, "", false, false, 0.1f);
+			mfIntroTimer += afTimeStep;
+			
+			if (lState == 1 && mfIntroRelTime > 0)
+			{	
+				////////////////////////
+				// Set relative time pos of the animations to make them less jarring
+				cAnimationState@ pPlayerIntroAnimR = PlayerBody_GetAnimationState(msFocusIntroAnim_R);
+				cAnimationState@ pPlayerIntroAnimL = PlayerBody_GetAnimationState(msFocusIntroAnim_L);
+				iLuxEntity@ pItem = cLux_ID_Entity(m_idItemEntity);
+				cAnimationState@ pItemAnim = pItem !is null ? pItem.GetMeshEntity().GetAnimationStateFromName(msFocusIntroAnim_Item) : null;
+				
+				if (pPlayerIntroAnimR !is null) pPlayerIntroAnimR.SetRelativeTimePosition(mfIntroRelTime);
+				if (pPlayerIntroAnimL !is null) pPlayerIntroAnimL.SetRelativeTimePosition(mfIntroRelTime);
+				if (pItemAnim !is null) pItemAnim.SetRelativeTimePosition(mfIntroRelTime);
+			}
+			
+			////////////////
+			// State over
+			if (lState == -1)
+			{
+				if (mbWindUp)
+				{
+					if (mbClick) ChangeAnimState(eUsingItemAnimState_Use);
+					else ChangeAnimState(eUsingPocketWatchAnimState_WindUp);
+				}
+				else
+				{
+					ChangeAnimState(eUsingItemAnimState_Loop);
+				}
+			}
+				
+			////////////////
+			// Leave state?
+			if (!mbWindUp && mbLeaveState && mfIntroTimer >= mfIntroDelayTime)
+				ChangeAnimState(eUsingItemAnimState_Outro);
+		}
+		
+		////////////////
+		// Wind up
+		else if (mlAnimState == eUsingPocketWatchAnimState_WindUp)
+		{
+			///////////////
+			// Update state
+			int lState = UpdateStateAnims(gsUsingPocketWatch_PlayerPocketWatchFocusWindupAnimR, gsUsingPocketWatch_PlayerPocketWatchFocusWindupAnimL, gsUsingPocketWatch_PocketWatchFocusWindupAnim, false, false, 0.1f);
+			
+			if(mbSingleFrame==false)
+			{
+				cScript_SetGlobalArgBool(0, false);
+				tString sEnt = Item_GetHeldEntity(eItemHandlerHand_Right);
+				cScript_RunGlobalFunc(sEnt, "cScrPropPocketWatch", "_Global_WindUpPocketWatch");
+				
+				mbSingleFrame = true;
+			}
+			
+			//////////////
+			// State over?
+			if (lState == -1)
+			{
+				ChangeAnimState(eUsingItemAnimState_Outro);
+			}
+		}
+		
+		////////////////
+		// Click
+		else if (mlAnimState == eUsingItemAnimState_Use)
+		{
+			///////////////
+			// Update state
+			int lState = UpdateStateAnims(gsUsingPocketWatch_PlayerPocketWatchFocusClickAnim, gsUsingPocketWatch_PocketWatchFocusClickAnim, false, false, 0.1f);
+			
+			if(mbSingleFrame==false)
+			{
+				cLux_AddDebugMessage("Pocketwatch running");
+				tString sEnt = Item_GetItemEntity(ItemType_GetFirstInInventory("PocketWatch"));
+				cScript_RunGlobalFunc(sEnt, "cScrPropPocketWatch", "_Global_Run");
+				
+				mbSingleFrame = true;
+			}
+			
+			////////////////
+			// State over
+			if (lState == -1)
+			{
+				ChangeAnimState(eUsingItemAnimState_Outro);
+			}
+		}
+		
+		else 
+		{
+			iScrPlayerState_UsingItem_Base::UpdateAnimationStates(afTimeStep);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPERS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetupWindUp()
+	{
+		mbWindUp = true;
+		mbSingleFrame = false;
+		mbForceWindUp = false;
+		
+		mlWindUpGeneratorTimestamp = Generator_GetFuelAddedTimestamp();
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetupClick()
+	{
+		mbWindUp = true;
+		mbClick = true;
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetWindupTimestamp()
+	{
+		mlWindUpGeneratorTimestamp = Generator_GetFuelAddedTimestamp();
+		mbForceWindUp = false;
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetWindupNeeded()
+	{
+		if (mbForceWindUp)
+		{
+			cScript_SetGlobalReturnBool(true);
+			return;
+		}
+		
+		int lGeneratorFuelStamp = Generator_GetFuelAddedTimestamp();
+		bool bWindupNeeded;
+		
+		if (cLux_GetCurrentMap().GetName() != "officer_hub" || Map_GetElapsedTime(lGeneratorFuelStamp) > 20)
+			bWindupNeeded = false;
+		else
+			bWindupNeeded = mlWindUpGeneratorTimestamp != Generator_GetFuelAddedTimestamp() && Generator_GetState() == eGeneratorState_On;
+		
+		cScript_SetGlobalReturnBool(bWindupNeeded);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_ForceWindup()
+	{
+		mbForceWindUp = true;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet@ apSet, iFontData@ apFont, float afStartY)
+	{			
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool mbWindUp = false;
+	bool mbClick = false;
+	bool mbSingleFrame = false;
+	
+	int mlWindUpGeneratorTimestamp = -1;
+	bool mbForceWindUp = false;
+	
+	//------------------------------------------------------------
+}

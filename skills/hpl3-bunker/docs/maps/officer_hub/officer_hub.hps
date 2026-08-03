@@ -1,0 +1,4059 @@
+#include "interfaces/Map_Interface.hps"
+#include "base/Inputhandler_Types.hps"
+
+#include "helpers/helper_map.hps"
+#include "helpers/helper_props.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_audio.hps"
+#include "helpers/helper_imgui.hps"
+#include "helpers/helper_sequences.hps"
+#include "helpers/helper_game.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_ai.hps"
+#include "helpers/helper_areas.hps"
+#include "helpers/helper_menu.hps"
+#include "custom/helpers/helper_agent.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+#include "custom/helpers/helper_gun.hps"
+#include "helpers/helper_player.hps"
+#include "custom/helpers/helper_props_custom.hps"
+
+//--------------------------------------------------
+ 
+/*Place any global values here. These must be const variables as they will not be saved*/
+/*This is also the place for enums and classes, but these should be avoided whenever possible*/
+
+const int glLockerCountLocal = 11;
+ 
+//--------------------------------------------------
+
+enum eHub_StalkerEmergeStage
+{
+	eHub_StalkerEmergeStage_None = 0,
+	eHub_StalkerEmergeStage_TakenSoldier = 1,
+	eHub_StalkerEmergeStage_ReactToPadlock = 2,
+	eHub_StalkerEmergeStage_RoamInHoles = 3,
+	eHub_StalkerEmergeStage_Emerge = 4,
+}
+
+//--------------------------------------------------
+ 
+class cScrMap : iScrMap
+{
+	//--------------------------------------------
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN CALLBACKS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+ 
+	////////////////////////////
+	// Set up map environment
+	void Setup()
+	{
+		// Put display name entry in english.lang / Levels
+		GetBase().SetDisplayNameEntry("officer-hub");
+		
+		// Set up color grading etc.
+	}
+	
+	//-------------------------------------------------------
+		
+	void PreloadData()
+	{
+		///////////////
+		// Preload particles
+		ParticleSystem_Preload("monster_attack_dust_cloud.ps");
+		ParticleSystem_Preload("sparks_smaller.ps");
+		ParticleSystem_Preload("grenade_explosion.ps");
+		ParticleSystem_Preload("dust_medium_extra_long_oneshot.ps");
+
+		//////////////
+		// Preload entity
+		Entity_Preload("player_bunker.ent");
+	}
+	
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run first time starting map
+	void OnStart()
+	{
+		// Any general setup of script / entities
+		
+		/////////////////////////
+		// Debug
+		if(cLux_ScriptDebugOn())
+		{
+			Item_SetCurrentSlotsCount(15);
+			if (ItemType_GetCountInInventory("Gun") == 0)
+			{
+				Item_AddToInventory("Gun");
+				Item_AddManyToInventory("Ammunition", 2);
+			}
+			
+			if (ItemType_GetCountInInventory("DynamoLantern") == 0)
+				Item_AddToInventory("DynamoLantern");
+						
+			Item_AddToInventory("Fuel");
+			Item_AddToInventory("FuelBottle");
+			Item_AddToInventory("FuelBottle");
+			Item_AddToInventory("Lighter");
+			Item_AddToInventory("Cutters");
+			Item_AddToInventory("Wrench");
+			Item_AddToInventory("Shotgun");
+			Item_AddToInventory("Fuse");
+			Item_AddToInventory("DynamiteBundle");
+			Item_AddManyToInventory("ShotgunAmmunition", 3);
+			Item_AddToInventory("LockdownWheel");
+			Item_AddToInventory("Grenade");
+			Item_AddToInventory("GasMask");
+			Item_AddToInventory("GasGrenade");
+			Item_AddToInventory("Flare");
+			Item_AddToInventory("DetonatorHandle");
+			Item_AddToInventory("MolotovCocktail");
+			Item_AddToInventory("EmptyBottle");
+			Item_AddToInventory("PocketWatch");
+			Item_AddToInventory("FuelBottle");
+			Item_AddToInventory("ClothPiece");
+			Item_AddToInventory("Stick");
+			Item_AddToInventory("GasGrenade", eInventoryInstance_Auxiliary);
+			Item_AddToInventory("GasMask", eInventoryInstance_Auxiliary);
+			Item_AddToInventory("Torch");
+		}
+		
+		
+		// Preload maps
+		{
+			cLux_PreloadMap("arsenal.hpm");
+			cLux_PreloadMap("tunnels.hpm");
+			cLux_PreloadMap("maintenance.hpm");
+			cLux_PreloadMap("prison.hpm");
+			cLux_PreloadMap("soldier_quarters.hpm");
+			cLux_PreloadMap("arena.hpm");
+		}
+		
+		////////////
+		// Generator
+		Generator_AddFuel(1);
+		Generator_ChangeState(eGeneratorState_On);
+		Generator_SetRunForever(true);
+		
+		Light_SetVisible("lamp_exit_5_ending_*", false);
+		
+		//////////////
+		// Wine Cellar
+		CountWineCellarBottles();
+		
+		//////////////
+		// Admin office
+		SwingDoor_PushOpen("Door_SaveRoom_1", 2.f);
+		SwingDoor_PushOpen("Door_Bedroom_1", 2.f);		
+		CombinationLock_SetOpenDoorOnUnlock("combination_lock_saveroom", false);
+		
+		Decal_SetDynamicVisible("Decal_AdminOfficeGhoulHole_*", false);
+		
+		Entity_SetActive("Soldier_Seq_BlockerCrate_Unbreakable", true);
+		
+		///////////////
+		// Disable rats
+		RatHandler_SetActive(false);
+		
+		//////////////
+		// Lockers
+		SetupLockers();
+		
+		//////////////////////
+		// Setup corridor blocker
+		Map_AddTimer("Timer_SetupCorridorBlocker", 0.1f, "OnTimer_SetupCorridorBlocker");
+		
+		///////////////////
+		// Lockdown
+		iLuxEntity@ pLockdownWheel = Map_GetEntity("Lockdown_Wheel_damaged", eLuxEntityType_Prop);
+		m_idLockdownWheel = pLockdownWheel !is null ? pLockdownWheel.GetID() : tID_Invalid;
+		
+		Entity_SetActive("LockdownGate_*", true);
+		
+		//////////
+		// Setup lockers
+		Slide_SetLocked("filing_cabinet_box02_3", true, false);
+		
+		SetupSoldierScene();
+
+		array<int> vTemp;
+		MapTransfer_SaveState_Gun(0, 0, vTemp);
+		
+		//////////////////
+		// Setup Delisle's grating
+		cScript_RunGlobalFunc("DelisleGratingWall", "cScrPropGratingWall", "_Global_Open");
+		
+		///////////////////
+		// Start in black
+		if (mbIntroTextDone == false && cLux_ScriptDebugOn() == false)
+		{
+			Effect_Fade_Out(0);
+			Sound_FadeGlobalVolume(0.f, 0.f, eSoundEntryType_WorldAll);
+			Sketchbook_SetCanOpen(false);
+			Map_AddTimer("Timer_DeactivatePlayer", 0.1f, "OnTimer_DeactivatePlayer");
+		}
+		
+		///////////////////
+		// Save the game the first time we enter the hub
+		SaveRoom_SaveGame(false, false);
+		
+		///////////////////
+		// Activate revolver in locker if needed
+		bool bGeneratorRunningForever = GameDifficulty_GetSettingValueByID_Float(eGameDifficultySetting_GeneratorRunTime)>1000;
+		if (GameDifficulty_GetSettingValueByID_Bool(eGameDifficultySetting_RevolverInLocker))
+		{
+			if (Randomizer_GetLockerIsInHub("Travers"))
+			{
+				Entity_SetActive("LockerPickup_Travers_3", true);
+				Entity_SetActive("InteractAux_Travers_2", true);
+			}
+			
+			Entity_SetActive("SmokingSoldier", false);
+			Entity_SetActive("Trigger_SoldierDialog_intro", false);
+			Entity_SetActive("Trigger_StartWoundedSoldierDialog", false);
+			Entity_SetActive("Trigger_LeavingWoundedSoldierFlag_*", false);
+			Entity_SetActive("Trigger_CreatureGunWarning", false);
+			Entity_SetActive("max_ammo_temp_1", false);
+			Entity_SetActive("max_ammo_temp_6", false);
+			Entity_SetActive("SoldierSeq_Cigarette", false);
+			Entity_SetActive("SoldierGunHand", false);
+			Entity_SetActive("Soldier_Seq_BlockerCrate", false);
+			Entity_SetActive("Soldier_Seq_BlockerCrate_Unbreakable", false);
+			
+			Entity_SetActive("Padlock", false);
+			Entity_SetActive("metal_door_lock_hinge_1", false);
+			Entity_SetActive("metal_door_lock_hinge_2", false);
+			SwingDoor_SetBlocked("PadlockDoor", false, false);
+			
+			if (bGeneratorRunningForever==false)
+				Entity_SetActive("Trigger_KillGenerator_NoRevolver", true);
+		}
+		
+		//////////////////////////////
+		// Disable the generator hatch and pocketwatch if set to run for ever
+		if (bGeneratorRunningForever)
+		{
+			Entity_SetActive("Trigger_FuelHatch", false);
+			Entity_SetActive("Pocketwatch", false);
+			Entity_SetActive("InteractAux_Stopwatch", false);
+			Prop_SetStaticPhysics("PocketWatchStool", false);
+			Generator_SetFuelAmount(100);
+		}
+		
+		///////////////////
+		// Setup saving
+		SaveRoom_SetupSaveLamp(false, "SaveLamp");
+		if (GameDifficulty_GetSettingValueByID_Int(eGameDifficultySetting_SaveSystem) == eDifficultySettingValue_SaveSystem_NoSaving)
+		{
+			Entity_SetActive("SaveLamp", false);
+			Entity_SetActive("SaveLampBase", false);
+			Light_SetBrightness("Light_Point_save_lamp_amb_*", 0);
+		}
+		
+		if (GameDifficulty_GetNewGamePlusActive())
+		{
+			Entity_SetActive("Trap_16", false);
+			Entity_SetActive("Trap_16*", false);
+			Entity_SetActive("Trap_12", false);
+			Entity_SetActive("Trap_12*", false);
+		}
+		
+		////////////////////
+		// Disable pocket bags if the default slot count is too high
+		int lPotentialSlotUnlocks = Item_GetMaxSlotsCount() - Item_GetPlayerInventoryDefaultSlotsCount();
+		if (lPotentialSlotUnlocks < 2)
+			Entity_SetActive("pocket_bag_pickup_2", false); // Delisle
+	}
+
+	//-------------------------------------------------------
+	
+	////////////////////////////
+	// Run when entering map
+	void OnEnter()
+	{
+		////////////////////////
+		// Set rich presence
+		RichPresence_SetCurrent(eRichPresence_OfficersHub);
+		
+		///////////////////////
+		// Setup player body
+		if (PlayerBody_IsActive() == false)
+		{
+			PlayerBody_SetActive(true);
+			PlayerBody_SetModel("player_bunker.ent");
+		}
+		
+		///////////////////////////////
+		// Setup low height auto-teleport
+		Player_SetAutoTeleportWhenBelowAltitude(-20.f);
+		
+		///////////////////////
+		// Setup generator
+		SetupGenerator();
+		
+		///////////////////////
+		// Setup stalker
+		Blackboard_DoStalkerMapTransfer("Stalker_1");
+		
+		//////////////////////
+		// Setup lockdown anims
+		Entity_PlayAnimation("LockdownChain", "chain_rotate", 0.f, true);
+		Entity_PlayAnimation("LockdownCog", "cogwheel_rotate", 0.f, true);
+		Entity_SetAnimationSpeed("LockdownChain", "chain_rotate", 0.f);
+		Entity_SetAnimationSpeed("LockdownCog", "cogwheel_rotate", 0.f);
+		
+		iLuxEntity@ pLockdownChain = Map_GetEntity("LockdownChain", eLuxEntityType_Prop);
+		iLuxEntity@ pLockdownCog = Map_GetEntity("LockdownCog", eLuxEntityType_Prop);
+		m_idLockdownChain = pLockdownChain !is null ? pLockdownChain.GetID() : tID_Invalid;
+		m_idLockdownCog = pLockdownCog !is null ? pLockdownCog.GetID() : tID_Invalid;		
+		
+		///////////////////////
+		// Setup save room
+		SaveRoom_Setup("SaveLamp", "Area_SaveRoom_*");
+		ActivateAdminOfficeGhoulHole();
+		
+		///////////////////////////
+		// Setup reduced safe room
+		if (GameDifficulty_GetSettingValueByID_Bool(eGameDifficultySetting_ReducedSafeRoom))
+			SetSaferoomToUltraHardModeActive();
+		
+		/////////////////////////
+		// Release the rats if other maps have been visited or on ng+
+		RatHandler_SetActive(cScript_GetGlobalVarBool("RatsInHub") || GameDifficulty_GetNewGamePlusActive());
+		
+		/////////////////////////
+		// Update the in game map
+		InGameMap_UpdateGlobalMapState();
+		
+		////////////////
+		// Setup bombing effect
+		BombingHandler_SetActive(true);
+		
+		///////////////////
+		// Setup save game info hint
+		SaveRoom_SetSaveHintActive(true);
+		
+		/////////////////////////
+		// Audio
+		Entity_SetActive("Trigger_HubMusic_*",true);
+		Sound_Play("Sound_GunFire_*", 1.0f);
+		
+		if (Sound_Exists("Sound_GunFire_*"))
+		{
+			Sound_Stop("Sound_GunFire_*", 5.0f);
+			Sound_Play("Sound_GunFire_*", 1.0f);
+		}
+		
+		////////////
+		// Map change
+		Game_SetupAfterMapChange();
+		
+		float fPrisonDoorOpenAmount = cScript_GetGlobalVarFloat("PrisonDoorOpenAmount");
+		if (fPrisonDoorOpenAmount > 0.f)
+			SwingDoor_SetOpenAmount("prison_bars_door_1", fPrisonDoorOpenAmount);
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when leaving map
+	void OnLeave()
+	{
+		cScript_SetGlobalVarFloat("PrisonDoorOpenAmount", SwingDoor_GetOpenAmount("prison_bars_door_1"));
+		
+		/////////////////////////
+		// Audio
+		Sound_Stop("Sound_GunFire_*", 5.0f);
+		
+		//Entity_SetActive("Lockdown_Wheel_broken*", false);
+	}
+	
+	////////////////////////////
+	// To get when player makes input (mostly used for debug)
+	void OnAction(int alAction, bool abPressed) 
+	{
+		if (abPressed == false) return;
+		
+		if (alAction == eAction_Test0)
+		{
+			//OnTimer_ToggleGunOfferingState("");
+			//Seq_StalkerTakesSoldier("");
+		   // OnInteract_WorkingDetonator("");
+			//Entity_SetActive("Stalker_1", true);
+			//Stalker_GoToHole("Stalker_1", "GhoulHole_10", true, true);
+			//Sketchbook_CollectAllNotes();
+			GameStats_SetGuiActive(!GameStats_GetGuiActive());
+		}
+		
+		if (alAction == eAction_Test1)
+		{
+			if (Generator_GetState() == eGeneratorState_On)
+			{
+				Entity_SetActive("Trigger_KillGenerator", false);	
+				Generator_SetRunForever(false);
+				Generator_ChangeState(eGeneratorState_Off);
+			}
+			else
+			{
+				Entity_SetActive("Trigger_KillGenerator", true);
+				Generator_AddFuel(2);
+				Generator_ChangeState(eGeneratorState_On);
+				Generator_SetRunForever(true);
+			}
+		}
+		
+		if (alAction == eAction_Test2)
+		{
+			////////////////
+			// Broadcast shot message
+			array<iLuxEntity@> vAgents;
+			cLux_GetCurrentMap().GetEntityArray("*", eLuxEntityType_Agent, "", vAgents);
+			
+			for (int i = 0; i < vAgents.size(); ++i)
+			{
+				vAgents[i].BroadcastMessage(40, null, Player_GetPosition(), -1);
+			}
+		}
+		
+		if (alAction ==eAction_Test3)
+		{
+			////////////////
+			// Disable all agents
+			RatHandler_SetActive(false);
+			
+			array<iLuxEntity@> vAgents;
+			cLux_GetCurrentMap().GetEntityArray("*", eLuxEntityType_Agent, "", vAgents);
+			
+			for (int i = 0; i < vAgents.size(); ++i)
+			{
+				vAgents[i].SetActive(false);
+			}
+		}
+		
+		if (alAction == eAction_Test4)
+		{
+			////////////////
+			// Disable all traps
+			array<iLuxEntity@> vTraps;
+			cLux_GetCurrentMap().GetEntityArray("*", eLuxEntityType_Prop, "cScrPropTrap", vTraps);
+			
+			for (int i = 0; i < vTraps.size(); ++i)
+			{
+				tString sName = vTraps[i].GetName();
+				Entity_SetActive(sName, false);
+				Entity_SetActive(sName+"_*", false);
+			}
+		}
+		
+		if (alAction == eAction_Test5)
+		{			
+			cVector3f vPos(-31.674f, 6.385f, 2.672f);
+			float fAngle = cMath_Pi;
+			PlayerBody_PlayCutsceneAnimation("player_medbay_wakeup", false, 0.f, "OnAnimEnd_WakeUp", 0.2f, 0.f, true, vPos, fAngle);
+			PlayerBody_SetCutsceneMaxPitch(0.f);
+			PlayerBody_SetCutsceneMaxYaw(0.f);
+			
+			iLuxEntity@ pEnt = cLux_ID_Entity(PlayerBody_GetEntityID());
+			cBoneState@ pBone = pEnt.GetMeshEntity().GetBoneStateFromName("j_Head");
+			pBone.SetUsePostTransform(true);
+			pBone.SetPostTransform(cMath_MatrixRotateXYZ(cMath_Vector3ToRad(cVector3f(0.f, -20.f, 20.f))));
+		}
+		
+		if (alAction == eAction_Test6)
+		{
+			////////////////////
+			// Spawn stalker
+			mStalkerEmergeStage = eHub_StalkerEmergeStage_Emerge;					
+			tString sHole = msStalkerEmergeHoles[0];	
+				
+			Entity_SetActive("Stalker_1", true);
+			Stalker_SetEmergeAllowed("Stalker_1", true);
+			Stalker_SetMode("Stalker_1", eStalkerMode_Active, true);
+			Stalker_SetTenacity("Stalker_1", 0.5f);
+			Agent_SetSensesActive("Stalker_1", true);
+			
+			tID idHole = Blackboard_GetClosestGhoulHole(Stalker_GetGhoulHoleNetworkId("Stalker_1"), cLux_GetPlayer().GetCharacterBody().GetPosition());
+			cLuxArea@ pHole = cLux_ID_Area(idHole);
+			if (pHole !is null)
+			{
+				cLux_AddTodoMessage(""+pHole.GetName());
+				Stalker_GoToHole("Stalker_1", pHole.GetName(), true, true);
+			}
+						
+			Entity_SetActive("Trigger_StalkerEmerge_*", false);
+
+			// Activate rats
+			RatHandler_SetActive(true);
+			Entity_SetActive("Trigger_KillGenerator", true);
+			Generator_AddFuel(2);
+			Generator_ChangeState(eGeneratorState_On);
+			Generator_SetRunForever(true);
+		}
+		
+		if (alAction == eAction_Test7)
+		{
+			//Item_AddToInventory("FuelBottle");
+			//Item_ClearInventory();
+			//if (ItemType_GetCountInInventory("DynamoLantern") == 0)
+			//	Item_AddToInventory("DynamoLantern");
+			//Player_Teleport("PlayerStart_WoundedSoldier", true);
+			
+			//CreatureAttackTheSoldier();
+			
+			Entity_SetActive("Stalker_1", true);
+			Stalker_GoToHole("Stalker_1", "GhoulHole_15", true, true);
+			Sound_CreateAIEventAtEntity("player", 100, 4);
+			Agent_SetSensesActive("Stalker_1", true);
+			
+			//Agent_TeleportFeetToEntity("Stalker_1", "player", true);
+			//cScript_RunGlobalFunc("Stalker_1", "", "_Global_Debug");
+		}
+		
+		if (alAction == eAction_Test8)
+		{		
+			ActivateAdminOfficeGhoulHole();
+			//cLux_AddTodoMessage(""+cScript_GetGlobalVarInt("LevelProgression"));			
+			
+			Sound_PlayGui("music/concept/creature", 1.f, eSoundEntryType_Gui);
+			cSound_GetEntry("music/concept/creature").SetParam(0, 0.f);
+			cSound_GetEntry("music/concept/creature").SetParam(1, 0.f);
+		}
+		
+		if (alAction == eAction_Test9)
+		{
+			Item_ClearInventory();
+			Item_SetCurrentSlotsCount(15);
+			
+//			Item_AddToInventory("Gun");
+//			Item_AddManyToInventory("Ammunition", 2);
+//			Item_AddToInventory("DynamoLantern");
+//			Item_AddToInventory("Lighter");						
+//			Item_AddToInventory("Fuel");
+//			Item_AddToInventory("FuelBottle");
+//			Item_AddToInventory("EmptyBottle");
+//			Item_AddToInventory("MolotovCocktail");
+//			Item_AddToInventory("EmptyMolotovCocktail");
+//			Item_AddToInventory("ClothPiece");
+//			Item_AddToInventory("Stick");
+//			Item_AddToInventory("Torch");
+//			Item_AddToInventory("Grenade");
+//			Item_AddToInventory("GasGrenade");
+//			Item_AddToInventory("PocketWatch");
+//			Item_AddToInventory("Flare");
+			Item_AddToInventory("Medkit");
+			Item_AddToInventory("Bandage");
+			Item_AddToInventory("Cutters");
+			Item_AddToInventory("Wrench");
+			Item_AddToInventory("GasMask");
+			Item_AddToInventory("DynamiteBundle");
+			Item_AddToInventory("Meat");
+			Item_AddToInventory("LockdownWheel");
+			Item_AddToInventory("DetonatorHandle");
+			Item_AddToInventory("PocketBag");
+			Item_AddToInventory("Shotgun");
+			Item_AddManyToInventory("ShotgunAmmunition", 2);
+			Item_AddToInventory("RabbitDoll");
+			Item_AddToInventory("CommunicationsKey");
+			Item_AddToInventory("PillboxKey");
+		}		
+
+		if (alAction == eAction_TestPlus)
+		{
+			RatHandler_SetActive(true);
+		}
+		
+		if (alAction == eAction_TestMinus)
+		{
+			Sketchbook_CollectAllNotes();
+			
+//			InGameMap_AddObjective("Obj_GetDynamite");
+//			InGameMap_AddObjective("Obj_GetHandle");
+//			InGameMap_AddObjective("Obj_GetWheel");
+//			InGameMap_AddObjective("Obj_DelislesRoom");
+//			InGameMap_AddObjective("Obj_GetRadioCode_Communications");
+//			InGameMap_AddObjective("Obj_GetRadioCode_Security");
+//			InGameMap_AddObjective("Obj_GetRadioCode_Barracks");
+//			InGameMap_AddObjective("Obj_GetRadioCode_NoMarker");
+//			InGameMap_SetObjectiveCompleted("Obj_GetWrench_Foreman");
+//			InGameMap_SetObjectiveCompleted("Obj_GetWrench_Pillbox_A");
+//			InGameMap_SetObjectiveCompleted("Obj_GetWrench_Pillbox_B");
+//			InGameMap_SetObjectiveCompleted("Obj_GetWrench_Chapel");
+//			InGameMap_SetObjectiveCompleted("Obj_GetWrench_Locker");
+//			InGameMap_SetObjectiveCompleted("Obj_GetWrench_NoMarker");
+//			InGameMap_AddObjective("Obj_GetCutters_A");
+//			InGameMap_AddObjective("Obj_GetCutters_B");
+//			InGameMap_AddObjective("Obj_BlowUpExit");
+			
+			InGameMap_SetMapFound("nest");
+			InGameMap_SetMapFound("soldier_quarters");
+			InGameMap_SetMapFound("prison");
+			InGameMap_SetMapFound("arsenal");			
+		}
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// This only used for pure debug purposes when info needs to printed.
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afY)
+	{
+		//afY = cLux_DrawDebugText("My Debug value:"+..., afY);
+		return afY;
+	}
+	
+	//-------------------------------------------------------
+	
+	bool mbIntroTextDone = false;
+	float mfIntroTextCount = 0.f;
+	float mfIntroTextAlpha = 0.f;
+	
+	//-------------------------------------------------------
+	
+	void OnGui(float afTimeStep)
+	{
+		if (mbIntroTextDone || cLux_ScriptDebugOn())
+			return;
+		
+		//////////////////////
+		// Intro text
+		mfIntroTextCount += afTimeStep;
+		if (mfIntroTextCount > 3.5f)
+		{
+			bool bFadeOut = mfIntroTextCount > 11.f;
+			float fAlphaGoal = bFadeOut ? 0.f : 1.f;
+			float fFadeSpeed = 5.f;
+				
+			mfIntroTextAlpha = cMath_IncreaseTo(mfIntroTextAlpha, (1.f / fFadeSpeed) * afTimeStep, fAlphaGoal);
+			
+			////////////////////////////
+			// Done? Start the waking up cutscene
+			if (bFadeOut && mfIntroTextAlpha <= 0.f)
+			{
+				StartSickroomWakeUpSeq();
+				mbIntroTextDone = true;
+				return;
+			}
+				
+			///////////////
+			// Draw text
+			ImGui_LayoutBegin(eImGuiLayout_XY, ImGui_NrmPos(0.f, 0.f, 1.f), ImGui_NrmSize(0.5f, 0.5f));
+				
+				cImGuiTextFrameData textData = ImGui_GetDefaultTextFrame();
+				textData.mFont.SetFile(FontHandler_GetFont(eFontType_MainMenu, 72));
+				textData.mFontAlign = eFontAlign_Center;
+				textData.mFont.mvSize = cVector2f(20.f);
+				textData.mbUseBackgroundGfx = false;
+				textData.mFont.mColor = cColor_White;
+
+				ImGui_SetAlignment(eImGuiAlign_CenterCenter);
+				ImGui_SetModColorMul(cColor(1.f, 1.f, 1.f, mfIntroTextAlpha));
+				ImGui_SetTransCategory("GUIText");
+				ImGui_DoTextFrameExt("IntroMessageText", cVector2f_Zero, 0.f, 0.f, textData, ImGui_NrmPosGroup(0.f, 0.5f, 0.1f), ImGui_NrmSizeGroup(1.f));
+				ImGui_SetTransCategory("");
+					
+				ImGui_SetAlignment(eImGuiAlign_TopLeft);
+				ImGui_ResetModifiers();
+				
+			ImGui_LayoutEnd();
+		}
+	}
+	
+	//-------------------------------------------------------
+ 
+	//} END MAIN CALLBACKS
+	
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN FUNCTIONS 
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+
+	//-------------------------------------------------------
+	
+	void SetSaferoomToUltraHardModeActive()
+	{
+		/////////////////////
+		// Swap the exit door
+		const tString sExitDoor_UltraHardMode = "Door_SaveRoom_Exit_UltraHardMode";
+		Entity_SetActive(sExitDoor_UltraHardMode, true);
+		
+		/////////////////////
+		// Update exit door attachments
+		Entity_RemoveEntityAttachment("Lock_Door_SaveRoom_2");
+		Entity_RemoveEntityAttachment("door_lock_side_6");
+		Entity_RemoveEntityAttachment("door_lock_side_7");
+		Entity_RemoveEntityAttachment("combination_lock_saveroom");
+		
+		Entity_AttachToEntity("Lock_Door_SaveRoom_2", sExitDoor_UltraHardMode, "", true);
+		Entity_AttachToEntity("door_lock_side_6", sExitDoor_UltraHardMode, "", true);
+		Entity_AttachToEntity("door_lock_side_7", sExitDoor_UltraHardMode, "", true);
+		Entity_AttachToEntity("combination_lock_saveroom", sExitDoor_UltraHardMode, "", true);
+		
+		//////////////////////
+		// Update exit door Lock State
+		bool bExitDoor_LockState = MovingButton_IsSwitchedOn("Lock_Door_SaveRoom_2");
+		SwingDoor_SetBlocked(sExitDoor_UltraHardMode, bExitDoor_LockState, false);
+		
+		////////////////
+		// Disable metal door
+		Entity_SetActive("Door_SaveRoom_2", false);
+		
+		/////////////////////
+		// Swap the entrance door
+		const tString sEntranceDoor_UltraHardMode = "Door_SaveRoom_Entrance_UltraHardMode";
+		Entity_SetActive(sEntranceDoor_UltraHardMode, true);
+		
+		/////////////////////
+		// Update entrance door attachments
+		Entity_RemoveEntityAttachment("Lock_Door_SaveRoom_1");
+		Entity_AttachToEntity("Lock_Door_SaveRoom_1", sEntranceDoor_UltraHardMode, "", true);
+		
+		//////////////////////
+		// Update entrance door Lock State
+		bool bEntranceDoor_LockState = MovingButton_IsSwitchedOn("Lock_Door_SaveRoom_1");
+		SwingDoor_SetBlocked(sEntranceDoor_UltraHardMode, bEntranceDoor_LockState, false);
+		
+		////////////////
+		// Disable metal door
+		Entity_SetActive("Door_SaveRoom_1", false);
+		
+		/////////////////////////
+		// Delay this or it breaks and combination lock becomes unusuable
+		Map_AddTimer("Timer_SafeRoomLocksLinkToNewDoors", 1.f, "OnTimer_SafeRoomLocksLinkToNewDoors");
+	}
+	
+	void OnTimer_SafeRoomLocksLinkToNewDoors(const tString&in asTimer)
+	{
+		Entity_SetVarString("Lock_Door_SaveRoom_2", "", "Door_SaveRoom_Exit_UltraHardMode");
+		Entity_SetVarString("Lock_Door_SaveRoom_1", "", "Door_SaveRoom_Entrance_UltraHardMode");
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_DeactivatePlayer(const tString&in asTimer)
+	{
+		// Can't happen directly OnStart.
+		Player_SetActive(false);
+		cLux_AddDebugMessage("Player deactivated");
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnExplosion(const tString&in asEntity)
+	{
+		DoStalkerSoundReaction();
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnGunshot()
+	{
+		DoStalkerSoundReaction();
+	}
+	
+	//-------------------------------------------------------
+	
+	void DoStalkerSoundReaction()
+	{
+		if (mStalkerEmergeStage == eHub_StalkerEmergeStage_Emerge) 
+			return;
+		if (mStalkerEmergeStage < eHub_StalkerEmergeStage_ReactToPadlock)
+			return;
+		if (Map_TimeHasPassed("Timer_DidStalkerSoundReaction", 60.f) == false) 
+			return;
+		
+		Map_AddTimer("Timer_StalkerSoundReaction", 1.5f, "OnTimer_StalkerSoundReaction");
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_StalkerSoundReaction(const tString &in asTimer)
+	{
+		/////////////////////
+		// Setup vars
+		iLuxEntity@ pStalker = Map_GetEntity("Stalker_1", eLuxEntityType_Agent);
+		if (pStalker is null) return;
+		
+		/////////////////////
+		// Play reaction sound
+		Entity_PlaceAtEntity("Area_StalkerSoundReaction", "Stalker_1", cVector3f(0.f, 3.f, 0.f), false, false);
+		
+		float fMaxDist = Entity_GetDeltaToEntity("player", "Stalker_1").Length() * 2.f;		
+		Sound_CreateAtEntity("Sound_StalkerReact", "creatures/stalker/tunnel_warning", "Area_StalkerSoundReaction", 0.f, false, 1.f, -1.f, fMaxDist);
+		
+		/////////////////////
+		// Get two closest holes
+		int lNetworkId = Stalker_GetGhoulHoleNetworkId("Stalker_1");
+		cVector3f vPlayerPos = cLux_GetPlayer().GetCharacterBody().GetPosition();
+		
+		tID idClosestHole = Blackboard_GetClosestGhoulHole(lNetworkId, vPlayerPos, -1.f, -1.f, false, false);
+		tID idSecondClosestHole = Blackboard_GetClosestGhoulHole(lNetworkId, vPlayerPos, -1.f, -1.f, false, false, array<tID> = {idClosestHole});
+		
+		iLuxEntity@ pClosestHole = cLux_ID_Entity(idClosestHole);
+		iLuxEntity@ pSecondClosestHole = cLux_ID_Entity(idSecondClosestHole);
+		
+		if (pClosestHole is null) return;
+		if (pSecondClosestHole is null) return;
+		
+		/////////////////////
+		// Go to closest hole (go there from second closest if inactive)
+		if (Entity_IsActive("Stalker_1") == false)
+		{
+			Entity_SetActive("Stalker_1", true);
+			
+			Stalker_SetEmergeAllowed("Stalker_1", false);
+			Stalker_GoToHole("Stalker_1", pSecondClosestHole.GetName(), true, true);
+		}	
+		
+		Stalker_SetMode("Stalker_1", eStalkerMode_Active);
+		Stalker_GoToHole("Stalker_1", pClosestHole.GetName());
+		
+		/////////////////////
+		// Leave after a while
+		if (mStalkerEmergeStage < eHub_StalkerEmergeStage_RoamInHoles)
+		{
+			Seq_StalkerLeaveAfterSoundReaction("");
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	cSequenceStatesData mSeqDataStalkerLeaveAfterSoundReaction;
+	void Seq_StalkerLeaveAfterSoundReaction(const tString &in asTimer)
+	{
+		Sequence_Begin("Seq_StalkerLeaveAfterSoundReaction", mSeqDataStalkerLeaveAfterSoundReaction);
+		Sequence_Wait(20.f);
+		if (Sequence_DoStepAndWait(15.f))
+		{
+			///////////////////////
+			// Go to hole far away
+			if (mStalkerEmergeStage < eHub_StalkerEmergeStage_RoamInHoles)
+			{
+				int lNetworkId = Stalker_GetGhoulHoleNetworkId("Stalker_1");
+				cVector3f vPlayerPos = cLux_GetPlayer().GetCharacterBody().GetPosition();
+				
+				tID idHole = Blackboard_GetFarthestGhoulHole(lNetworkId, vPlayerPos, -1.f, -1.f, false, false);
+				iLuxEntity@ pHole = cLux_ID_Entity(idHole);
+				
+				if (pHole !is null)
+					Stalker_GoToHole("Stalker_1", pHole.GetName(), true, false);
+			}
+		}
+		else if (Sequence_DoStepAndWait(1.f))
+		{
+			///////////////////////
+			// Deactivate after a while
+			if (mStalkerEmergeStage < eHub_StalkerEmergeStage_RoamInHoles)
+			{
+				Entity_SetActive("Stalker_1", false);
+			}
+		}
+		Sequence_End();
+	}
+	
+	//-------------------------------------------------------
+	
+	bool mbDoorLockCheck = true;
+	
+	//-------------------------------------------------------
+	
+	bool OnCollide_AutoSave(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		if (alState!=1) return true;
+		Entity_SetActive(asParent, false);
+		
+		SaveRoom_SaveGame(true, false);
+		
+		return false;
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnBreak_DisableSlideLock(const tString &in asEntity)
+	{
+		Map_AddTimer("NoiseHint", 2.5f, "OnTimer_NoiseHint");
+		
+		tString sLockEnt;
+		
+		////////////////
+		// Entrance to safe room
+		if (asEntity=="Door_SaveRoom_Entrance_UltraHardMode")
+		{
+			sLockEnt = "Lock_Door_SaveRoom_1";
+		}
+		////////////
+		// Exit from safe room
+		else if (asEntity=="Door_SaveRoom_Exit_UltraHardMode")
+		{
+			sLockEnt = "Lock_Door_SaveRoom_2";
+			Entity_SetActive("door_lock_side_6", false);
+			Entity_SetActive("door_lock_side_7", false);
+			Entity_SetActive("combination_lock_saveroom", false);
+			mbHasLeftSafeRoom = true;
+		}
+		
+		////////////////////////
+		// All other doors/locks
+		else
+		{
+			sLockEnt = "Lock_"+asEntity;
+		}
+		
+		if (Entity_Exists(sLockEnt))
+			Entity_SetActive(sLockEnt, false);
+		
+		////////////////
+		// Name plates
+		Entity_SetActive(asEntity + "_nameplat*", false);
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnTrigger_LockDoor(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		/////////////////////
+		// Lock/ Unlock doors
+		tString sDoor = Entity_GetVarString(asChild, "");
+		SwingDoor_SetBlocked(sDoor, alState == 1, true);
+		
+		///////////////////////
+		// Save room music
+		if (mbSaveRoomGhoulHoleActive) return true;
+		if (SaveRoom_GetPlayerIsInSaveRoom() == false) return true;
+		
+		int lPrevSaveRoomDoorLockCount = mlSaveRoomDoorLockCount;
+		bool bIsInUltraHardMode = GameDifficulty_GetSettingValueByID_Bool(eGameDifficultySetting_ReducedSafeRoom);
+		
+		//////////////////
+		// Regular Modes
+		if (bIsInUltraHardMode==false)
+		{
+			if (sDoor == "Door_SaveRoom_1" || sDoor == "Door_SaveRoom_2")
+			{
+				mlSaveRoomDoorLockCount = cMath_Clamp(mlSaveRoomDoorLockCount + alState, 0, 2);
+			}
+			
+			if (mlSaveRoomDoorLockCount == 2 && lPrevSaveRoomDoorLockCount != 2)
+			{
+				Music_Stop(6.f, eMusicPrio_SceneAmb);
+				Music_PlayExt("Bunker_Officer_hub_safe_room.ogg", true, 0.25f, 1.0f, 6.0f, 1.0f, eMusicPrio_SceneAmb, true);
+			}
+			else if (mlSaveRoomDoorLockCount < 2 && lPrevSaveRoomDoorLockCount == 2)
+			{
+				Music_Stop(6.f, eMusicPrio_SceneAmb);
+			}
+		}
+		///////////////////
+		// Ultra Hard mode
+		else
+		{
+			if (SwingDoor_GetBlocked("Door_Generator"))//(sDoor=="Door_Generator" && alState==1)
+			{
+				Music_Stop(6.f, eMusicPrio_SceneAmb);
+				Music_PlayExt("Bunker_Officer_hub_safe_room.ogg", true, 0.25f, 1.0f, 6.0f, 1.0f, eMusicPrio_SceneAmb, true);
+			}
+			else
+			{
+				Music_Stop(6.f, eMusicPrio_SceneAmb);
+			}
+		}
+	
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	float mfLockdownChainAnimOffsetT = 0.f;
+	tID m_idLockdownWheel = tID_Invalid;
+	tID m_idLockdownCog = tID_Invalid;
+	tID m_idLockdownChain = tID_Invalid;
+	
+	bool mbLockerShotgunEvaluated = false;
+	[nosave] bool mbCorridorBlockerEvaluated = false;
+	
+	//-------------------------------------------------------
+	
+	void VariableUpdate(float afDeltaTime)
+	{
+		////////////////////////////////
+		// Check if shotgun should be activated in locker
+		// Needs to be done here in order to work on old saves
+		if (!mbLockerShotgunEvaluated)
+		{
+			mbLockerShotgunEvaluated = true;
+			if (GameDifficulty_GetNewGamePlusActive() && Entity_Exists("LockerPickup_Fortin_3") && Randomizer_GetLockerIsInHub("Fortin"))
+			{
+				Entity_SetActive("LockerPickup_Fortin_3", true);
+				Entity_SetActive("LockerPickup_Fortin_3_*", true);
+				Entity_SetActive("InteractAux_Fortin_3", true);
+				Light_SetBrightness("LockerPickup_Fortin_3_Light", 2.0f);
+			}
+		}
+		
+		////////////////////////////////
+		// Make sure corridor blocker is breakable
+		if (!mbCorridorBlockerEvaluated)
+		{
+			mbCorridorBlockerEvaluated = true;
+			
+			iLuxEntity@ pCrate = mBaseObj.GetEntityByName("CorridorBlocker", eLuxEntityType_Prop);
+			if (pCrate !is null &&
+				pCrate.GetInteractionDisabled() == false)
+			{
+				WoodenBreakable_SetIsBreakable(pCrate.GetName(), true);
+			}
+		}
+		
+		////////////////////
+		// Update lockdown wheel animations
+		if (m_idLockdownWheel == tID_Invalid) return;
+		
+		cLuxProp@ pWheel = cLux_ID_Prop(m_idLockdownWheel);			
+		cLuxProp@ pCog = cLux_ID_Prop(m_idLockdownCog);			
+		cLuxProp@ pChain = cLux_ID_Prop(m_idLockdownChain);
+		
+		if (pWheel is null) return;
+		if (pCog is null) return;
+		if (pChain is null) return;
+		
+		float fT = Wheel_GetRotationAmount(pWheel.GetName()) * 0.25f;			
+		cAnimationState@ pCogAnim = pCog.GetMeshEntity().GetAnimationStateFromName("cogwheel_rotate");
+		cAnimationState@ pChainAnim = pChain.GetMeshEntity().GetAnimationStateFromName("chain_rotate");
+		
+		if (pCogAnim !is null && pChainAnim !is null)	
+		{
+			pCogAnim.SetRelativeTimePosition(mfLockdownChainAnimOffsetT + fT);
+			pChainAnim.SetRelativeTimePosition(mfLockdownChainAnimOffsetT + fT);
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// GENERATOR 
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+	
+	//-------------------------------------------------------
+	
+	bool mbHasAddedFuel = false;
+	bool mbHasLeftSafeRoom = false;
+	tString msUsedFuelItemID = "";
+	tString msUsedFuelItemType = "";
+	
+	//-------------------------------------------------------
+	
+	void SetupGenerator()
+	{
+		Generator_SetupEntities("Generator", "Generator_PowerLamp", "Generator_Lever", "Generator_FuelGauge", "Lamp_Generator_*", "Lamp_GeneratorBackup_*");
+
+		Generator_AddPowerSwitch("PowerSwitch_Hub_2", "", "", "Lamp_PowerSwitch_2_*", true);
+		Generator_AddPowerSwitch("PowerSwitch_Hub_3", "", "", "Lamp_PowerSwitch_3_*", true);
+		Generator_AddPowerSwitch("PowerSwitch_Hub_4", "", "", "Lamp_PowerSwitch_4_*", false);
+		Generator_AddPowerSwitch("PowerSwitch_Hub_5", "", "", "Lamp_PowerSwitch_5_*", false);
+		Generator_AddPowerSwitch("PowerSwitch_Hub_6", "", "", "Lamp_PowerSwitch_6_*", true);
+		Generator_AddPowerSwitch("PowerSwitch_Hub_7", "", "", "Lamp_PowerSwitch_7_*", false);
+		
+		Generator_EndSetup();
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnPowerSwitchTurnedOn(const tString &in asEntity)
+	{
+		if (mbExitBlownUp && asEntity == "PowerSwitch_Hub_2")
+		{
+			SetupPostExplosionExitLamps();
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnLookAt_GeneratorHint(const tString &in asEntity, int alState)
+	{
+		Entity_SetActive(asEntity, false);
+		if (GameDifficulty_GetSettingValueByID_Float(eGameDifficultySetting_GeneratorRunTime) > 1000)
+			return;
+			
+		Hint_StopHint();
+		Hint_ShowHint_Hold("Hints", "HintGenerator", true, 1.5f, true, 15.f, true, true);
+		
+	}
+ 
+	//-------------------------------------------------------
+	
+	void OnLookAt_FuelHatch(const tString &in asEntity, int alState)
+	{
+		Entity_SetPlayerLookAtCallback(asEntity, "OnLookAt_FuelHatchAutoEquip", false, false, false, 2);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnLookAt_FuelHatchAutoEquip(const tString &in asEntity, int alState)
+	{
+		if (alState == 1 && mbHasAddedFuel && mbHasLeftSafeRoom)
+			OnTimer_AutoEquipFuel("");
+		else
+			Map_RemoveTimer("OnTimer_AutoEquipFuel");
+	}
+ 
+	//-------------------------------------------------------
+	
+	void OnTimer_AutoEquipFuel(const tString &in asTimer)
+	{
+		if (Item_IsHeld(eItemHandlerHand_Right)) return;
+		if (cLux_GetPlayer().GetCurrentStateId() != ePlayerState_Normal) return;
+		
+		tString sFuelType = "";
+		if (ItemType_GetCountInInventory("Fuel") > 0)
+		{
+			sFuelType = "Fuel";
+		}
+		else if (ItemType_GetCountInInventory("FuelBottle") > 0)
+		{
+			sFuelType = "FuelBottle";
+		}
+		
+		if (sFuelType == "") return;
+		
+		Item_Equip(ItemType_GetFirstInInventory(sFuelType));
+	}
+		
+	//-------------------------------------------------------
+		 
+	bool CanUse_Fuel(const tString &in asItemType, const tString &in asItemID, const tString &in asPickedEntity)
+	{
+		return asPickedEntity == "Trigger_FuelHatch" || (asPickedEntity == "SaveLamp_SavingCostsFuel_Aux" && GameDifficulty_GetSettingValueByID_Int(eGameDifficultySetting_SaveSystem) == eDifficultySettingValue_SaveSystem_SavingCostsFuel);
+	}
+		
+	//-------------------------------------------------------
+		 
+	bool CanUse_FuelBottle(const tString &in asItemType, const tString &in asItemID, const tString &in asPickedEntity)
+	{
+		return CanUse_Fuel(asItemType, asItemID, asPickedEntity);
+	}
+		
+	//-------------------------------------------------------
+	
+	bool OnUse_FuelBottle(const tString &in asItemType, const tString &in asItemID, const tString &in asTargetEntity, const tString &in asItemEntity, float afTimeElapsed, float afTimeStep)
+	{
+		return OnUse_Fuel(asItemType, asItemID, asTargetEntity, asItemEntity, afTimeElapsed, afTimeStep);
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnUse_Fuel(const tString &in asItemType, const tString &in asItemID, const tString &in asTargetEntity, const tString &in asItemEntity, float afTimeElapsed, float afTimeStep)
+	{
+		if (asTargetEntity == "SaveLamp_SavingCostsFuel_Aux")
+		{
+			return OnUse_Fuel_SaveLamp(asItemType, asItemID, asTargetEntity);
+		}
+		
+		/////////////////
+		// Check fullness
+		if (Generator_GetFullness() > Generator_GetFullnessInteractLimit())
+		{
+			Hint_ShowPrompt("Hints", "HintGeneratorFull", false, 1.f, false);
+			Item_StopUsing(eItemHandlerHand_Right);
+			return true;
+		}
+		
+		/////////////////
+		// Play anims
+		tString sPlayerAnim = asItemType == "Fuel" ? "player_generator_refuelling_cannister" : "player_generator_refuelling_bottle";
+		
+		cVector3f vPos(-48.07f, 1.5f, -10.60f);
+		float fAngle = cMath_PiDiv2;
+		
+		PlayerBody_SetUnequipItemsOnCutscene(true, false);
+		PlayerBody_PlayCutsceneAnimation(sPlayerAnim, false, 0.3f, "OnAnimEnd_RefillGenerator", 1.f, 0.f, true, vPos, fAngle);
+		PlayerBody_SetArmAnimationPitch(true, true, asItemType == "Fuel");
+		PlayerBody_SetArmAnimationYaw(false, true, true);
+		PlayerBody_SetCutsceneMaxPitch(0.f);
+		PlayerBody_SetCutsceneMaxYaw(0.f);
+		
+		if (asItemType == "Fuel")
+			Entity_PlayAnimation(Item_GetHeldEntity(eItemHandlerHand_Right), "fuel_cannister_refuelling_generator", 0.3f, false);
+		if (asItemType == "FuelBottle")
+			Map_AddTimer("Timer_HideFuelBottleCork", 0.99f, "OnTimer_HideFuelBottleCork");
+		
+		/////////////////
+		// Add fuel
+		Map_AddTimer("Timer_AddGeneratorFuel", 1.f, "OnTimer_AddGeneratorFuel");	
+		cScript_SetGlobalVarBool("HasUsedFuelItem", true);
+		
+		/////////////////
+		// Store item data
+		msUsedFuelItemID = asItemID;
+		msUsedFuelItemType = asItemType;
+		
+		/////////////////
+		// Push away obstructions
+		HandleFuelHatchObstructions();
+		
+		return false;
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_HideFuelBottleCork(const tString &in asTimer)
+	{
+		iLuxEntity@ pEnt = Map_GetEntity(Item_GetHeldEntity(eItemHandlerHand_Right), eLuxEntityType_Prop);
+		cSubMeshEntity@ pSubMesh = pEnt !is null ? pEnt.GetMeshEntity().GetSubMeshEntityName("cork") : null;
+		
+		if (pEnt is null) return;
+		if (pSubMesh is null) return;
+		
+		pSubMesh.SetVisible(false);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_AddGeneratorFuel(const tString &in asTimer)
+	{
+		Generator_AddFuel(1);
+		mbHasAddedFuel = true;
+		GameStats_IncreaseEntryAmount(eHeroStats_GeneratorRefills);
+		Sound_CreateAtEntity("Sound_FuelRefill", "officer_hub/generator/fuel_refill", "Trigger_FuelHatch");
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnAnimEnd_RefillGenerator(const tString &in asAnim)
+	{
+		Player_SetCrouching(false, true, true);
+		
+		/////////////////////
+		// Remove from inventory if any
+		Item_RemoveFromInventory(msUsedFuelItemID, eInventoryInstance_Player, false, true);
+		
+		bool bEquip = false;
+		if (ItemType_GetCountInInventory(msUsedFuelItemType) > 0)
+		{
+			bEquip = true;
+			Item_Equip(ItemType_GetFirstInInventory(msUsedFuelItemType));
+		}
+		else
+		{
+			tString sOtherType = msUsedFuelItemType == "Fuel" ? "FuelBottle" : "Fuel";
+			
+			if (ItemType_GetCountInInventory(sOtherType) > 0)
+			{
+				bEquip = true;
+				Item_Equip(ItemType_GetFirstInInventory(sOtherType));
+			}
+		}
+		
+		if (bEquip == false)
+		{
+			PlayerBody_SetArmAnimationPitch(false, true, true);
+			PlayerBody_SetArmAnimationYaw(false, true, true);
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnConnectionState_PowerSwitch(const tString &in asEntity, int alState)
+	{
+		if (alState == 0) return;
+		if (cLux_GetCurrentMap() is null) return;
+		if (cLux_IsChangingMap()) return;
+		if (Generator_GetIsSetupDone() == false) return;
+		
+		Generator_SetPowerSwitchOn(asEntity, alState == 1);
+	}
+	
+	//-------------------------------------------------------
+	
+	void GetRigidBodiesInArea(const tString &in asArea, array<iPhysicsBody@> &out avOutVector)
+	{
+		iLuxEntity@ pArea = Map_GetEntity(asArea, eLuxEntityType_Area);
+		cBoundingVolume boundingVolume = pArea.GetBody(0).GetBoundingVolume();
+		cLux_GetCurrentMap().GetPhysicsWorld().GetBodiesInAABB(boundingVolume.GetMin(), boundingVolume.GetMax(), true, false, avOutVector);
+		
+		for (int i = 0; i < avOutVector.length(); i++)
+		{
+			iPhysicsBody @pBody = avOutVector[i];
+			
+			if(pBody.IsActive()==false || pBody.GetMass()==0)
+			{
+				avOutVector.removeAt(i);
+				i--;
+				continue;
+			}
+			
+			iLuxEntity @pEntity = cLux_GetBodyEntity(pBody);
+			if(pEntity == null/* || Entity_GetCollide(pEntity.GetName(), asArea)==false*/)
+			{
+				avOutVector.removeAt(i);
+				i--;
+			}
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void HandleFuelHatchObstructions()
+	{
+		array<iPhysicsBody@> vBodies;
+		GetRigidBodiesInArea("GeneratorPropPushArea", vBodies);
+		
+		for (int i = 0; i < vBodies.length(); i++)
+		{
+			iPhysicsBody@ pBody = vBodies[i];
+			tString sEnt = cLux_GetBodyEntity(pBody).GetName();
+			if (Map_TimerExists(sEnt)) continue;
+			
+			Entity_SetVarFloat(sEnt, "InPushAreaCount", 0);
+			Entity_SetCollideCharacter(sEnt, false);
+			PushFuelHatchObstruction(sEnt);
+			
+			Map_AddTimer(sEnt, 0.25+0.1*i, "Timer_HandleFuelHatchObstructionProp");
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void PushFuelHatchObstruction(const tString &in asEnt)
+	{
+		float fPushAreaCount = Entity_GetVarFloat(asEnt, "InPushAreaCount");
+		
+		cVector3f vEntPos = Entity_GetPosition(asEnt);
+		cVector3f vAreaPos = Entity_GetPosition("GeneratorPropPushArea");
+		cVector3f vImpulse = cMath_Vector3Normalize((vEntPos-vAreaPos)*cVector3f(1, 0, 1))*(1.f+fPushAreaCount*0.5);
+		Entity_AddImpulse(asEnt, vImpulse, false, true);
+		
+		Entity_SetVarFloat(asEnt, "InPushAreaCount", fPushAreaCount+1.0f);
+	}
+	
+	//-------------------------------------------------------
+	
+	void Timer_HandleFuelHatchObstructionProp(const tString &in asTimer)
+	{
+		if (Entity_Exists(asTimer)==false || Entity_IsActive(asTimer)==false)
+			return;
+		
+		if (Entity_GetCollide(asTimer, "GeneratorPropPushArea"))
+		{
+			PushFuelHatchObstruction(asTimer);
+			Map_AddTimer(asTimer, 0.2, "Timer_HandleFuelHatchObstructionProp");
+			return;
+		}
+			
+		Entity_SetCollideCharacter(asTimer, true);
+	}
+	
+	//-------------------------------------------------------
+	
+	//} END GENERATOR
+	
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SAVE ROOM
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+	
+	//-------------------------------------------------------
+	
+	bool mbSaveRoomGhoulHoleActive = false;
+	int mlSaveRoomDoorLockCount = 1;
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_SetupCorridorBlocker(const tString &in asTimer)
+	{
+		Prop_SetStaticPhysics("CorridorBlocker", true);
+		WoodenBreakable_SetIsBreakable("CorridorBlocker", false);
+	}
+	
+	//-------------------------------------------------------	
+	
+	void OnLookAt_AuxBoxHint(const tString &in asEntity, int alState)
+	{
+		if(alState == 1)
+		{
+			if (Hint_GetCurrentEntry() != "HintAuxBox")
+			{
+				Hint_StopHint();
+				Hint_ShowHint_Hold("Hints", "HintAuxBox", true, 1.5f, true, 15.f, true, true);
+			}
+		}
+		else
+		{
+			if (Hint_GetCurrentEntry() == "HintAuxBox")
+				Hint_StopHint();
+		}
+	}
+
+	//-------------------------------------------------------
+
+	void OnInteract_StopAuxBoxHint(const tString &in asEntity)
+	{
+		////////////////
+		// Hints
+		if (Hint_GetCurrentEntry() == "HintAuxBox")
+			Hint_StopHint();
+	}
+
+	//-------------------------------------------------------
+	
+	
+	void OnLookAt_SaveLamp(const tString &in asEntity, int alState)
+	{
+		tString sHint = GameDifficulty_GetSaveHint();
+		if(alState == 1)
+		{
+			if (Hint_GetCurrentEntry() != sHint)
+			{
+				Hint_StopHint();
+				if (GameDifficulty_GetSettingValueByID_Int(eGameDifficultySetting_SaveSystem) == eDifficultySettingValue_SaveSystem_SavingCostsFuel)
+					Hint_RemoveFromGiven("Hints", sHint);
+				Hint_ShowHint_Hold("Hints", sHint, true, 1.5f, true, 15.f, true, true);
+			}
+		}
+		else
+		{
+			if (Hint_GetCurrentEntry() == sHint)
+				Hint_StopHint();
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnInteract_SaveLamp(const tString &in asEntity)
+	{
+		////////////////
+		// About to get lit!
+		if (Lamp_GetLit(asEntity) == false)
+			SaveGameProgress();
+		else
+			Map_AddTimer(asEntity, 1.f, "OnTimer_SaveGameProgress");
+		
+		////////////////
+		// Add impulse
+		Entity_AddImpulse("SaveLampBase", cMath_RandomSphereSurfacePoint(0.5f), true, true);
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnUse_Fuel_SaveLamp(const tString &in asItemType, const tString &in asItemID, const tString &in asTargetEntity)
+	{
+		//////////////////
+		// Save
+		OnInteract_SaveLamp("SaveLamp");
+		Lamp_SetLit("SaveLamp", !Lamp_GetLit("SaveLamp"), true);
+		
+		Sound_PlayGui("update/lantern_fill/fill", 1.f, eSoundEntryType_Gui);
+		
+		//////////////////
+		// Unequip & remove item
+		Item_RemoveFromInventory(asItemID);
+		Player_ChangeStateToNormal();
+		PlayerBody_StopAnimationLayer(ePlayerBodyAnimationLayer_LeftArm, 0.5);
+		PlayerBody_PlayLayerIdleAnimation(ePlayerBodyAnimationLayer_LeftArm, 0.5);
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_SaveGameProgress(const tString&in asTimer)
+	{
+		Lamp_SetLit(asTimer, true, true);
+		SaveGameProgress();
+	}
+	
+	//-------------------------------------------------------
+	
+	void SaveGameProgress()
+	{
+		/////////////////
+		// Save game
+		SaveRoom_SaveGame(true, true);
+		
+		////////////////
+		// Hints
+		if (Hint_GetCurrentEntry() == GameDifficulty_GetSaveHint())
+			Hint_StopHint();
+		
+		Entity_SetActive("Trigger_SaveHint", false);
+		
+		GameStats_IncreaseEntryAmount(eHeroStats_TimesSaved);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnInteract_SaveRoomMap(int alState)
+	{
+		Hint_StopHint();
+		Hint_ShowHint_Hold("Hints", "HintInGameMap", true, 1.5f, true, 15.f);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnGui_SaveRoomMap(float afTimeStep, float afAlpha)
+	{
+		bool bZoomed = ZoomArea_GetIsZoomedIn();
+		
+		cImGuiLabelData labelData = ImGui_GetDefaultLabel();
+		labelData.mFont.SetFile(FontHandler_GetFont(eFontType_Readable,96));
+		labelData.mFont.mvSize = bZoomed ? 24 : 18;
+		labelData.mColorBase = cColor_White;
+		labelData.mGfxBackground.mColor = cColor(0, afAlpha);
+		labelData.mbUseBackgroundGfx = true;
+		
+		ImGui_SetModColorMul(cColor(1, afAlpha));
+		ImGui_SetAlignment(eImGuiAlign_CenterCenter);
+		ImGui_SetTransCategory("MapOverlay");
+		
+		DrawMapPins("Map_Pin_*", labelData, bZoomed);		
+		if (bZoomed) DrawMapPins("Map_ZoomPin_*", labelData, bZoomed);
+		if (InGameMap_GetMapFound("prison")) 
+		{
+			DrawMapPins("Map_Prison_Pin_*", labelData, bZoomed);
+			if (bZoomed) DrawMapPins("Map_Prison_ZoomPin_*", labelData, bZoomed);
+		}
+		if (InGameMap_GetMapFound("soldier_quarters")) 
+		{
+			DrawMapPins("Map_SoldierQuarters_Pin_*", labelData, bZoomed);
+			if (bZoomed) DrawMapPins("Map_SoldierQuarters_ZoomPin_*", labelData, bZoomed);
+		}
+		if (InGameMap_GetMapFound("arsenal")) 
+		{
+			DrawMapPins("Map_Arsenal_Pin_*", labelData, bZoomed);
+			if (bZoomed) DrawMapPins("Map_Arsenal_ZoomPin_*", labelData, bZoomed);
+		}
+		if (InGameMap_GetMapFound("nest")) 
+		{
+			DrawMapPins("Map_Nest_Pin_*", labelData, bZoomed);
+			if (bZoomed) DrawMapPins("Map_Nest_ZoomPin_*", labelData, bZoomed);
+		}
+		
+		ImGui_SetAlignment(eImGuiAlign_TopLeft);
+		ImGui_SetModColorMul(cColor_White);
+	}
+	
+	//-------------------------------------------------------
+	
+	void DrawMapPins(const tString &in asName, cImGuiLabelData@ apLabelData, bool abZoomed)
+	{
+		array<iLuxEntity@> vPins;
+		Map_GetEntityArray(asName, vPins, eLuxEntityType_Area);
+		
+		for (int i = 0; i < vPins.length(); i++)
+		{
+			iLuxEntity@ pEnt = vPins[i];
+			tString sText = pEnt.GetVarString("");
+			ImGui_DoLabelExt(sText, apLabelData, GetHudPosFromWorldPos(pEnt.GetPosition(), abZoomed));
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	cVector3f GetHudPosFromWorldPos(const cVector3f &in avWorldPos, bool abZoomed)
+	{
+		cVector3f vMagicOffset = abZoomed ? cVector3f(25, 25, 0) : cVector3f(12, 12, 0);
+		cVector2f vScreenSize = cGraphics_GetLowLevel().GetScreenSizeFloat();
+		cRect2l rect = cMath_GetClipRectFromSphere(avWorldPos, 0.01, cLux_GetViewport().GetCamera().GetFrustum(), cVector2l(vScreenSize.x, vScreenSize.y), false, false);
+		cVector2f vHudPos = (cVector2f(rect.x, rect.y) * cLux_GetHudVirtualSize()) / vScreenSize;
+		
+		return cLux_GetHudVirtualStartPos() + cVector3f(vHudPos.x, vHudPos.y, 1) - ImGui_GetCurrentGroupPos() + vMagicOffset;
+	}
+	
+	//-------------------------------------------------------
+
+	bool OnTrigger_EnterSafeRoom(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		Achievement_Unlock(eAchievement_Enlisted);
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	void ActivateAdminOfficeGhoulHole()
+	{
+		if (mbSaveRoomGhoulHoleActive) return;
+		if (cScript_GetGlobalVarInt("LevelProgression") < 3) return;
+		if (Entity_IsActive("Trigger_AdminOfficeGhoulHole")) return;
+		
+		cLux_AddDebugMessage("Activating Admin Office ghoul hole!");
+		
+		mbSaveRoomGhoulHoleActive = true;
+		
+		Entity_SetActive("Trigger_AdminOfficeGhoulHole", true);
+		Entity_SetActive("AdminOfficeGhoulHole_Hole_*", true);
+		Entity_SetActive("AdminOfficeGhoulHole_NoHole_*", false);
+		Entity_SetActive("Hide_AdminOfficeGhoulHoleTable", false);
+		Entity_SetCollideCharacter("overcoat_hanging_5", false);
+		Entity_SetCollideCharacter("AdminOfficeGhoulHole_Hole_3", false);
+		Decal_SetDynamicVisible("Decal_AdminOfficeGhoulHole_*", true);
+		
+		///////////////////////////////
+		// Make the ghoul hole a real thread if in ultra hard mode
+		if (GameDifficulty_GetSettingValueByID_Bool(eGameDifficultySetting_ReducedSafeRoom))
+		{
+			Entity_SetActive("GhoulHole_SafeRoom", true);
+			Entity_SetActive("Area_SaveRoom_1", false);
+			Entity_SetActive("Area_SaveRoom_2", false);
+			Entity_SetActive("Area_SaveRoom_3", false);
+		}
+			
+		cLuxArea@ pArea = cLux_ToArea(mBaseObj.GetEntityByName("Trigger_AdminOfficeGhoulHole", eLuxEntityType_Area));
+		cBoundingVolume@ pBV = pArea !is null ? pArea.GetAreaBody().GetBoundingVolume() : null;
+			
+		if (pBV !is null)
+		{
+			array<iPhysicsBody@> vBodies;
+			mBaseObj.GetPhysicsWorld().GetBodiesInAABB(pBV.GetMin(), pBV.GetMax(), true, false, vBodies);
+				
+			for (int i = 0; i < vBodies.size(); ++i)
+			{
+				iPhysicsBody@ pBody = vBodies[i];
+				if (pBody is null) continue;
+					
+				pBody.AddForce(cVector3f_Down);
+			}
+		}
+		
+		iLuxEntity@ pBrokenTable = mBaseObj.GetEntityByName("AdminOfficeGhoulHole_Hole_4", eLuxEntityType_Prop);
+		cMeshEntity@ pBrokenTableMeshEnt = pBrokenTable !is null ? pBrokenTable.GetMeshEntity() : null;
+		
+		if (pBrokenTableMeshEnt !is null)
+		{
+			pBrokenTableMeshEnt.GetSubMeshEntityName("tabletop_piece_1").SetVisible(false);
+			pBrokenTableMeshEnt.GetSubMeshEntityName("legs_piece_2").SetVisible(false);
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnLookAt_AdminOfficeGhoulHole(const tString &in asEntity, int alState)
+	{
+		Player_SetScared(10.f);
+	}
+	
+	//-------------------------------------------------------
+ 
+	//} END SAVE ROOM	
+		
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAP STREAMING
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+
+	bool OnTrigger_Player_SwitchMap_Prison(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		Stalker_SetTenacity("Stalker_1", 1.f);
+		Blackboard_SetupStalkerMapTransfer("Stalker_1");
+		
+		Game_DoMapChange("prison.hpm", "MapTransfer_Hub_Prison");
+		return true;
+	}
+
+	//-------------------------------------------------------
+
+	bool OnTrigger_Player_SwitchMap_Arsenal(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		Stalker_SetTenacity("Stalker_1", 1.f);
+		Blackboard_SetupStalkerMapTransfer("Stalker_1");
+		
+		Game_DoMapChange("arsenal.hpm", "MapTransfer_Hub_Arsenal");
+		return true;
+	}
+
+	//-------------------------------------------------------
+
+	bool OnTrigger_Player_SwitchMap_Nest(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		Stalker_SetTenacity("Stalker_1", 1.f);
+		Blackboard_SetupStalkerMapTransfer("Stalker_1");
+		
+		Game_DoMapChange("maintenance.hpm", "MapTransfer_Hub_Nest");
+		return true;
+	}
+
+	//-------------------------------------------------------
+
+	bool OnTrigger_Player_SwitchMap_Soldier_Quaters(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		Stalker_SetTenacity("Stalker_1", 1.f);
+		Blackboard_SetupStalkerMapTransfer("Stalker_1");
+		
+		Game_DoMapChange("soldier_quarters.hpm", "MapTransfer_ToBarracks");
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnTrigger_Player_SwitchMap_Ending(const tString &in asParent, const tString &in asChild, int alState)
+	{		
+		Game_DoMapChange("arena.hpm", "MapTransfer_Hub_Ending");
+		return true;
+	}
+
+	//-------------------------------------------------------
+ 
+	//} END MAP STREAMING
+	
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// EVENTS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+  	
+		//-------------------------------------------------------
+	
+		/////////////////////////////////////////
+		// START Event: The player wakes up in the sickroom
+		//{//////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSeqSickrommWakeUp;
+		int mlWakeUpBlurFxID = -1;
+		int mlWakeUpImageTrailId = -1;
+		bool mbWakeUpSeqStarted = false;
+		
+		//-------------------------------------------------------
+		
+		void StartSickroomWakeUpSeq()
+		{
+			if (mbWakeUpSeqStarted)
+				return;
+			
+			mbWakeUpSeqStarted = true;
+			Seq_SickroomWakeUp("");
+		}
+		
+		//-------------------------------------------------------
+		
+		void Seq_SickroomWakeUp(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_SickroomWakeUp", mSeqSickrommWakeUp);
+			
+			if (Sequence_DoStepAndWait(1.f))
+			{
+				Player_FadeDreamLights(1.f, 4.f);
+			}
+			else if (Sequence_DoStepAndWait(3.5f))
+			{								
+				cVector3f vPos(-31.674f, 6.385f, 2.672f);
+				float fAngle = cMath_Pi;
+				PlayerBody_PlayCutsceneAnimation("player_medbay_wakeup", false, 0.f, "OnAnimEnd_WakeUp", 0.f, 0.105f, true, vPos, fAngle);
+				PlayerBody_SetCutsceneMaxPitch(0.f);
+				PlayerBody_SetCutsceneMaxYaw(0.f);
+				
+				Sound_PlayGui("trenches/dream/hospital", 1.f, eSoundEntryType_Gui);
+				
+				Light_SetVisible("Light_PowerSwitch_3_9_4", false);
+				
+				Player_SetActive(true);
+			}
+			else if (Sequence_DoStepAndWait(2.f))
+			{
+				Player_FadeDreamLights(0.7f, 3.f);
+			}
+			else if (Sequence_DoStepAndWait(1.5f))
+			{
+				mlWakeUpBlurFxID = Effect_Blur_Start(0.9f, 0.f);
+				
+				cAnimationState@ pAnim = PlayerBody_GetAnimationState("player_medbay_wakeup");
+				if (pAnim !is null)
+					pAnim.SetSpeed(0.3f);
+				
+				Effect_Fade_In(1.f);
+				Sound_FadeGlobalVolume(1.f, 2.f, eSoundEntryType_WorldAll);
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{
+				Effect_Fade_Out(1.5f);
+				Player_FadeDreamLights(1.f, 3.f);
+				Sound_FadeGlobalVolume(0.f, 4.f, eSoundEntryType_WorldAll);
+			}
+			else if (Sequence_DoStepAndWait(2.f))
+			{				
+				cAnimationState@ pAnim = PlayerBody_GetAnimationState("player_medbay_wakeup");
+				if (pAnim !is null)
+					pAnim.SetSpeed(0.f);
+			}
+			else if (Sequence_DoStepAndWait(2.f))
+			{				
+				cAnimationState@ pAnim = PlayerBody_GetAnimationState("player_medbay_wakeup");
+				if (pAnim !is null)
+				{
+					pAnim.SetSpeed(0.5f);
+					pAnim.SetRelativeTimePosition(0.f);
+				}
+				
+				iLuxEntity@ pEnt = cLux_ID_Entity(PlayerBody_GetEntityID());
+				cBoneState@ pBone = pEnt !is null ? pEnt.GetMeshEntity().GetBoneStateFromName("j_Head") : null;
+				if (pEnt !is null && pBone !is null)
+				{
+					pBone.SetUsePostTransform(true);
+					pBone.SetPostTransform(cMath_MatrixRotateXYZ(cMath_Vector3ToRad(cVector3f(20.f, -20.f, 20.f))));
+				}
+				
+				Effect_Fade_In(2.f);
+				Player_FadeDreamLights(0.65f, 2.f);
+				Sound_FadeGlobalVolume(1.f, 2.f, eSoundEntryType_WorldAll);
+			}
+			else if (Sequence_DoStepAndWait(2.f))
+			{
+				Effect_Fade_Out(2.f);
+				Player_FadeDreamLights(1.f, 3.f);
+				Sound_FadeGlobalVolume(0.f, 4.f, eSoundEntryType_WorldAll);
+			}
+			else if (Sequence_DoStepAndWait(1.25f))
+			{
+				cAnimationState@ pAnim = PlayerBody_GetAnimationState("player_medbay_wakeup");
+				if (pAnim !is null)
+					pAnim.SetSpeed(0.f);
+					
+				iLuxEntity@ pEnt = cLux_ID_Entity(PlayerBody_GetEntityID());
+				cBoneState@ pBone = pEnt !is null ? pEnt.GetMeshEntity().GetBoneStateFromName("j_Head") : null;
+				if (pEnt !is null && pBone !is null)
+				{
+					pBone.SetUsePostTransform(false);
+					pBone.SetPostTransform(cMatrixf_Identity);
+				}
+				
+				Effect_Blur_FadeAmount(mlWakeUpBlurFxID, 0.4f, 1.f);
+				
+			}
+			else if (Sequence_DoStepAndWait(0.5f))
+			{
+				Sound_CreateAtEntity("Sound_WakeUp", "officer_hub/cutscene/wakeup/start", "player");
+
+				Sound_CreateAtEntity("Sound_WakeFoley", "officer_hub/cutscene/wakeup/wake_foley", "player");
+				Sound_CreateAtEntity("Sound_WakeBed", "officer_hub/cutscene/wakeup/wake_bed", "Trigger_BedSound");
+			}
+			else if (Sequence_DoStepAndWait(0.02f))
+			{
+				Light_SetVisible("Light_PowerSwitch_3_9_4", true);
+				
+				cAnimationState@ pAnim = PlayerBody_GetAnimationState("player_medbay_wakeup");
+				if (pAnim !is null)
+				{
+					pAnim.SetRelativeTimePosition(0.f);
+					pAnim.SetSpeed(1.f);
+				}
+				
+				mlWakeUpImageTrailId = Effect_ImageTrail_Start(2.f, 0.f, 20.f, 1.f);					
+				
+			}
+			else if (Sequence_DoStepAndWait(6.08f))
+			{
+				Effect_Fade_In(0.6f);
+				Player_FadeDreamLights(0.f, 0.6f);
+				Sound_FadeGlobalVolume(1.f, 0.6f, eSoundEntryType_WorldAll);
+			}
+			else if (Sequence_DoStepAndWait(1.4f))
+			{
+				Effect_ImageTrail_FadeInstanceAmount(mlWakeUpImageTrailId, 0.5f, 1.f);
+				Effect_Blur_FadeAmount(mlWakeUpBlurFxID, 0.15f, 1.f);
+			}
+			else if (Sequence_DoStepAndWait(4.f))
+			{
+				Effect_ImageTrail_FadeInstanceAmount(mlWakeUpImageTrailId, 1.f, 1.f);
+				Effect_Blur_FadeAmount(mlWakeUpBlurFxID, 0.4f, 1.f);
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{				
+				Effect_Blur_FadeOut(mlWakeUpBlurFxID, 5.f);
+				Effect_ImageTrail_FadeOut(mlWakeUpImageTrailId, 5.f);
+				Sketchbook_SetCanOpen(true);
+			}
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_SoundSweet_1(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Entity_SetActive("Trigger_SoundSweet_1",false);
+			Sound_Play("Sound_TriggerSweet_1", 0.0f);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+
+		bool OnTrigger_SoundSweet_2(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Entity_SetActive("Trigger_SoundSweet_2",false);
+			Sound_Play("Sound_TriggerSweet_2", 0.0f);
+			return false;
+		}
+
+		//-------------------------------------------------------
+		
+		bool OnTrigger_SoundSweet_4(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Entity_SetActive("Trigger_SoundSweet_4",false);
+			Sound_Play("Sound_TriggerSweet_4", 0.0f);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_PlayBarricadeSweet(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Entity_SetActive("Trigger_SoundBarricade",false);
+			Sound_Play("Sound_WakeBarricade", 0.0f);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_PlayStairSweet(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Entity_SetActive("Trigger_SweetStairs",false);
+			Sound_Play("Sound_StairSweet", 0.0f);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_PlayCageSweet(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Entity_SetActive("Trigger_SweetCage",false);
+			Sound_Play("Sound_CageSweet", 0.0f);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event: The player wakes up in the sickroom
+		
+		/////////////////////////////////////////
+		// START Event: The player finds the diary and the magnetlampe
+		//{//////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_DynamoLantern(const tString &in asEntity)
+		{
+			Hint_StopHint(0.f);
+			Hint_ShowHint_Hold("Hints", "HintFlashlight", true, 1.5f, true, 15.f, true, true);
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event: The player finds the diary and the magnetlampe
+		
+		//-------------------------------------------------------
+	
+		/////////////////////////////////////////
+		// START Event: The player meets the wounded soldier
+		//{//////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		bool mbPlayerIsTooFarAway = false;
+		bool mbEscapeVoiceSubjectPlayed = false;
+		bool mbCreatureVoiceSubjectPlayed = false;
+		bool mbSoldierIsOfferingTheGun = false;
+		bool mbStalkerAttackedTheSoldier = false;
+		bool mbNopeAchievementActive = false;
+		
+		//-------------------------------------------------------
+		
+		void SetupSoldierScene()
+		{
+			Entity_StopAnimation("SoldierGunHand");
+			Entity_StopAnimation("SmokingSoldier");
+			Entity_PlayAnimation("SmokingSoldier", "soldier_idle_cigarette_in_hand", 0.1f, true);
+			
+			///////////////////////
+			// Align attached item sockets to parent bone rotation
+			Entity_AlignSocketWithParentRotation("SmokingSoldier", "GunSocket");
+			Entity_AlignSocketWithParentRotation("SmokingSoldier", "CigaretteSocket");
+			Entity_AttachToEntity("Trigger_GunPickupPrompt", "SoldierGunHand", "", false, true);
+		}
+
+		//-------------------------------------------------------
+		
+		void SetSmokingSoldierHeadTiltActive(bool abX)
+		{
+			cScript_SetGlobalArgBool(0, abX);
+			cScript_RunGlobalFunc("SmokingSoldier", "cScrSmokingSoldier", "_Global_SetHeadTiltActive");
+		}
+
+		//-------------------------------------------------------
+		
+		void SetSmokingSoldierArmTrackingActive(bool abX)
+		{
+			cScript_SetGlobalArgBool(0, abX);
+			cScript_RunGlobalFunc("SmokingSoldier", "cScrSmokingSoldier", "_Global_SetArmTrackingActive");
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_StopWoundedSoldierDialog(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState!=1) return true;
+			mbPlayerIsTooFarAway = true;
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_ContinueWoundedSoldierDialog(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState!=1)
+				return true;
+				
+			mbPlayerIsTooFarAway = false;
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnAnimEnd_SoldierPlayIdleAnim(const tString &in asEntityName, const tString &in asAnimName)
+		{
+			if (mbStalkerAttackedTheSoldier)
+				return;
+				
+			////////////////////////////
+			// Idle with ciiggarette held 
+			if (asAnimName == "soldier_cigarette_mouth_to_cigarette_hand" || 
+				asAnimName == "soldier_react_to_monster_noise")
+			{
+				Entity_PlayAnimation("SmokingSoldier", "soldier_idle_cigarette_in_hand", 0.1f, true);
+			}
+			else if (asAnimName == "soldier_pointing")
+			{
+				Entity_PlayAnimation("SmokingSoldier", "soldier_idle_no_gun", 0.1f, true);
+			}
+			
+			else if (asAnimName == "soldier_offer_gun_refused_to_cigarette_hand")
+			{
+				Entity_SetInteractionDisabled("SoldierGunHand", true);
+				Entity_PlayAnimation("SmokingSoldier", "soldier_idle_cigarette_in_hand", 0.1f, true);
+			}
+			
+			/////////////////////////////////
+			// Idle with ciggarette in mounth 
+			else if (asAnimName == "soldier_cigarette_hand_to_cigarette_mouth")
+			{
+			}
+			
+			////////////////////////////
+			// Idle with ciiggarette held and play escape topic
+			else if (asAnimName == "soldier_inhale")
+			{
+				Entity_PlayAnimation("SmokingSoldier", "soldier_idle_cigarette_in_hand", 0.1f, true);
+				SetSmokingSoldierHeadTiltActive(true);
+				HeadTracker_SetActive("SmokingSoldier", true);
+				
+				/////////////////////////////////////
+				// Check if we can start the escape topic
+				Map_AddTimer("Timer_PlaySoldierDialog_Escape", 0.f, "OnTimer_ContinueWoundedSoldiersDialog");
+			}
+			
+			/////////////////////////////////
+			// Idle offering gun to the player
+			else if (asAnimName == "soldier_grab_gun_to_offer_gun")
+			{
+				Entity_PlayAnimation("SmokingSoldier", "soldier_idle_offer_gun", 0.1f, true);
+				Entity_SetInteractionDisabled("SoldierGunHand", false);
+				
+				///////////////////////////////
+				// Run a timer to check if the player is still nearby. If too far stop pointing the gun at him.
+				if (ItemType_IsInInventory("Gun") == false)
+				{
+					Entity_SetActive("Trigger_CheckPlayerDistanceToOfferGHun", true);
+					mbSoldierIsOfferingTheGun = true;
+				}
+			}
+			else if(asAnimName == "soldier_offer_gun_taken_to_idle_no_gun")
+			{
+				Entity_PlayAnimation("SmokingSoldier", "soldier_pointing", 0.1f, false, true, "OnAnimEnd_SoldierPlayIdleAnim");
+				Voice_Play("Dialog_WoundedSoldier_BulletsInfo", -1, "", 2);
+				
+				Map_AddTimer("OnTimer_SmokingSoldierHeadTilt_On", 2.75, "OnTimer_SmokingSoldierHeadTilt");
+				Map_AddTimer("OnTimer_SmokingSoldierHeadTilt_Off", 5, "OnTimer_SmokingSoldierHeadTilt");
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Door_StartSoldierDialog(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState!=1)
+				return true;
+				
+			Voice_Play("Dialog_WoundedSoldier_Intro", -1, "", 0);
+			Sound_Stop("Sound_SoldierBreathe", 3.0f);
+			Music_PlayExt("Bunker_SoldierTalk_Version2.ogg", true, 0.05f, 1.0f, 4.0f, 1.0f, eMusicPrio_SceneAmb, true);
+			Entity_SetActive("Trigger_MusicStop", true);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_StartWoundedSoldierDialog(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState!=1)
+				return true;
+			
+			Entity_SetActive(asParent, false);
+			
+			//////////////////////
+			// Play Animations
+			//Entity_PlayAnimation("SmokingSoldier", "soldier_cigarette_mouth_to_cigarette_hand", 0.1f, false, true, "OnAnimEnd_SoldierPlayIdleAnim");
+			SetSmokingSoldierHeadTiltActive(true);
+			
+			///////////////////////
+			// Play voices
+			Voice_StopAll();
+			Voice_Play("Dialog_WoundedSoldier_Officers", -1, "", 0);
+			
+			////////////////////////////////////
+			// Used to pause the dialog if the player walks away
+			Entity_SetActive("Trigger_LeavingWoundedSoldierFlag_*", true);
+			
+			
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ContinueWoundedSoldiersDialog(const tString&in asTimer)
+		{
+			///////////////////////////
+			// Escape voice subject
+			if (asTimer == "Timer_PlaySoldierDialog_Escape")
+			{
+				/////////////////////
+				// If the voice subject is already played abort
+				if (mbEscapeVoiceSubjectPlayed)
+				{
+					if (Map_TimerExists(asTimer))
+					{
+						Map_RemoveTimer(asTimer);
+						return;
+					}
+					return;
+				}
+				
+				/////////////////////
+				// If the player is too far away wait until back
+				if (mbPlayerIsTooFarAway)
+				{
+					Map_AddTimer(asTimer, 1, "OnTimer_ContinueWoundedSoldiersDialog");
+					return; 
+				}
+				
+				/////////////////////////
+				// Play the voice subject
+				Voice_Play("Dialog_WoundedSoldier_Escape", -1, "", 0);
+				mbEscapeVoiceSubjectPlayed = true;
+			}
+			
+			//////////////////////////
+			// creature voice subject
+			else if (asTimer == "Timer_Prepare_SoldierDialog_Creature")
+			{
+				/////////////////////
+				// If the voice subject is already played abort
+				if (mbCreatureVoiceSubjectPlayed)
+				{
+					if (Map_TimerExists(asTimer))
+					{
+						Map_RemoveTimer(asTimer);
+						return;
+					}
+					return;
+				}
+				
+				/////////////////////
+				// If the player is too far away wait until back
+				if (mbPlayerIsTooFarAway)
+				{
+					Map_AddTimer(asTimer, 1, "OnTimer_ContinueWoundedSoldiersDialog");
+					return; 
+				}
+				
+				///////////////////////////
+				// Play creature warning sound and soldier's voice subject
+				Sound_Play("Sound_SoldierCreatureWarning_2", 0.0f);
+				PlaySoldierDialog_Creature();
+			}
+			
+			//////////////////////////
+			// Urge voice subjects
+			else if (asTimer == "Timer_Prepare_SoldierDialog_Urge_Gun")
+			{
+				Map_AddTimer(asTimer, 15, "OnTimer_ContinueWoundedSoldiersDialog");
+				Voice_Play("Dialog_WoundedSoldier_Urge_Gun");
+			}
+			else if (asTimer == "Timer_Prepare_SoldierDialog_Urge_Bullets")
+			{
+				Map_AddTimer(asTimer, 15, "OnTimer_ContinueWoundedSoldiersDialog");
+				Voice_Play("Dialog_WoundedSoldier_Urge_Bullets");
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnVoiceLine_DynamiteLocation(const tString&in asScene, const tString&in asSubject, int alLineIndex, bool abStartOfline)
+		{
+			if (!abStartOfline) return;
+			
+			Map_AddTimer("OnTimer_SmokingSoldierHeadTilt_Off", 1, "OnTimer_SmokingSoldierHeadTilt");
+			Map_AddTimer("OnTimer_SmokingSoldierHeadTilt_On", 3, "OnTimer_SmokingSoldierHeadTilt");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_SmokingSoldierHeadTilt(const tString&in asTimer)
+		{
+			bool bOn = asTimer == "OnTimer_SmokingSoldierHeadTilt_On";
+			SetSmokingSoldierHeadTiltActive(bOn);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnVoiceLine_PrepareSoldierDialogEscapeSubject(const tString&in asScene, const tString&in asSubject, int alLineIndex, bool abStartOfline)
+		{
+			if (!abStartOfline) return;
+			
+			SetSmokingSoldierHeadTiltActive(false);
+			HeadTracker_SetActive("SmokingSoldier", false);
+			Map_AddTimer("OnTimer_PrepareSoldierDialogEscapeSubject", 5, "OnTimer_PrepareSoldierDialogEscapeSubject");
+			
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PrepareSoldierDialogEscapeSubject(const tString&in asTimer)
+		{
+			//////////////////////
+			// Play Animations
+			Entity_PlayAnimation("SmokingSoldier", "soldier_inhale", 0.1f, false, true, "OnAnimEnd_SoldierPlayIdleAnim");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnVoiceLine_PrepareSoldierDialogCreatureSubject(const tString&in asScene, const tString&in asSubject, int alLineIndex, bool abStartOfline)
+		{
+			if (abStartOfline)
+			{
+				SetSmokingSoldierHeadTiltActive(false);
+				HeadTracker_SetActive("SmokingSoldier", false);
+				return;
+			}
+			
+			//Entity_PlayAnimation("SmokingSoldier", "soldier_cigarette_hand_to_cigarette_mouth", 0.1f, false, true, "OnAnimEnd_SoldierPlayIdleAnim");
+			Map_AddTimer("Timer_Prepare_SoldierDialog_Creature", 0.5, "OnTimer_ContinueWoundedSoldiersDialog");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PlaySoldierDialogCreature(const tString&in asTimer)
+		{
+			Voice_Play("Dialog_WoundedSoldier_Creature", -1, "", 1);
+			mbCreatureVoiceSubjectPlayed = true;
+			
+			Map_RemoveTimer("OnTimer_PrepareSoldierDialogEscapeSubject");
+			Entity_PlayAnimation("SmokingSoldier", "soldier_react_to_monster_noise", 0.1f, false, true, "OnAnimEnd_SoldierPlayGiveGunAnim");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnAnimEnd_SoldierPlayGiveGunAnim(const tString &in asEntityName, const tString &in asAnimName)
+		{
+			if (mbStalkerAttackedTheSoldier)
+				return;
+			
+			OnTimer_ToggleGunOfferingState("");
+			
+			Map_AddTimer("Timer_ToggleGunOfferingState", 5.f, "OnTimer_ToggleGunOfferingState");
+			
+			////////////////////////////////
+			// Kill the soldier if the player leaves the area without picking up the gun
+			Entity_SetActive("Trigger_ForceKillSoldier", true);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_ToggleOfferPlayerTheGun(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (ItemType_IsInInventory("Gun") || mbStalkerAttackedTheSoldier)
+				return false;
+			
+			tString sTimerName = "Timer_ToggleGunOfferingState";
+			if ( (alState==1 && mbSoldierIsOfferingTheGun) || (alState!=1 && mbSoldierIsOfferingTheGun==false) )
+			{
+				if (Map_TimerExists(sTimerName))
+					Map_RemoveTimer(sTimerName);
+				return true;
+			}
+				
+			if (Map_TimerExists(sTimerName))
+				Map_RemoveTimer(sTimerName);
+				
+			float fDelay = alState==1 ? 0.2f : 1.f;
+			Map_AddTimer(sTimerName, fDelay, "OnTimer_ToggleGunOfferingState");
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ToggleGunOfferingState(const tString&in asTimer)
+		{
+			if (ItemType_IsInInventory("Gun"))
+				return;
+				
+			////////////////////
+			// Put gun away
+			if (mbSoldierIsOfferingTheGun)
+			{
+				Entity_PlayAnimation("SmokingSoldier", "soldier_offer_gun_refused_to_cigarette_hand", 1.0f, false, true, "OnAnimEnd_SoldierPlayIdleAnim");
+				mbSoldierIsOfferingTheGun = false;
+				Map_RemoveTimer("Timer_Prepare_SoldierDialog_Urge_Gun");
+				
+				SetSmokingSoldierArmTrackingActive(false);
+			}
+			
+			////////////////////
+			// Offer gun
+			else
+			{
+				Voice_Play("Dialog_WoundedSoldier_Urge_Gun");
+				Entity_PlayAnimation("SmokingSoldier", "soldier_grab_gun_to_offer_gun", 1.0f, false, true, "OnAnimEnd_SoldierPlayIdleAnim");
+				mbSoldierIsOfferingTheGun = true;
+				
+				SetSmokingSoldierHeadTiltActive(false);
+				SetSmokingSoldierArmTrackingActive(true);
+				HeadTracker_SetActive("SmokingSoldier", true);
+				
+				Map_AddTimer("Timer_Prepare_SoldierDialog_Urge_Gun", 20, "OnTimer_ContinueWoundedSoldiersDialog");
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_PickupGun(const tString &in asEntity)
+		{
+			if (Item_GetInventoryIsFull(eInventoryInstance_Player, true))
+				return;
+			
+			Entity_SetActive("Trigger_CheckPlayerDistanceToOfferGHun", false);
+			mbSoldierIsOfferingTheGun = false;
+				
+			Map_AddTimer("Timer_Prepare_SoldierDialog_Urge_Bullets", 20, "OnTimer_ContinueWoundedSoldiersDialog");
+			
+			Entity_PlayAnimation("SmokingSoldier", "soldier_offer_gun_taken_to_idle_no_gun", 0.1f, false, true, "OnAnimEnd_SoldierPlayIdleAnim");
+			
+			if (Map_TimerExists("Timer_ToggleGunOfferingState"))
+				Map_RemoveTimer("Timer_ToggleGunOfferingState");
+			
+			Hint_StopHint();
+			Map_RemoveTimer("Timer_GunPickupHint");
+			Map_AddTimer("Timer_GunEquipHint", 9.f, "OnTimer_GunEquipHint");
+			
+			HeadTracker_SetActive("SmokingSoldier", false);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_PlayWarningBark(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			/////////////////////
+			// If this voice subject is already played abort
+			if (mbCreatureVoiceSubjectPlayed)
+			{
+				if (Map_TimerExists("Timer_Prepare_SoldierDialog_Creature"))
+				{
+					Map_RemoveTimer("Timer_Prepare_SoldierDialog_Creature");
+					return false;
+				}
+				return false;
+			}
+			
+			/////////////////////////////////////
+			// If the player enters the room with the bullets before the dialog's end then skip the dialog and go straight to the creature dialog.
+			PlaySoldierDialog_Creature();
+			return false;
+		}
+			
+		//-------------------------------------------------------
+		
+		void PlaySoldierDialog_Creature()
+		{
+			Voice_StopAll();
+			Sound_Play("Sound_SoldierCreatureWarning_2", 0.0f);
+			
+			Map_AddTimer("Timer_PlaySoldierDialogCreature", 0.25f,"OnTimer_PlaySoldierDialogCreature");
+			
+			////////////////////////////
+			// Setup lamps for flickering
+			tString sLamp1 = "Lamp_PowerSwitch_3_12";
+			tString sLamp2 = "Lamp_PowerSwitch_3_14";
+			Lamp_SetupFlicker(sLamp1, .25, 2.5, 0.2, 0.6, true, "", "", "", "", 0.25f, 0.5f);
+			Lamp_SetupFlicker(sLamp2, .5, 1.5, 0.1, 0.5, true, "", "", "", "", 0.35f, 0.65f);
+			Lamp_SetFlickerActive(sLamp1, true);
+			Lamp_SetFlickerActive(sLamp2, true);
+			
+			Map_AddTimer("Timer_StopKitchenLampFlicker", 16.f,"OnTimer_StopKitchenLampFlicker");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_StopKitchenLampFlicker(const tString &in asTimer)
+		{
+			Lamp_SetFlickerActive("Lamp_PowerSwitch_3_12", false);
+			Lamp_SetFlickerActive("Lamp_PowerSwitch_3_14", false);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnDoorway_NopeAchievementActive(const tString &in asArea, const tString &in asEntity, int alState)
+		{
+			if (Achievement_GetUnlocked(eAchievement_Nope)) return false;
+			
+			///////////////////////
+			// Save Nope Achievement state to config so that the achievement will work even if the player force closes the game
+			cConfigFile@ pFile = cLux_GetStatsConfig();
+			
+			bool bNopeAchievementActive = alState == 1;
+			if (pFile !is null)
+			{
+				pFile.SetBool("Game", "Nope", bNopeAchievementActive);
+				pFile.Save();
+			}
+			
+			return alState == 1 || !mbStalkerAttackedTheSoldier;
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event: The player meets the soldier
+		
+		//-------------------------------------------------------
+	
+		/////////////////////////////////////////
+		// START Event: Soldier's death
+		//{//////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		eHub_StalkerEmergeStage mStalkerEmergeStage = eHub_StalkerEmergeStage_None;
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_ForceKillSoldier(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (mbCreatureVoiceSubjectPlayed && ItemType_IsInInventory("Gun")==false)
+			{
+				CreatureAttackTheSoldier();
+				return false;
+			}
+			
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_PrepareSoldiersDeathSequence(const tString &in asEntity)
+		{
+			if (mbStalkerAttackedTheSoldier) return;
+			
+			Entity_SetActive("Trigger_CreatureAttackTheSoldier", true);
+			Entity_SetActive("Trigger_CreatureAttackTheSoldier_Early", true);
+			
+			Map_RemoveTimer("Timer_StalkerAttackIfAimAtSolder");
+			Map_AddTimer("Timer_StalkerAttackIfAimAtSolder", 0.2f, "OnTimer_StalkerAttackIfAimAtSolder");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_StalkerAttackIfAimAtSolder(const tString &in asTimer)
+		{
+			if (mbStalkerAttackedTheSoldier) return;
+						
+			cLuxPlayer@ pPlayer = cLux_GetPlayer();
+			cCamera@ pCam = pPlayer !is null ? pPlayer.GetCamera() : null;
+			iLuxEntity@ pSoldier = Map_GetEntity("SmokingSoldier", eLuxEntityType_Prop);
+			
+			if (pPlayer is null) return;
+			if (pCam is null) return;
+			if (pSoldier is null) return;
+			
+			cVector3f vToSoldier = cMath_Vector3Normalize(pSoldier.GetPosition() - pCam.GetPosition());
+			float fDot = cMath_Vector3Dot(pCam.GetForward(), vToSoldier);			
+			
+			if (fDot >= 0.95f &&
+				pPlayer.GetCurrentStateId() == ePlayerState_Custom_UsingGun_Aim &&
+				Revolver_GetUnspentBulletCount() > 0 &&
+				pSoldier.CheckIsOnScreen(true))
+			{
+				Player_FadeMoveSpeedMulTo(0.6f, 1.0f, ePlayerMoveSpeedMulType_Script);
+				Player_FadeRunSpeedMulTo(0.4f, 1.5f);
+				
+				CreatureAttackTheSoldier();				
+				return;
+			}
+			
+			Map_AddTimer("Timer_StalkerAttackIfAimAtSolder", 0.2f, "OnTimer_StalkerAttackIfAimAtSolder");
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_CreatureAttackTheSoldier(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState!=1) return true;
+			
+			if (asParent == "Trigger_CreatureAttackTheSoldier_Early")
+			{
+				if (SwingDoor_GetOpenAmount("MedbayDoor_3") < 0.6f)
+					 return false;
+				
+				Player_FadeMoveSpeedMulTo(0.6f, 1.0f, ePlayerMoveSpeedMulType_Script);
+				Player_FadeRunSpeedMulTo(0.4f, 1.5f);
+			}
+			else
+			{
+				
+				Player_FadeMoveSpeedMulTo(0.5f, 1.0f, ePlayerMoveSpeedMulType_Script);
+				Player_FadeRunSpeedMulTo(0.0f, 1.0f);
+			}
+			
+			CreatureAttackTheSoldier();
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void CreatureAttackTheSoldier()
+		{
+			if (Map_TimerExists("Timer_Prepare_SoldierDialog_Urge_Gun"))
+				Map_RemoveTimer("Timer_Prepare_SoldierDialog_Urge_Gun");
+			if (Map_TimerExists("Timer_Prepare_SoldierDialog_Urge_Bullets"))
+				Map_RemoveTimer("Timer_Prepare_SoldierDialog_Urge_Bullets");
+				
+			Entity_SetActive("Trigger_ForceKillSoldier", false);
+			Entity_SetActive("Trigger_CreatureAttackTheSoldier", false);
+			Entity_SetActive("Trigger_CreatureAttackTheSoldier_Early", false);
+			Entity_SetActive("Trigger_CheckPlayerDistanceToOfferGHun", false);
+			
+			mbStalkerAttackedTheSoldier = true;
+			
+			if (Map_TimerExists("Timer_ToggleGunOfferingState"))
+				Map_RemoveTimer("Timer_ToggleGunOfferingState");
+				
+			Map_RemoveTimer("Timer_StalkerAttackIfAimAtSolder");
+				
+			Seq_StalkerTakesSoldier("");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_Player_PrepareGun(const tString &in asEntity)
+		{
+			Hint_StopHint();
+			Map_RemoveTimer("Timer_GunPickupHint");
+			Map_AddTimer("Timer_GunEquipHint", 9.f, "OnTimer_GunEquipHint");
+			
+			Light_FadeBrightnessTo("SoldierGun_Light", 0, 5);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_GunEquipHint(const tString&in asTimer)
+		{
+			if (ItemType_GetCountInInventory("Gun") == 0) return;
+			
+			Hint_StopHint();
+			Hint_ShowHint_Hold("Hints", "HintEquipGun", true, 1.5f, true, 15.f, true, true);
+		}
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mStalkerTakesSoldier;
+		void Seq_StalkerTakesSoldier(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_StalkerTakesSoldier ", mStalkerTakesSoldier);
+			
+			if (Sequence_DoStepAndWait(0.5f))
+			{
+				Entity_SetCollideCharacter("SmokingSoldier", false);
+				Entity_SetCollide("SmokingSoldier", false);
+				
+				////////////////
+				// Light Flicker
+				if (Map_TimerExists("Timer_StopKitchenLampFlicker"))
+					Map_RemoveTimer("Timer_StopKitchenLampFlicker");
+				Lamp_SetFlickerActive("Lamp_PowerSwitch_3_12", true);
+				Lamp_SetFlickerActive("Lamp_PowerSwitch_3_14", true);
+				
+				///////////////////
+				// Play killing voices
+				Voice_StopAll();
+				Voice_Play("Dialog_WoundedSoldier_Death", -1, "", 2);
+				Map_AddTimer("Timer_StopWoundedSoldierDialogue", 2.f, "OnTimer_StopWoundedSoldierDialogue");
+				
+				////////////////////
+				// Disable the cigarette and other unneeded entities
+				Entity_SetActive("SoldierSeq_*", false);
+				Entity_SetActive("SoldierGunHand", false);
+				Entity_SetActive("Trigger_GunPickupPrompt", false);
+				
+				//////////////////
+				// Play soldier and monster animations
+				Entity_PlayAnimation("SmokingSoldier", "soldier_death", 0.1f);
+				
+				Entity_SetActive("stalker_rigid_1", true);
+				Entity_StopAnimation("stalker_rigid_1");
+				Entity_PlayAnimation("stalker_rigid_1", "stalker_kill_smoking_soldier", 0.f);
+				
+				////////////////
+				//Break the crate
+				Entity_SetActive("Soldier_Seq_BlockerCrate", true);
+				Entity_SetActive("Soldier_Seq_BlockerCrate_Unbreakable", false);
+				Prop_SetHealth("Soldier_Seq_BlockerCrate", 0.f);
+				ParticleSystem_SetVisible("SoldierSeq_CigaretteSmoke", false);
+				ParticleSystem_CreateAtEntity("PS_SoldierBeigTakenDust", "monster_attack_dust_cloud.ps", "SoldierSeq_GhoulAttackDustSource", false);
+				Entity_AddImpulse("Lamp_PowerSwitch_3_16", cVector3f(1.2f,0.3f,-1.3f), false, true);
+				
+				//////////////////
+				// Prepare turning off the generator
+				bool bGeneratorRunningForever = GameDifficulty_GetSettingValueByID_Float(eGameDifficultySetting_GeneratorRunTime)>1000;
+				if (bGeneratorRunningForever==false)
+					Entity_SetActive("Trigger_KillGenerator", true);
+				
+				/////////////////
+				// Sound effects
+				Sound_PlayGui("officer_hub/soldier/death_stinger", 1.0);
+				Sound_Play("Sound_SoldierDeath", 0.0f);
+				Music_Stop(5.0f, eMusicPrio_SceneAmb);
+				Music_Play("Bunker_SoldierDeath_Version2.ogg", 0.2f, false, eMusicPrio_MinorEvent); 
+			}
+			else if (Sequence_DoStepAndWait(0.1f))
+			{
+				/////////////////////////////////
+				// Release concrete blocks from the crate
+				Entity_SetActive("ConcreteBlock_MedBay_*", true);
+				Entity_AddImpulseFromEntity("ConcreteBlock_MedBay_*", "SoldierSeq_GhoulAttackImpulseSource", 10.f, true);
+				Light_FadeBrightnessTo("Light_HighlightGhoulHole", 0.1f, 2.f);
+				
+				///////////////////////////////
+				// Enable the gun pickup if not already picked up
+				if (ItemType_IsInInventory("Gun")==false)
+				{
+					Entity_SetActive("SoldierGun", true);
+					Light_FadeBrightnessTo("SoldierGun_Light", 1, 5);
+				}
+			}
+			else if (Sequence_DoStepAndWait(3.f))
+			{
+			}
+			else if (Sequence_DoStepAndWait(5.f))
+			{
+				///////////////////////////////
+				// Deactivate cutscene entities
+				Entity_SetActive("SmokingSoldier", false);
+				Entity_SetActive("stalker_rigid_1", false);
+				
+				////////////////////////////
+				// Enable the real agent entity
+				Entity_SetActive("Stalker_1", true);
+				Stalker_SetEmergeAllowed("Stalker_1", false);
+				Stalker_GoToHole("Stalker_1", "GhoulHole_3", true, true);
+				Agent_SetSensesActive("Stalker_1", false);
+				
+				Player_FadeMoveSpeedMulTo(1.0f, 0.5f, ePlayerMoveSpeedMulType_Script);
+				Player_FadeRunSpeedMulTo(1.0f, 0.5f);
+				
+				mStalkerEmergeStage = eHub_StalkerEmergeStage_TakenSoldier;
+			}
+			else if (Sequence_DoStepAndWait(10.f))
+			{
+				if (mStalkerEmergeStage < eHub_StalkerEmergeStage_ReactToPadlock)
+					Stalker_GoToHole("Stalker_1", "GhoulHole_1");
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{
+				if (mStalkerEmergeStage < eHub_StalkerEmergeStage_ReactToPadlock)
+					Entity_SetActive("Stalker_1", false);
+				
+				Lamp_SetFlickerActive("Lamp_PowerSwitch_3_12", false);
+				Lamp_SetFlickerActive("Lamp_PowerSwitch_3_14", false);
+					
+				Map_AddTimer("Timer_GunPickupHint", 30.f, "OnTimer_GunPickupHint");
+			}
+			
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_StopWoundedSoldierDialogue(const tString &in asTimer)
+		{
+			Voice_FadeSceneVolumeTo("Dialog_WoundedSoldier", 0.f, 3.f);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_GunPickupHint(const tString&in asTimer)
+		{
+			if (ItemType_IsInInventory("Gun"))
+				return;
+				
+			Hint_StopHint();
+			Hint_ShowHint_Hold("Hints", "HintGunPickup", false, 1.5f, true, 15.f);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_StopSoldierMusic(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Entity_SetActive("Trigger_MusicStop", false);
+			Music_Stop(5.0f, eMusicPrio_SceneAmb);
+			return false;
+		}
+
+		//-------------------------------------------------------
+		
+		//} END Event: The player pickups the gun and the ghoul takes the soldier away
+		
+		//-------------------------------------------------------
+		
+		/////////////////////////////////////////
+		// START Event: The player breaks the padlock
+		//{//////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_KillGenerator(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			bool bGeneratorRunningForever = GameDifficulty_GetSettingValueByID_Float(eGameDifficultySetting_GeneratorRunTime)>1000;
+			if (bGeneratorRunningForever)
+			{
+				Entity_SetActive("Trigger_KillGenerator", false);
+				return false;
+			}
+				
+			Generator_SetRunForever(false);
+			Generator_SetFuelAmount(0);
+			
+			Music_Play("Bunker_PowerDown_Version2.ogg", 0.2f, false, eMusicPrio_MinorEvent);
+			Entity_SetActive("Trigger_KillGenerator", false);
+			return false;
+		}
+		
+		
+		bool OnTrigger_Player_KillGenerator_NoRevolver(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			OnTrigger_Player_KillGenerator(asParent, asChild, alState);
+			Seq_StalkerReactsToPadlock("");
+			
+			/////////////////////////////
+			// Spawn the Stalker earlier for consecutive playthroughs
+			if (GameDifficulty_GetNewGamePlusActive())
+			{
+				Entity_SetActive("Trigger_ActivateStalkerEarly", true);
+				Entity_SetActive("Trigger_StalkerEmerge_*", false);
+				Entity_SetActive("Trigger_EnableStalkerInHoles_*", false);
+			}
+			
+			Entity_SetActive("Trigger_KillGenerator_NoRevolver", false);
+			return false;
+		}
+		
+		
+		//-------------------------------------------------------
+		
+		void OnBreak_Padlock(const tString &in asEntity)
+		{
+			Entity_SetCollide("metal_door_lock_hinge_1", true);
+			
+			Seq_StalkerReactsToPadlock("");
+			
+			///////////////////////////////////
+			// If for debug purposess the soldier is still talking stop him.
+			if (Map_TimerExists("Timer_Prepare_SoldierDialog_Urge_Gun"))
+				Map_RemoveTimer("Timer_Prepare_SoldierDialog_Urge_Gun");
+			if (Map_TimerExists("Timer_Prepare_SoldierDialog_Urge_Bullets"))
+				Map_RemoveTimer("Timer_Prepare_SoldierDialog_Urge_Bullets");
+				
+			/////////////////////////////
+			// Spawn the Stalker earlier for consecutive playthroughs
+			if (GameDifficulty_GetNewGamePlusActive())
+			{
+				Entity_SetActive("Trigger_ActivateStalkerEarly", true);
+				Entity_SetActive("Trigger_StalkerEmerge_*", false);
+				Entity_SetActive("Trigger_EnableStalkerInHoles_*", false);
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSeqDataStalkerReactsToPadlock;
+		void Seq_StalkerReactsToPadlock(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_StalkerReactsToPadlock", mSeqDataStalkerReactsToPadlock);
+			Sequence_Wait(1.5f);
+			if (Sequence_DoStepAndWait(1.f))
+			{
+				Sound_CreateAtEntity("Sound_StalkerReact", "creatures/stalker/spot", "Area_PadlockBreakStalkerSound", 0.f, false, 0.5f);
+				
+				tString sHint = "HintRun";							
+				int lSprintMode = cLux_GetUserConfig().GetInt("Accessibility", "SprintMode", 0);
+				if 		(lSprintMode == 1) sHint = "HintRunAlt";
+				else if (lSprintMode == 2) sHint = "HintRunAlt_Toggle";
+				
+				Hint_ShowHint_Hold("Hints", sHint, true, 1.5f, false);	
+				
+				Map_AddTimer("Timer_DidStalkerSoundReaction", 20.f, "");
+			}
+			else if (Sequence_DoStepAndWait(18.f))
+			{
+				Entity_SetActive("Stalker_1", true);
+				
+				Stalker_SetEmergeAllowed("Stalker_1", false);
+				Stalker_GoToHole("Stalker_1", "GhoulHole_1", true, true);				
+				Stalker_GoToHole("Stalker_1", "GhoulHole_13");				
+				Agent_SetSensesActive("Stalker_1", false);
+				
+				mStalkerEmergeStage = eHub_StalkerEmergeStage_ReactToPadlock;
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{
+				if (mStalkerEmergeStage < eHub_StalkerEmergeStage_RoamInHoles)
+				{
+					Entity_SetActive("Stalker_1", false);
+				}
+			}
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event: The player breaks the padlock
+		
+		//-------------------------------------------------------
+		
+		//////////////////////////////////////////////////////
+		// START Event: The player explores the save room
+		//{///////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_PickUpPocketWatch(const tString &in asEntity)
+		{
+			Map_AddTimer("Timer_ActivatePocketWatchStool", 0.1f, "OnTimer_ActivatePocketWatchStool");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ActivatePocketWatchStool(const tString &in asTimer)
+		{
+			if (Entity_Exists("Pocketwatch") == false || Entity_IsActive("Pocketwatch") == false)
+			{
+				Prop_SetStaticPhysics("PocketWatchStool", false);
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_ReleaseCorridorBlocker(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			tString sCrate = "CorridorBlocker";
+			Entity_SetInteractionDisabled(sCrate, false);
+			//Prop_SetDisableBreakable(sCrate, false);
+			WoodenBreakable_SetIsBreakable(sCrate, true);
+			Prop_SetStaticPhysics(sCrate, false);
+			Entity_SetActive(asParent, false);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_ShowMainGameplayHint(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Hint_StopHint();
+			Hint_ShowHint_Hold("LoadGame", "LoadingHint", true, 1.5f, true, 15.f);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_AllowNoteInteraction(const tString &in asEntity)
+		{
+			Entity_SetInteractionDisabled("Note_KeepTheLightOn", false);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_GeneratorNote(const tString &in asEntity)
+		{
+			Entity_SetActive("Trigger_DoorCodeNote", true);
+			Entity_SetInteractionDisabled("Note_DoorCode", false);
+			
+			Sound_Stop("Sound_DoorScratch", 2.0f);
+			SequenceStates_Stop("Seq_SoundDoorHit");
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_ActivateStalkerEarly(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			mStalkerEmergeStage = eHub_StalkerEmergeStage_Emerge;
+					
+			bool bWasActive = Entity_IsActive("Stalker_1");
+			tString sHole = msStalkerEmergeHoles[0];
+				
+			Entity_SetActive("Stalker_1", true);
+			Stalker_SetEmergeAllowed("Stalker_1", true);
+			Stalker_SetMode("Stalker_1", eStalkerMode_Passive, true);
+			Stalker_SetTenacity("Stalker_1", 0.5f);
+			Agent_SetSensesActive("Stalker_1", true);
+					
+			if (bWasActive == false)
+				Stalker_GoToHole("Stalker_1", sHole, true, true);
+			
+			Entity_SetActive(asParent, false);
+			Entity_SetActive("Trigger_StalkerEmerge_*", false);
+			Entity_SetActive("Trigger_EnableStalkerInHoles_*", false);
+			
+			Blackboard_SetStalkerReachOutHoleCooldown(60.f * 5.f);
+			
+			cLux_AddDebugMessage("Stalker released early!");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		
+		//SAFE ROOM DOOR SOUND----------------------------------- 
+		//-------------------------------------------------------
+		
+		void Lock_Door_SaveRoom_2_OnPlayerInteract(const tString &in asEntity)
+		{
+			Entity_SetActive("Trigger_SwitchSweet",true);
+			Entity_SetActive("Trigger_DoorSweet",false);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_SoundSwitchSweet(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (mbDoorLockCheck)
+				{
+					Entity_SetActive("Trigger_SwitchSweet",false);
+					Entity_SetActive("Trigger_DoorSweet",false);
+					Seq_SoundDoorHit("");
+					mbDoorLockCheck = false;
+					return false;
+				}
+			else
+				{
+					mbDoorLockCheck = true;
+					return false;
+				}
+			return false;
+		}
+
+		//-------------------------------------------------------
+		
+		bool OnTrigger_SoundDoorSweet(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (mbDoorLockCheck)
+				{
+					Entity_SetActive("Trigger_SwitchSweet",false);
+					Entity_SetActive("Trigger_DoorSweet",false);
+					Seq_SoundDoorHit("");
+					mbDoorLockCheck = false;
+					return false;
+				}
+			else
+				{
+					mbDoorLockCheck = true;
+					return false;
+				}
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSeqSoundDoorHit;
+		void Seq_SoundDoorHit(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_SoundDoorHit", mSeqSoundDoorHit);
+			if (Sequence_DoStepAndWait(0.8f))
+			{
+				Entity_SetActive("Trigger_SwitchSweet",false);
+				Entity_SetActive("Trigger_DoorSweet",false);
+			}
+			else if (Sequence_DoStepAndWait(5.5f))
+			{
+				//Sound_Play("Sound_DoorThud", 0.0f);	
+			}
+			else if (Sequence_DoStepAndContinue())
+			{
+				//Sound_Play("Sound_DoorScratch", 0.0f);					
+			}
+			Sequence_End();
+		}
+		
+		//SAFE ROOM DOOR SOUND END------------------------------- 
+		//-------------------------------------------------------
+		
+		//} END Event: The player explores the save room
+		
+		//-------------------------------------------------------
+		
+		//////////////////////////////////////////////////////
+		// START Event: The player explores the store room
+		//{///////////////////////////////////////////////////		
+		
+		//-------------------------------------------------------
+		
+		bool mbPlayerExploredLockers = false;
+		int mlUnlockedLockerCount = 0;
+		
+		//-------------------------------------------------------
+		
+		void OnBreak_MoveItemsToTheFloor(const tString &in asEntity)
+		{
+			if (asEntity=="BreakableDesk01")
+			{
+				Prop_MoveLinearTo("Note_RatsAndBurntCorpses", "Note_RatsAndBurntCorpses_Floor", 4, 4, 0, false);
+			}
+			else if (asEntity=="BreakableDesk03")
+			{
+				Prop_MoveLinearTo("Note_AmnesiaCause", "Note_AmnesiaCause_Floor", 4, 4, 0, false);
+			}
+			else if (asEntity=="BreakableDesk05")
+			{
+				Prop_RemoveAttachedProp("Note_JoubertsJournal_StrangeSounds", asEntity);
+				Prop_MoveLinearTo("Note_JoubertsFinalJournalEntry", "Note_JoubertsFinalJournalEntry_Floor", 4, 4, 0, false);
+				Prop_MoveLinearTo("Note_JoubertsJournal_StrangeSounds", "Note_JoubertsJournal_StrangeSounds_Floor", 4, 4, 0, false);
+			}
+			else if (asEntity=="BreakableDesk06")
+			{
+				Prop_MoveLinearTo("Note_LaRuesReport", "Note_LaRuesReport_Floor", 4, 4, 0, false);
+				Decal_SetDynamicVisible("blood_splatter_light_59", false);
+			}
+			else if (asEntity=="BreakableDesk07")
+			{
+				Decal_SetDynamicVisible("blood_splatter_light_46", false);
+				Decal_SetDynamicVisible("blood_splatter_light_45", false);
+				Prop_RemoveAttachedProp("Note_IncreasedSecurity", asEntity);
+				Prop_MoveLinearTo("Note_IncreasedSecurity", "Note_IncreasedSecurity_Floor", 4, 4, 0, false);
+				Prop_MoveLinearTo("Note_ShootingItMultipleTimes", "Note_ShootingItMultipleTimes_Floor", 4, 4, 0, false);
+			}
+			else if (asEntity=="BreakableDesk08")
+			{
+				Prop_MoveLinearTo("Note_AssumptionsAboutMotive", "Note_AssumptionsAboutMotive_Floor", 4, 4, 0, false);
+			}
+			else if (asEntity=="MainRoomDesk")
+			{
+				Prop_RemoveAttachedProp("Note_PrisonerInCustody", asEntity);
+				Prop_MoveLinearTo("Note_PrisonerInCustody", "Note_PrisonerInCustody_Floor", 4, 4, 0, false);
+			}
+			else if (asEntity=="french_table_messhall_3")
+			{
+				Decal_SetDynamicVisible("decal_grunge_01_1", false);
+			}
+			else if (asEntity=="french_table_messhall_4")
+			{
+				Decal_SetDynamicVisible("decal_grunge_01_2", false);
+			}
+			else if (asEntity=="JoubertsDesk_1")
+			{
+				Decal_SetDynamicVisible("grunge_wood_scratches_4", false);
+				Prop_RemoveAttachedProp("Note_AutopsyOfReynard", asEntity);
+				Prop_MoveLinearTo("Note_AutopsyOfReynard", "Note_AutopsyOfReynard_Floor", 4, 4, 0, false);
+			}
+			else if (asEntity=="military_wooden_crate_7")
+			{
+				Prop_MoveLinearTo("Note_WineSupply", "Note_WineSupply_Floor", 4, 4, 0, false);
+			}
+			else if (asEntity=="military_wooden_crate_4")
+			{
+				Prop_SetHealth("military_wooden_crate_9", 0.f);
+			}
+			else if (asEntity=="military_wooden_crate_3")
+			{
+				Prop_SetHealth("military_wooden_crate_4", 0.f);
+			}
+			else if (asEntity=="military_wooden_crate_6")
+			{
+				Prop_SetHealth("military_wooden_crate_5", 0.f);
+			}
+			else if (asEntity=="military_wooden_crate_8")
+			{
+				Prop_SetHealth("military_wooden_crate_7", 0.f);
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void SetupLockers()
+		{
+			/////////////////////
+			// Items in lockers should be highlighted, even when not in LoS
+			array<iLuxEntity@> vPickups;
+			Map_GetEntityArray("LockerPickup_*", vPickups, eLuxEntityType_Prop);
+			
+			for (int i = 0; i < vPickups.size(); ++i)
+			{
+				HighlightEffect_AddIgnoreLosEntity(vPickups[i].GetName());
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_EnableBreakDesk(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState == 1) return true;
+				
+			Entity_SetActive("Trigger_BreakDesk", Entity_PlayerIsInFront(asParent));			
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_BreakDesk(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState == -1) return true;
+			
+			Prop_SetHealth("NoisyDesk", 0.f);
+			Map_AddTimer("NoisyDesk", 0.01f, "OnTimer_DoNoisyDeskImpulse");
+			
+			Entity_SetActive("Trigger_BreakDesk", false);
+			Entity_SetActive("Trigger_EnableBreakDesk", false);
+
+			
+			Map_AddTimer("NoiseHint", 2.5f, "OnTimer_NoiseHint");
+			
+			Effect_Rumble_Start(0.5, 0.5f);
+
+			return false;
+		}
+
+		bool mbHasGivenNoiseHint = false;
+
+		void OnTimer_NoiseHint(const tString &in asTimer)
+		{
+			if (mbHasGivenNoiseHint)
+				return;
+			
+			if (Stalker_GetIsInsideWalls("Stalker_1") == false && 
+				Entity_IsActive("Stalker_1"))
+			{
+				return;
+			}
+			
+			mbHasGivenNoiseHint = true;
+			
+			/////////////////////
+			// Play reaction sound
+			Entity_PlaceAtEntity("Area_StalkerSoundReaction", "Stalker_1", cVector3f(0.f, 3.f, 0.f), false, false);
+			
+			float fMaxDist = Entity_GetDeltaToEntity("player", "Area_StalkerSoundReaction").Length() * 2.f;		
+			Sound_CreateAtEntity("Sound_StalkerReact", "creatures/stalker/tunnel_warning", "Area_StalkerSoundReaction", 0.f, false, 1.f, -1.f, fMaxDist);
+			
+			Map_AddTimer("Timer_ShowNoiseHint", 3.f, "OnTimer_ShowNoiseHint");
+		}
+		
+		void OnTimer_ShowNoiseHint(const tString &in asTimer)
+		{
+			// Show hint
+			Hint_StopHint();
+			Hint_ShowHint_Hold("Hints", "HintNoise", true, 1.5f, true, 15.f);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_DoNoisyDeskImpulse(const tString &in asTimer)
+		{
+			iLuxEntity@ pEnt = Map_GetEntity("NoisyDesk", eLuxEntityType_Prop);
+			if (pEnt !is null)
+			{
+				for (int i = 0; i < pEnt.GetBodyNum(); ++i)
+				{
+					iPhysicsBody@ pBody = pEnt.GetBody(i);
+					pBody.AddImpulse(cVector3f_Down);
+				}
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_CombinationLock(const tString &in asEntity)
+		{
+			mbPlayerExploredLockers = true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnAddCode_Bardin(const tString &in asEntity, const tString &in asNameID, const tString &in asCombination)
+		{
+			mbPlayerExploredLockers = true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnCombinationLock_Unlocked(const tString&in asEntityName)
+		{
+			tString sName = Entity_GetVarString(asEntityName, "");
+			
+			/////////////
+			// Save room
+			if (asEntityName == "combination_lock_saveroom")
+			{
+				Entity_SetInteractionDisabled(asEntityName, true);
+				MovingButton_SetLocked("Lock_Door_SaveRoom_2", false, true);
+				mbHasLeftSafeRoom = true;
+			}
+			
+			///////////////
+			// Mission Storage locker
+			else
+			{
+				const tString sPickupName = "LockerPickup_" + sName + "_*";
+				
+				array<iLuxEntity@> vPickups;
+				Map_GetEntityArray(sPickupName, vPickups, eLuxEntityType_Prop);
+				for (uint i = 0; i < vPickups.length(); i++)
+				{
+					tString sClassName = vPickups[i].GetClassName();
+					
+					if (sClassName == "cScrPropPickup")
+					{
+						Pickup_SetCanPickup(vPickups[i].GetName(), true);
+						Pickup_SetIsLockerItem(vPickups[i].GetName(), false);
+					}
+					else if (sClassName == "cScrPropReadable")
+					{
+						Readable_SetCanPickup(vPickups[i].GetName(), true);
+						Readable_SetIsLockerItem(vPickups[i].GetName(), false);
+					}
+					
+					HighlightEffect_RemoveIgnoreLosEntity(vPickups[i].GetName());
+				}
+				
+				Achievement_IncreaseUnlockedLockerCount();
+				
+				// Needed to ensure old saves work correctly
+				mlUnlockedLockerCount++;
+				if (mlUnlockedLockerCount >= glLockerCountLocal)
+					Achievement_Unlock(eAchievement_Codebreaker);
+			
+				///////////////
+				// Deactivate aux areas
+				tString sInteractAux = "InteractAux_" + sName + "_*";
+				if (Map_GetEntityCount(sInteractAux) > 0) 
+					Entity_SetActive(sInteractAux, false);
+					
+				tString sLookAtAux = "LookAtAux_" + sName;
+				if (Entity_Exists(sLookAtAux))
+					Entity_SetActive(sLookAtAux, false);
+			}	
+		}
+		
+		//-------------------------------------------------------
+
+		void OnInteract_Wrench(const tString &in asEntity)
+		{
+			Map_AddTimer("Timer_CheckWrenchPickUp", 0.1f, "OnTimer_CheckWrenchPickUp");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_CheckWrenchPickUp(const tString &in asTimer)
+		{
+			if (Entity_Exists("LockerPickup_Monet_1") == false ||
+				Entity_IsActive("LockerPickup_Monet_1") == false)
+			{
+				InGameMap_SetObjectiveCompleted("Obj_GetWrench_Foreman");
+				InGameMap_SetObjectiveCompleted("Obj_GetWrench_Chapel");
+				InGameMap_SetObjectiveCompleted("Obj_GetWrench_Pillbox_A");
+				InGameMap_SetObjectiveCompleted("Obj_GetWrench_Pillbox_B");
+				InGameMap_SetObjectiveCompleted("Obj_GetWrench_Locker");
+				InGameMap_SetObjectiveCompleted("Obj_GetWrench_NoMarker");
+				
+				Music_Play("Bunker_WrenchPickup.ogg", 0.1f, false, eMusicPrio_MinorEvent);
+				return;
+			}
+			
+			Map_RestartCurrentTimer();
+		}
+
+		//-------------------------------------------------------
+		
+		//} END Event: The player explores the store room
+		
+		//-------------------------------------------------------
+		
+		/////////////////////////////////////////////////////////
+		// START Event: The player explores the officers quarters
+		//{//////////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		tString[] msStalkerEmergeHoles = { "GhoulHole_12", "GhoulHole_12" };
+		
+		//-------------------------------------------------------
+				
+		void OnBreak_CabinetChainlock(const tString &in asEntity)
+		{
+			Prop_SetStaticPhysics("filing_cabinet_5_hinge_1", false);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_EnableStalkerInHoles(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (mStalkerEmergeStage == eHub_StalkerEmergeStage_Emerge)
+				return false;
+				
+			int lId = cString_GetNumericSuffixInt(asParent);
+			
+			tString sStartHole = "GhoulHole_6";
+			tString sGoalHole = "GhoulHole_12";
+			
+			if (lId == 2)
+			{
+				sStartHole = "GhoulHole_12";
+				sGoalHole = "GhoulHole_6";
+			}
+			
+			bool bWasActive = Entity_IsActive("Stalker_1");
+			
+			Entity_SetActive("Stalker_1", true);
+			Stalker_SetEmergeAllowed("Stalker_1", false);
+			Stalker_SetMode("Stalker_1", eStalkerMode_Active, true);
+			Stalker_SetTenacity("Stalker_1", 0.75f);
+			Agent_SetSensesActive("Stalker_1", true);
+			
+			if (bWasActive == false)
+				Stalker_GoToHole("Stalker_1", sStartHole, true, true);
+			
+			Stalker_GoToHole("Stalker_1", sGoalHole);
+			
+			mStalkerEmergeStage = eHub_StalkerEmergeStage_RoamInHoles;
+			
+			Blackboard_SetStalkerReachOutHoleCooldown(60.f * 10.f);
+			
+			Entity_SetActive("Trigger_EnableStalkerInHoles_*", false);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_StalkerEmerge(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			int lId = cString_GetNumericSuffixInt(asParent);
+			
+			////////////////////
+			// Entered area where requirements to spawn stalker can be filled!
+			if (alState == 1)
+			{
+				////////////////////
+				// Wait in hole to emerge from
+				OnTimer_StalkerWaitInEmergeHole(asParent);
+				return true;
+			}
+			
+			////////////////////
+			// Left area, check if requirements filled!
+			else
+			{				
+				bool bEmerge = false;				
+				
+				////////////////////
+				// Stop waiting in emerge hole
+				Map_RemoveTimer(asParent);				
+				
+				//////////////////////
+				// Has explored lockers and found lockdown wheel dog tag?
+				if (lId == 1)
+				{
+					if (mbPlayerExploredLockers && Sketchbook_GetHasCode("J DELISLE"))
+					{					
+						bEmerge = true;
+					}	
+				}
+				
+				//////////////////////
+				// Picked up lockdown wheel?
+				else if (lId == 2)
+				{
+					if (ItemType_GetCountInInventory("LockdownWheel") > 0)
+					{
+						bEmerge = true;
+					}
+				}
+				
+				////////////////////
+				// Emerge?
+				if (bEmerge)
+				{
+					mStalkerEmergeStage = eHub_StalkerEmergeStage_Emerge;
+					
+					bool bWasActive = Entity_IsActive("Stalker_1");
+					tString sHole = msStalkerEmergeHoles[lId - 1];
+					
+					Entity_SetActive("Stalker_1", true);
+					Stalker_SetEmergeAllowed("Stalker_1", true);
+					Stalker_SetMode("Stalker_1", eStalkerMode_Active, true);
+					Stalker_SetTenacity("Stalker_1", 0.5f);
+					Agent_SetSensesActive("Stalker_1", true);
+					
+					if (bWasActive == false)
+						Stalker_GoToHole("Stalker_1", sHole, true, true);
+					
+					Entity_SetActive("Trigger_StalkerEmerge_*", false);
+				}
+				
+				return true;
+			}			
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_StalkerWaitInEmergeHole(const tString &in asTimer)
+		{
+			int lId = cString_GetNumericSuffixInt(asTimer);			
+			Stalker_GoToHole("Stalker_1", msStalkerEmergeHoles[lId - 1]);
+			
+			Map_AddTimer(asTimer, 1.f, "OnTimer_StalkerWaitInEmergeHole");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnAddCode_DelisleDogTag(const tString &in asEntity, const tString &in asNameID, const tString &in asCombination)
+		{
+			Sound_Play("Sound_DogTagSweet", 0.f);
+			
+			InGameMap_SetObjectiveCompleted("Obj_DelislesRoom");
+			InGameMap_AddObjective("Obj_GetWheel", 1.f);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTear_DelislePlank(const tString &in asEntity)
+		{
+			iLuxEntity@ pEnt = Map_GetEntity(asEntity, eLuxEntityType_Prop);
+			if (pEnt is null) return;
+			
+			pEnt.GetMainBody().SetCollideFlags(mBaseObj.GetCollideFlag("-plank"));
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event: The player explores the officers quarters
+		
+		//-------------------------------------------------------
+		
+		/////////////////////////////////////////////////////////
+		// START Event: The player explores the wine cellar
+		//{//////////////////////////////////////////////////////
+		
+		// TODO: The bottle counter is broken. Need to fix and take into account bottle in all maps!  
+		//-------------------------------------------------------
+		
+		int mlWineCellarBottlesCount = 0;
+		
+		//-------------------------------------------------------
+		
+		void CountWineCellarBottles()
+		{
+			///////////////////////
+			// Get total number of bottles
+			array<iLuxEntity@> vWineCellarBottles;
+			Map_GetEntityArray("wine_cellar_bottle_*", vWineCellarBottles, eLuxEntityType_Prop);
+			
+			array<iLuxEntity@> vWineCellarBottlesRespawnable;
+			Map_GetEntityArray("respawnable_wine_cellar_bottle_*", vWineCellarBottlesRespawnable, eLuxEntityType_Prop);
+			
+			const int lBottleCount = vWineCellarBottles.size() + vWineCellarBottlesRespawnable.size();
+			mlWineCellarBottlesCount = lBottleCount;
+			
+			cLux_AddDebugMessage("Wine Cellar Bottles Count: " + mlWineCellarBottlesCount);
+		}
+		
+		//-------------------------------------------------------
+		
+		void RespawnWineCellarBottles()
+		{
+			Entity_SetActive("respawnable_wine_cellar_bottle_*", true);
+			CountWineCellarBottles();
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_SetWineCellarBottlesCount(const tString &in asEntity)
+		{
+			bool bPlayerCanPickupEmptyBottles = ItemType_IsInInventory("EmptyBottle") == false || ( ItemType_GetCountInInventory("EmptyBottle") < Item_GetAmountMax(ItemType_GetFirstInInventory("EmptyBottle")) );
+			if (bPlayerCanPickupEmptyBottles == false) return;
+			mlWineCellarBottlesCount = cMath_Max(0, mlWineCellarBottlesCount - 1);
+			cLux_AddDebugMessage("Wine Cellar Bottles Count: " + mlWineCellarBottlesCount);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_RespawnWineBottles(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState!=1) return true;
+			
+			int lSpawnThreshold = cMath_RandRectl(8, 12);
+			if (mlWineCellarBottlesCount < lSpawnThreshold)
+				RespawnWineCellarBottles();
+			
+			return true;
+		} 
+		
+		//-------------------------------------------------------
+		
+		void dynamite_stick_pickup_1_OnPlayerInteract(const tString &in asEntity)
+		{
+			Entity_SetActive("Trigger_SoundSweet_3",true);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_SoundSweet_3(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Sound_Play("Sound_TriggerSweet_3", 0.0f);
+			return false;
+		}
+
+		//-------------------------------------------------------
+		
+		void OnLookAt_Delisle(const tString &in asEntity, int alState)
+		{
+			if (InGameMap_IsObjectiveCompleted("Obj_DelislesRoom") == false)
+			{
+				InGameMap_AddObjective("Obj_DelislesRoom", 0.f);
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnLookAt_Stafford(const tString &in asEntity, int alState)
+		{
+		}
+
+		//-------------------------------------------------------
+		
+		void OnInteract_DelisleWheel(const tString &in asEntity)
+		{
+			Map_AddTimer("Timer_CheckWheelPickUp", 0.1f, "OnTimer_CheckWheelPickUp");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_CheckWheelPickUp(const tString &in asTimer)
+		{
+			if (Entity_Exists("LockerPickup_Delisle_1") == false ||
+				Entity_IsActive("LockerPickup_Delisle_1") == false)
+			{
+				InGameMap_SetObjectiveCompleted("Obj_GetWheel");
+				InGameMap_SetObjectiveCompleted("Obj_GetWheel_NoMarker");
+				InGameMap_SetObjectiveCompleted("Obj_DelislesRoom");
+				
+				Music_Play("Bunker_WheelPickup.ogg", 0.1f, false, eMusicPrio_MinorEvent);
+				return;
+			}
+			
+			Map_RestartCurrentTimer();
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_PickUpBurntCorpseFuel(const tString &in asEntity)
+		{
+			Hint_StopHint();
+			Hint_ShowHint_Hold("Hints", "HintPourFuel", false, 1.5f, true, 15.f);
+		}
+
+		//-------------------------------------------------------
+		
+		//} END Event: The player explores the wine cellar
+		
+		//-------------------------------------------------------
+		
+		////////////////////////////////////////////////////////////////
+		// START Event: The player opens the lockdown gates
+		//{/////////////////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_DamagedWheel(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Entity_SetActive("Lockdown_Wheel_damaged", false);
+			Entity_SetActive("Lockdown_Wheel_broken", true);
+			Entity_AddImpulse("Lockdown_Wheel_broken", cVector3f(0.2f,0.3f,0.3f), false, true);
+			Entity_AlignBaseMatrix("Lockdown_Wheel_broken", "Lockdown_Wheel_damaged");
+			Sound_CreateAtEntity("Wheel_Break", "officer_hub/cutscene/wheel_break", "LockdownWheel_Proxy");
+			Entity_SetActive("LockdownWheel_Proxy", true);
+						
+			cLuxProp@ pCog = cLux_ID_Prop(m_idLockdownCog);
+			cAnimationState@ pCogAnim = pCog !is null ? pCog.GetMeshEntity().GetAnimationStateFromName("cogwheel_rotate") : null;
+			mfLockdownChainAnimOffsetT = pCogAnim !is null ? pCogAnim.GetRelativeTimePosition() : 0.f;
+			
+			m_idLockdownWheel = tID_Invalid;
+			
+			InGameMap_AddObjective("Obj_EmergencyLockdown", 1.f);
+			
+			if (cLux_GetPlayer().GetCurrentStateId() == ePlayerState_Wheel)
+			{
+				Player_SetLookSpeedMul(0.f);
+				Player_FadeLookSpeedMulTo(1.f, 1.f);
+				Player_ChangeStateToNormal();
+			}
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool CanUse_LockdownWheel(const tString &in asItemType, const tString &in asItemID, const tString &in asPickedEntity)
+		{
+			return asPickedEntity == "LockdownWheel_Proxy";
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnUse_LockdownWheel(const tString &in asItemType, const tString &in asItemID, const tString &in asTargetEntity, const tString &in asItemEntity, float afTimeElapsed, float afTimeStep)
+		{	
+			PlayerBody_SetArmAnimationPitch(false, true, true);
+			PlayerBody_SetArmAnimationYaw(false, true, true);
+			
+			Player_SetCrouching(false, true);
+			PlayerBody_SetUnequipItemsOnCutscene(true, false);
+			PlayerBody_PlayCutsceneAtEntity("tool_wheel_use", "LockdownWheel_AnimPos", false, 0.3f);
+			PlayerBody_SetCutsceneMaxPitch(0.f);
+			PlayerBody_SetCutsceneMaxYaw(0.f);
+			
+			Map_AddTimer("Timer_DetachWheel", 3.62f, "OnTimer_DetachWheel");
+			
+			InGameMap_SetObjectiveCompleted("Obj_EmergencyLockdown");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_DetachWheel(const tString &in asTimer)
+		{
+			Item_RemoveFromInventory(ItemType_GetFirstInInventory("LockdownWheel"), eInventoryInstance_Player, false, true);
+			Entity_SetActive("Lockdown_Wheel", true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_LockdownWheel(const tString &in asEntity)
+		{
+			if (m_idLockdownWheel == tID_Invalid)
+			{
+				iLuxEntity@ pEnt = Map_GetEntity(asEntity, eLuxEntityType_Prop);
+				m_idLockdownWheel = pEnt !is null ? pEnt.GetID() : tID_Invalid;
+			}
+			
+			Map_AddTimer(asEntity, 0.01f, "OnTimer_UpdateLockdownWheel");
+			Entity_SetVarFloat(asEntity, "StartInteractAngle", Wheel_GetCurrentAngle(asEntity));
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_UpdateLockdownWheel(const tString &in asTimer)
+		{
+			if (Entity_IsInteractedWith(asTimer))
+			{
+				Map_RestartCurrentTimer();
+				return;
+			}
+			
+			float fAngle = Wheel_GetCurrentAngle(asTimer);
+			float fStartAngle = Entity_GetVarFloat(asTimer, "StartInteractAngle");
+			float fAngleDiff = fAngle - fStartAngle;
+			float fAngleGoal = fAngle >= 90.f ? 180.f : 0.f;
+				
+			if (fAngleDiff >= 30.f) fAngleGoal = 180.f;
+			if (fAngleDiff <= -40.f) fAngleGoal = 0.f;
+			
+			if (fAngleGoal >= 180.0f)
+			{
+				Achievement_Unlock(eAchievement_GaveTheAllClear);
+				
+				Entity_SetInteractionDisabled(asTimer, true);
+				Entity_SetCollide(asTimer, false);
+				Entity_SetCollideCharacter(asTimer, false);
+			}
+				
+			Wheel_SetAngle(asTimer, fAngleGoal, true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnConnectionStateChange_LockdownWheel(const tString &in asEntity, int alState)
+		{
+			if (alState == 1)
+			{
+				Entity_SetCollide(asEntity, true);
+				Entity_SetCollideCharacter(asEntity, true);
+				Prop_SetStaticPhysics(asEntity, true);
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event: The player opens the lockdown gates
+		
+		//-------------------------------------------------------
+		
+		////////////////////////////////////////////////////////////////
+		// START Event: The stalker waits by the admin exit
+		//{/////////////////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		void ActivateAdminExitHole()
+		{
+			Entity_SetActive("AdminExitHoleSandbags_Closed_*", false);
+			Entity_SetActive("AdminExitHoleSandbags_Open_*", true);
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event: The stalker waits by the admin exit
+		
+		//-------------------------------------------------------
+		
+		////////////////////////////////////////////////////////////////
+		// START Event: The player uses the dynamite to blow up the exit
+		//{/////////////////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		bool mbDynamiteIsInPlace = false;
+		bool mbDetonatorHandleIsInPlace = false;
+		bool mbExitBlownUp = false;
+		
+		//-------------------------------------------------------		
+		
+		bool CanUse_DetonatorHandle(const tString &in asItemType, const tString &in asItemID, const tString &in asPickedEntity)
+		{
+			return asPickedEntity == "Detonator_Proxy";
+		}
+		
+		bool OnUse_DetonatorHandle(const tString &in asItemType, const tString &in asItemID, const tString &in asTargetEntity, const tString &in asItemEntity, float afTimeElapsed, float afTimeStep)
+		{	
+			PlayerBody_SetArmAnimationPitch(false, true, true);
+			PlayerBody_SetArmAnimationYaw(false, true, true);
+			
+			PlayerBody_SetUnequipItemsOnCutscene(true, false);
+			PlayerBody_PlayCutsceneAtEntity("tool_detonator_handle_use", "Detonator_Animated", false, 0.3, "OnAnimEnd_DetonatorHandleUsed");
+			
+			Entity_PlayAnimation("Detonator_Animated", "detonator_fasten_handle", 0);
+			
+			return false;
+		}
+		
+		//-------------------------------------------------------
+
+		void OnAnimEnd_DetonatorHandleUsed(const tString &in asAnim)
+		{
+			Item_RemoveFromInventory(ItemType_GetFirstInInventory("DetonatorHandle"), eInventoryInstance_Player, false, true);
+			mbDetonatorHandleIsInPlace = true;
+			
+			if (mbDynamiteIsInPlace==false)
+			{
+				Entity_SetActive("Detonator", true);
+				Entity_SetActive("Detonator_Animated", false);
+			}
+			else
+			{
+				ActivateDetonatorTrigger();
+			}
+		}
+		
+		//-------------------------------------------------------		
+		
+		void ActivateDetonatorTrigger()
+		{
+			Entity_SetActive("Detonator", false);
+			Entity_SetActive("Detonator_InteractArea", true);
+			
+			Entity_SetActive("Detonator_Animated", true);
+			iLuxEntity@ pDetonator = Map_GetEntity("Detonator_Animated", eLuxEntityType_Prop);
+			pDetonator.PlayAnimation("detonator_ignite", 0);
+			cAnimationState@ pAnim = pDetonator.GetMeshEntity().GetAnimationStateFromName("detonator_ignite");
+			
+			pAnim.SetSpeed(0);
+		}
+		
+		//-------------------------------------------------------		
+		
+		void OnConnectionStateChange_Detonator_Trigger(const tString &in asEntity, int alState)
+		{
+			if (alState!=1) return;
+			ParticleSystem_CreateAtEntity("detonator_spark", "sparks_smaller.ps", "detonator_particle_origin", false);
+			ParticleSystem_CreateAtEntity("dynamite_holder_spark", "sparks_smaller.ps", "dynamite_holder_particle_origin", false);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_WorkingDetonator(const tString &in asEntity)
+		{
+			PlayerBody_PlayCutsceneAtEntity("player_detonator_ignite", "Detonator_Animated", false, 0.3f, "OnAnimEnd_DetonatorUsed");
+			PlayerBody_SetCutsceneMaxPitch(0.f);
+			PlayerBody_SetCutsceneMaxYaw(0.f);
+			Entity_PlayAnimation("Detonator_Animated", "detonator_ignite", 0.f, false, true, "OnAnimEnd_DetonatorIgnite");
+			Entity_SetAnimationSpeed("Detonator_Animated", "detonator_ignite", 1.f);
+			
+			Seq_DynamiteExplosion("");
+			
+			//////////////////////////
+			// Stalker retreat			
+			Stalker_SetMode("Stalker_1", eStalkerMode_Passive, true);			
+			if (Stalker_GetIsInsideWalls("Stalker_1") == false)
+				Stalker_Retreat("Stalker_1");
+				
+			Entity_SetActive("BlockBox_TunnelHole", true);
+			Stalker_AddPathBlockerBody("Stalker_1", Entity_GetMainBodyID("BlockBox_TunnelHole"), true);
+		}
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSeqDataDynamiteExplosion;
+		void Seq_DynamiteExplosion(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_DynamiteExplosion", mSeqDataDynamiteExplosion);
+			Sequence_Wait(1.8f);
+			if (Sequence_DoStepAndWait(0.3f))
+			{
+				mbExitBlownUp = true;
+
+				InGameMap_SetObjectiveCompleted("Obj_BlowUpExit");
+				
+				ParticleSystem_CreateAtEntity("PS_DynamiteExplosion", "grenade_explosion.ps", "Trigger_DynamiteBundleSlot", false);
+				ParticleSystem_CreateAtEntity("PS_DynamiteExplosionDust", "dust_medium_extra_long_oneshot.ps", "Area_ExitExplosionDust", false);
+				
+				Sound_CreateAtEntity("Sound_DynamiteExplosion", "officer_hub/dynamite/detonate", "Trigger_DynamiteBundleSlot");
+				Sound_Stop("Sound_ExitSweet_*", 3.0f);
+				Music_Play("Bunker_Ground_Explode.ogg", 0.27f, false, eMusicPrio_MinorEvent);
+				
+				Effect_Shake_Start(0.01f, 1.f, 0.5f, 1.f);
+				
+				///////////////////
+				// Exit collapse
+				Entity_SetActive("ExitFloor", false);
+				Entity_SetActive("DynamiteBox", false);
+				Entity_SetActive("DynamiteBoxBase", false);
+				Entity_SetActive("DynamiteFuse", false);
+				Entity_SetActive("Detonator_DynamiteBundle", false);
+				Entity_SetActive("ExitRubble_*", true);
+				Entity_SetActive("Exit_Vista", true);
+				Entity_SetActive("cavein_debris_*", true);
+				Entity_SetActive("exit_barricade_intact_*", false);
+				Entity_SetActive("exit_barricade_broken_*", true);
+				Entity_SetActive("DetonatorEndCable", false);
+				Entity_SetActive("HoleRock_*", true);
+				
+				Entity_AddImpulse("exit_barricade_broken_2", cVector3f(-2.f, -2.f, 0.f), false, false);				
+			}
+			else if (Sequence_DoStepAndWait(0.3f))
+			{
+				Light_FadeBrightnessTo("Light_Exit_*", 0.f, 0.3f);
+				LensFlare_SetVisible("LensFlare_Exit", false);
+				Billboard_SetVisible("Billboard_Exit_*", false);
+				
+				Lamp_SetupFlicker("Lamp_PowerSwitch_2_2", 0.1f, 0.5f, 0.1f, 0.5f, false, "level_entity_shared/lights/light_flicker");
+				Lamp_SetFlickerActive("Lamp_PowerSwitch_2_2", true);
+				
+				Sound_Stop("Sound_Exit*", 0.5f);
+				
+				SetupPostExplosionExitLamps();
+			}
+			else if (Sequence_DoStepAndWait(10.f))
+			{
+				Entity_SetActive("ExitSign", false);
+				Entity_SetActive("ExitSign_Broken", true);
+				Entity_AttachToEntity("Description_42", "ExitSign_Broken", "Body_1", true, false, true);				
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{
+				Lamp_SetFlickerActive("Lamp_PowerSwitch_2_2", false);
+			}
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnAnimEnd_DetonatorIgnite(const tString &in asEntity, const tString &in asAnim)
+		{
+			Entity_PlayAnimation("Detonator_Animated", "", 0.f, true);			
+			
+		}
+				
+		//-------------------------------------------------------
+		
+		void SetupPostExplosionExitLamps()
+		{
+			Lamp_SetLit("Lamp_PowerSwitch_2_1", false, false);			
+			Lamp_SetLit("Lamp_PowerSwitch_2_2", false, false);			
+			Lamp_SetupFlicker("Lamp_PowerSwitch_2_10", 0.1f, 1.f, 0.1f, 1.f, false, "level_entity_shared/lights/light_flicker");
+			Lamp_SetFlickerActive("Lamp_PowerSwitch_2_10", true);
+			Light_SetVisible("lamp_exit_5_ending_*", true);
+			
+			Entity_SetVarBool("Lamp_PowerSwitch_2_10", "IgnoreAgentFlicker", true);
+		}
+		
+		//-------------------------------------------------------
+
+		void OnAnimEnd_DetonatorUsed(const tString &in asAnim)
+		{
+			Entity_SetActive("Detonator_InteractArea", false);
+			
+			if (GameDifficulty_GetSettingValueByID_Int(eGameDifficultySetting_SaveSystem) == eDifficultySettingValue_SaveSystem_Default)
+				Map_AddTimer("Timer_PostDynamiteAutoSave", 0.1f, "OnTimer_PostDynamiteAutoSave");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PostDynamiteAutoSave(const tString &in asTimer)
+		{
+			SaveRoom_SaveGame(true, false);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool CanUse_DynamiteBundle(const tString &in asItemType, const tString &in asItemID, const tString &in asPickedEntity)
+		{
+			return asPickedEntity == "Trigger_DynamiteBundleSlot";
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnUse_DynamiteBundle(const tString &in asItemType, const tString &in asItemID, const tString &in asTargetEntity, const tString &in asItemEntity, float afTimeElapsed, float afTimeStep)
+		{
+			PlayerBody_SetUnequipItemsOnCutscene(true, false);
+			PlayerBody_PlayCutsceneAtEntity("tool_dynamite_use", "DynamiteAnimPos", false, 0.3, "OnAnimEnd_DynamiteBundlelUsed");
+			Map_AddTimer("OnTimer_DynamiteUseReplaceEntity", 0.3, "OnTimer_DynamiteUseReplaceEntity");
+			
+			PlayerBody_SetArmAnimationPitch(false, true, true);
+			PlayerBody_SetArmAnimationYaw(false, true, true);
+			
+			Entity_PlayAnimation("DynamiteFuse", "detonator_cable_use");
+			
+			Entity_SetActive("Trigger_DynamiteBundleSlot", false);
+			//Sound_CreateAtEntity("Sound_DynamitePlacement", "weapons/revolver/revolver_draw", "Trigger_DynamiteBundleSlot");
+			
+			return false;
+		}
+			
+		//-------------------------------------------------------
+
+		void OnTimer_DynamiteUseReplaceEntity(const tString &in asTimer)
+		{
+			iLuxEntity@ pDynamite = Map_GetEntity("Detonator_DynamiteBundle_Animated");
+			pDynamite.SetActive(true);
+			
+			cAnimationState@ pPlayerAnim = PlayerBody_GetAnimationState("tool_dynamite_use");
+			cAnimationState@ pDynamiteAnim = pDynamite.GetMeshEntity().GetAnimationStateFromName("dynamite_bundle_use");
+			pDynamite.PlayAnimation("dynamite_bundle_use", 0, false, true);
+			pDynamiteAnim.SetTimePosition(pPlayerAnim.GetTimePosition());
+			
+			Item_RemoveFromInventory(ItemType_GetFirstInInventory("DynamiteBundle"), eInventoryInstance_Player, false, true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnAnimEnd_DynamiteBundlelUsed(const tString &in asAnim)
+		{
+			Entity_SetActive("Detonator_DynamiteBundle_Animated", false);
+			Entity_SetActive("Detonator_DynamiteBundle", true);
+			mbDynamiteIsInPlace = true;
+			
+			if (mbDetonatorHandleIsInPlace==false) return;
+			
+			ActivateDetonatorTrigger();
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_BreakEndingHolePlanks(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Prop_SetHealth("EndingHolePlank_*", 0.f);
+			Entity_SetActive("BrokenEndingHolePlank", false);
+			Entity_SetActive("BrokenEndingHolePlank_*", true);
+			
+			//Player_SetFallDamageActive(false);
+			Map_AddTimer("Timer_ActivateFallDamage", 2.5f, "OnTimer_ActivateFallDamage");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ActivateFallDamage(const tString &in asTimer)
+		{
+			//Player_SetFallDamageActive(true);
+		}
+
+		//-------------------------------------------------------
+		
+		//} END Event: The player uses the dynamite to blow up the exit
+		
+		//-------------------------------------------------------
+		
+		//MUSIC--------------------------------------------------
+		
+		bool OnTrigger_HubMusicPlay(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Map_RemoveTimer("Timer_LevelMusic");
+			Map_RemoveTimer("Timer_MusicRand");
+			Entity_SetActive("Trigger_HubMusic_*",false);
+			Music_Stop(15.0f, eMusicPrio_SceneAmb);
+			Map_AddTimer("Timer_HubMusic", cMath_RandRectf(25.f, 50.f), "OnTimer_PlayHubMusic");
+			return false;
+		}
+			
+		//-------------------------------------------------------
+
+		void OnTimer_PlayHubMusic(const tString &in asTimer)
+			{
+				Music_PlayExt("Bunker_Officer_hub_main_hallway.ogg", true, 0.1f, 1.0f, 20.f, 1.0f, eMusicPrio_BgAmb, true);
+				Map_AddTimer("Timer_MusicStop", cMath_RandRectf(240.f, 300.f), "OnTimer_StopMusic");
+			}
+			
+		//-------------------------------------------------------
+		
+		void OnTimer_StopMusic(const tString &in asTimer)
+			{
+				Music_Stop(20.f, eMusicPrio_BgAmb);
+				Map_AddTimer("Timer_MusicStartRand", cMath_RandRectf(240.f, 270.f), "OnTimer_PlayHubMusic");
+			}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_FirstMusicStart(const tString &in asParent, const tString &in asChild, int alState)
+			{
+				Music_PlayExt("Bunker_Officer_hub_main_hallway.ogg", true, 0.1f, 1.0f, 18.f, 1.0f, eMusicPrio_BgAmb, true);
+				Map_AddTimer("Timer_MusicStop", cMath_RandRectf(270.f, 360.f), "OnTimer_StopMusic");
+				Entity_SetActive("Trigger_MusicStart",false);
+				Entity_SetActive("Trigger_HubMusic_*",false);
+				return false;
+			}
+			
+		//-------------------------------------------------------
+
+		//MUSIC_END----------------------------------------------
+	
+	//} END EVENTS
+}

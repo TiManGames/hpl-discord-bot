@@ -1,0 +1,444 @@
+#include "interfaces/UserModule_Interface.hps"
+#include "custom/modules/ModuleInterfaces_Custom.hps"
+#include "helpers/helper_audio.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_modules.hps"
+
+//---------------------------------------------------
+
+class cShadowFleshDecalInstance
+{
+	//---------------------------------------------------
+	
+	cShadowFleshDecalInstance() {}
+	
+	//---------------------------------------------------
+	
+	cShadowFleshDecalInstance(const array<tID> &in avDecals, float afFadeTime)
+	{
+		mvDecals = avDecals;
+		mfFadeTime = afFadeTime;
+	}
+	
+	//---------------------------------------------------
+	
+	bool FadeDecals(float afTimeStep)
+	{		
+		mfFadeCount += afTimeStep;
+
+		if (mfFadeCount >= mfFadeTime) 
+			mfFadeCount = mfFadeTime;
+		
+		cMeshEntity@ pDecal = null;
+		for(int i = 0; i < mvDecals.size(); i++)
+		{
+			@pDecal = cLux_ID_MeshEntity(mvDecals[i]);
+			pDecal.SetDiffuseColorMul(cColor(1.f, 1.f, 1.f, cMath_Easing(eEasing_SineIn, mfFadeCount / mfFadeTime)));
+		}		
+		
+		return mfFadeCount >= mfFadeTime;
+	}
+	
+	//---------------------------------------------------
+	
+	float mfFadeCount = 0.f;
+	float mfFadeTime = 0.f;
+	array<tID> mvDecals;
+	
+	//---------------------------------------------------
+}
+
+//---------------------------------------------------
+
+class cShadowFleshGroup
+{
+	//---------------------------------------------------
+	
+	cShadowFleshGroup() {}
+	
+	//---------------------------------------------------
+	
+	cShadowFleshGroup(uint64 alId, const array<tID> &in avFlesh, const array<tID> &in avDecals)
+	{
+		mlId = alId;
+		mvFlesh = avFlesh;
+		mvDecals = avDecals;
+	}
+	
+	//---------------------------------------------------
+	
+	uint64 mlId = 0;
+	array<tID> mvFlesh;
+	array<tID> mvDecals;
+	
+	//---------------------------------------------------
+}
+
+//---------------------------------------------------
+
+class cScrShadowFleshHandler : iScrUserModule, iScrUserModule_Interface, iScrShadowFleshHandler_Interface
+{
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		mvInstances.resize(0);
+		mvGroups.resize(0);
+		mvSpawnedDecals.resize(0);
+		
+		mbResetSpawnedDecals = true;
+		mfVolumeMul = 1.f;
+	}
+	
+	//------------------------------------------------------------
+	
+	void LoadUserConfig(){}
+	void SaveUserConfig(){}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// MAP LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnMapLeave(cLuxMap @apMap)
+	{
+		mvInstances.resize(0);
+		mvGroups.resize(0);
+		
+		if (mbResetSpawnedDecals)
+			mvSpawnedDecals.resize(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void PreloadData(cLuxMap @apMap){}
+	void CreateWorldEntities(cLuxMap @apMap){}
+	void DestroyWorldEntities(cLuxMap @apMap){}	
+	void OnEnterContainer(const tString&in asOldContainer){}
+	void OnLeaveContainer(const tString&in asNewContainer){}
+	
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+		mvInstances.resize(0);
+		mvGroups.resize(0);
+		
+		if (mbResetSpawnedDecals)
+			mvSpawnedDecals.resize(0);
+	}
+	
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// PER-FRAME
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep){}
+	void PostUpdate(float afTimeStep){}
+	
+	//------------------------------------------------------------
+	
+	void VariableUpdate(float afDeltaTime)
+	{
+		/////////////////////
+		// Fade in decals
+		for (int i = 0; i < mvInstances.size(); i++)
+		{
+			if (mvInstances[i].FadeDecals(afDeltaTime))
+			{		
+				mvInstances[i] = mvInstances[mvInstances.size() - 1];
+				mvInstances.pop_back();
+				i--;
+			}				
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnDraw(float afFrameTime){}
+	void OnPostRender(float afFrameTime){}
+	void OnRenderSolid(cRendererCallbackFunctions@ apFunctions){}
+	
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// INTERFACE
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SpawnFlesh(const tString &in asFlesh, const tString &in asDecals, float afMinTime, float afMaxTime, bool abDefaultEffects, float afShake = 0.01f, float afImageTrail = 1.f)
+	{		
+		/////////////////////////////
+		// Spawn group if it exists!
+		uint64 lId = H64(asFlesh);
+		for (int i = 0; i < mvGroups.size(); ++i)
+		{
+			cShadowFleshGroup@ pGroup = mvGroups[i];
+			if (pGroup.mlId == lId)
+			{
+				Spawn(pGroup.mvFlesh, pGroup.mvDecals, afMinTime, afMaxTime, abDefaultEffects);
+				return;
+			}
+		}		
+		
+		/////////////////////////////
+		// Not in group, find in map and spawn!
+		array<tID> vFleshIds;
+		cLux_GetCurrentMap().GetEntityArrayID(asFlesh, eLuxEntityType_Prop, "", vFleshIds);
+			
+		array<cMeshEntity@> vDecals;
+		Map_GetDecalArray(asDecals, vDecals);
+			
+		array<tID> vDecalIds;	
+		for(int i = 0; i < vDecals.size(); ++i)
+		{
+			tID id = vDecals[i].GetID();
+			vDecalIds.push_back(id);
+			mvSpawnedDecals.push_back(id);
+		}
+		
+		Spawn(vFleshIds, vDecalIds, afMinTime, afMaxTime, abDefaultEffects, afShake, afImageTrail);
+	}
+	
+	//------------------------------------------------------------
+	
+	void Spawn(const array<tID> &in avFlesh, const array<tID> &in avDecals, float afMinTime, float afMaxTime, bool abDefaultEffects, float afShake = 0.01f, float afImageTrail = 1.f)
+	{		
+		if (avFlesh.size() < 1) 
+			return;
+		
+		/////////////////////////////
+		// Setup flesh
+		array<iLuxEntity@> vFlesh;		
+		for (int i = 0; i < avFlesh.size(); ++i)
+		{
+			iLuxEntity@ pFlesh = cLux_ID_Entity(avFlesh[i]);
+			if (pFlesh is null || pFlesh.IsActive())
+				return;
+			
+			vFlesh.push_back(pFlesh);
+		}
+		
+		/////////////////////////////
+		// Store decals in instance for fading		
+		cShadowFleshDecalInstance instance = cShadowFleshDecalInstance(avDecals, afMinTime);
+		mvInstances.push_back(instance);				
+		
+		/////////////////////////////
+		// Calculate avg pos
+		cVector3f vAvgPos = cVector3f(0.f);		
+        for (int i = 0; i < vFlesh.size(); ++i)		
+			vAvgPos += vFlesh[i].GetPosition();
+		
+		vAvgPos /= vFlesh.size();
+		
+		/////////////////////////////
+		// Get biggest distance from flesh to avg pos
+		float fMaxDistSqr = 0.f;
+		for (int i = 0; i < vFlesh.size(); ++i)
+		{			
+			float fDistSqr = (vAvgPos - vFlesh[i].GetPosition()).SqrLength();
+			if (fDistSqr > fMaxDistSqr)
+				fMaxDistSqr = fDistSqr;
+		}
+		
+		/////////////////////////////
+		// Spawn flesh at different times depending on distance
+		iPhysicsBody@ pBody = null;
+		bool bSpawnParticles = true;
+		
+		for (int i = 0; i < vFlesh.size(); ++i)
+		{
+			iLuxEntity@ pFlesh = vFlesh[i];
+			
+			float fDistSqr = (vAvgPos - pFlesh.GetPosition()).SqrLength();
+			
+			float fSpawnTimeMul = 1.f;
+			if (fDistSqr < fMaxDistSqr * 0.25f)		fSpawnTimeMul = 0.75f;
+			else if (fDistSqr < fMaxDistSqr * 0.5f)	fSpawnTimeMul = 1.f;
+			else									fSpawnTimeMul = 1.25f;
+						
+			float fMinFadeInTime = afMinTime * fSpawnTimeMul;
+			float fMaxFadeInTime = afMaxTime * fSpawnTimeMul;
+			
+			@pBody = pFlesh.GetBody(0);			
+			if (pBody !is null)
+			{
+				// Only scale pieces with a body				
+				cVector3f vTarScale = pFlesh.GetMeshScaleMul();
+				float fMeshScaleTime = cMath_RandRectf(afMinTime * fSpawnTimeMul * 3.f, afMaxTime * fSpawnTimeMul * 3.f);
+				
+				pFlesh.SetMeshScaleMul(cVector3f(vTarScale.x, vTarScale.y * 0.5f, vTarScale.z));
+				pFlesh.FadeMeshScaleMul(vTarScale, fMeshScaleTime, eEasing_BackOut);
+				
+				// Spawn particles on every other piece
+				if (bSpawnParticles)
+				{
+					cParticleSystem@ pPS = cLux_GetCurrentMap().GetWorld().CreateParticleSystem("PS_" + pFlesh.GetName(), "shadow_flesh_appear.ps", cVector3f(1.f), true, false);
+					pPS.SetWorldPosition(pFlesh.GetPosition() + cVector3f_Up * (pBody.GetBoundingVolume().GetSize().y / 2.f));
+					pPS.SetMatrix(cMath_MatrixMul(pPS.GetLocalMatrix(), cMath_MatrixScale(pFlesh.GetOnLoadScale())));
+				}
+				
+				bSpawnParticles = !bSpawnParticles;
+			}
+			else
+			{
+				// Others should only fade in when the growth is close to done
+				fMinFadeInTime = afMinTime * 1.5f * fSpawnTimeMul;
+				fMaxFadeInTime = afMaxTime * 1.5f * fSpawnTimeMul;
+			}
+			
+			pFlesh.GetMeshEntity().SetRenderFlagBit(eRenderableFlag_ShadowCaster, true);
+			Prop_SetActiveAndFade(pFlesh.GetName(), true, cMath_RandRectf(fMinFadeInTime, fMaxFadeInTime));
+			
+			// disable character collision if too close to the player, to prevent from pushing the player out of bounds
+			iPhysicsBody@ pBody = pFlesh.GetMainBody();
+			if (pBody !is null)
+			{
+				float fPlayerDistSqr = cMath_Vector3DistSqr(pBody.GetWorldPosition(), cLux_GetPlayer().GetCharacterBody().GetPosition());
+				float fDisableDist = pBody.GetBoundingVolume().GetRadius() + 0.3;
+				if (fPlayerDistSqr < fDisableDist * fDisableDist) pBody.SetCollideCharacter(false);
+			}
+		}		
+        
+		/////////////////////////////
+		// Do default effects
+        if (abDefaultEffects)
+			DoFleshEffectsAtPos(vAvgPos, cMath_Clamp(cMath_Sqrt(fMaxDistSqr) * 3.f, 5.f, 40.f), afShake, afImageTrail);
+	}
+	
+	//------------------------------------------------------------
+	
+	void DoFleshEffectsAtPos(const cVector3f &in avPos, float afLightRadius, float afShake = 0.01f, float afImageTrail = 1.f)
+	{
+		Effect_Shake_Start(afShake, 1.5f, 1.f, 1.f);
+        Effect_ImageTrail_Start(afImageTrail, 2.f, 1.5f, 1.f);
+		
+		LightFlash_Add(1.5f, 0.5f, 1.f, avPos, gShadowFleshLightColor, afLightRadius, 1.f);
+		
+		cSoundEntity@ pSound = cLux_GetCurrentMap().GetWorld().CreateSoundEntity("Sound_FleshSpawn", "03_03_herberts_hq/shadow_guardian/shadow_guardian_appear", true);
+		if (pSound !is null)
+		{
+			pSound.SetWorldPosition(avPos);
+			pSound.SetScriptableIsSaved(false);
+			pSound.FadeIn(0.f, 1.f);
+			pSound.FadeVolumeMul(mfVolumeMul, 0.f);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupDecals(const tString &in asDecals)
+	{
+		/////////////////////////////
+		// Set alpha to 0
+		array<cMeshEntity@> vDecals;
+		Map_GetDecalArray(asDecals, vDecals);
+			
+		for (int i = 0; i < vDecals.size(); ++i)
+		{
+			cMeshEntity@ pDecal = vDecals[i];
+			
+			// Setup new decals only!
+			if (mvSpawnedDecals.find(pDecal.GetID()) == -1)
+				pDecal.SetDiffuseColorMul(cColor(1.f, 1.f, 1.f, 0.f));
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void AddGroup(const tString &in asFlesh, const tString &in asDecals)
+	{
+		/////////////////////////////
+		// Get flesh
+		array<tID> vFleshIds;
+		cLux_GetCurrentMap().GetEntityArrayID(asFlesh, eLuxEntityType_Prop, "", vFleshIds);
+		
+		/////////////////////////////
+		// Get decals
+		array<cMeshEntity@> vDecals;
+		Map_GetDecalArray(asDecals, vDecals);
+		
+		array<tID> vDecalIds;
+		for (int i = 0; i < vDecals.size(); ++i)
+			vDecalIds.push_back(vDecals[i].GetID());
+		
+		/////////////////////////////
+		// Add group
+		if (vFleshIds.size() > 0)
+			mvGroups.push_back(cShadowFleshGroup(H64(asFlesh), vFleshIds, vDecalIds));
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetSpawnedDecalsOnMapLeave(bool abX)
+	{
+		mbResetSpawnedDecals = abX;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetFleshSpawnSoundVolumeMul(float afX)
+	{
+		mfVolumeMul = afX;
+	}
+	
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// GLOBALS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnAction(int alAction, bool abPressed){}	
+	void OnAnalogInput(int alAnalogId, const cVector3f &in avAmount){}
+	void OnExitPressed(){}
+	void AppGotInputFocus(){}
+	void AppLostInputFocus(){}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	array<cShadowFleshDecalInstance> mvInstances;
+	array<cShadowFleshGroup> mvGroups;
+	array<tID> mvSpawnedDecals;
+	bool mbResetSpawnedDecals;
+	float mfVolumeMul;
+	
+	//------------------------------------------------------------
+}

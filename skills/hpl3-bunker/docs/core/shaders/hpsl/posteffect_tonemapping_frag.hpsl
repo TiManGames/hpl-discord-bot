@@ -1,0 +1,212 @@
+////////////////////
+// samplers
+uniform cTexture2D finalMap : 0;
+
+@ifdef UseNoise
+	uniform float afTime;
+	uniform float afIntensity;
+@endif
+
+@ifdef UseBloom
+	uniform cTexture2D blurMap0 : 1;
+	uniform cTexture2D blurMap1 : 2;
+	uniform cTexture2D blurMap2 : 3;
+
+	uniform cVector4f avBloomTint;
+	uniform cVector3f avSizeWeight;
+	uniform float afBloomFalloff = 0.5f;
+@endif
+
+@ifdef UseColorGrading
+@ifdef UseTextureArray
+	uniform cTexture3D gradingMap[8] : 4;
+@else
+	// Apple AMD drivers does not support Texture3D arrays
+	uniform cTexture3D gradingMap0 : 4;
+	uniform cTexture3D gradingMap1 : 5;
+	uniform cTexture3D gradingMap2 : 6;
+	uniform cTexture3D gradingMap3 : 7;
+	uniform cTexture3D gradingMap4 : 8;
+	uniform cTexture3D gradingMap5 : 9;
+	uniform cTexture3D gradingMap6 : 10;
+	uniform cTexture3D gradingMap7 : 11;
+@endif	
+	uniform float afGradingMapAlpha[8];
+	uniform int alGradingMapNum;
+@endif
+
+uniform float afKey;
+uniform float afExposure;
+uniform float afInvGammaCorrection;
+uniform float afWhiteCut;
+uniform cVector2f avInvScreenSize;
+
+@ifdef UseNoise
+	// Noise
+	cVector3f Rand(cVector2f avP)
+	{
+		return fract(sin(cVector3f(	dot(avP, cVector2f(12.9898, 78.233)),
+									dot(avP, cVector2f(52.313, 16.987)),
+									dot(avP, cVector2f(36.791, 46.339)))) * 43758.5453);
+	}
+
+	cVector3f TriNoise(cVector2f avP, float afOffset)
+	{
+		cVector3f vA = Rand(avP * avInvScreenSize + afTime * 0.07 + afOffset);
+		cVector3f vB = Rand(avP * avInvScreenSize + afTime * 0.11 + afOffset);
+
+		return vA + vB - 0.5;
+	}
+@endif
+
+////////////////////
+// MAIN
+void main(in cVector4f px_vPosition,
+		  in cVector4f px_vTexCoord0,
+		  out cVector4f out_vColor0 : 0)
+{
+	float fNoiseSteps = 1.0 / (128.0);//(235.0 - 16.0);
+	cVector4f vSourceColor = sample(finalMap, px_vTexCoord0.xy);
+	
+	@ifdef UseBloom
+	
+		@ifdef UseNoise
+			////////////
+			// sample blur with noise
+			cVector3f vNoise0 = TriNoise(px_vPosition.xy, 0.25);
+			cVector3f vNoise1 = TriNoise(px_vPosition.xy, 0.50);
+			cVector3f vNoise2 = TriNoise(px_vPosition.xy, 0.75);
+			cVector3f vNoise3 = TriNoise(px_vPosition.xy, 1.0);
+			
+			cVector4f vBlurColor0 = 	sample(blurMap0, 	  px_vTexCoord0.xy + (vNoise0.xy - 0.5) * avInvScreenSize);
+			cVector4f vBlurColor1 = 	sample(blurMap1, 	  px_vTexCoord0.xy + (vNoise1.xy - 0.5) * 3.0 * avInvScreenSize);
+			cVector4f vBlurColor2 = 	sample(blurMap2, 	  px_vTexCoord0.xy + (vNoise2.xy - 0.5) * 6.0 * avInvScreenSize);
+		@else
+			////////////
+			// sample blur
+			cVector4f vBlurColor0 = 	sample(blurMap0, 	  px_vTexCoord0.xy);
+			cVector4f vBlurColor1 = 	sample(blurMap1, 	  px_vTexCoord0.xy);
+			cVector4f vBlurColor2 = 	sample(blurMap2, 	  px_vTexCoord0.xy);
+		@endif
+
+		////////////
+		// Add blur togehter
+		cVector4f vBlurColor = sqrt((vBlurColor0 * avSizeWeight.x + vBlurColor1 * avSizeWeight.y + vBlurColor2 * avSizeWeight.z) / dot(avSizeWeight, cVector3f(1.0, 1.0, 1.0)));
+
+		float fNan = dot(vBlurColor,vBlurColor);
+
+		if(isnan(fNan) || isinf(fNan))
+			vBlurColor = cVector4f(0.0, 0.0, 0.0, 0.0);
+
+
+		@ifdef UseNoise
+			vBlurColor.rgb += vNoise3 * fNoiseSteps;
+		@endif
+
+		///////////
+		// Perform the brightness check in normalized space since value can be more than 1.0
+		cVector2f vMax = max(vBlurColor.xy, cVector2f(vBlurColor.z, 0.001));
+		vBlurColor *= avBloomTint * dot(vBlurColor.xyz / max(vMax.x, vMax.y), cVector3f(0.3, 0.58, 0.12));
+
+		//////////
+		// Apply bloom
+		vSourceColor = vSourceColor + vBlurColor;
+	@endif
+	
+	@ifdef DisableToneMapping
+		// No tone mapping
+	@else
+		////////////
+		// Apply the exposure and key and store the white cut in alpha
+		vSourceColor = vSourceColor * afKey * afExposure;
+		vSourceColor.w = afWhiteCut * afKey;
+
+		////////////
+		// Apply the uncharted tone mapping
+		vSourceColor = vSourceColor * cVector4f(1.5 / 8.0, 1.5 / 8.0, 1.5 / 8.0, 2.0); // Rescale the color because of x 8.0 in helper_gamma_correction
+		vSourceColor = ((vSourceColor*(0.15*vSourceColor+(0.1*0.5))+(0.2*0.02))/(vSourceColor*(0.15*vSourceColor+(0.5))+(0.2*0.3)))-(0.02/0.3);
+
+		/////////////
+		// Cut all the light above the White Cut, making it 1.0
+		vSourceColor *= 2.0 / vSourceColor.w;
+	@endif
+
+	@ifdef DisableGamma
+		//No gamma correction
+	@else
+		//////////
+		// Perform the gamma correction
+		// Correct gamma code (too late to change now)
+		cVector4f vLower = vSourceColor * 12.92;
+		cVector4f vUpper = (1.0 + 0.055) * pow(vSourceColor, cVector4f(1.0 / 2.4, 1.0 / 2.4, 1.0 / 2.4, 1.0 / 2.4)) - 0.055;
+		vSourceColor = mix(vLower, vUpper, step(cVector4f(0.0031308, 0.0031308, 0.0031308, 0.0031308), vSourceColor));
+	@endif
+	
+	vSourceColor = clamp(vSourceColor, cVector4f(0.0, 0.0, 0.0, 0.0), cVector4f(1.0, 1.0, 1.0, 1.0));
+
+	@ifdef UseColorGrading
+		cVector3f vGradingOffset = cVector3f(0.5 / 16.0, 0.5 / 16.0, 0.5 / 16.0);
+		cVector3f vGradingDiv = cVector3f(1.0 + 0.5 / 16.0, 1.0 + 0.5 / 16.0, 1.0 + 0.5 / 16.0);
+		
+		@ifdef UseTextureArray
+			@ifdef LayeredColorGrading
+			for(int i = 0; i < 8; ++i) //up to 8 layers
+			{
+				if(i >= alGradingMapNum) break;
+
+			@else
+			int i = 0; //single layer
+			{
+			@endif
+				/////////////////
+				// Map the color value to another color
+				cVector3f vGradingCoords = (vSourceColor.rgb + vGradingOffset) / vGradingDiv;
+				cVector4f vSample = sampleLod(gradingMap[i], vGradingCoords, 0);
+				vSourceColor = mix(vSourceColor, vSample, afGradingMapAlpha[i]);
+			}		
+		@else	
+		{	
+			/////////////
+			// Array not supported, go with manual sampling
+			cVector3f vGradingCoords = (vSourceColor.rgb + vGradingOffset) / vGradingDiv;
+			if(0 < alGradingMapNum) {
+				vSourceColor = mix(vSourceColor, sampleLod(gradingMap0, vGradingCoords, 0), afGradingMapAlpha[0]);
+				vGradingCoords = (vSourceColor.rgb + vGradingOffset) / vGradingDiv;
+			}
+
+			@ifdef LayeredColorGrading
+				if(1 < alGradingMapNum) {
+					vSourceColor = mix(vSourceColor, sampleLod(gradingMap1, vGradingCoords, 0), afGradingMapAlpha[1]);
+					vGradingCoords = (vSourceColor.rgb + vGradingOffset) / vGradingDiv;
+				} 
+				if(2 < alGradingMapNum) {
+					vSourceColor = mix(vSourceColor, sampleLod(gradingMap2, vGradingCoords, 0), afGradingMapAlpha[2]);
+					vGradingCoords = (vSourceColor.rgb + vGradingOffset) / vGradingDiv;
+				} 
+				if(3 < alGradingMapNum) {
+					vSourceColor = mix(vSourceColor, sampleLod(gradingMap3, vGradingCoords, 0), afGradingMapAlpha[3]);
+					vGradingCoords = (vSourceColor.rgb + vGradingOffset) / vGradingDiv;
+				} 
+				if(4 < alGradingMapNum) {
+					vSourceColor = mix(vSourceColor, sampleLod(gradingMap4, vGradingCoords, 0), afGradingMapAlpha[4]);
+					vGradingCoords = (vSourceColor.rgb + vGradingOffset) / vGradingDiv;
+				} 
+				if(5 < alGradingMapNum) {
+					vSourceColor = mix(vSourceColor, sampleLod(gradingMap5, vGradingCoords, 0), afGradingMapAlpha[5]);
+					vGradingCoords = (vSourceColor.rgb + vGradingOffset) / vGradingDiv;
+				} 
+				if(6 < alGradingMapNum) {
+					vSourceColor = mix(vSourceColor, sampleLod(gradingMap6, vGradingCoords, 0), afGradingMapAlpha[6]);
+					vGradingCoords = (vSourceColor.rgb + vGradingOffset) / vGradingDiv;
+				}
+				if(7 < alGradingMapNum) {
+					vSourceColor = mix(vSourceColor, sampleLod(gradingMap7, vGradingCoords, 0), afGradingMapAlpha[7]);
+				} 	
+			@endif
+		}		
+		@endif
+	@endif
+
+	out_vColor0 = cVector4f(vSourceColor.rgb, dot(cVector3f(0.299, 0.587, 0.114), vSourceColor.rgb));
+
+}

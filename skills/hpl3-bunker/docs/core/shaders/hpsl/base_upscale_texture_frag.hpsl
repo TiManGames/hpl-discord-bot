@@ -1,0 +1,108 @@
+////////////////////////////////////////////////////////
+// Base - Upscale a texture
+//
+////////////////////////////////////////////////////////
+
+uniform cTexture2D aTexture : 0;
+
+uniform cVector2f avTextureSize;
+uniform cVector2f avInvTextureSize;
+
+@ifdef Bicubic
+cVector4f CubicWeights(float afX)
+{
+	////////////////
+	// Precomputed "recommended" spline from https://developer.nvidia.com/gpugems/GPUGems/gpugems_ch24.html
+	const cMatrixf kmtxSplitWeights = cMatrixf(
+		-7.0, 21.0, -21.0, 7.0,
+		15.0, -36.0, 27.0,-6.0,
+		-9.0, 0.0, 9.0, 0.0,
+		1.0, 16.0, 1.0, 0.0);
+    
+	return mul(kmtxSplitWeights, cVector4f(afX * afX * afX, afX * afX, afX, 1.0));
+}
+
+cVector4f SampleBicubic(cVector2f avUV)
+{
+	//////////////
+	// Calculate texel center and fract
+	avUV = avUV * avTextureSize - 0.5;
+	cVector2f vFract = fract(avUV);
+	avUV -= vFract;
+
+	//////////////
+	// Calculate weights based on fract part
+	cVector4f vCubicX = CubicWeights(vFract.x);
+	cVector4f vCubicY = CubicWeights(vFract.y);
+
+	cVector4f vWeights = cVector4f(vCubicX.xz + vCubicX.yw, vCubicY.xz + vCubicY.yw);
+	cVector2f vWeightXY = vWeights.xz / (vWeights.xz + vWeights.yw);
+	
+	/////////////
+	// Calculate UV center and offset from weights
+	cVector4f vUVCenter = avUV.xxyy + cVector4f(-0.5, 1.5, -0.5, 1.5);
+	cVector4f vUVOffset = vUVCenter + cVector4f(vCubicX.yw, vCubicY.yw) / vWeights;
+	vUVOffset *= avInvTextureSize.xxyy;
+
+	///////////////
+	// Sample and mix result
+	return lerp(lerp(	sampleLod(aTexture, vUVOffset.yw, 0), 
+						sampleLod(aTexture, vUVOffset.xw, 0), 
+						vWeightXY.x), 
+				lerp(	sampleLod(aTexture, vUVOffset.yz, 0), 
+						sampleLod(aTexture, vUVOffset.xz, 0), 
+						vWeightXY.x), 
+						vWeightXY.y);
+}
+@endif
+
+@ifdef Bilinear
+cVector4f SampleBilinear(cVector2f avUV)
+{
+	return sampleLod(aTexture, avUV, 0);
+}
+@endif
+
+@ifdef Smoothest
+cVector4f SampleBilinearSmooth(cVector2f avUV)
+{
+	//http://iquilezles.org/www/articles/texture/texture.htm
+	avUV = avUV * avTextureSize + 0.5;
+	cVector2f iuv = floor(avUV);
+	cVector2f fuv = fract(avUV);
+
+	avUV = iuv + fuv*fuv*fuv*(fuv*(fuv*6.0-15.0)+10.0);;
+	avUV = (avUV - 0.5) * avInvTextureSize;
+
+	return sampleLod(aTexture, avUV, 0);
+}
+@endif
+
+@ifdef Nearest
+cVector4f SampleNearest(cVector2f avUV)
+{
+	return sampleLod(aTexture, (floor(avUV * avTextureSize) + 0.5) * avInvTextureSize, 0);
+}
+@endif
+
+cVector4f Sample(cVector2f avUV)
+{
+@ifdef Nearest
+	return SampleNearest(avUV);
+@elseif Bilinear
+	return SampleBilinear(avUV);
+@elseif Smoothest
+	return SampleBilinearSmooth(avUV);
+@elseif Bicubic
+	return SampleBicubic(avUV);
+@else
+	return cVector4f(1, 1, 1, 1);
+@endif
+}
+
+void main(in cVector4f px_vPosition,
+	      in cVector4f px_vTexCoord0,	
+		  out cVector4f out_vColor : 0)
+{
+	out_vColor = clamp(Sample(px_vTexCoord0.xy), 0.0, 1.0);
+}

@@ -1,0 +1,490 @@
+#include "interfaces/Agent_Interface.hps"
+#include "helpers/helper_modules.hps"
+
+class cScrAgentHumanoid : iScrAgent, iScrAgent_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupCharBody()
+	{
+		iCharacterBody@ pCharBody = mBaseObj.GetCharBody();
+		
+		pCharBody.SetCustomGravity(	cVector3f(0,-12,0) );
+		pCharBody.SetCustomGravityActive(true);
+		pCharBody.SetMass(80);
+		
+		pCharBody.SetAccurateClimbing(true);
+		pCharBody.SetMaxNoSlideSlopeAngle(cMath_ToRad(50) );
+		pCharBody.SetMaxPushMass(10);
+		pCharBody.SetMaxPushForce(300);
+		pCharBody.SetPushImpulse(100);
+		pCharBody.SetCharacterMaxPushMass(10);
+		pCharBody.SetCharacterPushForce(100);
+		pCharBody.SetMaxStepSize(0.39f);
+		pCharBody.SetMaxStepSizeInAir(0.1f);
+		pCharBody.SetStepClimbSpeed(1.0f);
+		
+		pCharBody.SetMaxPositiveMoveSpeed(eCharDir_Forward,1);
+		pCharBody.SetMaxNegativeMoveSpeed(eCharDir_Forward,-1);
+		pCharBody.SetMaxPositiveMoveSpeed(eCharDir_Right,1);
+		pCharBody.SetMaxNegativeMoveSpeed(eCharDir_Right,-1);
+		pCharBody.SetMoveSpeedMul(eCharDir_Forward,1);
+		pCharBody.SetMoveAcc(eCharDir_Forward,1);
+		pCharBody.SetMoveDeacc(eCharDir_Forward,1);
+		pCharBody.SetMoveAcc(eCharDir_Right,1);
+		pCharBody.SetMoveDeacc(eCharDir_Right,1);
+		pCharBody.SetMoveOppositeDirAccMul(eCharDir_Forward,1);
+		pCharBody.SetMoveOppositeDirAccMul(eCharDir_Right,1);
+	}
+	
+	//------------------------------------------------------------
+		
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		/////////////////////////////////
+		// Attacker Variables
+		msAttackerTeleportPos = apInstanceVars.GetVarString("AttackerTeleportPos","");
+		msAttackerDamageCallback = apInstanceVars.GetVarString("AttackerDamageCallback","");
+		msAttackerCustomCallback = apInstanceVars.GetVarString("AttackerCustomCallback","");
+		
+		/////////////////////////////////
+		// Mover Component
+		@mpMover = cLux_CreateEntityComponent_CharMover(mBaseObj, mBaseObj.GetCharBody());
+		
+		mpMover.LoadFromVariables(apVars);
+		
+		/////////////////////////////////
+		// Mover Component
+		mpMover.SetMaxForwardSpeed(1);
+		mpMover.SetMaxBackwardSpeed(1);
+		mpMover.SetTurnMinBreakAngle(cMath_ToRad(40) );
+		mpMover.SetTurnBreakMul(0);
+		mpMover.SetTurnSpeedMul(3);
+		mpMover.SetTurnMaxSpeed(4);
+
+		mpMover.SetStoppedToWalkSpeed(0.05);
+		mpMover.SetWalkToRunSpeed(3);
+		mpMover.SetWalkToStoppedSpeed(0.025);
+		mpMover.SetRunToWalkSpeed(0.8);
+		
+		mpMover.SetMoveSpeedAnimMul(1);
+		
+		/////////////////////////////////
+		// Pathfinder Component
+		if(mbUsePathfinding)
+		{
+			@mpPathfinder = cLux_CreateEntityComponent_Pathfinder(mBaseObj);
+			mpPathfinder.SetNodeContainerName("humanoid");
+		}
+		else
+		{
+			@mpPathfinder = null;
+		}
+		
+		/////////////////////////////////
+		// Anim
+		msCutscene_EndAlignmentBone = apVars.GetVarString("CutsceneEndAlignmentBone", "");
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnAfterWorldLoad()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnUpdate(float afTimeStep)
+	{
+		if(mbCutsceneAnimation_Active)
+		{	
+			cMeshEntity @pMeshEnt = mBaseObj.GetMeshEntity();
+			
+			////////////////////////////
+			//Get the T value
+			float fStep = mfCutsceneAnimation_FadeInTime<0.0001f ? 100000.0f : afTimeStep/mfCutsceneAnimation_FadeInTime;
+			mfCutsceneAnimation_FadeInT = cMath_IncreaseTo(mfCutsceneAnimation_FadeInT, fStep, 1.0f);
+
+			///////////////////////////////////////////////////
+			// Play animation at specific position and angle
+			if (mbCutsceneAnimation_GlobalSpace)
+			{
+				// Move actor body
+				cVector3f vNewPos = mvCutsceneAnimation_StartPosition * (1.0f-mfCutsceneAnimation_FadeInT) + mvCutsceneAnimation_Position * mfCutsceneAnimation_FadeInT;
+				mBaseObj.GetCharBody().SetFeetPosition(vNewPos, true);
+				
+				// Rotate actor root joint
+				cBoneState@ pBone = pMeshEnt.GetBoneStateFromName(GetRootBoneName());
+				pBone.SetUsePreTransform(true);
+				float fYaw = cMath_InterpolateLinear(mfCutsceneAnimation_StartAngle, mfCutsceneAnimation_StartAngle + cMath_GetAngleDistanceRad(mfCutsceneAnimation_StartAngle, mfCutsceneAnimation_Angle), mfCutsceneAnimation_FadeInT);
+				pBone.SetPreTransform(cMath_MatrixRotateXYZ(cVector3f(-cMath_GetAngleDistanceRad(fYaw, mfCutsceneAnimation_Angle), 0, 0)));
+			}
+			
+			cAnimationState @pAnimState = pMeshEnt.GetAnimationStateFromName(msCutsceneAnimation_Name);
+			if(pAnimState is null || pAnimState.IsOver())
+			{
+				OnCutsceneAnimationDone();
+			}
+		}
+	}
+
+	//------------------------------------------------------------
+	
+	void ResetProperties()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void BeforeEntityDestruction()
+	{
+	}
+		
+	//------------------------------------------------------------
+	
+	void OnStartMove()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnConnectionStateChange(iLuxEntity@ apEntity,int alState)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnSetActive(bool abX)
+	{
+		if (abX==false)
+		{
+			cLux_GetMusicHandler().RemoveDynamicTrack(mBaseObj.GetID());
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void GiveDamage(iPhysicsBody@ apBodyHit, const cVector3f&in avOrigin, const cVector3f&in avHitPos, cLuxDamageProperties@ apDamageProps)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnHealthChange()
+	{
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	bool CanInteract(int alType, iPhysicsBody@ apBody)
+	{
+		return false;
+	}
+	
+	//------------------------------------------------------------
+		
+	bool OnInteract(int alType, iPhysicsBody@ apBody, const cVector3f &in avFocusPos, const tString&in asData)
+	{
+		return false;
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ATTACKER CALLBACKS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	tString msAttackerTeleportPos;
+	tString msAttackerDamageCallback;
+	tString msAttackerCustomCallback;
+	
+	//------------------------------------------------------------
+	
+	void _Global_Attacker_GetTeleportPos()
+	{
+		cScript_SetGlobalReturnString(msAttackerTeleportPos);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_Attacker_GetDamageCallback()
+	{
+		cScript_SetGlobalReturnString(msAttackerDamageCallback);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_Attacker_GetCustomCallback()
+	{
+		cScript_SetGlobalReturnString(msAttackerCustomCallback);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PLAY ANIMATION
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_Humanoid_GetCutsceneActive()
+	{
+		cScript_SetGlobalReturnBool(mbCutsceneAnimation_Active);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_Humanoid_GetActiveCutscene()
+	{
+		cScript_SetGlobalReturnString((mbCutsceneAnimation_Active ? msCutsceneAnimation_Name : ""));			
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_Humanoid_PlayCutsceneAnimation()
+	{
+		tString sAnim = cScript_GetGlobalArgString(0);
+		bool bLoop = cScript_GetGlobalArgBool(1);
+		float fFadeTime = cScript_GetGlobalArgFloat(2);
+		tString sCallback = cScript_GetGlobalArgString(3);
+		float fSpeed = cScript_GetGlobalArgFloat(4);
+		float fRelTimePos = cScript_GetGlobalArgFloat(5);	
+		bool bGlobal = cScript_GetGlobalArgBool(6);
+		cVector3f vPos = cScript_GetGlobalArgVector3f(7);
+		float fAngle = cScript_GetGlobalArgFloat(8);
+		bool bFadeSpeed = cScript_GetGlobalArgBool(9);
+		bool bEndAtRootMotionBoneYaw = cScript_GetGlobalArgBool(10);
+
+		PlayCutsceneAnimation(sAnim, bLoop, fFadeTime, sCallback, fSpeed, fRelTimePos, bGlobal, vPos, fAngle, bFadeSpeed, bEndAtRootMotionBoneYaw);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_Humanoid_StopCutsceneAnimation()
+	{
+		if (mbCutsceneAnimation_Active)
+			OnCutsceneAnimationDone();
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_Humanoid_SetSoundVolume()
+	{
+		mBaseObj.SetSoundVolume(cScript_GetGlobalArgFloat(0));
+	}
+	
+	//------------------------------------------------------------
+	
+	tString GetRootBoneName()
+	{
+		if (msCutscene_EndAlignmentBone != "")
+			return msCutscene_EndAlignmentBone;
+		
+		cNode3D@ pBone = mBaseObj.GetMeshEntity().GetBoneStateRoot();
+		cNode3DIterator@ pChildIt = pBone.GetChildIterator();
+		
+		while(pChildIt.HasNext())
+		{
+			cNode3D @pChild = pChildIt.Next();
+			return pChild.GetName();
+		}
+		
+		return "";
+	}
+	
+	//------------------------------------------------------------
+	
+	void PlayCutsceneAnimation(const tString &in asAnim, bool abLoop, float afFadeTime, const tString &in asCallback, float afSpeed, float afRelTimePos, bool abGlobalSpace, const cVector3f &in avPos, float afAngle, bool abFadeSpeed, bool abAlignWithRotBoneAtEnd)
+	{
+		float fT = 0;
+		if(mbCutsceneAnimation_Active == true && mfCutsceneAnimation_Angle == afAngle)
+		{
+			fT = mfCutsceneAnimation_FadeInT;
+		}
+		iCharacterBody@ pBody = mBaseObj.GetCharBody();
+		
+		mbCutsceneAnimation_Active = true;
+		msCutsceneAnimation_Name = asAnim;
+		mbCutsceneAnimation_GlobalSpace = abGlobalSpace;
+		mvCutsceneAnimation_Position = avPos;
+		mvCutsceneAnimation_StartPosition = pBody.GetFeetPosition();
+		
+		mfCutsceneAnimation_Angle = afAngle;
+		mfCutsceneAnimation_StartAngle = pBody.GetYaw();
+		mfCutsceneAnimation_FadeInT = fT;
+		
+		mfCutsceneAnimation_FadeInTime = afFadeTime;
+		mfCutsceneAnimation_Speed = abFadeSpeed ? afSpeed : -1.f;
+		mbCutsceneAnimation_AlignRotAtEnd = abAlignWithRotBoneAtEnd;
+		
+		//////////////////////////
+		// Set up state
+		pBody.SetTestCollision(false);
+		pBody.SetGravityActive(false);
+		pBody.SetPhysicsBodyActive(false);
+		pBody.StopMovement();
+		
+		mpMover.SetUseMoveStateAnimations(false);
+		mpMover.SetDynamicObjectAvoidanceActive(false);
+		mpMover.SetWallAvoidanceActive(false);
+		
+		mpMover.StopTurning();
+		mpPathfinder.Stop();
+		
+		mBaseObj.GetMeshEntity().SetUpdateBonesWhenCulled(true);
+		mBaseObj.StopAllAnimations(afFadeTime);
+		mBaseObj.PlayAnimation(asAnim, afFadeTime, abLoop, true, asCallback, false, false);
+		
+		cAnimationState@ pState = mBaseObj.GetMeshEntity().GetAnimationStateFromName(asAnim);
+		if (pState !is null)
+			pState.SetSpeed(afSpeed);
+		
+		// Fix rotations
+		if(mbCutsceneAnimation_GlobalSpace)
+		{
+			cBoneState@ pBone = mBaseObj.GetMeshEntity().GetBoneStateFromName(GetRootBoneName());
+			pBone.SetUsePreTransform(true);
+			pBone.SetPreTransform(cMath_MatrixRotateXYZ(cVector3f(-mfCutsceneAnimation_StartAngle, 0, 0)));
+			pBody.SetYaw(mfCutsceneAnimation_Angle);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnCutsceneAnimationDone()
+	{
+		mbCutsceneAnimation_Active = false;
+		mbCutsceneAnimation_FadeOutActive = false;
+		
+		iCharacterBody@ pBody = mBaseObj.GetCharBody();
+		
+		cBoneState@ pBone = mBaseObj.GetMeshEntity().GetBoneStateFromName(GetRootBoneName());
+		cVector3f vPos = pBone.GetWorldPosition();
+		cVector3f vFeetPos = pBody.GetFeetPosition();
+		vPos.y += vFeetPos.y - vPos.y;
+		pBody.SetFeetPosition(vPos, true);
+		
+		if (mbCutsceneAnimation_AlignRotAtEnd)
+		{
+			cBoneState@ pEndRotBone = mBaseObj.GetMeshEntity().GetBoneStateFromName(msCutscene_EndAlignmentBone);
+			if (pEndRotBone !is null)
+			{
+				float fYaw = cMath_GetAngleFromPoints3D(0.f, cMath_Vector3Normalize(pEndRotBone.GetWorldMatrix().GetTranspose().GetForward())).y;
+				pBody.SetYaw(fYaw);
+			}
+		}
+		
+		pBody.SetTestCollision(true);
+		pBody.SetGravityActive(true);
+		pBody.SetPhysicsBodyActive(true);	
+		
+		mBaseObj.GetMeshEntity().SetUpdateBonesWhenCulled(false);
+		mBaseObj.StopAnimation(msCutsceneAnimation_Name, 0);
+		mpMover.PlayAnimation("idle", 0.f);		
+		
+		mpMover.SetUseMoveStateAnimations(true);
+		mpMover.SetDynamicObjectAvoidanceActive(true);
+		mpMover.SetWallAvoidanceActive(true);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	
+	void OnRenderSolid(cRendererCallbackFunctions@ apFunctions)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	cLuxPathfinder@ mpPathfinder;
+	cLuxCharMover@ mpMover;
+	
+	//------------------------------------------------------------
+	
+	bool mbUsePathfinding=true;
+	
+	//------------------------------------------------------------
+	
+	bool 		mbCutsceneAnimation_Active = false;
+	bool 		mbCutsceneAnimation_SensesActive = false;
+	bool 		mbCutsceneAnimation_FadeOutActive = false;
+	bool		mbCutsceneAnimation_AlignRotAtEnd = false;
+	
+	tString 	msCutsceneAnimation_Name = "";
+	float 		mfCutsceneAnimation_Speed = 0.f;
+	
+	bool 		mbCutsceneAnimation_GlobalSpace = false;
+	cVector3f 	mvCutsceneAnimation_Position = 0;
+	cVector3f 	mvCutsceneAnimation_StartPosition = 0;
+	float 		mfCutsceneAnimation_Angle = 0;
+	float 		mfCutsceneAnimation_StartAngle = 0;
+	
+	float 		mfCutsceneAnimation_FadeInTime = 1;
+	float 		mfCutsceneAnimation_FadeInT = 1;
+	
+	tString		msCutscene_EndAlignmentBone = "";
+	
+	
+	//------------------------------------------------------------
+		
+}	

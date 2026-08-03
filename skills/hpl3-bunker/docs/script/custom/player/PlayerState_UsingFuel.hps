@@ -1,0 +1,362 @@
+#include "interfaces/PlayerState_Interface.hps"
+#include "custom/player/PlayerState_UsingItem_Base.hps"
+#include "base/InputHandler_Types.hps"
+#include "player/Player_Types.hps"
+#include "helpers/helper_props.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+#include "helpers/helper_modules.hps"
+#include "custom/helpers/helper_items.hps"
+#include "custom/helpers/helper_props_custom.hps"
+#include "custom/helpers/helper_player_custom.hps"
+
+//------------------------------------------------------------
+
+const float gfUsingFuel_MinPitch = cMath_ToRad(-55.f);
+const float gfUsingFuel_MaxPitch = cMath_ToRad(30.f);
+const float gfUsingFuel_PitchFadeTime = 0.25f;
+
+const tString gsUsingFuel_FuelSpillEnt = "fuel_spill.ent";
+
+const float gfUsingFuel_FuelSpillDist = 0.75f;
+
+const float gfUsingFuel_MaxThrowDist = 4.0f;
+
+const float[] gvThrowAnimTimeStamps = {0.28922, 0.972245, 1.73145};
+
+///////////////
+// Player anims
+const tString gsUsingFuel_PlayerPourAnim_Start_R = "tool_fuel_use_start_rarm";
+const tString gsUsingFuel_PlayerPourAnim_Start_L = "tool_fuel_use_start_larm";
+const tString gsUsingFuel_PlayerPourAnim_Start_Head = "tool_fuel_use_start_head";
+const tString gsUsingFuel_PlayerPourAnim_R = "tool_fuel_use_loop_rarm";
+const tString gsUsingFuel_PlayerPourAnim_L = "tool_fuel_use_loop_larm";
+const tString gsUsingFuel_PlayerPourAnim_Head = "tool_fuel_use_loop_head";
+const tString gsUsingFuel_PlayerPourAnim_End_R = "tool_fuel_use_end_rarm";
+const tString gsUsingFuel_PlayerPourAnim_End_L = "tool_fuel_use_end_larm";
+const tString gsUsingFuel_PlayerPourAnim_End_Head = "tool_fuel_use_end_head";
+
+const tString gsUsingFuel_PlayerPourAnim_Start_Item = "fuel_cannister_throw_fuel_start";
+const tString gsUsingFuel_PlayerPourAnim_Open_Item = "fuel_cannister_open";
+
+enum eUsingFuelAnimState
+{
+	eUsingFuelAnimState_UseStart = eUsingItemAnimState_LastEnum,
+	eUsingFuelAnimState_UseEnd
+}
+
+//------------------------------------------------------------
+
+class cScrPlayerState_UsingFuel : iScrPlayerState_UsingItem_Base, iScrPlayerState_Interface
+{
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		iScrPlayerState_UsingItem_Base::Init();
+		
+		msFocusIntroAnim_R = "tool_fuel_focus_start_rarm";
+		msFocusIntroAnim_L = "tool_fuel_focus_start_larm";
+		msFocusLoopAnim_R = "tool_fuel_focus_idle_rarm";
+		msFocusLoopAnim_L = "tool_fuel_focus_idle_larm";
+		msFocusOutroAnim_R = "tool_fuel_focus_end_rarm";
+		msFocusOutroAnim_L = "tool_fuel_focus_end_larm";
+		
+		mbUsesOtherHandAnims = true;
+		
+		msItemPrompt = "PourFuel";
+		
+		mfEquipLastItemOnLeaveDelay = 0.55f;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ENTER MAP
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap) 
+	{
+		/////////////
+		// Preload
+		ParticleSystem_Preload("fuel_throw.ps");
+
+		Entity_Preload(gsUsingFuel_FuelSpillEnt);
+	}
+
+	void OnMapLeave(cLuxMap @apMap) {}
+	
+	//------------------------------------------------------------
+	
+	void CreateWorldEntities(cLuxMap @apMap) {}	
+	void DestroyWorldEntities(cLuxMap @apMap) {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnEnterState(int alPrevStateId)
+	{
+		////////////////
+		// Enter base
+		iScrPlayerState_UsingItem_Base::OnEnterState(alPrevStateId);
+		
+		////////////////
+		// Setup vars
+		
+		////////////////
+		// Setup body
+		SetupPitchFade(gfUsingFuel_MinPitch, gfUsingFuel_MaxPitch, gfUsingFuel_PitchFadeTime, false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep) override
+	{
+		iScrPlayerState_UsingItem_Base::Update(afTimeStep);
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateAnimationStates(float afTimeStep) override
+	{
+		////////////////
+		// Throw
+		if (mlAnimState == eUsingFuelAnimState_UseStart)
+		{
+			///////////////
+			// Update state
+			int lState = UpdateStateAnims(gsUsingFuel_PlayerPourAnim_Start_R, gsUsingFuel_PlayerPourAnim_Start_L, gsUsingFuel_PlayerPourAnim_Start_Item, false, false, 0.0f);
+			if (lState == 1)
+			{
+				PlayerBody_PlayAdditiveCameraAnimation(gsUsingFuel_PlayerPourAnim_Start_Head, false, 0.1, 1.0f);
+			}
+			else if (lState == -1)
+			{
+				ChangeAnimState(eUsingItemAnimState_Use);
+			}
+		}
+		if (mlAnimState == eUsingItemAnimState_Use)
+		{
+			///////////////
+			// Update state
+			int lState = UpdateStateAnims(gsUsingFuel_PlayerPourAnim_R, gsUsingFuel_PlayerPourAnim_L, "", false, false, 0.1f);
+			if (lState == 1)
+			{
+				mlSpillCount = 0;
+				//PlayerBody_PlayAdditiveCameraAnimation(gsUsingFuel_PlayerPourAnim_Head, false, 0.0, 1.0f);
+			}
+			else if (lState == -1)
+			{
+				ChangeAnimState(eUsingFuelAnimState_UseEnd);
+			}
+			
+			cAnimationState@ pAnimState = PlayerBody_GetAnimationState(gsUsingFuel_PlayerPourAnim_R);
+			float fAnimTime = pAnimState.GetTimePosition();
+			
+			if (mlSpillCount < gvThrowAnimTimeStamps.length() && fAnimTime > gvThrowAnimTimeStamps[mlSpillCount])
+			{
+				mlSpillCount++;
+				
+				iLuxEntity@ pCannister = cLux_ID_Entity(m_idItemEntity);
+				iPhysicsBody@ pOpeningBody = pCannister is null ? null : pCannister.GetBodyFromName("Opening");
+				if (pCannister !is null && pOpeningBody !is null)
+				{
+					cParticleSystem@ pPS = pCannister.CreateParticleSystem("fuel_throw_"+mlSpillCount, "fuel_throw.ps", true, false);
+					if (pPS !is null)
+					{
+						cMatrixf mtxPS = pOpeningBody.GetWorldMatrix();
+						//mtxPS.SetTranslation(mtxPS.GetTranslation() - mtxPS.GetUp() * 0.02f);
+						pPS.SetWorldMatrix(mtxPS);
+					}
+				}
+				
+				////////////////////
+				// Try to generate spill
+				cCamera @pCam = mBaseObj.mpPlayer.GetCamera();
+			
+				cVector3f vDirection = pCam.GetForward();		
+				cVector3f vCamPos = pCam.GetPosition();
+					
+				float fHitDist;
+				cVector3f vHitNrm;
+				iPhysicsBody@ pTargetBody = cLux_GetClosestBody(vCamPos, vDirection, gfUsingFuel_MaxThrowDist, fHitDist, vHitNrm);
+				if (pTargetBody is null) fHitDist = gfUsingFuel_MaxThrowDist;
+				fHitDist -= 0.1f;
+				
+				cVector3f vTargetPos = vCamPos + vDirection * fHitDist;
+				
+				@pTargetBody = cLux_GetClosestBody(vTargetPos, cVector3f_Down, 100, fHitDist, vHitNrm);
+				vTargetPos = vTargetPos + cVector3f_Down * (fHitDist-0.01);
+				
+				if ((vTargetPos-mvLastSpill).Length() > gfUsingFuel_FuelSpillDist)
+				{
+					mvLastSpill = vTargetPos;
+					
+					//////////////////
+					// Create spill prop
+					cLuxMap@ pMap = cLux_GetCurrentMap();
+					if (pMap !is null)
+					{
+						cLuxProp@ pProp = cLux_ID_Prop(m_idItemEntity);
+						if (pProp is null) return;
+							
+						tString sProp = pProp.GetName();
+			
+						cVector3f vRight = cMath_Vector3Cross(vHitNrm, cVector3f_Forward);
+						cVector3f vFwd = cMath_Vector3Cross(vRight, vHitNrm);
+						cMatrixf mtxTransform = cMath_MatrixUnitVectors(vRight, vHitNrm, vFwd, vTargetPos);
+						pMap.CreateEntity(sProp + "_spill_"+mlSpillCount, gsUsingFuel_FuelSpillEnt, mtxTransform, cVector3f(1.f));
+						
+						iLuxEntity@ pDecalEnt = pMap.GetLatestEntity();
+					
+						if(pDecalEnt !is null && pDecalEnt.GetMeshEntity() !is null)
+						{
+							pDecalEnt.SetVarBool("SpillGenerated", true);
+							Player_AddAimAssistTarget(pDecalEnt.GetID());
+				
+							cMeshEntity@ pMeshEnt = pDecalEnt.GetMeshEntity();
+
+							// Will be rendered above other "world" decals
+							pMeshEnt.SetRenderLayer(2);
+
+							// Set sub div index
+							if(pMeshEnt.GetSubMeshEntity(0) !is null)
+							{
+								cMaterial@ pMat = pMeshEnt.GetSubMeshEntity(0).GetMaterial();
+								pMeshEnt.GetSubMeshEntity(0).SetCurrentSubDiv(cMath_RandRectl(0, pMat.GetUvSubDivNum() - 1));
+							}
+						}
+
+						// Attach to entity if it's dynamic
+						iLuxEntity@ pTargetEnt = pTargetBody is null ? null : Map_GetEntity(Body_GetEntityName(pTargetBody.GetName()));
+						if(pTargetEnt !is null)
+						{
+							cMeshEntity@ pMeshEntity = pTargetEnt.GetMeshEntity();
+							
+							if(pMeshEntity !is null && pMeshEntity.IsStatic() == false)
+							{
+								pDecalEnt.AttachToEntity(pTargetEnt, pTargetBody, true, false, false);
+							}
+						}
+					}
+				}
+			}
+		}
+		if (mlAnimState == eUsingFuelAnimState_UseEnd)
+		{
+			///////////////
+			// Update state
+			int lState = UpdateStateAnims(gsUsingFuel_PlayerPourAnim_End_R, gsUsingFuel_PlayerPourAnim_End_L, "", false, true, 0.1f);
+			if (lState == 1)
+			{
+				//PlayerBody_PlayAdditiveCameraAnimation(gsUsingFuel_PlayerPourAnim_End_Head, false, 0.0, 1.0f);
+			}
+			else if (lState == -1)
+			{
+				mbAutoEquipNextItem = true;
+				mbAllowLeavingState = true;
+				mbLeaveState = true;
+		
+				//////////////////
+				// Remove item
+				tString sItem = Item_GetHeld(eItemHandlerHand_Right);
+				Item_SetPlayUnequipAnim(sItem, false);
+				Item_Unequip(sItem, true);
+				Item_RemoveFromInventory(sItem);
+				
+				mBaseObj.mpPlayer.ChangeState(ePlayerState_Normal);
+			}
+		}
+		
+		else
+		{
+			iScrPlayerState_UsingItem_Base::UpdateAnimationStates(afTimeStep);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnUse() 
+	{	
+		///////////////////////////////////////////////
+		// If the item can be used on things in the map
+		cCamera @pCam = mBaseObj.mpPlayer.GetCamera();
+		if(mPickBasics.UpdatePickCheck(pCam, false))
+		{
+			iScrItemHandler_Interface @pHandler = cast<iScrItemHandler_Interface>( cLux_GetUserModuleFromID(eModuleType_Custom_ItemHandler) );
+			if (pHandler.CanUseHeldItemOnWorld(eItemHandlerHand_Right, mPickBasics.GetFocusedEntity().GetName()))
+			{
+				Item_UseHeldOnWorld(eItemHandlerHand_Right, mPickBasics.GetFocusedEntity().GetName());
+				return;
+			}
+		}
+		
+		///////////////////////////
+		// If we're near the generator skip pouring fuel around
+		if (Generator_GetPlayerNearFuelHatch())
+		{
+			return;
+		}
+		
+		///////////////////////////
+		// Use!
+		mvLastSpill = 100000;
+		mbAllowLeavingState = false;
+		
+		ChangeAnimState(eUsingFuelAnimState_UseStart);
+		
+		cScript_SetGlobalVarBool("HasUsedFuelItem", true);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPERS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet@ apSet, iFontData@ apFont, float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	cVector3f mvLastSpill;
+	int mlSpillCount = 0;
+	
+	//------------------------------------------------------------
+}

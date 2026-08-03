@@ -1,0 +1,752 @@
+#include "interfaces/PlayerState_Interface.hps"
+#include "base/InputHandler_Types.hps"
+#include "player/Player_Types.hps"
+#include "helpers/helper_game.hps"
+#include "helpers/helper_audio.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_player.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_items.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+#include "custom/helpers/helper_props_custom.hps"
+
+/////////////////////////////////////////
+// SETTINGS
+/////////////////////////////////////////
+
+//------------------------------------------------------------
+
+const float gfBabyTalkDelay = 3.0f;
+const float gfBabyTalkDefaultInitTime = 1.0f;
+const float gfLookTime = 0.5f;
+const float gfLookDownAngle = cMath_ToRad(-90.f);
+const float gfYawRange = cMath_ToRad(8.f);
+const float gfPitchRange = cMath_ToRad(8.f);
+
+const tString gsCheckBabyCalmIntroAnim = "calming_baby_intro";
+const tString gsCheckBabyCalmLoopAnimA = "calming_baby_a";
+const tString gsCheckBabyCalmLoopAnimB = "calming_baby_b";
+const tString gsCheckBabyCalmOutroAnim = "calming_baby_outro";
+const tString gsCheckBabyCalmIntroCrouchAnim = "calming_baby_crouched_intro";
+const tString gsCheckBabyCalmLoopCrouchAnimA = "calming_baby_crouched_a";
+const tString gsCheckBabyCalmLoopCrouchAnimB = "calming_baby_crouched_b";
+const tString gsCheckBabyCalmOutroCrouchAnim = "calming_baby_crouched_outro";
+
+//------------------------------------------------------------
+
+class cScrPlayerState_CheckBaby : iScrPlayerState, iScrPlayerState_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL
+	/////////////////////////////////////////
+
+	//------------------------------------------------------------
+
+	void OnAttachBodyToStickyArea() {}
+	
+	//------------------------------------------------------------
+	
+	void _Global_StartForcedCheck()
+	{
+		mfForcedCheckCount = cScript_GetGlobalArgFloat(0);
+		
+		if (cLux_GetPlayer().GetCurrentStateId() != ePlayerState_Custom_CheckBaby)
+			cLux_GetPlayer().ChangeState(ePlayerState_Custom_CheckBaby);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetEffectIntensity()
+	{
+		mfEffectIntensity = cScript_GetGlobalArgFloat(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetHoldingBaby()
+	{
+		mbHoldingBaby = cScript_GetGlobalArgBool(0);
+		msBabyEntity = cScript_GetGlobalArgString(1);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetHoldingBaby()
+	{
+		cScript_SetGlobalReturnBool(mbHoldingBaby);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetBabyTalkInitTime()
+	{
+		mfBabyTalkInitTime = cScript_GetGlobalArgFloat(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_IsTalkingToBaby()
+	{
+		cScript_SetGlobalReturnBool(mfTimeInState >= mfBabyTalkInitTime && mbExitRequested == false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetCalmBabyAnimState()
+	{
+		cScript_SetGlobalReturnInt(mlCalmBabyAnimState);
+	}
+		
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		mlBlurId = -1;
+		mlDofId = -1;
+		mfTimeInState = 0.f;
+		mfLookCount = 0.f;
+		mfStartPitch = 0.f;
+		mfExitPitch = 0.f;
+		mfStartYaw = 0.f;
+		mfSoundCount = 0.f;
+		mfBabyTalkInitTime = gfBabyTalkDefaultInitTime;
+		mfBabyTalkCount = mfBabyTalkInitTime;
+		mfHeartbeatEffectCount = 0.f;
+		mfHeartbeatEffectStrength = 0.f;
+		mfEffectIntensity = 1.f;
+		mfRumbleCount = 0.f;
+		mfForcedCheckCount = 0.f;
+		mbExitRequested = false;
+		mbHoldingBaby = false;
+		mbAllowBabyTalk = true;
+		mbPlayThumbAnim = false;
+		msHeldLeft = "";
+		msHeldRight = "";
+		msBabyEntity = "";
+		mlCalmBabyAnimState = -1;
+		mlSootheBabyCount = 0;
+		mfCalmBabyAnimCount = 0.f;
+		m_idBabySoundId = tID_Invalid;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// USER SETTINGS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void LoadUserConfig() {}	
+	void SaveUserConfig() {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ENTER MAP
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap) {}
+	
+	//------------------------------------------------------------
+	
+	void OnMapLeave(cLuxMap @apMap) 
+	{
+		mfBabyTalkInitTime = gfBabyTalkDefaultInitTime;
+	}
+	
+	//------------------------------------------------------------
+	
+	void CreateWorldEntities(cLuxMap @apMap) {}
+	void DestroyWorldEntities(cLuxMap @apMap) {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnEnterState(int alPrevStateId)
+	{
+		///////////////////
+		// Set up vars
+		ResetLook();
+		
+		mfTimeInState = 0.f;
+		mbExitRequested = false;
+		mfSoundCount = 1.25f;
+		mfBabyTalkCount = mfBabyTalkInitTime;
+		mbAllowBabyTalk = true;
+		mfHeartbeatEffectCount = 0.f;
+		mfHeartbeatEffectStrength = 0.f;
+		mfRumbleCount = 0.f;
+		mlCalmBabyAnimState = -1;
+		mfCalmBabyAnimCount = 0.f;
+
+		///////////////////
+		// Items
+		msHeldRight = Item_GetHeld(eItemHandlerHand_Right);
+		Item_PutAway(eItemHandlerHand_Right);
+		
+		if (mbHoldingBaby == false)
+		{
+			msHeldLeft = Item_GetHeld(eItemHandlerHand_Left);
+			Item_PutAway(eItemHandlerHand_Left);
+		}
+		
+		///////////////////
+		// Player		
+		mBaseObj.mpPlayer.GetCharacterBody().StopMovement();
+		
+		///////////////////
+		// Animation
+		if (mbHoldingBaby == false)
+		{
+			tString sAnim = Player_GetCrouching() ? "check_baby_crouch_loop_" : "check_baby_loop_";
+			sAnim += cMath_RandRectl(1, 3);
+			PlayerBody_PlayAnimation(sAnim, ePlayerBodyAnimationLayer_FullBody, true, false, true, 0.3f);
+		}
+		else
+		{
+			mlCalmBabyAnimState = 0;
+			
+			tString sAnim = Player_GetCrouching() ? gsCheckBabyCalmIntroCrouchAnim : gsCheckBabyCalmIntroAnim;
+			mbPlayThumbAnim = mlSootheBabyCount == 0 || cMath_RandRectl(0, 1) == 0;	
+			mfCalmBabyAnimCount = PlayerBody_GetAnimationState(sAnim).GetLength() - (mbPlayThumbAnim ? 0.3f : 0.f);
+			
+			PlayerBody_PlayAnimation(sAnim, ePlayerBodyAnimationLayer_FullBody, false, false, true, 0.3f);
+			
+			++mlSootheBabyCount;
+		}
+		
+		PlayerBody_AlignLowerBodyToCameraYaw();	
+		
+		///////////////////
+		// Effects
+		if (mbHoldingBaby == false)
+		{
+			mlDofId = Effect_DoF_Start(0.f, 0.1f, 0.025f, 2.f);
+			mlBlurId = Effect_RadialBlur_Start(0.3f, 1.f, 0.6f, 2.f);
+		}
+		
+		mbIsSafe = FearHandler_IsAgentNearby(); //Set to opposite to force the correct behavior in update
+		
+		//////////////////
+		// Hints
+		if (mbHoldingBaby == false)
+			Hint_StopHint();
+					
+		//////////////////
+		// Map callback
+		cLuxMap@ pMap = cLux_GetCurrentMap();
+		tString sCallback = "void OnCheckBaby(int alState)";
+		if (pMap.ScriptMethodExists(sCallback) && pMap.ScriptPrepare(sCallback))
+		{
+			pMap.SetArgInt(0, 1);
+			pMap.ScriptExecute();
+		}			
+
+		Effect_Shake_EnableAll(false);
+
+		cLux_AddDebugMessage("[CheckBaby] Enter state");
+		
+		SetBabyCheckCounters();		
+	}
+	
+	//------------------------------------------------------------
+
+	void OnLeaveState(int alNextStateId)
+	{	
+		if (mbExitRequested == false)
+			RequestExit();
+		
+		mlCalmBabyAnimState = -1;
+		mfForcedCheckCount = 0.f;
+		mBaseObj.mpPlayer.SetCameraPosAdd(eCameraAddType_CheckBaby, 0.f);
+		
+		FearHandler_FadeRateMulTo(eFearRateMulType_CheckBaby, 1, 0.5f);
+		
+		//////////////////
+		// Map callback
+		cLuxMap@ pMap = cLux_GetCurrentMap();
+		tString sCallback = "void OnCheckBaby(int alState)";
+		if (pMap.ScriptMethodExists(sCallback) && pMap.ScriptPrepare(sCallback))
+		{
+			pMap.SetArgInt(0, -1);
+			pMap.ScriptExecute();
+		}
+		
+		Effect_Shake_EnableAll(true);
+		
+		cLux_AddDebugMessage("[CheckBaby] Leave state");
+	}
+		
+	//------------------------------------------------------------
+	
+	void Reset() {}
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep)
+	{	
+		//////////////////////
+		// Time
+		if (mfTimeInState < 9999999.f)
+			mfTimeInState += afTimeStep;
+		
+		//////////////////////
+		// Leave state?
+		if (mfForcedCheckCount > 0.f)
+			mfForcedCheckCount -= afTimeStep;
+			
+		if (cInput_IsTriggered(eAction_CheckBaby) == false && mbExitRequested == false && mfForcedCheckCount <= 0.f)
+			RequestExit();
+			
+		//////////////////////
+		// Anims
+		if (mbHoldingBaby && mbExitRequested == false)
+		{
+			float fPrevCalmBabyAnimCount = mfCalmBabyAnimCount;
+			mfCalmBabyAnimCount -= afTimeStep;
+			
+			if (mfCalmBabyAnimCount <= 0.f && fPrevCalmBabyAnimCount > 0.f)
+			{
+				tString sAnimA = gsCheckBabyCalmLoopAnimA;
+				tString sAnimB = gsCheckBabyCalmLoopAnimB;
+				
+				if (Player_GetCrouching())
+				{
+					sAnimA = gsCheckBabyCalmLoopCrouchAnimA;
+					sAnimB = gsCheckBabyCalmLoopCrouchAnimB;
+				}
+				
+				if (mbPlayThumbAnim)
+				{
+					mlCalmBabyAnimState = 1;
+					mfCalmBabyAnimCount = PlayerBody_GetAnimationState(sAnimA).GetLength() - 0.3f;
+				}
+				else
+				{
+					mlCalmBabyAnimState = 2;
+				}
+				
+				tString sAnim = mbPlayThumbAnim ? sAnimA : sAnimB;				
+				PlayerBody_PlayAnimation(sAnim, ePlayerBodyAnimationLayer_FullBody, true, false, true, 0.6f);
+				
+				mbPlayThumbAnim = false;
+			}
+		}
+		
+		//////////////////////
+		// Look down on belly/up if exiting!
+		cLuxPlayer@ pPlayer = mBaseObj.mpPlayer;
+		cCamera@ pCam = pPlayer.GetCamera();
+		
+		mfLookCount -= afTimeStep;
+		if (mfLookCount <= 0.f)
+			mfLookCount = 0.f;
+		
+		float fT = cMath_Easing(eEasing_SineInOut, 1.f - (mfLookCount / gfLookTime));
+		float fTarPitch = gfLookDownAngle;
+		
+		if (mbExitRequested)
+			fTarPitch = mfExitPitch;
+		
+		float fPitch = cMath_InterpolateLinear(mfStartPitch, fTarPitch, fT);
+		
+		if (mfLookCount > 0.f)
+			pCam.SetPitch(fPitch);
+		
+		float fPosAddT = mbExitRequested ? 1.f - fT : fT;
+		//cVector3f vPosAdd = cVector3f_Forward * 0.2f;
+		// Fix due to new anims - IT
+		cVector3f vPosAdd = 0.0f;
+		
+		if (mbHoldingBaby)
+		{
+			if (Player_GetCrouching())	vPosAdd = cVector3f(0.f, 0.075f, -0.05f);
+			else						vPosAdd = cVector3f(0.f, 0.0f, 0.f);
+		}			
+			
+		pPlayer.SetCameraPosAdd(eCameraAddType_CheckBaby, vPosAdd * fPosAddT);
+		
+		if (mbExitRequested)
+		{
+			if (cMath_GetAngleDistanceRad(fPitch, fTarPitch) < 0.01f &&
+				PlayerBody_GetAnimationState(msOutroAnim).IsOver())
+					pPlayer.ChangeState(ePlayerState_Normal);
+		}
+		
+		///////////////////////
+		// Baby talk
+		mfBabyTalkCount -= afTimeStep;
+		
+		if (Voice_SceneInvolvingCharacterIsActive("Player"))
+			mfBabyTalkCount = gfBabyTalkDelay;
+		
+		if (mfBabyTalkCount <= 0.f)
+		{
+			mfBabyTalkCount = 0.f;
+			
+			if (mbAllowBabyTalk)
+				TalkToBaby();
+		}
+		
+		bool bWasSafe = mbIsSafe;
+		mbIsSafe = FearHandler_IsAgentNearby() == false;
+		
+		if (mbIsSafe && bWasSafe == false)
+		{
+			mfFearRate = FearHandler_GetRate();
+			FearHandler_FadeRateMulTo(eFearRateMulType_CheckBaby, 0, 0.5f);
+		}
+		else if (mbIsSafe == false)
+		{
+			mfFearRate = FearHandler_GetRate();
+			if (bWasSafe)
+			{
+				FearHandler_FadeRateMulTo(eFearRateMulType_CheckBaby, 1, 0.5f);
+			}
+		}
+		
+		if (mbHoldingBaby)
+			return;
+		
+		///////////////////////
+		// Sounds	
+		mfSoundCount -= afTimeStep;
+		if (mfSoundCount <= 0.f && mbExitRequested == false)
+		{
+			mfSoundCount = 0.f;
+				
+			cSoundEntity@ pSound = cLux_ID_SoundEntity(m_idBabySoundId);
+			if (pSound is null)
+			{
+				Sound_CreateAtEntity("Sound_BabyHeartbeat", "player/baby/heartbeat", "player", 1.f);
+				@pSound = cLux_GetCurrentMap().GetWorld().GetSoundEntity("Sound_BabyHeartbeat");
+				
+				m_idBabySoundId = pSound.GetID();
+				pSound.SetVolume(1.0f * mfEffectIntensity);
+			}
+		}
+		
+		///////////////////////
+		// Screen effects (synced with hearbeat sound)
+		if (mfSoundCount > 0.f)
+			return;
+		
+		mfHeartbeatEffectCount += cMath_PiDiv2 * (142.f / 60.f) * afTimeStep;
+		if (mfHeartbeatEffectCount > cMath_Pi)
+			mfHeartbeatEffectCount -= cMath_Pi;
+						
+		// Fade in strength
+		mfHeartbeatEffectStrength += afTimeStep;
+		if (mfHeartbeatEffectStrength > 1.f)
+			mfHeartbeatEffectStrength = 1.f;
+			
+		// Stronger effects if kick was recent!
+		float fTime = Pregnancy_GetTimeSinceLastBabyKick();
+		float fHeartbeatIntensity = 1.f + cMath_Clamp(1.f - (fTime / 10.f), 0.f, 1.f);
+			
+		float fBeat = cMath_Abs(cMath_Sin(mfHeartbeatEffectCount));
+		float fMul = mfHeartbeatEffectStrength * fHeartbeatIntensity * mfEffectIntensity;
+		
+		if (mlBlurId != -1)
+		{
+			float fBlurSize = 0.3f + (0.5f * fBeat * fMul);
+			Effect_RadialBlur_FadeSize(mlBlurId, fBlurSize, 0.5f);
+		}
+			
+		if (mlDofId != -1)
+		{
+			float fFalloff = 0.025f + (0.05f * fBeat * fMul);
+			Effect_DoF_FadeFalloff(mlDofId, fFalloff, 0.5f);
+		}
+		
+		///////////////////////
+		// Rumble
+		mfRumbleCount -= afTimeStep;
+		if (mfRumbleCount <= 0.f)
+		{
+			mfRumbleCount = 60.f / 142.f;
+			
+			float fRumble = 0.15f * fMul;
+			Effect_Rumble_Start(fRumble, mfRumbleCount, 0.f, 0.f);
+		}
+	}	
+	
+	//-------------------------------------------------------
+	
+	void SetBabyCheckCounters()
+	{
+		mlTotalTimesChecked++;
+		
+		if (Pregnancy_GetTimeSinceLastBabyKick() < 45) return;
+		
+		cLuxMap@ pMap = cLux_GetCurrentMap();
+		tString sMap = pMap.GetName();
+		
+		int lUniqueMapsBabyChecked = 0;
+		
+		for (int i = 0; i<mvMaps.length(); i++)
+		{
+			if (sMap != mvMaps[i])
+			{
+				if (mvMapsBabyChecked[i] == 1)
+					lUniqueMapsBabyChecked++;					
+			}
+			else
+			{
+				mvMapsBabyChecked[i] = 1;
+				lUniqueMapsBabyChecked++;
+			}
+		}
+		
+		if (lUniqueMapsBabyChecked >= 3)
+			Achievement_Unlock(eAchievement_Caregiver);
+	}
+	
+	//-------------------------------------------------------
+	
+	void _Global_GetBabyCheckCounters()
+	{
+		cScript_SetGlobalReturnInt(mlTotalTimesChecked);
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetLook()
+	{
+		mfLookCount = gfLookTime;
+		mfStartPitch = mBaseObj.mpPlayer.GetCamera().GetPitch();
+		mfStartYaw = mBaseObj.mpPlayer.GetCharacterBody().GetYaw();
+	}
+	
+	//------------------------------------------------------------
+
+	void RequestExit()
+	{
+		///////////////////
+		// Vars		
+		mfExitPitch = mBaseObj.mpPlayer.GetCamera().GetPitch() + cMath_ToRad(5.f);
+		if (mfLookCount <= 0.f)
+			mfExitPitch = gfLookDownAngle + cMath_ToRad(32.f);
+		
+		mbExitRequested = true;
+		
+		ResetLook();
+		
+		///////////////////
+		// Anim
+		if (mbHoldingBaby == false)
+		{
+			msOutroAnim = Player_GetCrouching() ? "check_baby_crouch_end" : "check_baby_end";
+			PlayerBody_PlayAnimation(msOutroAnim, ePlayerBodyAnimationLayer_FullBody, false, false, true, 0.3f);
+		}
+		else
+		{
+			mlCalmBabyAnimState = 3;
+			
+			msOutroAnim = Player_GetCrouching() ? gsCheckBabyCalmOutroCrouchAnim : gsCheckBabyCalmOutroAnim;
+			PlayerBody_PlayAnimation(msOutroAnim, ePlayerBodyAnimationLayer_FullBody, false, false, true, 0.3f);
+		}
+		
+		///////////////////
+		// Items
+		if (msHeldLeft != "" && cString_Sub(msHeldLeft, 0, 9)!="Matchbook")
+			Item_TakeOut(msHeldLeft);
+		if (msHeldRight != "")
+			Item_TakeOut(msHeldRight);
+			
+		///////////////////
+		// Sound	
+		Sound_Stop("Sound_BabyHeartbeat", 1.f);
+			
+		///////////////////
+		// Effects
+		if (mlDofId != -1)
+			Effect_DoF_FadeOut(mlDofId, 0.5f);
+		if (mlBlurId != -1)
+			Effect_RadialBlur_FadeOut(mlBlurId, 0.5f);
+			
+		mlDofId = -1;
+		mlBlurId = -1;
+	}
+	
+	//------------------------------------------------------------
+	
+	void TalkToBaby()
+	{
+		/////////////////
+		// Good moment to talk?
+		cLuxAgent@ pAgent = cLux_ID_Agent(Blackboard_GetClosestAgent(cLux_GetPlayer().GetCharacterBody().GetFeetPosition()));
+			
+		bool bAgentsOK = Blackboard_GetAgentCount() == 0 || (pAgent !is null && pAgent.GetDistanceToPlayer() > 3.f);
+		bool bFearOK = mfFearRate < 0.75f; // Upped to higher fear - the PregHandler takes care of whispering - ask Ian
+		bool bDialogOK = Voice_SceneInvolvingCharacterIsActive("Player") == false;
+		
+		if (bFearOK && bDialogOK && bAgentsOK)
+		{
+			Voice_Play(Pregnancy_GetBabyTalkVoiceSubject());
+			
+			// Don't repeat lines if whispering
+			if (Pregnancy_GetWhispering())
+				mbAllowBabyTalk = false;
+		}
+				
+		if (!mbHoldingBaby)
+		{
+			//cLux_AddTodoMessage("ANIMATION: Rub belly!");
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void PostUpdate(float afTimeStep) {}	
+	void OnGui(float afTimeStep) {}
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool OnAction(int alAction, bool abPressed)
+	{        
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnAnalogInput(int alAnalogId, const cVector3f &in avAmount) 
+	{ 
+		/////////////////////////
+		// Look around!
+		if (alAnalogId == eAnalogType_Look)
+		{
+			if (mfLookCount > 0.f || mbExitRequested) 
+				return false;
+			
+			iCharacterBody@ pCharBody = mBaseObj.mpPlayer.GetCharacterBody();
+			cCamera@ pCam = mBaseObj.mpPlayer.GetCamera();
+			
+			float fMul = Player_GetLookSpeedMul() * 0.25f;
+			
+			/////////////////////////
+			// Set yaw
+			float fYaw = pCharBody.GetYaw();
+			float fMinYaw = mfStartYaw - gfYawRange;
+			float fMaxYaw = mfStartYaw + gfYawRange;
+			
+			fYaw += avAmount.x * -1.f * fMul;
+			pCharBody.SetYaw(cMath_Clamp(fYaw, fMinYaw, fMaxYaw));
+			
+			/////////////////////////
+			// Set pitch
+			float fPitch = pCam.GetPitch();
+			float fMinPitch = gfLookDownAngle - gfPitchRange;
+			float fMaxPitch = gfLookDownAngle + gfPitchRange;
+			
+			fPitch += avAmount.y * -1.f * fMul;
+			pCam.SetPitch(cMath_Clamp(fPitch, fMinPitch, fMaxPitch));
+			return false;
+		}
+		
+		return false; 
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnExitPressed() { return true; }
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// BODY CALLBACKS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool AllowBuoyancy(iPhysicsBody @apBody) { return true; }
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// CHARACTER CALLBACK
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void CharBody_GravityCollide(iCharacterBody@ apCharBody, iPhysicsBody@ apBody, cCollideData @apCollideData) {}
+	void CharBody_HitGround(iCharacterBody@ apCharBody,const cVector3f &in avVel) {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	int mlBlurId;
+	int mlDofId;
+	float mfTimeInState;
+	float mfLookCount;
+	float mfStartPitch;
+	float mfExitPitch;
+	float mfStartYaw;
+	float mfSoundCount;
+	float mfBabyTalkCount;
+	float mfBabyTalkInitTime;
+	float mfHeartbeatEffectCount;
+	float mfHeartbeatEffectStrength;
+	float mfRumbleCount;
+	float mfForcedCheckCount;
+	float mfEffectIntensity;
+	float mfFearRate;
+	bool mbIsSafe;
+	bool mbExitRequested;
+	tString msOutroAnim;
+	bool mbHoldingBaby;
+	bool mbAllowBabyTalk;
+	bool mbPlayThumbAnim;
+	int mlCalmBabyAnimState;
+	int mlSootheBabyCount;
+	float mfCalmBabyAnimCount;
+	tString msBabyEntity;
+	tString msHeldLeft;
+	tString msHeldRight;
+	[nosave] tID m_idBabySoundId;
+	array<tString> mvMaps = {"02_01_path_to_outpost", "02_02_courtyard", "02_03_arsenal", "02_04_living_quarters", "02_05_cistern", "02_06_oasis", "02_07_alchemists_lab", "03_03_herberts_hq_a", "03_03_herberts_hq_b", "03_04_pillar_room", "03_05_vitae_station", "03_06_ghouls_nest", "04_01_town", "04_02_sandstorm"};
+	array<int> mvMapsBabyChecked = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+	int mlTotalTimesChecked;
+	
+	//------------------------------------------------------------
+}

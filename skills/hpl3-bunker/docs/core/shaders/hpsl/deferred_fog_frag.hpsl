@@ -1,0 +1,262 @@
+////////////////////////////////////////////////////////
+// Deferred Fog - Fragment Shader
+//
+// Fragment shader for all things fog!
+////////////////////////////////////////////////////////
+
+@include helper_float_packing.hpsl
+
+@include helper_fog.hpsl
+
+//--------------------------------------------------------------
+
+//////////////
+// Arguments
+cBuffer cFogFragArguments : 1
+{
+	cMatrixf a_mtxNoise;
+	cMatrixf a_mtxInvView;
+	cMatrixf a_mtxSkybox;
+
+	cVector4f avScreenToFarPlane;
+
+	cVector3f avCameraPos;
+
+	cVector4f avFogSettings;
+	cVector4f avFogColor;
+	
+	cVector3f avRayCastStart;
+
+	cVector3f avNegPlaneDistNeg;
+	float afNegFarPlane;
+
+	cVector3f avNegPlaneDistPos;
+	float afSkyboxMipNum;
+
+	float afInvNoiseScale;
+	float afNoiseStrength;
+	int alFogType;
+
+	cVector4f avSkyboxColor;
+	
+	cVector4f avSecondFogSettings;
+	cVector4f avSecondFogColor;
+
+	cVector2f avInvScreenSize;
+};
+
+//--------------------------------------------------------------
+
+uniform cTexture2D  aDepthMap : 0;
+uniform cTexture3D  aNoiseMap : 1;
+uniform cTextureCube aSkyboxMap : 2;
+uniform cTexture2D aSceneColor : 3;
+
+//--------------------------------------------------------------
+
+@ifdef OutsideBox
+	@ifdef UseBackside 	
+		void GetPlaneIntersection(cVector3f avPlaneNormal, cVector3f avLocalBoxRay, float afNegPlaneDist, inout float afFinalT)
+		{
+			//Get T (amount of ray) to intersection
+			float fMul  = dot(avLocalBoxRay, avPlaneNormal);
+			float fT = afNegPlaneDist / fMul;
+			
+			//Get the intersection and see if inside box
+			cVector3f vIntersection = abs(avLocalBoxRay*fT + avRayCastStart);
+			if( all( cVector3b(step(vIntersection, cVector3f(0.5001, 0.5001, 0.5001))) ) )
+			{
+				afFinalT = max(afFinalT, fT);	
+			}
+		}
+	@endif
+
+@endif
+
+@ifdef UseNoise
+
+	float SampleNoise(cVector3f avPos)
+	{
+		cVector3f vUV = avPos * 16.0 + 0.5;
+		cVector3f viUV = floor(vUV);
+		cVector3f vfUV = fract(vUV);
+
+		vUV = (viUV + vfUV*vfUV*(3.0-2.0*vfUV)) * (1.0 / 16.0);
+
+		return dot(sample(aNoiseMap, vUV).rgb, cVector3f(0.333, 0.333, 0.333));
+	}
+@endif
+
+
+//--------------------------------------------------------------
+
+void main(in cVector4f px_vPosition,
+@ifdef OutsideBox || UseBackside
+		  in cVector3f px_vVertexPos,
+@endif
+@ifdef OutsideBox && UseBackside
+		  in cVector3f px_vLocalBoxRay,
+@endif
+		  out cVector4f px_vColor : 0)
+{
+	////////////////////////////////////
+	// Get depth distnace
+	cVector4f vDepthVal =  load(aDepthMap, cVector2l(px_vPosition.xy), 0);
+	
+	//Get the depth as distance from camera origin
+	cVector3f vPos = cVector3f(px_vPosition.xy * avScreenToFarPlane.xy + avScreenToFarPlane.zw, afNegFarPlane) * vDepthVal.x;
+	float fDepth = length(vPos);
+	cVector3f vDir = normalize(mul(a_mtxNoise, cVector4f(vPos, 0.0)).xyz);
+	cVector3f vCameraHeight = avCameraPos;
+	cVector4f vFogSettings = avFogSettings;
+	vFogSettings.y = (vFogSettings.y - vFogSettings.x);
+
+	@ifdef UseSecondaryFog
+		cVector4f vSecondFogSettings = avSecondFogSettings;
+	@endif
+
+	////////////////////////////////////
+	// Outside box
+	@ifdef OutsideBox
+		//Depth starts at box!
+		float fStartDist = length(px_vVertexPos);
+		vFogSettings.x = max(fStartDist, vFogSettings.x);
+		
+		@ifdef UseSecondaryFog
+			vSecondFogSettings = max(fStartDist, vSecondFogSettings.x);
+		@endif
+
+		///////////////////////////////////
+		// Ray cast to find back of square
+		@ifdef UseBackside
+			float fFinalT = 0.0;
+			GetPlaneIntersection(cVector3f(-1.0, 0.0, 0.0), px_vLocalBoxRay,	avNegPlaneDistNeg.x,	fFinalT);//Left
+			GetPlaneIntersection(cVector3f(1.0, 0.0, 0.0), px_vLocalBoxRay, 	avNegPlaneDistPos.x,	fFinalT);//Right
+			GetPlaneIntersection(cVector3f(0.0, -1.0, 0.0), px_vLocalBoxRay,	avNegPlaneDistNeg.y, 	fFinalT);//Bottom
+			GetPlaneIntersection(cVector3f(0.0, 1.0, 0.0 ), px_vLocalBoxRay,	avNegPlaneDistPos.y, 	fFinalT);//Top
+			GetPlaneIntersection(cVector3f(0.0, 0.0, -1.0), px_vLocalBoxRay,	avNegPlaneDistNeg.z, 	fFinalT);//Back
+			GetPlaneIntersection(cVector3f(0.0, 0.0, 1.0), px_vLocalBoxRay, 	avNegPlaneDistPos.z,	fFinalT);//Front
+			
+			float fLocalBackDist = length(fFinalT*px_vVertexPos);
+			fDepth = min(fLocalBackDist, fDepth);
+		@endif
+			
+	////////////////////////////////////
+	// Inside box
+	@else
+		@ifdef UseBackside
+			fDepth = min( length(px_vVertexPos), fDepth);
+		@endif	
+	@endif
+	
+	@ifdef UseNoise
+		//////////
+		// Get the world direction and offset
+		cVector3f vNoiseOffset = a_mtxNoise[3].xyz * afInvNoiseScale;
+				
+		////////////
+		// Prescale all values
+		cVector4f vFogStart = vFogSettings.xxxx * afInvNoiseScale;
+		cVector4f vFogEnd = (vFogSettings.xxxx + min(cVector4f(8, 8, 8, 8), vFogSettings.yyyy - vFogSettings.xxxx)) * afInvNoiseScale;
+		cVector4f vDepth = cVector4f(fDepth + 0.5, fDepth + 0.5, fDepth + 0.5, fDepth + 0.5) * afInvNoiseScale;
+
+		/////////////
+		// sample from the end to the front
+		cVector4f vDist = mix(vFogStart, vFogEnd, cVector4f(1.0, 0.7, 0.4, 0.1));
+		cVector4f vSample;
+
+		vSample.x = SampleNoise(vNoiseOffset + vDir * vDist.x);
+		vSample.y = SampleNoise(vNoiseOffset + vDir * vDist.y);
+		vSample.z = SampleNoise(vNoiseOffset + vDir * vDist.z);
+		vSample.w = SampleNoise(vNoiseOffset + vDir * vDist.w);
+
+		////////////
+		// Fade out samples that are behind the point
+		cVector4f vWeight = clamp(vDepth - vDist, cVector4f(0, 0, 0, 0), cVector4f(afInvNoiseScale, afInvNoiseScale, afInvNoiseScale, afInvNoiseScale)) * vSample * afNoiseStrength / afInvNoiseScale * cVector4f(1, 1, 0.8, 0.4);
+
+		float fNoise = 0.0f;
+		fNoise = mix(fNoise, vSample.x, vWeight.x);
+		fNoise = mix(fNoise, vSample.y, vWeight.y);
+		fNoise = mix(fNoise, vSample.z, vWeight.z);
+		fNoise = mix(fNoise, vSample.w, vWeight.w);
+	@else
+		float fNoise = 0.0;
+	@endif
+
+	//////////////
+	// Caluclate fog amount
+	float fAmount = FogAmount(vCameraHeight.x, vDir, fDepth, vFogSettings, fNoise, alFogType);
+
+	@ifdef UseSecondaryFog
+		float fSecondAmount = FogAmount(vCameraHeight.y, vDir, fDepth, vSecondFogSettings, fNoise, alFogType);
+	@endif
+
+	@ifdef UseSkybox
+		/////////////
+		// Fade to the color of the skybox		
+		@ifdef UseSeparateFogSkybox
+			float fMipLevel = clamp(1.0 - fDepth / avFogSettings.y, 0.0, 1.0) * afSkyboxMipNum;
+			cVector4f vSkyboxColor = sampleLod(aSkyboxMap, mul(a_mtxSkybox, cVector4f(vDir, 0)).xyz, fMipLevel);
+		@else
+			cVector4f vSkyboxColor = sample(aSkyboxMap, mul(a_mtxSkybox, cVector4f(vDir, 0)).xyz);
+		@endif
+
+		vSkyboxColor *= avSkyboxColor;
+		
+		@ifdef UseSeparateFogSkybox
+			cVector4f vFogColor = mix(avFogColor, vSkyboxColor, fAmount); vFogColor.w = avFogColor.w;
+
+			@ifdef UseSecondaryFog
+				cVector4f vSecondFogColor = mix(avSecondFogColor, vSkyboxColor, fSecondAmount); vSecondFogColor.w = avSecondFogColor.w;
+			@endif
+		@else
+			cVector4f vFogColor = mix(avFogColor, vSkyboxColor, min(fAmount * 6.0, 1.0)); vFogColor.w = avFogColor.w;
+
+			@ifdef UseSecondaryFog
+				cVector4f vSecondFogColor = mix(avSecondFogColor, vSkyboxColor, min(fSecondAmount * 6.0, 1.0)); vSecondFogColor.w = avSecondFogColor.w;
+			@endif
+		@endif
+
+		if(vDepthVal.x >= 0.99)
+		{
+			////////////
+			// Make sure to render the skybox in full at the end of the screen
+			vFogColor = vSkyboxColor;
+			fAmount = 1.0;
+		}
+	@else
+		cVector4f vFogColor = avFogColor;
+
+		@ifdef UseSecondaryFog
+			cVector4f vSecondFogColor = avSecondFogColor;
+		@endif
+	@endif
+
+	@ifdef UseUnderwaterFog
+		px_vColor.xyz = pow(avFogColor.xyz, cVector3f(fAmount * 1.2, fAmount * 1.2, fAmount * 1.2) * avFogColor.a);
+		//px_vColor.xyz = pow(avFogColor.xyz, cVector3f(fAmount * 1.2, fAmount * 1.2, fAmount * 1.2));
+		px_vColor.w = 1.0;
+	@else
+		@ifdef Lighten
+			// Manual blending
+			px_vColor = load(aSceneColor, cVector2l(px_vPosition.xy), 0);
+
+			@ifdef UseSecondaryFog
+				px_vColor = mix(px_vColor, vSecondFogColor * 8.0, vSecondFogColor.a * fSecondAmount);
+			@endif
+
+			px_vColor = mix(px_vColor, max(vFogColor * 8.0, px_vColor), vFogColor.a * fAmount);
+		@elseif UseSecondaryFog
+			// Blend the second fog color with the primary
+			px_vColor.xyz = vSecondFogColor.xyz;
+			px_vColor.w = fSecondAmount * vSecondFogColor.w;
+			vFogColor.a = vFogColor.w * fAmount;
+
+			px_vColor = mix(px_vColor, vFogColor, vFogColor.a);
+			px_vColor.xyz *= 8.0;
+		@else
+			px_vColor.xyz = vFogColor.xyz * 8;
+			px_vColor.w = vFogColor.w * fAmount;
+		@endif
+	@endif
+}

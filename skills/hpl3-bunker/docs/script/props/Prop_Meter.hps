@@ -1,0 +1,421 @@
+#include "interfaces/Prop_Interface.hps"
+#include "base/Player_Types.hps"
+
+
+class cScrPropMeter: iScrProp, iScrProp_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		/////////////////////////////////////////
+		// Init vars
+		mfMaxAngle = 0.0f;
+		mfCurrentStateAmount = 0.0f;
+		mfCurrentAngle = 0.0f;
+		mfGoalAngle = 0.0f;
+		mfSpeedMul = 7.6f;
+		mfMaxSpeed = 20.5f;
+		mfVibrationFrequency = 0.5f;
+		mfVibrationAngularAmplitude = cMath_ToRad(1.0f);
+		mfVibrationLinearAmplitude = 0.01f;
+		mfVibrationAngularSign = 1.0f;
+		mfVibrationLinearSign = 1.0f;
+		mfCurrentVibrationAngle = 0.0f;
+		@mpNeedleBody = null;
+		mvMaxPosition = cVector3f_Zero;
+		mvMinPosition = cVector3f_Zero;
+		mvCurrentVibrationPosition = cVector3f_Zero;
+		m_mtxNeedleBody = cMatrixf_Identity;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// LOADING
+	/////////////////////////////////////////
+
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		/////////////////////////////////////////
+		// Load vars from type.
+		mfMaxSpeed = apVars.GetVarFloat("MaxSpeed", 1.0f);
+		mfSpeedMul = apVars.GetVarFloat("SpeedMul", 1.0f);
+		
+		mfShakeMul = cMath_Clamp(apVars.GetVarFloat("ShakeMul", 0.0f), 0.0f, 10.0f);
+		mfVibrationAngularAmplitude = cMath_ToRad(cMath_Clamp(apVars.GetVarFloat("VibrationAmplitude", 0.0f), 0.0f, 10.0f));
+		mfVibrationLinearAmplitude = cMath_Clamp(apVars.GetVarFloat("VibrationAmplitude", 0.0f), 0.0f, 10.0f) * 0.01f;
+		mfVibrationFrequency = cMath_Clamp(apVars.GetVarFloat("VibrationFrequency", 0.0f), 0.0f, 10.0f);
+		
+		mfMaxAngle = cMath_ToRad(apVars.GetVarFloat("RotationAtMax", 0.0f));
+		mvMaxPosition = apVars.GetVarVector3f("TranslationAtMax", cVector3f_Zero);
+		
+		///////////////////////////
+		// Load needle body.
+		tString sNeedleBodyName = apVars.GetVarString("NeedleBodyName", "");
+		if(sNeedleBodyName != "")
+		{
+			@mpNeedleBody = mBaseObj.GetBodyFromName(sNeedleBodyName);
+			if(mpNeedleBody is null)
+			{
+				Error("Could not load needle body with name '"+ sNeedleBodyName +"' in: " + mBaseObj.GetName());
+			}
+		}
+		else
+		{
+			///////////////////////////////////////////
+			// No body is specified loading main body
+			@mpNeedleBody = mBaseObj.GetMainBody();
+		}
+		
+		m_mtxNeedleBody = mpNeedleBody.GetLocalMatrix();
+		
+		/////////////////////////////////////////
+		// Load vars from instance.
+		mfCurrentStateAmount = apInstanceVars.GetVarFloat("NeedleState", 0.0f);
+
+		/////////////////////////////////////////
+		//Set angle to the loaded state directly.
+		mfCurrentAngle = mfCurrentStateAmount*mfMaxAngle;
+		mfGoalAngle = mfCurrentAngle;
+		
+		//////////////////////////////////////////////////////////////////////
+		//Set the min position to the position of the body in game
+		mvMinPosition = mpNeedleBody.GetLocalMatrix().GetTranslation();
+		mvMaxPosition += mvMinPosition;
+		
+		mvCurrentPosition = (mvMaxPosition-mvMinPosition)*mfCurrentStateAmount;
+		mvGoalPosition = mvCurrentPosition;
+		
+		cMatrixf mtxLocalMatrix = cMath_MatrixRotateZ(mfCurrentAngle);
+		mtxLocalMatrix.SetTranslation(mvCurrentPosition);
+		mpNeedleBody.SetMatrix(cMath_MatrixMul(m_mtxNeedleBody, mtxLocalMatrix));
+		
+		///////////////////////////////////////////////////////////////////////////////////////
+		//Restrict vibrations to either angular or linear. If any of the offsets are set to 0
+		if(mfMaxAngle <= 0.0f)
+		{
+			mfVibrationAngularAmplitude = 0.0f;
+		}
+		else if(mvMaxPosition == cVector3f_Zero)
+		{
+			mfVibrationLinearAmplitude = 0.0f;
+		}
+	
+	}
+	
+	//------------------------------------------------------------
+
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnUpdate(float afTimeStep)
+	{
+		bool bIsMoving = false;
+
+		if(UpdateNeedleRotation(afTimeStep)) bIsMoving = true;
+
+		if(UpdateNeedlePosition(afTimeStep)) bIsMoving = true;
+	
+		if(mbIsMoving && !bIsMoving)
+		{
+			SetCurrentConnectionState();
+			mbIsMoving = false;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnPostUpdate(float afTimeStep)
+	{
+		/////////////////////////////////////////////////////
+		// Sets the new position and/or rotation of the needle.
+		cMatrixf mtxLocalMatrix = cMath_MatrixRotateZ(mfCurrentAngle + mfCurrentVibrationAngle);
+		mtxLocalMatrix.SetTranslation(mvCurrentPosition + mvCurrentVibrationPosition);
+		mpNeedleBody.SetMatrix(cMath_MatrixMul(m_mtxNeedleBody, mtxLocalMatrix));
+	}
+	
+	//------------------------------------------------------------
+	
+	void BeforeEntityDestruction()
+	{
+	}
+	
+	//------------------------------------------------------------
+
+	void ResetProperties()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	bool CanInteract(int alType, iPhysicsBody@ apBody)
+	{
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnAttachmentUpdate(const cMatrixf&in a_mtxTransformAdd)
+	{
+		//////////////////////////////////////////////////////////////////
+		// Adds the attached parents transform to the body transformation.
+		m_mtxNeedleBody = cMath_MatrixMul(a_mtxTransformAdd, m_mtxNeedleBody);
+	}
+	
+	//------------------------------------------------------------
+	
+	/*bool OnUpdateAutoSleep()
+	{
+		return true;
+	}*/
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL FUNCS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetState()
+	{
+		/////////////////////////////////////////
+		// Sets the new state amount.
+		mfCurrentStateAmount = cScript_GetGlobalArgFloat(0);
+		
+		/////////////////////////////////////////
+		// True if should skip to the new state.
+		bool bSkipToState = !cScript_GetGlobalArgBool(1);
+
+		///////////////////////////////////////////////////////
+		// Calcs new goal angle and position to move needle to.
+		mfGoalAngle = mfCurrentStateAmount*mfMaxAngle;
+		mvGoalPosition = (mvMaxPosition-mvMinPosition)*mfCurrentStateAmount;
+		
+		///////////////////////////////////////////////////////
+		// Sets new angle and position directly.
+		if(bSkipToState)
+		{
+			mfCurrentAngle = mfGoalAngle;
+			mvCurrentPosition = mvGoalPosition;
+		}
+		
+		mbIsMoving = true;
+	}
+	//------------------------------------------------------------
+	
+	void _Global_SetShakeMul()
+	{
+		mfShakeMul = cMath_Clamp(cScript_GetGlobalArgFloat(0), 0.0f, 10.0f);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetSpeedMul()
+	{
+		mfSpeedMul = cScript_GetGlobalArgFloat(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// NEEDLE UPDATING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool UpdateNeedleRotation(float afTimeStep)
+	{
+		bool bMoving = false;
+		if(cMath_Abs(mfGoalAngle - mfCurrentAngle) > 0.01f)
+		{
+			////////////////////////////////////////////
+			// Updates needle angle. Used for rotation.
+			float fCurrentSpeed = cMath_Min(((mfGoalAngle - mfCurrentAngle)*2.0f)*mfSpeedMul, mfMaxSpeed);
+			
+			mfCurrentAngle += fCurrentSpeed*afTimeStep;
+
+			bMoving = true;
+		}
+	
+		UpdateNeedleAngularVibration(afTimeStep);
+		
+		return bMoving;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool UpdateNeedlePosition(float afTimeStep)
+	{
+		bool bMoving = false;
+		if(cMath_Vector3DistSqr(mvCurrentPosition, mvGoalPosition) > 0.0001f)
+		{
+			////////////////////////////////////////////
+			// Updates needle position.
+			float fCurrentSpeed = cMath_Min((cMath_Vector3DistSqr(mvCurrentPosition, mvGoalPosition))*mfSpeedMul, mfMaxSpeed);
+			
+			cVector3f vNormal = cMath_Vector3Normalize(mvGoalPosition - mvCurrentPosition);
+			
+			mvCurrentPosition +=  vNormal * fCurrentSpeed * afTimeStep;
+			
+			bMoving = true;
+		}
+	
+		UpdateNeedleLinearVibration(afTimeStep);
+		
+		return bMoving;
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateNeedleAngularVibration(float afTimeStep)
+	{
+		/////////////////////////////////////////////////////////
+		// Updates needle angle. Used for the angular vibration. 
+		if(cMath_Abs(mfCurrentVibrationAngle - (mfVibrationAngularAmplitude*mfVibrationAngularSign*mfShakeMul)) > 0.01f)
+		{
+			mfCurrentVibrationAngle += cMath_Min(mfVibrationFrequency*afTimeStep, mfVibrationAngularAmplitude*mfShakeMul)*mfVibrationAngularSign;
+		}
+		
+		/////////////////////////////////////////////////////////
+		// If needle has rotated to the specified amplitude then ping-pong back.
+		else
+		{
+			mfVibrationAngularSign *= -1.0f;
+		}
+	}	
+	
+	//------------------------------------------------------------
+
+	void UpdateNeedleLinearVibration(float afTimeStep)
+	{
+		/////////////////////////////////////////////////////////
+		// Updates needle position. Used for the linear vibration. 
+		cVector3f vNormal = cMath_Vector3Normalize(mvMaxPosition - mvMinPosition);
+	
+		if(cMath_Vector3DistSqr(mvCurrentVibrationPosition, vNormal * mfVibrationLinearAmplitude * mfVibrationLinearSign * mfShakeMul) >= 0.00001f)
+		{
+		
+			mvCurrentVibrationPosition += vNormal * cMath_Min(mfVibrationFrequency*afTimeStep, mfVibrationLinearAmplitude*mfShakeMul) * mfVibrationLinearSign;
+		}
+		
+		/////////////////////////////////////////////////////////
+		// If needle has moved to the specified amplitude then ping-pong back.
+		else
+		{
+			mfVibrationLinearSign *= -1.0f;
+		}
+	}	
+	
+	//------------------------------------------------------------
+	
+	void SetCurrentConnectionState()
+	{
+		if(mfCurrentStateAmount < 1.0f && mfCurrentStateAmount > 0.0f)
+			mBaseObj.ChangeConnectionState(0);
+		else if(mfCurrentStateAmount >= 1.0f)
+			mBaseObj.ChangeConnectionState(1);
+		else
+			mBaseObj.ChangeConnectionState(-1);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnSetActive(bool abX)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	[nosave] iPhysicsBody@ mpNeedleBody; //The needle which is supposed to be moved/rotated.
+	float mfCurrentStateAmount;
+	bool mbIsMoving;
+	cMatrixf m_mtxNeedleBody;
+	
+	/////////////////////////////////////////
+	// SPEED
+	float mfSpeedMul;
+	[nosave] float mfMaxSpeed;
+	
+	/////////////////////////////////////////
+	// ANGULAR
+	[nosave] float mfMaxAngle;
+	float mfGoalAngle;
+	float mfCurrentAngle;
+	
+	/////////////////////////////////////////
+	// LINEAR
+	[nosave] cVector3f mvMaxPosition;
+	[nosave] cVector3f mvMinPosition;
+	cVector3f mvCurrentPosition;
+	cVector3f mvGoalPosition;
+	
+	/////////////////////////////////////////
+	// VIBRATION
+	[nosave] float mfVibrationFrequency;
+	float mfShakeMul;
+	
+	/////////////////////////////////////////
+	// ANGULAR VIBRATION
+	[nosave] float mfCurrentVibrationAngle;
+	[nosave] float mfVibrationAngularAmplitude;
+	[nosave] float mfVibrationAngularSign;
+	
+	/////////////////////////////////////////
+	// LINEAR VIBRATION
+	[nosave] cVector3f mvCurrentVibrationPosition;
+	[nosave] float mfVibrationLinearAmplitude;
+	[nosave] float mfVibrationLinearSign;
+	
+	//------------------------------------------------------------
+}

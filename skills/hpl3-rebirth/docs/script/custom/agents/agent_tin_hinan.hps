@@ -1,0 +1,2713 @@
+//----------------------------------------------------------------------
+//----------------------------------------------------------------------
+//----------------------------------------------------------------------
+
+////////////////////////////////
+// TIN HINAN                  //
+////////////////////////////////
+
+//----------------------------------------------------------------------
+
+#include "agents/Agent_Humanoid.hps"
+#include "helpers/helper_player.hps"
+#include "helpers/helper_effects.hps"
+#include "custom/player/PlayerTypes_Custom.hps"
+#include "base/Base_Types.hps"
+#include "custom/components/ComponentInterfaces_Custom.hps"
+#include "custom/helpers/helper_player_custom.hps"
+#include "custom/agents/agent_types_custom.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+
+//----------------------------------------------------------------------
+
+tString gsTinHinanSound_TurnOnLight = "creatures/foley/creature/wraith/Turns_on_light";
+tString gsTinHinanSound_TurnOffLight = "creatures/foley/creature/wraith/Turns_off_light";
+tString gsTinHinanSound_SpotlightLoop = "creatures/foley/creature/wraith/spotlight_sound";
+tString gsTinHinanSound_SpotlightMoveLoop = "creatures/foley/creature/tin_hinan/tin_hinan_beam_sweep";
+
+float gfTinHinanDefaultCrystalSightRange = 33.5f;
+float gfTinHinanDefaultCrystalSightRangeMul = 1.f;
+
+//----------------------------------------------------------------------
+
+class cTinHinanSpotlightBillboard
+{
+	tID m_idBillboard = tID_Invalid;
+	int mlRaycastIndex = 0;
+	bool mbAvailable = true;
+	cVector3f mvForward;
+	float mfMaxBrightness = 2;
+	float mfBrightness = 0;
+	bool mbTurnOn = false;
+	bool mbTurnOff = false;
+}
+
+//----------------------------------------------------------------------
+
+enum eTinHinanState
+{
+	eTinHinanState_TinHinan,
+}
+
+//----------------------------------------------------------------------
+
+enum eTinHinanLightMovement
+{
+	eTinHinanLightMovement_None,
+	eTinHinanLightMovement_Turn,
+	eTinHinanLightMovement_Forward,
+	eTinHinanLightMovement_ForwardOffset,
+	eTinHinanLightMovement_FollowPosition,
+	eTinHinanLightMovement_SidewaysEight,
+	eTinHinanLightMovement_Scan,
+	eTinHinanLightMovement_LeftToRight,
+	eTinHinanLightMovement_FollowEntity,
+}
+
+//----------------------------------------------------------------------
+
+class cScrAgentTinHinan : cScrAgentHumanoid
+{
+	//===========================================================
+
+	//////////////////////////////////////////
+	//=======================================
+	// MAIN FUNCTIONS
+	//=======================================
+	//{///////////////////////////////////////
+	//===========================================================
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	//{///////////////////////////////////////
+		
+	//------------------------------------------------------------
+		
+	void Init()
+	{
+		msHeadTracker_TargetEntity = "";
+		mBaseObj.SetUpdatePlayerDetection(false);
+	}
+		
+	//} END INIT
+	
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// LOADING
+	//{////////////////////////////////////////
+		
+	//------------------------------------------------------------
+		
+	void SetupCharBody()
+	{
+		cScrAgentHumanoid::SetupCharBody();
+		iCharacterBody@ pCharBody = mBaseObj.GetCharBody();
+		
+		pCharBody.SetMass(80);
+		pCharBody.SetMaxPositiveMoveSpeed(eCharDir_Forward,1.0f);
+		pCharBody.SetMoveSpeedMul(eCharDir_Forward,1);
+		pCharBody.SetMoveAcc(eCharDir_Forward,4);
+		pCharBody.SetMoveDeacc(eCharDir_Forward,8);
+		pCharBody.SetMaxPushMass(20);
+		pCharBody.SetMaxPushForce(300);
+		pCharBody.SetAccurateClimbing(true);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		cScrAgentHumanoid::SetupAfterLoad(apWorld, apVars, apInstanceVars);
+		
+		//////////////////////
+		// General Setup
+		mBaseObj.SetAlignEntityWithGroundRay(true);
+		mBaseObj.SetFOV(cMath_ToRad(120.0f));
+		mBaseObj.SetSightRange(80.0f);
+		mBaseObj.SetSightRangeMul(1.0f);
+		mBaseObj.SetRelativeEyeHeight(0.55f);
+		
+		////////////
+		// Pathfinder Setup
+		mpPathfinder.SetNodeContainerName("TinHinan");
+		mpPathfinder.SetMaxHeight(4.0f);
+				
+		SetupComponents(apWorld, apVars, apInstanceVars);
+		
+		Entity_Preload(msCrystalModel);
+		
+		mpStateMachine.ChangeState(eTinHinanState_TinHinan);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupComponents(cWorld @apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		////////////
+		// State Machine
+		@mpStateMachine = cLux_CreateEntityComponent_StateMachine(mBaseObj);
+		mpStateMachine.AddState("TinHinan", eTinHinanState_TinHinan);
+				
+		////////////
+		// Mover Setup
+		mpMover.SetWallAvoidanceActive(true);
+		mpMover.SetupWallAvoidance(4.0f, 10.0f, 4);
+		mpMover.SetupDynamicObjectAvoidance(1.7f, 10, 3);
+		mpMover.SetVerticalMoveSpeedExtraAnimMul(0.5f);
+		mpMover.SetMaxForwardSpeed(1);
+		mpMover.SetMaxBackwardSpeed(1);
+		mpMover.SetRunToWalkSpeed(1.9);
+		mpMover.SetWalkToRunSpeed(2.0);
+		mpMover.SetTurnSpeedMul(2.f);
+						
+		iCharacterBody@ pCharBody = mBaseObj.GetCharBody();
+		pCharBody.SetGravityActive(false);
+		pCharBody.SetDeaccelerateMoveSpeedInAir(true);
+		pCharBody.SetForceVelocity(cVector3f_Zero);
+		pCharBody.SetEntityPitchAmount(0);
+		mpMover.SetUse3DMovement(true);
+		mpMover.SetBankingActive(false);
+		
+		mbFlyMode_Active = true;		
+		mfSoundRadiusMul = 3.f;
+		
+		/////////////////////
+		// Head tracker
+		@mpHeadTracker = cLux_CreateEntityComponent_HeadTracker(mBaseObj);
+		mpHeadTracker.LoadFromVariables(apVars);
+		
+		msHeadTracker_TargetEntity = apInstanceVars.GetVarString("HeadTracker_TargetEntity", "");
+		if (msHeadTracker_TargetEntity == "")
+			msHeadTracker_TargetEntity = "Player";
+		
+		mpHeadTracker.SetActive(apInstanceVars.GetVarBool("HeadTracker_Active", true));
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnAfterWorldLoad()
+	{
+		cScrAgentHumanoid::OnAfterWorldLoad();
+		
+		if (msHeadTracker_TargetEntity != "")
+		{
+			iLuxEntity@ pEntity = mBaseObj.GetMap().GetEntityByName(msHeadTracker_TargetEntity);
+			if (pEntity !is null)
+				mpHeadTracker.SetTrackEntity(pEntity);
+			else
+				Error("Could not find headtracker target entity '"+msHeadTracker_TargetEntity+"' for entity '"+mBaseObj.GetName()+"'");
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	//} END Loading
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	//{///////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnUpdate(float afTimeStep)
+	{
+		cScrAgentHumanoid::OnUpdate(afTimeStep);
+		if(mBaseObj.IsActive()==false) return;
+
+		UpdateCustomSpotlightFollow(afTimeStep);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnVariableUpdate(float afDeltaTime)
+	{
+		if (mbStarted == false)
+		{
+			OnStart();
+			mbStarted = true;
+		}
+		
+		UpdateSpotlightBillboards(afDeltaTime);
+		UpdateLineOfSight(afDeltaTime);
+		UpdateSpotlight(afDeltaTime);	
+		UpdateSounds(afDeltaTime);
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetProperties()
+	{
+		cScrAgentHumanoid::ResetProperties();
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnStart()
+	{
+		RegisterWithFearHandler();
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnSetActive(bool abX)
+	{
+		cScrAgentHumanoid::OnSetActive(abX);
+		if (abX == false)
+		{			
+			mlSpotlight_ActivationIndex = 3;
+			SetSpotLightActive(false, false);
+			mlSpotlight_ActivationIndex = 0;
+
+			if (mlSpotlightFOVShakeID >= 0)
+			{
+				Effect_FOV_Shake_FadeOut(mlSpotlightFOVShakeID, 0.5);
+				mlSpotlightFOVShakeID = -1;
+			}		
+
+			array<tID> vBillboards;
+			for (int i = 0; i < mvSpotlightBillboards.size(); ++i)
+			{
+				cTinHinanSpotlightBillboard@ pBillboard = mvSpotlightBillboards[i];
+				cLux_ID_Billboard(pBillboard.m_idBillboard).SetVisible(false);
+				vBillboards.push_back(pBillboard.m_idBillboard);
+			}
+			
+			Blackboard_ReleaseWraithBillboards(mBaseObj.GetID(), vBillboards);
+			
+			mvSpotlightBillboards.resize(0);
+			mbSpotlightBillboard_Init = false;
+		}
+		else
+		{
+			RegisterWithFearHandler();
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	//} END GENERAL
+	
+	//------------------------------------------------------------
+		
+	//}END MAIN FUNCTIONS
+
+	//===========================================================
+	
+	/////////////////////////////////////////
+	//=======================================
+	// HELPERS
+	//=======================================
+	//{//////////////////////////////////////
+	
+	//===========================================================
+		
+	//------------------------------------------------------------
+	
+	void RegisterWithFearHandler()
+	{
+		if (mbRegisteredWithFearHandler) return;
+		mbRegisteredWithFearHandler = true;
+		
+		iScrFearHandler_Interface @pHandler = cast<iScrFearHandler_Interface>( cLux_GetUserModuleFromID(eModuleType_Custom_FearHandler) );
+		cFearThreatParams mFearParams;
+		mFearParams.m_idEntity = mBaseObj.GetID();
+		mFearParams.mfBaseFearRate = 0.2f;
+		mFearParams.mfSurpriseFactor = 0.4f;
+		mFearParams.mfLookAtFactor = 0.15f;
+		mFearParams.mfActivationDistance = 20.0f;
+		mFearParams.mfDeactivationDistance = 25.0f;
+		mFearParams.mfActivationDelay = 0.2f;
+		mFearParams.mfActivationLightLevel = -1.0f;
+		mFearParams.mbLookAtDetectWholeArea = false;
+		mFearParams.mfMaxFearDist = 6.0f;
+		mFearParams.mfMinFearDist = 15.0f;
+		pHandler.RegisterThreatAgent(mFearParams);
+	}
+
+	//------------------------------------------------------------
+	
+	void ExecuteEntityCallback(const tString &in asFunc)
+	{
+		if (asFunc == "") return;
+		
+		tString sMethodName = "void " + asFunc + "(const tString &in asEntity)";
+		cLuxMap@ pMap = mBaseObj.GetMap();
+		if (pMap.ScriptMethodExists(sMethodName) && pMap.ScriptPrepare(sMethodName))
+		{
+			tString sName = mBaseObj.GetName();
+			pMap.SetArgString(0, sName);
+			pMap.ScriptExecute();
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// SOUNDS
+	//{//////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	tID m_idSfx_SpotlightSound = tID_Invalid;
+	bool mbSfx_SpotlightSoundActive = false;
+	float mfSfx_SpotlightSoundActiveMul = 0;
+	float mfSfx_SpotlightSoundVolume = 1.0f;
+	float mfSfx_SpotlightSoundVolumeMul = 0.0f;
+	float mfSfx_SpotlightSoundVolumeMulGoal = 1.0f;
+	
+	tID m_idSfx_SpotlightTurnSound = tID_Invalid;
+	float mfSfx_SpotlightTurnSoundVolume = 1.0f;
+	float mfSfx_SpotlightTurnSoundVolumeMul = 0.0f;
+	float mfSfx_SpotlightTurnSoundVolumeMulGoal = 0.5f;
+	
+	float mfSfx_VolumeMul = 1.0f;
+	float mfSfx_VolumeMulGoal = 1.0f;
+
+	//------------------------------------------------------------
+	
+	void UpdateSounds(float afTimeStep)
+	{
+		/////////////////////////
+		// Update volume muls
+		mfSfx_VolumeMul = cMath_IncreaseTo(mfSfx_VolumeMul, afTimeStep, mfSfx_VolumeMulGoal);
+		
+		float fSpotlightSoundActiveMulTar = mbSfx_SpotlightSoundActive ? 1 : 0;
+		mfSfx_SpotlightSoundActiveMul = cMath_IncreaseTo(mfSfx_SpotlightSoundActiveMul, afTimeStep, fSpotlightSoundActiveMulTar);
+		
+		mfSfx_SpotlightSoundVolumeMul = cMath_IncreaseTo(mfSfx_SpotlightSoundVolumeMul, (1.f / 3.f) * afTimeStep, mfSfx_SpotlightSoundVolumeMulGoal);
+		mfSfx_SpotlightSoundVolumeMul *= mfSfx_VolumeMul;
+		mfSfx_SpotlightSoundVolumeMul *= mfSfx_SpotlightSoundActiveMul;
+		
+		mfSfx_SpotlightTurnSoundVolumeMul = cMath_IncreaseTo(mfSfx_SpotlightTurnSoundVolumeMul, (1.f / 3.f) * afTimeStep, mfSfx_SpotlightTurnSoundVolumeMulGoal);
+		mfSfx_SpotlightTurnSoundVolumeMul *= mfSfx_VolumeMul;
+								
+		/////////////////////////
+		// Update sounds
+		if (m_idSfx_SpotlightSound == tID_Invalid)
+		{
+			cSoundEntity@ pSound = mBaseObj.GetMap().GetWorld().CreateSoundEntity(mBaseObj.GetName() + "_SpotlightSound", gsTinHinanSound_SpotlightLoop, true);			
+			m_idSfx_SpotlightSound = pSound.GetID();
+			
+			pSound.SetCustomMaxDistance(75.f);
+			pSound.SetCustomMinDistance(20.f);
+			pSound.SetUseCustomProperties(true);
+			
+			pSound.SetVolume(mfSfx_SpotlightSoundVolume);
+			pSound.FadeVolumeMul(0, 0);
+		}
+		else
+		{
+			cSoundEntity@ pSound = cLux_ID_SoundEntity(m_idSfx_SpotlightSound);
+			if (pSound !is null)
+			{
+				float fSoundPosDist = cMath_Min(mBaseObj.GetDistanceToPlayer() - 3.f, mfCrystal_SightRange * mfCrystal_SightRangeMul);
+				cVector3f vPos = GetCrystalPos() + GetCrystalDir() * fSoundPosDist;
+				pSound.SetPosition(vPos);
+				
+				float fDistToPlayer = (vPos - mBaseObj.GetPlayerPos()).Length();
+				float fVolume = cMath_Clamp(1.f - cMath_Clamp((fDistToPlayer / 20.f), 0.0f, 1.0f), 0.0f, 1.f);
+				
+				fVolume = cMath_Easing(eEasing_QuadOut, fVolume);
+				float fSpeed = 0.f;				
+				
+				if (mbCrystal_Active == false)
+				{
+					fVolume = 0.f;
+					fSpeed = 1.f;
+				}
+				
+				pSound.FadeVolumeMul(fVolume * mfSfx_SpotlightSoundVolumeMul, fSpeed);
+			}
+		}
+		
+		if (m_idSfx_SpotlightTurnSound == tID_Invalid)
+		{
+			cSoundEntity@ pSound = mBaseObj.GetMap().GetWorld().CreateSoundEntity(mBaseObj.GetName() + "_SpotlightTurnSound", gsTinHinanSound_SpotlightMoveLoop, true);
+			m_idSfx_SpotlightTurnSound = pSound.GetID();
+			
+			pSound.SetCustomMaxDistance(75.f);
+			pSound.SetCustomMinDistance(20.f);
+			pSound.SetUseCustomProperties(true);
+			
+			pSound.SetVolume(mfSfx_SpotlightTurnSoundVolume);
+			pSound.FadeVolumeMul(0, 0);
+		}
+		else
+		{
+			cSoundEntity@ pSound = cLux_ID_SoundEntity(m_idSfx_SpotlightTurnSound);
+			if (pSound !is null)
+			{
+				float fSoundPosDist = cMath_Min(mBaseObj.GetDistanceToPlayer() - 3.f, mfCrystal_SightRange * mfCrystal_SightRangeMul);
+				cVector3f vPos = GetCrystalPos() + GetCrystalDir() * fSoundPosDist;				
+				pSound.SetPosition(vPos);
+				
+				float fVolume = mSpotlightMovement == eTinHinanLightMovement_Turn ? 1.0f : 0.0f;
+				float fSpeed = 0.f;
+				
+				if (mbCrystal_Active == false)
+				{
+					fVolume = 0.f;
+					fSpeed = 1.f;
+				}
+					
+				pSound.FadeVolumeMul(fVolume * mfSfx_SpotlightTurnSoundVolumeMul, fSpeed);
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	//} END SOUNDS
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// CUSTOM SPOTLIGHT FOLLOW
+	//{//////////////////////////////////////
+	
+	cVector3f mvFollowTarget_Offset = 0.f;
+	bool mbFollowTarget_LocalOffset = false;
+	
+	//------------------------------------------------------------
+	
+	void UpdateCustomSpotlightFollow(float afTimeStep)
+	{
+		if (m_idCrystal_FollowTarget == tID_Invalid) return;
+		
+		iLuxEntity@ pEnt = cLux_ID_Entity(m_idCrystal_FollowTarget);
+		if (pEnt is null)
+		{
+			m_idCrystal_FollowTarget = tID_Invalid;
+			return;
+		}
+		
+		cVector3f vOffset = mvFollowTarget_Offset;
+		if (mbFollowTarget_LocalOffset)
+		{
+			cLuxAgent@ pAgent = cLux_ToAgent(pEnt);
+			if (pAgent !is null)
+				vOffset = cMath_MatrixMul(cMath_MatrixRotateY(pAgent.GetCharBody().GetYaw() + cMath_Pi), vOffset);
+			else
+				vOffset = cMath_MatrixMul(pEnt.GetMatrix().GetRotation(), vOffset);
+		}			
+		
+		cVector3f vPos = pEnt.GetPosition() + vOffset;		
+		TurnSpotlightToPos(vPos, true, true, 10.f);
+	}
+	
+	//------------------------------------------------------------
+	
+	//} END CUSTOM SPOTLIGHT FOLLOW
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// LINE OF SIGHT
+	//{//////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool mbPlayerCameraLineOfSight = false;
+	int mlLosIndex = 0;
+	int mlPlayerCamerLosCount = 0;
+	cVector3f mvCrytalLosCheckPos = 0.f;
+	
+	//------------------------------------------------------------
+	
+	void UpdateLineOfSight(float afTimeStep)
+	{
+		iLuxEntity@ pCrystal = cLux_ID_Entity(m_idCrystal);
+		if (pCrystal !is null)
+		{
+			// Check los from position crystal had when the struggle started
+			cVector3f vCrystalPos = pCrystal.GetPosition();
+			if (mbTinHinan_InStruggle == false)		mvCrytalLosCheckPos = vCrystalPos;
+			else 									vCrystalPos = mvCrytalLosCheckPos;
+			
+			if (mlLosIndex == 0)
+			{
+				cVector3f vDir = cLux_GetPlayer().GetCamera().GetPosition() - vCrystalPos;
+				mBaseObj.GetClosestBody("OnRaycast_UpdateLineOfSight", vCrystalPos, cMath_Vector3Normalize(vDir), vDir.Length(), mlLosIndex);
+			}
+			else if (mlLosIndex == 1)
+			{
+				cVector3f vPos = cLux_GetPlayer().GetCharacterBody().GetPosition();
+				cVector3f vDir = vPos - vCrystalPos;
+				mBaseObj.GetClosestBody("OnRaycast_UpdateLineOfSight", vCrystalPos, cMath_Vector3Normalize(vDir), vDir.Length(), mlLosIndex);
+			}
+			
+			++mlLosIndex;
+			mlLosIndex %= 2;
+		}		
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnRaycast_UpdateLineOfSight(bool abSuccesful, float afDistance, const cVector3f&in avNormal, iPhysicsBody@ apBody, int alUservalue)
+	{
+		if (abSuccesful == false)
+		{
+			++mlPlayerCamerLosCount;
+		}
+		
+		if (alUservalue == 1)
+		{
+			mbPlayerCameraLineOfSight = mlPlayerCamerLosCount > 0;
+			mlPlayerCamerLosCount = 0;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	//} END LINE OF SIGHT
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// CRYSTAL
+	//{//////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool mbCrystal_Active = false;
+	bool mbCrystal_HelperActive = false;
+	bool mbCrystal_HelperActivation = false;
+	float mfCrystal_SightRange = gfTinHinanDefaultCrystalSightRange;
+	float mfCrystal_SightRangeMul = gfTinHinanDefaultCrystalSightRangeMul;
+	
+	tID m_idCrystal;
+	tID m_idCrystal_FollowTarget;
+	[nosave] tString msCrystalModel = "tin_hinan_crystal.ent";
+	eTinHinanLightMovement mSpotlightMovement = eTinHinanLightMovement_Forward;
+	cVector3f mvCrystal_CurrentDir;
+	cVector3f mvCrystal_TargetDir;
+	float mfCrystal_TargetHAngle = 0;
+	float mfCrystal_TargetVAngle = 0;
+	float mfCrystal_CurrentVAngle = 0;
+	float mfCrystal_CurrentHAngle = 0;
+	bool mbCrystal_PlayerDetected = false;
+	bool mbCrystal_PlayerSeen = false;
+	bool mbSpotlight_WhiteEffect = false;
+	
+	float mfSpotlight_MovementTimer = 0.0f;
+	float mfSpotlight_DetectedTimer = 0.0f;
+	float mfSpotlight_DetectedMul = 1.0f;
+	
+	float mfSpotlight_Fov = 14.f;
+	float mfSpotlight_Aspect = 0.7f;
+	float mfSpotlight_ForwardOffsetH = 0;
+	float mfSpotlight_ForwardOffsetTargetH = 0;
+	float mfSpotlight_ForwardOffsetV = 0;
+	float mfSpotlight_ForwardOffsetTargetV = 0;
+	float mfSpotlight_FollowPositionH = 0;
+	float mfSpotlight_FollowPositionTargetH = 0;
+	float mfSpotlight_FollowPositionV = 0;
+	float mfSpotlight_FollowPositionTargetV = 0;
+	float mfSpotlight_TurningDoneMul = 1.0f;
+	float mfSpotlight_TurnHTarget = 0;
+	float mfSpotlight_TurnVTarget = 0;
+	float mfSpotlight_TurnSpeed = 0;
+	float mfSpotlight_LerpSpeed = 0;
+	float mfSpotlight_LerpSpeedMul = 1.f;
+	float mfSpotlight_LerpSpeedTransitionTimer = 0;
+	int mlSpotlight_ActivationIndex = 0;
+	bool mbSpotlight_ActivationReset = true;
+	
+	cVector3f mvSpotlight_RaycastPos;
+	cVector3f mvSpotlight_FollowPosition;
+	
+	cColor mSpotlightcolor;
+	float mfSpotlightBrightnessMul = 1.0f;
+	tID m_idSpotLight;
+	tID m_idSpotLight_LensFlare;
+	
+	//------------------------------------------------------------
+	
+	void CreateCrystal()
+	{
+		if (m_idCrystal != tID_Invalid) return;
+		if (msCrystalModel == "") return;
+
+		mBaseObj.GetMap().CreateEntity(mBaseObj.GetName() + "_crystal", msCrystalModel, cMatrixf_Identity, cVector3f_One);
+		
+		iLuxEntity@ pEnt = mBaseObj.GetMap().GetLatestEntity();
+		if (pEnt is null) return;
+						
+		pEnt.AttachToSocket(cLux_ID_Entity(mBaseObj.GetID()), "wraith_crystal", false, true);
+		m_idCrystal = pEnt.GetID();
+		
+		iLight@ pLight = pEnt.GetLightFromName("Light_Spot_1");
+		if (pLight !is null) m_idSpotLight = pLight.GetID();
+						
+		cLightSpot@ pSpot = cast<cLightSpot>(cLux_ID_Light(m_idSpotLight));
+		mfSpotlight_Aspect = pSpot.GetAspect();
+		mfSpotlight_Fov = cMath_ToDeg(pSpot.GetFOV());
+		
+		cLensFlare@ pFlare = pEnt.GetLensFlareFromName("LensFlare_1");
+		if (pFlare !is null) m_idSpotLight_LensFlare = pFlare.GetID();
+		
+		SetSpotLightActive(false, true);
+		SetSpotLightColor(mTinHinan_SpotlightColorIdle);
+
+		mBaseObj.Timer_Remove("Timer_SetCrystalColor");
+//		mBaseObj.Timer_Add("Timer_SetCrystalColor", 0.2f, "OnTimer_SetCrystalColor");
+				
+		mvCrystal_CurrentDir = mvCrystal_TargetDir = mBaseObj.GetCharBody().GetForward();
+		TurnSpotlightToDir(mvCrystal_TargetDir, true, false);
+	}
+	
+	void OnTimer_SetCrystalColor(uint64 alID)
+	{
+		if (m_idCrystal != tID_Invalid) cLux_ID_Entity(m_idCrystal).GetMeshEntity().SetIlluminationColor(cColor(1.0f,1.0f,1.0f) * 1.4f);
+	}
+
+	//------------------------------------------------------------
+	
+	void UpdateSpotlight(float afTimeStep)
+	{
+		if (m_idCrystal == tID_Invalid) return;
+		
+		if (mlSpotlight_ActivationIndex < 3)
+		{
+			++mlSpotlight_ActivationIndex;
+			if (mlSpotlight_ActivationIndex == 3)
+			{
+				if (mbCrystal_HelperActivation)
+				{
+					mbCrystal_HelperActivation = false;
+					mbCrystal_Active = mbCrystal_HelperActive;
+				}
+				
+				SetSpotLightActive(mbCrystal_Active);
+				if (mbSpotlight_ActivationReset) ResetSpotlightDir();
+			}
+		}
+				
+		///////////////////////////
+		// Update movement
+		iLuxEntity@ pEnt = cLux_ID_Entity(m_idCrystal);					
+		if (mSpotlightMovement == eTinHinanLightMovement_Turn)
+		{
+			mfSpotlight_LerpSpeed = 4.0f * mfSpotlight_LerpSpeedMul;
+			mfCrystal_TargetHAngle = cMath_IncreaseTo(mfCrystal_TargetHAngle, mfSpotlight_TurnSpeed * afTimeStep, mfSpotlight_TurnHTarget);
+			mfCrystal_TargetVAngle = cMath_IncreaseTo(mfCrystal_TargetVAngle, mfSpotlight_TurnSpeed * afTimeStep, mfSpotlight_TurnVTarget);
+		}
+		else if (mSpotlightMovement == eTinHinanLightMovement_Forward)
+		{
+			mfSpotlight_LerpSpeed = 1.0f;
+			
+			cVector3f vForward = mBaseObj.GetCharBody().GetForward();
+			vForward.y -= 0.15f;
+			SetSpotlightTargetDir(vForward);
+		}
+		else if (mSpotlightMovement == eTinHinanLightMovement_ForwardOffset)
+		{
+			cVector3f vFwd = mBaseObj.GetCharBody().GetForward();
+			vFwd.y = 0;
+			
+			mfSpotlight_LerpSpeed = 0.8f;
+			GetSpotlightAngle(vFwd, mfCrystal_TargetHAngle, mfCrystal_TargetVAngle);
+			mfSpotlight_ForwardOffsetH = cMath_IncreaseTo(mfSpotlight_ForwardOffsetH, 0.8f * afTimeStep, mfSpotlight_ForwardOffsetTargetH);
+			mfSpotlight_ForwardOffsetV = cMath_IncreaseTo(mfSpotlight_ForwardOffsetV, 0.8f * afTimeStep, mfSpotlight_ForwardOffsetTargetV);
+			mfCrystal_TargetHAngle = ClosestAngleToAngle(mfCrystal_TargetHAngle, mfCrystal_CurrentHAngle) + mfSpotlight_ForwardOffsetH;
+			mfCrystal_TargetVAngle = ClosestAngleToAngle(mfCrystal_TargetVAngle, mfCrystal_CurrentVAngle) + mfSpotlight_ForwardOffsetV;
+		}
+		else if (mSpotlightMovement == eTinHinanLightMovement_FollowPosition)
+		{
+			mfSpotlight_LerpSpeed = 2.0f;
+			GetSpotlightAngle(GetCrystalToPosDir(mvSpotlight_FollowPosition), mfSpotlight_FollowPositionTargetH, mfSpotlight_FollowPositionTargetH);
+			mfSpotlight_FollowPositionTargetH = ClosestAngleToAngle(mfSpotlight_FollowPositionTargetH, mfCrystal_CurrentHAngle);
+			mfSpotlight_FollowPositionTargetV = ClosestAngleToAngle(mfSpotlight_FollowPositionTargetV, mfCrystal_CurrentVAngle);
+			mfSpotlight_FollowPositionH = cMath_IncreaseTo(mfSpotlight_FollowPositionH, 1.5f * afTimeStep, mfSpotlight_FollowPositionTargetH);
+			mfSpotlight_FollowPositionV = cMath_IncreaseTo(mfSpotlight_FollowPositionV, 1.5f * afTimeStep, mfSpotlight_FollowPositionTargetV);
+			mfCrystal_TargetHAngle = mfSpotlight_FollowPositionH;
+			mfCrystal_TargetVAngle = mfSpotlight_FollowPositionV;
+//			SetSpotlightTargetDir(GetCrystalToPosDir(mvSpotlight_FollowPosition));
+		}
+		else if (mSpotlightMovement == eTinHinanLightMovement_SidewaysEight)
+		{
+			
+			mfSpotlight_LerpSpeed = 5.0f * mfSpotlight_SidewaysEightSpeed;
+			mfSpotlight_MovementTimer += mfSpotlight_SidewaysEightSpeed * afTimeStep;
+			
+			cVector3f vForward = cVector3f_Zero;
+			if (mbSpotlight_UseCustomTarget)
+			{
+				iLuxEntity@ pTargetEntity = cLux_ID_Entity(m_idSpotlight_TargetEntity);
+				if (pTargetEntity !is null)
+				{
+					vForward = GetCrystalToPosDir(pTargetEntity.GetPosition());
+				}
+				else
+				{
+					vForward = GetCrystalToPosDir(mvSpotlight_CustomTarget);
+				}
+			}
+			else
+			{
+				vForward = mBaseObj.GetCharBody().GetForward();
+				vForward.y -= 0.15f;
+			}
+			
+			vForward = GetLeminscateMovement(mfSpotlight_MovementTimer, vForward, mfSpotlight_SidewaysEightHMul, mfSpotlight_SidewaysEightVMul);
+			SetSpotlightTargetDir(vForward);
+		}
+		else if (mSpotlightMovement == eTinHinanLightMovement_Scan)
+		{
+			mfSpotlight_LerpSpeed = 1.0f;
+			mfSpotlight_MovementTimer += mfSpotlight_ScanSpeed * afTimeStep;
+			
+			cVector3f vForward = mvSpotlight_ScanDir;
+			vForward = GetScanMovement(mfSpotlight_MovementTimer, vForward, mfSpotlight_ScanHMul, mfSpotlight_ScanVMul);
+			SetSpotlightTargetDir(vForward);
+		}
+		else if (mSpotlightMovement == eTinHinanLightMovement_LeftToRight)
+		{
+			mfSpotlight_LerpSpeed = 5.0f;
+			mfSpotlight_MovementTimer += mfSpotlight_LeftRightSpeed * afTimeStep;
+			
+			cVector3f vForward = mBaseObj.GetCharBody().GetForward();
+			
+			cQuaternion q;
+			q.FromAngleAxis(-cMath_ToRad(mfSpotlight_LeftRightAngle), mBaseObj.GetCharBody().GetRight());
+			
+			vForward = cMath_MatrixMul(cMath_MatrixQuaternion(q), vForward);
+			
+			vForward = GetLeftAndRightMovement(mfSpotlight_MovementTimer, vForward, mfSpotlight_LeftRightHMul);
+			SetSpotlightTargetDir(vForward);
+		}
+		else if (mSpotlightMovement == eTinHinanLightMovement_FollowEntity)
+		{
+			mfSpotlight_LerpSpeed = 1.0f;
+			iLuxEntity@ pTargetEntity = cLux_ID_Entity(m_idSpotlight_FollowEntity);
+			if (pTargetEntity !is null)
+			{
+				cVector3f vForward = GetCrystalToPosDir(pTargetEntity.GetPosition());
+				SetSpotlightTargetDir(vForward);
+			}
+			else
+			{
+				mSpotlightMovement = eTinHinanLightMovement_None;
+			}
+		}
+		
+		///////////////////////////
+		// Update current angles
+		float fLerpSpeed = mfSpotlight_LerpSpeed;
+		if (mfSpotlight_LerpSpeedTransitionTimer > 0.0f)
+		{
+			mfSpotlight_LerpSpeedTransitionTimer -= afTimeStep;
+			float fTransitionMul = 1.0f - cMath_Clamp(mfSpotlight_LerpSpeedTransitionTimer / 3.0f, 0.0f, 1.0f);
+			fLerpSpeed *= ((fTransitionMul * 0.8f) + 0.2f);
+		}
+				
+		mfCrystal_CurrentHAngle += (mfCrystal_TargetHAngle - mfCrystal_CurrentHAngle) * fLerpSpeed * afTimeStep;
+		mfCrystal_CurrentVAngle += (mfCrystal_TargetVAngle - mfCrystal_CurrentVAngle) * fLerpSpeed * afTimeStep;
+						
+		float fAbs = cMath_Abs(mfCrystal_CurrentHAngle);
+		if (fAbs > cMath_ToRad(180.0f))
+		{
+			float fBefore = mfCrystal_CurrentHAngle;
+			mfCrystal_TargetHAngle += mfCrystal_CurrentHAngle > 0 ? -cMath_ToRad(360.0f) : cMath_ToRad(360.0f);
+			mfSpotlight_TurnHTarget += mfCrystal_CurrentHAngle > 0 ? -cMath_ToRad(360.0f) : cMath_ToRad(360.0f);
+			mfCrystal_CurrentHAngle += mfCrystal_CurrentHAngle > 0 ? -cMath_ToRad(360.0f) : cMath_ToRad(360.0f);
+		}
+		
+		///////////////////////////
+		// Turning done? Send message!
+		if (mSpotlightMovement == eTinHinanLightMovement_Turn)
+		{
+			float fAngleDiff = cMath_Abs(mfSpotlight_TurnHTarget - mfCrystal_CurrentHAngle) + cMath_Abs(mfSpotlight_TurnVTarget - mfCrystal_CurrentVAngle);
+			if (fAngleDiff <= cMath_ToRad(5.0f) * mfSpotlight_TurningDoneMul)
+			{
+				mSpotlightMovement = eTinHinanLightMovement_None;
+				mBaseObj.BroadcastMessage(eCustomEntityMessage_SpotlightTurnDone, null, mBaseObj.GetPosition(), 0);
+			}
+		}
+			
+		///////////////////////////
+		// Calculate new rot
+		cQuaternion q1;
+		q1.FromAngleAxis(-mfCrystal_CurrentHAngle + cMath_Pi, cVector3f_Up);
+		
+		cVector3f vForward = cMath_MatrixMul(cMath_MatrixQuaternion(q1), cVector3f_Forward);
+		vForward.Normalize();
+		
+		cVector3f vLeft = cMath_Vector3Cross(vForward, cVector3f_Up);
+		vLeft.Normalize();
+		
+		cVector3f vUp = cMath_Vector3Cross(vLeft, vForward);
+		vLeft.Normalize();
+		
+		cQuaternion q2;
+		q2.FromAngleAxis(mfCrystal_CurrentVAngle, vLeft);
+		
+		cQuaternion q3 = q2 * q1;
+		
+		cMatrixf mtxNew = pEnt.GetMatrix();
+		mtxNew.SetRotation(cMath_MatrixQuaternion(q3));
+		
+		pEnt.SetMatrix(mtxNew);
+		
+		mvCrystal_CurrentDir = pEnt.GetMatrix().GetTranspose().GetForward();
+		
+		// Cast ray and find where the spotlight hits an object
+		mBaseObj.GetClosestBody("OnRaycast_FindSpotlightHit", pEnt.GetPosition(), mvCrystal_CurrentDir, mfCrystal_SightRange * mfCrystal_SightRangeMul);
+		
+		mbTinHinan_PlayerSeen = mbCrystal_Active && GetPlayerIsSeen();
+
+		mbCrystal_PlayerSeen = false;		
+											
+		float fDetectionAdd = 0.0f;
+		if (mbCrystal_PlayerSeen)
+		{
+			float fCrouchMul = 1.0f;
+			fDetectionAdd = 1.6f * fCrouchMul;
+			if (Player_GetHiding()) fDetectionAdd = 0.6f;
+		}
+		else fDetectionAdd = -0.8f;
+						
+		mfSpotlight_DetectedTimer += fDetectionAdd * mfSpotlight_DetectedMul * afTimeStep;
+		mfSpotlight_DetectedTimer = cMath_Clamp(mfSpotlight_DetectedTimer, 0.0f, 1.0f);
+		
+		if (mbCrystal_PlayerDetected == false && mfSpotlight_DetectedTimer >= 1.0f)
+		{
+			mbCrystal_PlayerDetected = true;
+			mBaseObj.BroadcastMessage(eLuxEntityMessage_PlayerDetected, null, mBaseObj.GetPlayerPos(), 0);
+		}
+		else if (mbCrystal_PlayerDetected && mfSpotlight_DetectedTimer < 0.8f)
+		{
+			mbCrystal_PlayerDetected = false;
+			mBaseObj.BroadcastMessage(eLuxEntityMessage_PlayerUndetected, null, mBaseObj.GetPlayerPos(), 0);
+		}
+		
+		// white screen effect for when you're in the beam
+		if (mbCrystal_PlayerDetected && mbSpotlight_VisualsActive && mbSpotlight_WhiteEffect == false)
+		{
+			mbSpotlight_WhiteEffect = true;
+		}
+		else if ((mbCrystal_PlayerDetected == false || mbSpotlight_VisualsActive == false) && mbSpotlight_WhiteEffect)
+		{
+			mbSpotlight_WhiteEffect = false;
+		}
+	}
+	
+	void OnRaycast_FindSpotlightHit(bool abSuccesful, float afDistance, const cVector3f&in avNormal, iPhysicsBody@ apBody, int alUserValue)
+	{
+		if (abSuccesful) mvSpotlight_RaycastPos = GetCrystalPos() + mvCrystal_CurrentDir * afDistance;
+		else mvSpotlight_RaycastPos = GetCrystalPos() + mvCrystal_CurrentDir * mfCrystal_SightRange * mfCrystal_SightRangeMul;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetPlayerIsSeen()
+	{
+		if (mbPlayerCameraLineOfSight == false) return false;
+		if (GetCrystalToPos(mBaseObj.GetPlayerPos()).Length() > mfCrystal_SightRange * mfCrystal_SightRangeMul) return false;
+		if (GetPointIsInFrontOfCrystal(mBaseObj.GetPlayerPos()) == false) return false;
+		if (GetPointInCystalFOV(mBaseObj.GetPlayerPos()) == false) return false;
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetPointIsInFrontOfCrystal(const cVector3f &in avPoint)
+	{
+		iLuxEntity@ pCrystal = cLux_ID_Entity(m_idCrystal);
+		if (pCrystal is null) return false;
+		
+		cVector3f vToPoint = GetCrystalToPos(avPoint);
+		float fDot = cMath_Vector3Dot(vToPoint, pCrystal.GetMatrix().GetTranspose().GetForward());
+		return fDot >= 0.0;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetPointInCystalFOV(const cVector3f &in avPoint)
+	{
+		iLight @ pEnt = cLux_ID_Light(m_idSpotLight);
+		if (pEnt is null) return false;
+		
+		cVector3f vPointDir = cMath_Vector3Normalize(avPoint - pEnt.GetWorldPosition());
+		cVector3f vPosDirV = cMath_Vector3ProjectOnPlane(vPointDir, pEnt.GetWorldMatrix().GetTranspose().GetRight());
+		cVector3f vPosDirH = cMath_Vector3ProjectOnPlane(vPointDir, pEnt.GetWorldMatrix().GetTranspose().GetUp());
+		float fVAngle = cMath_Vector3Angle(cVector3f_Zero - pEnt.GetWorldMatrix().GetTranspose().GetForward(), cMath_Vector3Normalize(vPosDirV));
+		float fHAngle = cMath_Vector3Angle(cVector3f_Zero - pEnt.GetWorldMatrix().GetTranspose().GetForward(), cMath_Vector3Normalize(vPosDirH));
+		return fVAngle <= cMath_ToRad(mfSpotlight_Fov + 2.f) * 0.5f && fHAngle <= cMath_ToRad((mfSpotlight_Fov + 2.f) * mfSpotlight_Aspect) * 0.5f;
+	}
+	
+	//------------------------------------------------------------
+	
+	float NormalizeAngle(float afAngle)
+	{
+		afAngle %= cMath_PiMul2;
+		if (afAngle > cMath_Pi) return afAngle - cMath_PiMul2;
+		else if (afAngle < -cMath_Pi) return afAngle + cMath_PiMul2;
+		else return afAngle;
+	}
+	
+	//------------------------------------------------------------
+	
+	float ClosestAngleToAngle(float afAngle, float afToAngle)
+	{
+		float fDist1 = cMath_Abs(afToAngle - afAngle);
+		float fDist2 = cMath_Abs(afToAngle - (afAngle + cMath_PiMul2));
+		float fDist3 = cMath_Abs(afToAngle - (afAngle - cMath_PiMul2));
+		if (fDist2 <= fDist1 && fDist2 <= fDist3) return afAngle + cMath_PiMul2;
+		if (fDist3 <= fDist1 && fDist3 <= fDist2) return afAngle - cMath_PiMul2;
+		return afAngle;
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetCrystalDetection()
+	{
+		mbCrystal_PlayerDetected = false;
+		mfSpotlight_DetectedTimer = 0;
+	}
+
+	//------------------------------------------------------------
+	
+	cVector3f GetCrystalPos()
+	{
+		if (m_idCrystal == tID_Invalid) return cVector3f_Zero;
+		return cLux_ID_Entity(m_idCrystal).GetPosition();
+	}
+	
+	//------------------------------------------------------------
+	
+	cVector3f GetCrystalToPlayerDir()
+	{
+		if (m_idCrystal == tID_Invalid) return cVector3f_Zero;
+		return cMath_Vector3Normalize(mBaseObj.GetPlayerPos() - cLux_ID_Entity(m_idCrystal).GetPosition());
+	}
+	
+	//------------------------------------------------------------
+	
+	cVector3f GetCrystalToPos(const cVector3f &in avPos)
+	{
+		if (m_idCrystal == tID_Invalid) return cVector3f_Zero;
+		return avPos - cLux_ID_Entity(m_idCrystal).GetPosition();
+	}
+	
+	cVector3f GetCrystalToPosDir(const cVector3f &in avPos)
+	{
+		if (m_idCrystal == tID_Invalid) return cVector3f_Zero;
+		return cMath_Vector3Normalize(avPos - cLux_ID_Entity(m_idCrystal).GetPosition());
+	}
+	
+	cVector3f GetCrystalDir()
+	{
+		if (m_idCrystal == tID_Invalid) return cVector3f_Zero;
+		iLuxEntity@ pCrystal = cLux_ID_Entity(m_idCrystal);
+		return pCrystal.GetMatrix().GetTranspose().GetForward();
+	}
+	
+	//------------------------------------------------------------
+	
+	void AddSpotlightMovementTransition()
+	{
+		mfSpotlight_LerpSpeedTransitionTimer = 3.0f;
+	}
+	
+	//------------------------------------------------------------
+	
+	void StopSpotlightMovement()
+	{
+		mSpotlightMovement = eTinHinanLightMovement_None;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetSpotlightMovement_Forward(bool abForce = false)
+	{
+		if (abForce == false && mSpotlightMovement != eTinHinanLightMovement_None) return;
+		mSpotlightMovement = eTinHinanLightMovement_Forward;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetSpotlightMovement_ForwardOffset(float mfHOffset, float mfVOffset, bool abForce = false)
+	{
+		if (abForce == false && mSpotlightMovement != eTinHinanLightMovement_None) return;
+		mSpotlightMovement = eTinHinanLightMovement_ForwardOffset;
+		mfSpotlight_ForwardOffsetTargetH = mfHOffset;
+		mfSpotlight_ForwardOffsetTargetV = mfVOffset;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetSpotlightMovement_FollowPosition(const cVector3f &in avPos, bool abForce = false)
+	{
+		if (abForce == false && mSpotlightMovement != eTinHinanLightMovement_None) return;
+		mSpotlightMovement = eTinHinanLightMovement_FollowPosition;
+		mvSpotlight_FollowPosition = avPos;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetSpotlightTargetDir(const cVector3f &in avDir, bool abClosestAngle = true)
+	{
+		mvCrystal_TargetDir = avDir;
+		mvCrystal_TargetDir.Normalize();
+		
+		GetSpotlightAngle(mvCrystal_TargetDir, mfCrystal_TargetHAngle, mfCrystal_TargetVAngle);
+		if (abClosestAngle)
+		{
+			mfCrystal_TargetHAngle = ClosestAngleToAngle(mfCrystal_TargetHAngle, mfCrystal_CurrentHAngle);
+			mfCrystal_TargetVAngle = ClosestAngleToAngle(mfCrystal_TargetVAngle, mfCrystal_CurrentVAngle);
+		}
+	}
+	
+	void GetSpotlightAngle(const cVector3f &in avDir, float &out afHAngle, float &out afVAngle)
+	{
+		cVector3f vDirH = avDir;
+		vDirH.y = 0;
+		vDirH.Normalize();
+		
+		afHAngle = cMath_GetAngleFromPoints2D(0, cVector2f(avDir.x, avDir.z));
+		afVAngle = cMath_Vector3Angle(vDirH, avDir) * cMath_Sign(avDir.y);
+	}
+	
+	void GetClosestSpotlightAngle(const cVector3f &in avDir, float &out afHAngle, float &out afVAngle)
+	{
+		float fH = 0;
+		float fV = 0;
+		GetSpotlightAngle(avDir, fH, fV);
+		afHAngle = ClosestAngleToAngle(fH, mfCrystal_CurrentHAngle);
+		afVAngle = ClosestAngleToAngle(fV, mfCrystal_CurrentVAngle);
+	}
+	
+	//------------------------------------------------------------
+	
+	void TurnSpotlightToAngle(float afHAngle, float afVAngle, bool abForce = false, bool abFade = true, float afTurnSpeed = 2.0f, float afTurningDoneMul = 1.0f)
+	{
+		if (m_idCrystal == tID_Invalid) return;
+		if (abForce == false && mSpotlightMovement != eTinHinanLightMovement_None) return;
+		
+		mSpotlightMovement = eTinHinanLightMovement_Turn;
+		;
+		mfSpotlight_TurnHTarget = afHAngle;
+		mfSpotlight_TurnVTarget = afVAngle;
+				
+		if (abFade == false)
+		{
+			mvCrystal_CurrentDir = mvCrystal_TargetDir;
+			mfCrystal_CurrentHAngle = mfCrystal_TargetHAngle = mfSpotlight_TurnHTarget;
+			mfCrystal_CurrentVAngle = mfCrystal_TargetVAngle = mfSpotlight_TurnVTarget;
+		}
+		
+		mfSpotlight_TurnSpeed = afTurnSpeed;
+		mfSpotlight_TurningDoneMul = afTurningDoneMul;
+	}
+	
+	void TurnSpotlightToDir(const cVector3f &in avDir, bool abForce = false, bool abFade = true, float afTurnSpeed = 2.0f, float afTurningDoneMul = 1.0f)
+	{
+		if (m_idCrystal == tID_Invalid) return;
+		if (abForce == false && mSpotlightMovement != eTinHinanLightMovement_None) return;
+									
+		mSpotlightMovement = eTinHinanLightMovement_Turn;
+		
+		mvCrystal_TargetDir = avDir;
+		mvCrystal_TargetDir.Normalize();
+		GetSpotlightAngle(mvCrystal_TargetDir, mfSpotlight_TurnHTarget, mfSpotlight_TurnVTarget);
+		
+		mfSpotlight_TurnHTarget = ClosestAngleToAngle(mfSpotlight_TurnHTarget, mfCrystal_CurrentHAngle);
+		mfSpotlight_TurnVTarget = ClosestAngleToAngle(mfSpotlight_TurnVTarget, mfCrystal_CurrentVAngle);
+		
+		if (abFade == false)
+		{
+			mvCrystal_CurrentDir = mvCrystal_TargetDir;
+			mfCrystal_CurrentHAngle = mfCrystal_TargetHAngle = mfSpotlight_TurnHTarget;
+			mfCrystal_CurrentVAngle = mfCrystal_TargetVAngle = mfSpotlight_TurnVTarget;
+		}
+		
+		mfSpotlight_TurnSpeed = afTurnSpeed;
+		mfSpotlight_TurningDoneMul = afTurningDoneMul;
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetSpotlightDir()
+	{
+		if (m_idCrystal == tID_Invalid) return;
+		
+		cVector3f vDir = mBaseObj.GetCharBody().GetForward();
+		
+		mvCrystal_TargetDir = vDir;
+		mvCrystal_TargetDir.Normalize();
+		GetSpotlightAngle(mvCrystal_TargetDir, mfSpotlight_TurnHTarget, mfSpotlight_TurnVTarget);
+		
+		mfSpotlight_TurnHTarget = ClosestAngleToAngle(mfSpotlight_TurnHTarget, mfCrystal_CurrentHAngle);
+		mfSpotlight_TurnVTarget = ClosestAngleToAngle(mfSpotlight_TurnVTarget, mfCrystal_CurrentVAngle);
+		
+		mvCrystal_CurrentDir = mvCrystal_TargetDir;
+		mfCrystal_CurrentHAngle = mfCrystal_TargetHAngle = mfSpotlight_TurnHTarget;
+		mfCrystal_CurrentVAngle = mfCrystal_TargetVAngle = mfSpotlight_TurnVTarget;
+	}
+	
+	//------------------------------------------------------------
+	
+	void TurnSpotlightToPos(const cVector3f &in avPos, bool abForce = false, bool abFade = true, float afTurnSpeed = 2.0f, float afTurningDoneMul = 1.0f)
+	{
+		if (m_idCrystal == tID_Invalid) return;
+		TurnSpotlightToDir(avPos - cLux_ID_Entity(m_idCrystal).GetPosition(), abForce, abFade, afTurnSpeed, afTurningDoneMul);
+	}
+	
+	//------------------------------------------------------------
+	
+	float mfSpotlight_SidewaysEightSpeed = 1.0f;
+	float mfSpotlight_SidewaysEightHMul = 0.0f;
+	float mfSpotlight_SidewaysEightVMul = 0.0f;
+	bool mbSpotlight_UseCustomTarget = false;
+	tID m_idSpotlight_TargetEntity;
+	cVector3f mvSpotlight_CustomTarget;
+	
+	void SetSpotlightMovement_SidewaysEight(float afSpeed = 1.0f, float afHMul = 1.0f, float afVMul = 1.0f, bool abUseCustomTarget = false, const cVector3f &in avCustomTarget = cVector3f_Zero, bool abResetTimer = false, bool abForce = false)
+	{
+		if (abForce == false && mSpotlightMovement != eTinHinanLightMovement_None) return;
+		mfSpotlight_SidewaysEightSpeed = afSpeed;
+		mfSpotlight_SidewaysEightHMul = afHMul;
+		mfSpotlight_SidewaysEightVMul = afVMul;
+		mbSpotlight_UseCustomTarget = abUseCustomTarget;
+		mvSpotlight_CustomTarget = avCustomTarget;
+		m_idSpotlight_TargetEntity = tID_Invalid;
+		if (mSpotlightMovement != eTinHinanLightMovement_SidewaysEight || abResetTimer) mfSpotlight_MovementTimer = 0.0f;
+		if (mSpotlightMovement != eTinHinanLightMovement_SidewaysEight) AddSpotlightMovementTransition();
+		mSpotlightMovement = eTinHinanLightMovement_SidewaysEight;
+	}
+	
+	void SetSpotlightMovement_SidewaysEightAtEntity(float afSpeed = 1.0f, float afHMul = 1.0f, float afVMul = 1.0f, tID a_idEntity = tID_Invalid, bool abResetTimer = false, bool abForce = false)
+	{
+		SetSpotlightMovement_SidewaysEight(afSpeed, afHMul, afVMul, true, cVector3f_Zero, abResetTimer, abForce);
+		m_idSpotlight_TargetEntity = a_idEntity;
+	}
+	
+	void SetSpotlightMovement_SidewaysEightCustomTarget(const cVector3f &in avCustomTarget)
+	{
+		mvSpotlight_CustomTarget = avCustomTarget;
+	}
+	
+	//------------------------------------------------------------
+	
+	cVector3f GetLeminscateMovement(float afT, const cVector3f &in avDir, float afHMoveMul, float afVMoveMul)
+	{
+		float fHMove = afHMoveMul * cMath_Cos((2.0f * afT) + cMath_PiDiv2);
+		float fVMove = afVMoveMul * cMath_Sin(4.0f * afT) / 4.0f;
+
+		cVector3f vForward = avDir;
+		vForward.Normalize();
+		
+		cVector3f vRight = cMath_Vector3Cross(cVector3f_Up, vForward);
+		vRight.Normalize();
+		
+		cVector3f vUp = cMath_Vector3Cross(vForward, vRight);
+		vUp.Normalize();
+		
+		cVector3f vFinalDir = vForward;
+		
+		cQuaternion qHRot;
+		qHRot.FromAngleAxis(fHMove * cMath_ToRad(90), vUp);
+		
+		cQuaternion qVRot;
+		qVRot.FromAngleAxis(fVMove * cMath_ToRad(90), vRight);
+		
+		vFinalDir = cMath_MatrixMul(cMath_MatrixQuaternion(qHRot * qVRot), vFinalDir);
+		
+		return vFinalDir;
+	}
+	
+	//------------------------------------------------------------
+	
+	cVector3f RotateDirHV(const cVector3f &in avDir, float afH, float afV)
+	{
+		cVector3f vForward = avDir;
+		vForward.Normalize();
+		
+		cVector3f vRight = cMath_Vector3Cross(cVector3f_Up, vForward);
+		vRight.Normalize();
+		
+		cVector3f vUp = cMath_Vector3Cross(vForward, vRight);
+		vUp.Normalize();
+		
+		cVector3f vFinalDir = vForward;
+		
+		cQuaternion qHRot;
+		qHRot.FromAngleAxis(afH, vUp);
+		
+		cQuaternion qVRot;
+		qVRot.FromAngleAxis(afV, vRight);
+		
+		vFinalDir = cMath_MatrixMul(cMath_MatrixQuaternion(qHRot * qVRot), vFinalDir);
+		
+		return vFinalDir;
+	}
+	
+	//------------------------------------------------------------
+	
+	cVector3f mvSpotlight_ScanDir;
+	float mfSpotlight_ScanSpeed = 1.0f;
+	float mfSpotlight_ScanHMul = 0.0f;
+	float mfSpotlight_ScanVMul = 0.0f;
+	
+	void SetSpotlightMovement_Scan(const cVector3f &in avDir, float afSpeed = 1.0f, float afHMul = 1.0f, float afVMul = 1.0f, bool abForce = false)
+	{
+		if (abForce == false && mSpotlightMovement != eTinHinanLightMovement_None) return;
+		mvSpotlight_ScanDir = avDir;
+		mfSpotlight_ScanSpeed = afSpeed;
+		mfSpotlight_ScanHMul = afHMul;
+		mfSpotlight_ScanVMul = afVMul;
+		if (mSpotlightMovement != eTinHinanLightMovement_Scan) mfSpotlight_MovementTimer = 0.0f;
+		mSpotlightMovement = eTinHinanLightMovement_Scan;
+	}
+	
+	//------------------------------------------------------------
+	
+	cVector3f GetScanMovement(float afT, const cVector3f &in avDir, float afHMoveMul, float afVMoveMul)
+	{
+		float fDistMul = 1.0f / (avDir.Length() * 0.2f);
+		if (fDistMul < 1.0f) fDistMul = 1.0f;
+		float fHMove = fDistMul * 0.6f * cMath_Cos(2.0f * afT);
+		float fVMove = fDistMul * 0.15f * cMath_Sin(0.7f * afT);
+
+		cVector3f vForward = avDir;
+		vForward.Normalize();
+		
+		cVector3f vRight = cMath_Vector3Cross(cVector3f_Up, vForward);
+		vRight.Normalize();
+		
+		cVector3f vUp = cMath_Vector3Cross(vForward, vRight);
+		vUp.Normalize();
+		
+		cVector3f vFinalDir = vForward;
+		
+		cQuaternion qHRot;
+		qHRot.FromAngleAxis(fHMove * cMath_ToRad(90), vUp);
+		
+		cQuaternion qVRot;
+		qVRot.FromAngleAxis(fVMove * cMath_ToRad(90), vRight);
+		
+		vFinalDir = cMath_MatrixMul(cMath_MatrixQuaternion(qHRot * qVRot), vFinalDir);
+		
+		return vFinalDir;
+	}
+	
+	//------------------------------------------------------------
+	
+	float mfSpotlight_LeftRightAngle = 45.0f;
+	float mfSpotlight_LeftRightSpeed = 1.0f;
+	float mfSpotlight_LeftRightHMul = 0.0f;
+	
+	void SetSpotlightMovement_LeftToRight(float afAngle = 45.0f, float afSpeed = 1.0f, float afHMul = 1.0f, bool abForce = false)
+	{
+		if (abForce == false && mSpotlightMovement != eTinHinanLightMovement_None) return;
+		mfSpotlight_LeftRightAngle = afAngle;
+		mfSpotlight_LeftRightSpeed = afSpeed;
+		mfSpotlight_LeftRightHMul = afHMul;
+		if (mSpotlightMovement != eTinHinanLightMovement_LeftToRight) mfSpotlight_MovementTimer = 0.0f;
+		mSpotlightMovement = eTinHinanLightMovement_LeftToRight;
+	}
+	
+	//------------------------------------------------------------
+	
+	cVector3f GetLeftAndRightMovement(float afT, const cVector3f &in avDir, float afHMoveMul)
+	{
+		float fHMove = afHMoveMul * cMath_Cos(afT);
+
+		cVector3f vForward = avDir;
+		vForward.Normalize();
+		
+		cVector3f vRight = cMath_Vector3Cross(cVector3f_Up, vForward);
+		vRight.Normalize();
+		
+		cVector3f vUp = cMath_Vector3Cross(vForward, vRight);
+		vUp.Normalize();
+		
+		cVector3f vFinalDir = vForward;
+		
+		cQuaternion qHRot;
+		qHRot.FromAngleAxis(fHMove * cMath_ToRad(90), vUp);
+		
+		vFinalDir = cMath_MatrixMul(cMath_MatrixQuaternion(qHRot), vFinalDir);
+		
+		return vFinalDir;
+	}
+	
+	//------------------------------------------------------------
+	
+	tID m_idSpotlight_FollowEntity;
+	
+	void SetSpotlightMovement_FollowEntity(tID a_idEntity, bool abForce = false)
+	{
+		if (abForce == false && mSpotlightMovement != eTinHinanLightMovement_None) return;
+		if (a_idEntity == tID_Invalid) return;
+		mSpotlightMovement = eTinHinanLightMovement_FollowEntity;
+		m_idSpotlight_FollowEntity = a_idEntity;
+	}
+	
+	
+	//------------------------------------------------------------
+	
+	bool mbSpotlightActivation_Active = false;
+	bool mbSpotlightActivation_SpotlightOnly = false;
+	float mfSpotlightActivation_FadeTime = 0;
+	bool mbSpotlight_VisualsActive = false;
+	
+	void SetSpotLightActive(bool abX, bool abMeshVisible = true, bool abSpotlightOnly = false, float afEffectFadeTime = 0.f)
+	{
+		bool bChange = mbCrystal_Active != abX;
+		mbCrystal_Active = abX;
+		
+		cLuxProp@ pCrystal = cLux_ID_Prop(m_idCrystal);
+		if (pCrystal !is null)
+		{
+			pCrystal.SetActive(abMeshVisible);
+		}
+		else return;
+		
+		if (mbCrystal_Active && mlSpotlight_ActivationIndex < 3) return;
+		
+		if (bChange)
+		{
+			if (mbCrystal_Active)
+			{
+				cSoundEntity@ pSound = mBaseObj.PlaySound("LightOn", gsTinHinanSound_TurnOnLight, true, true);
+				pSound.SetVolume(mfSfx_VolumeMul);
+			}
+			else
+			{
+				cSoundEntity@ pSound = mBaseObj.PlaySound("LightOff", gsTinHinanSound_TurnOffLight, true, true);
+				pSound.SetVolume(mfSfx_VolumeMul);
+			}
+		}
+		
+		mbSpotlightActivation_Active = mbCrystal_Active;
+		mbSpotlightActivation_SpotlightOnly = abSpotlightOnly;
+		mfSpotlightActivation_FadeTime = afEffectFadeTime;
+		
+		// activate visuals
+		float fVisualsDelay = 0;
+		if (mbCrystal_Active) fVisualsDelay = 0.3;
+		mBaseObj.Timer_Remove("Timer_ActivateSpotlightVisuals");
+		mBaseObj.Timer_Add("Timer_ActivateSpotlightVisuals", fVisualsDelay, "OnTimer_ActivateSpotlightVisuals");
+		
+		// activate sounds
+		mBaseObj.Timer_Remove("Timer_ActivateSpotlightSounds");
+		if (abX)
+		{
+			mBaseObj.Timer_Add("Timer_ActivateSpotlightSounds", 0.2, "OnTimer_ActivateSpotlightSounds");
+		}
+		else
+		{
+			mbSfx_SpotlightSoundActive = false;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnTimer_ActivateSpotlightVisuals(uint64 alID)
+	{
+		cLuxProp@ pCrystal = cLux_ID_Prop(m_idCrystal);
+		if (pCrystal is null) return;
+		
+		mbSpotlight_VisualsActive = mbSpotlightActivation_Active;
+		SetSpotlightBillboardActive(mbSpotlightActivation_Active);
+		
+		for (int i = 0; i < pCrystal.GetLightNum(); ++i)
+		{
+			iLight@ pLight = pCrystal.GetLight(i);
+			float fLightBrightness = pLight.GetDefaultBrightness();
+			if (mbSpotlightActivation_Active == false) fLightBrightness = 0.0f;
+			pLight.FadeBrightnessTo(fLightBrightness, mfSpotlightActivation_FadeTime);
+		}
+		
+		if (mbSpotlightActivation_SpotlightOnly == false)
+		{
+			cLensFlare@ pFlare = cLux_ID_LensFlare(m_idSpotLight_LensFlare);
+			if (pFlare !is null)
+			{
+				if (mbSpotlightActivation_Active) pFlare.FadeIn(mfSpotlightActivation_FadeTime);
+				else pFlare.FadeOut(mfSpotlightActivation_FadeTime);
+			} 
+			
+			for (int i = 0; i < pCrystal.GetBillboardNum(); ++i) 
+				pCrystal.GetBillboard(i).SetVisible(mbSpotlightActivation_Active);
+		}
+		
+		SetSpotLightColor(mSpotlightcolor);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnTimer_ActivateSpotlightSounds(uint64 alID)
+	{
+		mbSfx_SpotlightSoundActive = true;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetSpotLightColor(const cColor&in aColor)
+	{
+		mSpotlightcolor = aColor;
+		
+		cLuxProp@ pCrystal = cLux_ID_Prop(m_idCrystal);
+		if (pCrystal is null) return;
+			
+		pCrystal.SetEffectBaseColor(aColor * mfSpotlightBrightnessMul);
+		
+		float fActiveMul = mbCrystal_Active ? 2.5f : 2.0f;
+		if (mbFlyMode_Active) fActiveMul *= 2.0f;
+		pCrystal.GetMeshEntity().SetIlluminationColor(aColor * mfSpotlightBrightnessMul * fActiveMul);
+		
+//		for (int i = 0; i < pCrystal.GetLightNum(); ++i)
+//			pCrystal.GetLight(i).SetDiffuseColor(aColor);
+		
+		cLensFlare@ pFlare = cLux_ID_LensFlare(m_idSpotLight_LensFlare);
+		if (pFlare !is null)
+		{
+			pFlare.SetFlareColor(eLensFlareType_AnamorphicFlare, aColor * mfSpotlightBrightnessMul);
+			pFlare.SetFlareColor(eLensFlareType_Halo, aColor * mfSpotlightBrightnessMul);
+			pFlare.SetFlareColor(eLensFlareType_MultiIris, aColor * mfSpotlightBrightnessMul);
+		}
+		
+		for (int i = 0; i < pCrystal.GetBillboardNum(); ++i) 
+			pCrystal.GetBillboard(i).SetColor(aColor * mfSpotlightBrightnessMul);
+	}
+	
+	//------------------------------------------------------------
+	
+	//} END CRYSTAL
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// BILLBOARDS
+	//{//////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	array<cTinHinanSpotlightBillboard> mvSpotlightBillboards;
+	int mlSpoltightBillboard_MaxCount = 42;
+	int mlSpoltightBillboard_Quality = 2;
+	float mfSpotlightBillboard_Speed = 2.5f;
+	float mfSpotlightBillboard_PerFrame = 1.0f;
+	float mfSpotlightBillboard_Timer = 0.0f;
+	float mfSpotlightBillboard_Width = 0.8f;
+	int mlSpoltightBillboard_RaycastIndex = 0;
+	bool mbSpotlightBillboard_Active = false;
+	bool mbSpotlightBillboard_Init = false;
+	float mfSpotlightBillboard_ExtraLength = 2.f;
+	float mfSpotlightBillboard_StartOffset = 0;
+	float mfSpotlightBillboard_BrightnessMul = 1.f;
+	tID m_idSpotlightPS = tID_Invalid;
+	tID m_idSpotlightSuctionPS = tID_Invalid;
+	bool mbSuctionVisible = false;
+	tString msSpotlightBillboard_GroupNormal = "";
+	tString msSpotlightBillboard_GroupAnim = "";
+	array<tString> mvSpotlightBillboard_NormalMaterials = { "wraith_beam_shards_01.mat", "wraith_beam_shards_02.mat", "wraith_beam_shards_03.mat", "wraith_beam_shards_04.mat" };
+	tString msSpotlightBillboard_AlertMaterial = "wraith_beam_shards.mat";
+	
+	void InitSpotlightBillboards()
+	{
+		if (mbSpotlightBillboard_Init) return;
+		mbSpotlightBillboard_Init = true;
+		
+		for (int i = 0; i < mvSpotlightBillboards.size(); ++i)
+		{
+			cTinHinanSpotlightBillboard@ pBillboard = mvSpotlightBillboards[i];
+			cBillboard@ pEnt = mBaseObj.GetMap().GetWorld().GetBillboardFromID(pBillboard.m_idBillboard);
+			pEnt.SetActive(false);
+			pEnt.SetVisible(false);
+		}
+		mvSpotlightBillboards.resize(0);
+		
+		array<tID> vBillboards;
+		Blackboard_GetWraithBillboards(mBaseObj.GetID(), mlSpoltightBillboard_MaxCount, vBillboards);
+
+		cBillboard@ pBillboard;
+		for (int i = 0; i < vBillboards.size(); ++i)
+		{
+			@pBillboard = cLux_ID_Billboard(vBillboards[i]);
+			cTinHinanSpotlightBillboard newBillboard;
+			newBillboard.m_idBillboard = pBillboard.GetID();
+			newBillboard.mfMaxBrightness = 2.f;
+			mvSpotlightBillboards.push_back(newBillboard);
+		}
+	}
+	
+	void UpdateSpotlightBillboards(float afTimeStep)
+	{
+		if (mbSpotlightBillboard_Active)
+		{
+			mfSpotlightBillboard_Timer += mfSpotlightBillboard_PerFrame * afTimeStep;
+			if (mfSpotlightBillboard_Timer >= cEngine_GetStepSize())
+			{
+				mfSpotlightBillboard_Timer -= cEngine_GetStepSize();
+				
+				int lRaycastCount = 1;
+				if (mfSpotlightBillboard_PerFrame > 1) lRaycastCount = cMath_FloorToInt(mfSpotlightBillboard_PerFrame);
+				for (int i = 0; i < lRaycastCount; ++i)
+				{
+					iLuxEntity@ pCrystal = cLux_ID_Entity(m_idCrystal);
+					if (pCrystal is null) continue;
+					
+					cVector3f vForward = GetCrystalDir();
+					cVector2f vRot = cMath_RandRectVector2f(cVector2f(-7, -12), cVector2f(7, 12));
+					
+					cQuaternion q1;
+					q1.FromAngleAxis(cMath_ToRad(vRot.y), pCrystal.GetMatrix().GetTranspose().GetRight());
+					cQuaternion q2;
+					q2.FromAngleAxis(cMath_ToRad(vRot.x), pCrystal.GetMatrix().GetTranspose().GetUp());
+					
+					vForward = cMath_MatrixMul(cMath_MatrixQuaternion(q1 * q2), vForward);
+					
+					++mlSpoltightBillboard_RaycastIndex;
+					mBaseObj.GetClosestCharCollideBody("OnRaycast_ActivateSpotlightBillboard", pCrystal.GetPosition(), vForward, mfCrystal_SightRange * mfCrystal_SightRangeMul, mlSpoltightBillboard_RaycastIndex);
+					
+					cTinHinanSpotlightBillboard@ pBillboard = GetFreeSpotlightBillboard();
+					if (pBillboard !is null)
+					{
+						pBillboard.mbAvailable = false;
+						pBillboard.mlRaycastIndex = mlSpoltightBillboard_RaycastIndex;
+						pBillboard.mvForward = vForward;
+					}
+				}
+			
+			}
+		}
+		
+		int lUnusedCount = 0;
+		for (int i = 0; i < mvSpotlightBillboards.size(); ++i)
+		{
+			cTinHinanSpotlightBillboard@ pBillboard = mvSpotlightBillboards[i];
+			if (pBillboard.mbTurnOn || pBillboard.mbTurnOff)
+			{
+				cBillboard@ pEnt = mBaseObj.GetMap().GetWorld().GetBillboardFromID(pBillboard.m_idBillboard);
+				float fBrightnessTarget = 0.f;
+				
+				if (pBillboard.mbTurnOn)
+				{
+					fBrightnessTarget = pBillboard.mfMaxBrightness * mfSpotlightBillboard_BrightnessMul;
+					if (pBillboard.mfBrightness == fBrightnessTarget)
+					{
+						pBillboard.mbTurnOn = false;
+						pBillboard.mbTurnOff = true;
+					}
+				}
+				else if (pBillboard.mbTurnOff)
+				{
+					if (pBillboard.mfBrightness == fBrightnessTarget)
+					{
+						pEnt.SetVisible(false);
+						pBillboard.mbTurnOff = false;
+					}
+				}
+				
+				pBillboard.mfBrightness = cMath_IncreaseTo(pBillboard.mfBrightness, mfSpotlightBillboard_Speed * afTimeStep, fBrightnessTarget);
+				pEnt.SetColor(mSpotlightcolor * mfSpotlightBrightnessMul);
+				pEnt.SetBrightness(pBillboard.mfBrightness);
+			}
+			else
+			{
+				++lUnusedCount;
+			}
+		}
+		int lUsedCount = mlSpoltightBillboard_MaxCount - lUnusedCount;
+		
+//		cLux_AddDebugMessage("BILLBOARDS: " + lUsedCount + "/" + mlSpoltightBillboard_MaxCount);
+	}
+	
+	void OnRaycast_ActivateSpotlightBillboard(bool abSuccesful, float afDistance, const cVector3f&in avNormal, iPhysicsBody@ apBody, int alUserValue)
+	{	
+		if (abSuccesful)
+		{
+			//iLuxEntity@ pEnt = cLux_GetBodyEntity(apBody);
+			//if (mbPhysicsBeam_Shake) StartEntityShake(pEnt);
+		}
+		
+		for (int i = 0; i < mvSpotlightBillboards.size(); ++i)
+		{
+			cTinHinanSpotlightBillboard@ pBillboard = mvSpotlightBillboards[i];
+			if (pBillboard.mlRaycastIndex != alUserValue) continue;
+			
+			pBillboard.mbAvailable = true;
+			
+			if (mbSpotlightBillboard_Active == false) continue;
+			
+			iLuxEntity@ pCrystal = cLux_ID_Entity(m_idCrystal);
+			if (pCrystal is null) continue;
+			
+			cBillboard@ pEnt = mBaseObj.GetMap().GetWorld().GetBillboardFromID(pBillboard.m_idBillboard);
+			if (pEnt is null) continue;
+			
+			float fDist = cMath_Clamp(afDistance, 0.0f, mfCrystal_SightRange * mfCrystal_SightRangeMul);
+			if (fDist < 1.0f) continue;
+			
+			float fStartDist = 0.0f;
+			fStartDist = cMath_RandRectf(0.0f, 2.0f);
+			fStartDist -= mfSpotlightBillboard_StartOffset;
+			cVector3f vStart = pCrystal.GetPosition() + pBillboard.mvForward * fStartDist;
+			cVector3f vTarget = pCrystal.GetPosition() + pBillboard.mvForward * (fDist + mfSpotlightBillboard_ExtraLength);
+			cVector3f vMiddle = (vStart + vTarget) * 0.5f;
+			cVector3f vAxis = cVector3f_Zero - pBillboard.mvForward;
+						
+			pEnt.SetVisible(true);
+			pEnt.SetWorldPosition(vMiddle);
+			pEnt.SetBrightness(0);
+			pEnt.SetAxis(vAxis);
+			pEnt.SetSize(cVector2f(1.2f, fDist - fStartDist));
+			
+			// change material based on alert mode, also manage billboard groups
+			bool bAnimated = true;//mAlert >= eWraithAlertState_Alerted;
+			
+			tString sMatName = "";
+			if (bAnimated) sMatName = msSpotlightBillboard_AlertMaterial;
+			else
+			{
+				int lIndex = cMath_RandRectl(0, mvSpotlightBillboard_NormalMaterials.size() - 1);
+				sMatName = mvSpotlightBillboard_NormalMaterials[lIndex];
+			}
+			pEnt.SetMaterial(cResources_CreateMaterial(sMatName));
+			
+			pBillboard.mbTurnOn = true;
+			
+			// position spotlight ps
+			cParticleSystem@ pHitPS = cLux_ID_ParticleSystem(m_idSpotlightPS);
+			if (pHitPS !is null)
+			{
+				cVector3f vHitPos = pCrystal.GetPosition() + pBillboard.mvForward * fDist;
+				pHitPS.SetVisible(true);
+				pHitPS.SetWorldPosition(vHitPos);
+			}
+						
+			// position suction ps
+			cParticleSystem@ pSuctionPS = cLux_ID_ParticleSystem(m_idSpotlightSuctionPS);
+			if (pSuctionPS !is null)
+			{
+				cVector3f vDir = pBillboard.mvForward * 0.7f + pCrystal.GetMatrix().GetTranspose().GetForward() * 0.3f;
+				cVector3f vOrigin = pCrystal.GetPosition() + cMath_Vector3Normalize(vDir) * 15.0f;
+				if (mbSuctionVisible) pSuctionPS.SetVisible(true);
+				pSuctionPS.SetWorldPosition(pCrystal.GetPosition());
+				pSuctionPS.SetCustomOrigin(vOrigin);
+			}
+			
+			Debug_DrawSphere(pCrystal.GetPosition() + pBillboard.mvForward * fDist, 0.2f, cColor(0, 0.5, 1) * 2, 1 / mfSpotlightBillboard_Speed);
+			Debug_DrawLine(pCrystal.GetPosition(), pCrystal.GetPosition() + pBillboard.mvForward * fDist, cColor(0, 0.5, 1) * 2, 1 / mfSpotlightBillboard_Speed);
+			break;
+		}
+	}
+	
+	void SetSpotlightBillboardActive(bool abActive)
+	{
+		if (abActive == mbSpotlightBillboard_Active) return;
+		mbSpotlightBillboard_Active = abActive;
+		
+		if (mbSpotlightBillboard_Active)
+		{
+			cParticleSystem@ pHitPS = mBaseObj.CreateParticleSystem("BeamHit", "wraith_beam_hit", true, false);
+			pHitPS.SetVisible(false);
+			m_idSpotlightPS = pHitPS.GetID();
+			
+//			cParticleSystem@ pSuctionPS = mBaseObj.CreateParticleSystem("Suction", "wraith_suction_test", true, false);
+//			pSuctionPS.SetVisible(false);
+//			pSuctionPS.SetUseCustomOrigin(true);
+//			m_idSpotlightSuctionPS = pSuctionPS.GetID();
+		}
+		else
+		{
+			cParticleSystem@ pHitPS = cLux_ID_ParticleSystem(m_idSpotlightPS);
+			if (pHitPS !is null) pHitPS.Kill();
+			m_idSpotlightPS = tID_Invalid;
+			
+//			cLux_ID_ParticleSystem(m_idSpotlightSuctionPS).Kill();
+//			m_idSpotlightSuctionPS = tID_Invalid;
+		}
+		
+		for (int i = 0; i < mvSpotlightBillboards.size(); ++i)
+		{
+			cTinHinanSpotlightBillboard@ pBillboard = mvSpotlightBillboards[i];
+			if (pBillboard.mbTurnOn) pBillboard.mbTurnOff;
+		}
+	}
+	
+	void SetSpotlightBillboardQuality(int alQuality)
+	{
+		if (alQuality == mlSpoltightBillboard_Quality) return;
+		mlSpoltightBillboard_Quality = alQuality;
+		
+		if (mlSpoltightBillboard_Quality == 1)
+		{
+			mlSpoltightBillboard_MaxCount = 24;
+			mfSpotlightBillboard_Speed = 3.5f;
+			mfSpotlightBillboard_PerFrame = 0.8f;
+			mfSpotlightBillboard_Width = 0.8f;
+		}
+		else if (mlSpoltightBillboard_Quality == 2)
+		{
+			mlSpoltightBillboard_MaxCount = 60;
+			mfSpotlightBillboard_Speed = 3.0f;
+			mfSpotlightBillboard_PerFrame = 2.5f;
+			mfSpotlightBillboard_Width = 0.8f;
+		}
+		else if (mlSpoltightBillboard_Quality == 3)
+		{
+			mlSpoltightBillboard_MaxCount = 150;
+			mfSpotlightBillboard_Speed = 3.0f;
+			mfSpotlightBillboard_PerFrame = 6.0f;
+			mfSpotlightBillboard_Width = 0.8f;
+		}
+		
+		mbSpotlightBillboard_Init = false;
+		InitSpotlightBillboards();
+	}
+	
+	cTinHinanSpotlightBillboard@ GetFreeSpotlightBillboard()
+	{
+		for (int i = 0; i < mvSpotlightBillboards.size(); ++i)
+		{
+			cTinHinanSpotlightBillboard@ pBillboard = mvSpotlightBillboards[i];
+			if (pBillboard.mbAvailable && pBillboard.mbTurnOn == false && pBillboard.mbTurnOff == false)
+			{
+				return pBillboard;
+			}
+		}
+		return null;
+	}
+	
+	//------------------------------------------------------------
+	
+	//} END BILLBOARDS
+	
+	//------------------------------------------------------------
+						
+	//} END HELPERS
+
+	//===========================================================
+	
+	/////////////////////////////////////////
+	//=======================================
+	// GLOBALS
+	//=======================================
+	//{//////////////////////////////////////
+	
+	//===========================================================
+	
+	void _Global_StopSpotlightMovement()
+	{
+		StopSpotlightMovement();
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_TurnSpotlightToPos()
+	{
+		TurnSpotlightToPos(cScript_GetGlobalArgVector3f(0), cScript_GetGlobalArgBool(1), cScript_GetGlobalArgBool(2), cScript_GetGlobalArgFloat(3), cScript_GetGlobalArgFloat(4));
+	}
+
+	//------------------------------------------------------------
+	
+	void _Global_SetSpotlightOn()
+	{
+		if (mlSpotlight_ActivationIndex < 3)
+		{
+			mbCrystal_HelperActive = cScript_GetGlobalArgBool(0);
+			mbCrystal_HelperActivation = true;
+		}
+		
+		SetSpotLightActive(cScript_GetGlobalArgBool(0), true, cScript_GetGlobalArgBool(1), cScript_GetGlobalArgFloat(2));
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_StartSpotlightFollow()
+	{	
+		m_idCrystal_FollowTarget = cScript_GetGlobalArgID(0);
+		mvFollowTarget_Offset = cScript_GetGlobalArgVector3f(1);
+		mbFollowTarget_LocalOffset = cScript_GetGlobalArgBool(2);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_StopSpotlightFollow()
+	{
+		m_idCrystal_FollowTarget = tID_Invalid;
+		mvFollowTarget_Offset = 0.f;
+		mbFollowTarget_LocalOffset = false;
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetSpotlightSoundVolumeMul()
+	{
+		float fMul = cScript_GetGlobalArgFloat(0);
+		mfSfx_SpotlightSoundVolumeMulGoal = fMul;
+		mfSfx_SpotlightTurnSoundVolumeMulGoal = fMul;
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_HearBaby()
+	{				
+		TinHinan_HearBaby();
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetPassive()
+	{
+		mbTinHinan_Passive = cScript_GetGlobalArgBool(0);
+		
+		if (mbTinHinan_Passive)
+		{
+			mpStateMachine.StopTimer("LookAtCoverEdge");
+			mpStateMachine.StopTimer("SearchForPlayer");
+			mpStateMachine.StopTimer("HearBaby");
+			
+			mpHeadTracker.SetActive(true);
+		}
+		else
+		{
+			mfTinHinan_IgnorePlayerCount = 0.1f;
+			mpStateMachine.AddTimer("SearchForPlayer", 1.f);
+			
+			mbTinHinan_FirstSweep = true;
+			
+			mpHeadTracker.SetActive(false);
+		}		
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetDying()
+	{
+		mbTinHinan_IsDying = cScript_GetGlobalArgBool(0);
+		
+		if (mbTinHinan_IsDying)
+		{
+			mfSpotlightBrightnessMul = 0.5f;
+			SetSpotLightColor(mTinHinan_SpotlightColorAlert);
+			
+			tString sAnim = "idle_" + mlTinHinan_AnimationState;
+			mBaseObj.PlayAnimation(sAnim, 0.3f, true, false);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetAnimationState()
+	{
+		mlTinHinan_AnimationState = cScript_GetGlobalArgInt(0);
+		mbTinHinan_PlayTransitionAnim = true;
+		
+		tString sAnim = "idle_" + mlTinHinan_AnimationState;
+		mBaseObj.PlayAnimation(sAnim, 0.3f, false, true);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetSpotlightColor()
+	{
+		tString sColor = cScript_GetGlobalArgString(0);
+		if (sColor == "detected")		mTinHinan_SpotlightColorGoal = mTinHinan_SpotlightColorDetected;
+		else if (sColor == "alert")		mTinHinan_SpotlightColorGoal = mTinHinan_SpotlightColorAlert;
+		else if (sColor == "idle")		mTinHinan_SpotlightColorGoal = mTinHinan_SpotlightColorIdle;
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_Setup()
+	{
+		tString sCovers = cScript_GetGlobalArgString(0);
+		tString sCoverAreas = cScript_GetGlobalArgString(1);
+		tString sGhost = cScript_GetGlobalArgString(2);
+		
+		mvTinHinan_CoverIds.resize(0);
+		mvTinHinan_CoverAreaIds.resize(0);
+		mBaseObj.GetMap().GetEntityArrayID(sCovers, eLuxEntityType_Prop, "", mvTinHinan_CoverIds);
+		mBaseObj.GetMap().GetEntityArrayID(sCoverAreas, eLuxEntityType_Area, "", mvTinHinan_CoverAreaIds);
+		
+		iLuxEntity@ pEnt = mBaseObj.GetMap().GetEntityByName(sGhost);
+		m_idTinHinan_GhostId = pEnt is null ? tID_Invalid : pEnt.GetID();
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetSpotlightRadius()
+	{
+		cLightSpot@ pSpotLight = cast<cLightSpot>(cLux_ID_Light(m_idSpotLight));
+		
+		float fRadius = pSpotLight.GetRadius();
+		float fTime = 2.f;
+		
+		mfTinHinan_SpotlightRadiusGoal = cScript_GetGlobalArgFloat(0);
+		mfTinHinan_SpotlightFadeSpeed = cMath_Abs(mfTinHinan_SpotlightRadiusGoal - fRadius) / fTime;
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetSpotlightFeedbackActive()
+	{
+		mbTinHinan_SpotlightFeedbackActive = cScript_GetGlobalArgBool(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetSpotlightBillboardsActive()
+	{
+		mbSpotlightBillboard_Active = cScript_GetGlobalArgBool(0);
+		SetSpotlightBillboardActive(mbSpotlightBillboard_Active);
+	}
+		
+	//------------------------------------------------------------
+	
+	//} END GLOBALS
+	
+	//===========================================================
+	
+	/////////////////////////////////////////
+	//=======================================
+	// STATES
+	//=======================================
+	//{//////////////////////////////////////
+	
+	//===========================================================
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////////
+	// STATE: DEFAULT
+	//{////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void State_Default_Enter() {}
+	void State_Default_Leave() {}
+	void State_Default_Update(float afTimeStep) {}
+	bool State_Default_Message(int alMessageId) { return false; }
+	void State_Default_TimerUp(uint64 alId) {}
+	
+	//------------------------------------------------------------
+	
+	//}END STATE: DEFAULT
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////////
+	// STATE: TIN HINAN
+	//{////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool mbTinHinan_SpotlightFeedbackActive = true;
+	bool mbTinHinan_PlayerSeen = false;
+	bool mbTinHinan_PrevPlayerSeen = false;
+	bool mbTinHinan_WasInStruggle = false;
+	bool mbTinHinan_InStruggle = false;
+	bool mbTinHinan_Passive = false;
+	bool mbTinHinan_IsDying = false;
+	bool mbTinHinan_FirstSweep = false;
+	float mfTinHinan_PlayerRunCount = 0.f;
+	float mfTinHinan_PlayerRunImmunityCount = 0.f;
+	float mfTinHinan_SpottedCount = 0.f;
+	float mfTinHinan_IgnorePlayerCount = 0.f;
+	float mfTinHinan_EffectColorMul = 1.f;
+	float mfTinHinan_SpotlightRadiusGoal = 80.f;
+	float mfTinHinan_SpotlightFadeSpeed = 1.f;
+	int mlTinHinan_LookAtCoverCount = 0;
+	int mlTinHinan_SweepDir = 2;
+	int mlTinHinan_ClosestCoverToPlayerId = -1;
+	int mlTinHinan_CurrentCoverId = 0;
+	int mlTinHinan_AnimationState = 1;
+	bool mbTinHinan_PlayTransitionAnim = false;
+	bool mbTinHinan_Turn = false;
+	cColor mTinHinan_SpotlightColorGoal = 0;
+	array<tID> mvTinHinan_CoverIds;
+	array<tID> mvTinHinan_CoverAreaIds;
+	tID m_idTinHinan_GhostId = tID_Invalid;
+	
+	cColor mTinHinan_SpotlightColorIdle = cColor(0.6, 0.8, 0.9)*0.85;
+	cColor mTinHinan_SpotlightColorAlert = cColor(1, 0.8, 0.6);
+	cColor mTinHinan_SpotlightColorDetected = cColor(1, 0.5, 0.35)*1.2;
+	cColor mTinHinan_SpotlightColorStruggle = cColor(1, 0.25, 0.3)*1.5;
+	cColor mTinHinan_SpotlightColorCheck = cColor(0.3, 0.6, 1.4) * 0.25;
+	
+	//------------------------------------------------------------
+	
+	void State_TinHinan_Enter()
+	{
+		CreateCrystal();
+		InitSpotlightBillboards();
+		SetSpotlightBillboardQuality(2);
+			
+		mlTinHinan_CurrentCoverId = 0;
+		
+		mfCrystal_SightRange = 60.f;
+		mfCrystal_SightRangeMul = 1.f;
+		
+		mfTinHinan_PlayerRunCount = 0.f;
+		mfTinHinan_SpottedCount = 0.f;
+		
+		mfSfx_SpotlightSoundVolumeMulGoal = 1.0f;
+		mfSfx_SpotlightTurnSoundVolumeMulGoal = 1.0f;
+				
+		StopSpotlightMovement();
+		
+		iLuxEntity@ pCrystal = cLux_ID_Prop(m_idCrystal);
+		pCrystal.SetIlluminationBaseColor(cColor(1.f));
+		
+		mTinHinan_SpotlightColorGoal = mTinHinan_SpotlightColorIdle;
+		SetSpotLightColor(mTinHinan_SpotlightColorGoal);
+		
+		mpMover.SetUseMoveStateAnimations(false);
+		
+		mpStateMachine.AddTimer("SearchForPlayer", 1.f);
+	}
+	
+	//------------------------------------------------------------
+
+	void State_TinHinan_Leave() 
+	{
+		mfSpotlight_LerpSpeedMul = 1.f;
+		mfCrystal_SightRange = gfTinHinanDefaultCrystalSightRange;
+		mfCrystal_SightRangeMul = gfTinHinanDefaultCrystalSightRangeMul;
+		mfSfx_SpotlightSoundVolumeMulGoal = 1.0f;
+		mfSfx_SpotlightTurnSoundVolumeMulGoal = 0.5f;
+	}
+	
+	//------------------------------------------------------------
+	
+	void State_TinHinan_Update(float afTimeStep) 
+	{				
+		mbTinHinan_InStruggle = Struggle_IsActive(true);		
+		
+		TinHinan_UpdateCovers(afTimeStep);
+		TinHinan_UpdatePlayerDetection(afTimeStep);
+		TinHinan_UpdateSpotLight(afTimeStep);
+		TinHinan_UpdateSpotlightFeedback(afTimeStep);
+		TinHinan_UpdateTurning(afTimeStep);
+		
+		mbTinHinan_WasInStruggle = mbTinHinan_InStruggle;
+	}
+	
+	//------------------------------------------------------------
+	
+	void TinHinan_UpdateCovers(float afTimeStep)
+	{
+		if (mvTinHinan_CoverIds.size() == 0)
+			return;
+		
+		cLightSpot@ pSpotLight = cast<cLightSpot>(cLux_ID_Light(m_idSpotLight));		
+		iLuxEntity@ pGhost = cLux_ID_Entity(m_idTinHinan_GhostId);
+		
+		int lMaxCoverId = cMath_Min(mlTinHinan_CurrentCoverId + 5, mvTinHinan_CoverIds.size());
+		while (mlTinHinan_CurrentCoverId < lMaxCoverId)
+		{
+			cLuxProp@ pCover = cLux_ID_Prop(mvTinHinan_CoverIds[mlTinHinan_CurrentCoverId]);
+			if (pCover is null || pCover.IsActive() == false)
+			{
+				mlTinHinan_CurrentCoverId++;
+				continue;
+			}				
+			
+			//////////////////////
+			// Determine state
+			cVector3f vCoverPos = pCover.GetOnLoadTransform().GetTranslation() + cVector3f(0.f, 1.5f, 0.f);
+			
+			int lCoverState = 0;
+			bool bInFov = pSpotLight.GetFrustum().CollideSphere(vCoverPos, 0.5f, 6) != eCollision_Outside;
+			
+			if (bInFov && mbCrystal_Active)							lCoverState = 1;
+			else if (bInFov == false || mbCrystal_Active == false)	lCoverState = -1;
+			
+			if (pGhost !is null && pGhost.IsActive())
+			{
+				vCoverPos.y = pGhost.GetPosition().y;
+				const float fRangeSqr = 4.f * 4.f;
+				
+				if ((vCoverPos - pGhost.GetPosition()).SqrLength() < fRangeSqr)
+					lCoverState = 1;
+			}
+			
+			//////////////////////
+			// Open/close!			
+			bool bIsIndependant = pCover.GetVarBool("VineIndependant");
+			bool bIsOpen = pCover.GetVarBool("VineOpen");
+			
+			if (lCoverState == 1 && bIsOpen == false && bIsIndependant == false)
+			{
+				pCover.SetVarBool("VineOpen", true);
+				cScript_RunGlobalFunc(pCover.GetName(), "cScrPropVineCover", "_Global_Open");
+			}
+			else if (lCoverState == -1 && bIsOpen && bIsIndependant == false)
+			{
+				pCover.SetVarBool("VineOpen", false);
+				cScript_RunGlobalFunc(pCover.GetName(), "cScrPropVineCover", "_Global_Close");
+			}
+			
+			mlTinHinan_CurrentCoverId++;
+		}
+		
+		mlTinHinan_CurrentCoverId %= mvTinHinan_CoverIds.size();
+	}
+	
+	//------------------------------------------------------------
+	
+	void TinHinan_UpdatePlayerDetection(float afTimeStep)
+	{		
+		//////////////////
+		// Ignore player if passive
+		if (mbTinHinan_Passive)
+		{
+			mfTinHinan_IgnorePlayerCount = 100.f;
+			mbTinHinan_PlayerSeen = false;
+			mbTinHinan_PrevPlayerSeen = false;
+		}			
+		
+		//////////////////
+		// Ignore player after struggle
+		if (mbTinHinan_InStruggle == false && mbTinHinan_WasInStruggle)
+			mfTinHinan_IgnorePlayerCount = 6.f;		
+		if (mfTinHinan_IgnorePlayerCount > 0.f)
+			mfTinHinan_IgnorePlayerCount -= afTimeStep;
+		
+		//////////////////
+		// Spotted player?
+		if (mbTinHinan_PlayerSeen && mfTinHinan_IgnorePlayerCount <= 0.f)
+		{						
+			mfTinHinan_SpottedCount -= afTimeStep;			
+			if (mfTinHinan_SpottedCount <= 0.f && mbTinHinan_InStruggle == false)
+			{				
+				mTinHinan_SpotlightColorGoal = mTinHinan_SpotlightColorDetected;
+				
+				//////////////////
+				// Reset behaviour
+				mpHeadTracker.SetActive(true);
+				
+				mfTinHinan_SpottedCount = 0.f;
+				mbTinHinan_PrevPlayerSeen = true;
+				
+				mpStateMachine.StopTimer("SearchForPlayer");
+				mpStateMachine.StopTimer("LookAtCoverEdge");
+				mpStateMachine.StopTimer("HearBaby");
+			
+				StopSpotlightMovement();
+				
+				m_idCrystal_FollowTarget = mBaseObj.GetMap().GetPlayerEntity().GetID();
+				mvFollowTarget_Offset = 0.f;
+				mbFollowTarget_LocalOffset = false;
+				
+				//////////////////
+				// Map callback
+				ExecuteEntityCallback("OnPlayerFound_TinHinan");
+			}		
+		}
+		//////////////////
+		// Player not spotted!
+		else
+		{			
+			mfTinHinan_SpottedCount = 0.5f;
+			
+			if (mbTinHinan_PrevPlayerSeen)
+			{				
+				//////////////////
+				// Start looking again
+				mpHeadTracker.SetActive(false);
+				
+				mbTinHinan_PrevPlayerSeen = false;
+				
+				m_idCrystal_FollowTarget = tID_Invalid;
+				mvFollowTarget_Offset = 0.f;
+				mbFollowTarget_LocalOffset = false;
+				
+				mpStateMachine.StopTimer("SearchForPlayer");
+				mpStateMachine.StopTimer("LookAtCoverEdge");
+				mpStateMachine.StopTimer("HearBaby");
+				
+				// Start looking again!
+				if (mbTinHinan_Passive == false)
+					mpStateMachine.AddTimer("HearBaby", mfTinHinan_IgnorePlayerCount);		
+				
+				//////////////////
+				// Map callback
+				ExecuteEntityCallback("OnPlayerLost_TinHinan");
+			}			
+		}
+		
+		///////////////////////
+		// Player running?		
+		if (mbTinHinan_Passive)
+			return;
+		
+		// Freeze immunity count if player is checking baby
+		int lPlayerState = cLux_GetPlayer().GetCurrentStateId();
+		if (lPlayerState == ePlayerState_Custom_CheckBaby)
+			mfTinHinan_PlayerRunImmunityCount = cMath_RandRectf(3.f, 5.f);
+		
+		if (mfTinHinan_PlayerRunImmunityCount > 0.f)
+			mfTinHinan_PlayerRunImmunityCount -= afTimeStep;
+		
+		if (mfTinHinan_PlayerRunImmunityCount <= 0.f)
+		{
+			int lPlayerRunStage = -1;
+			float fPrevRunCount = mfTinHinan_PlayerRunCount;
+					
+			if (Player_GetRunning())	mfTinHinan_PlayerRunCount += afTimeStep;
+			else						mfTinHinan_PlayerRunCount = cMath_IncreaseTo(mfTinHinan_PlayerRunCount, afTimeStep * 3.f, 0.f);
+			
+			if (mfTinHinan_PlayerRunCount >= 1.f && fPrevRunCount < 1.f)
+			{
+				lPlayerRunStage = 1;
+			}
+			else if (mfTinHinan_PlayerRunCount >= 5.f && fPrevRunCount < 5.f)
+			{
+				lPlayerRunStage = 2;
+				mfTinHinan_PlayerRunCount = 0.f;
+				
+				/////////////////////
+				// Running a lot! Sweep in front of player!
+				if (mpStateMachine.TimerExists("LookAtCoverEdge") == false)
+				{
+					mpStateMachine.StopTimer("SearchForPlayer");				
+					TinHinan_SearchForPlayer(true);
+				}
+			}
+			
+			// Add some time before baby can cry from running again
+			if (mfTinHinan_PlayerRunCount == 0.f && fPrevRunCount != 0.f)
+				mfTinHinan_PlayerRunImmunityCount = cMath_RandRectf(3.f, 5.f);
+				
+			/////////////////////
+			// Map callback!
+			if (lPlayerRunStage != -1)
+			{
+				cLuxMap@ pMap = mBaseObj.GetMap();
+				tString sFunc = "void OnPlayerRunning_TinHinan(int alStage)";
+				if (pMap.ScriptMethodExists(sFunc) && pMap.ScriptPrepare(sFunc))
+				{
+					pMap.SetArgInt(0, lPlayerRunStage);
+					pMap.ScriptExecute();
+				}
+			}
+		}	
+	}
+	
+	//------------------------------------------------------------
+	
+	void TinHinan_UpdateSpotLight(float afTimeStep)
+	{
+		mfSpotlightBillboard_BrightnessMul = mfTinHinan_IgnorePlayerCount > 0.f ? 0.3f : 1.f;
+		
+		if (mbTinHinan_IsDying)
+			return;
+		
+		////////////////
+		// Setup
+		cLightSpot@ pSpotLight = cast<cLightSpot>(cLux_ID_Light(m_idSpotLight));
+		
+		////////////////
+		// Radius
+		float fRadius = pSpotLight.GetRadius();		
+		fRadius = cMath_IncreaseTo(fRadius, afTimeStep * mfTinHinan_SpotlightFadeSpeed, mfTinHinan_SpotlightRadiusGoal);
+		pSpotLight.SetRadius(fRadius);
+		
+		mfCrystal_SightRange = fRadius;
+		
+		////////////////
+		// Movement
+		float fSwayAngle = cMath_ToRad(cMath_Sin(cEngine_GetGameTime()) * 1.5f) * 1.5f;
+		mfCrystal_TargetHAngle += fSwayAngle * afTimeStep;
+		
+		float fSpeedMulGoal = mSpotlightMovement != eTinHinanLightMovement_None ? 1.f : 0.25f;
+		mfSpotlight_LerpSpeedMul = cMath_IncreaseTo(mfSpotlight_LerpSpeedMul, afTimeStep * 0.25f, fSpeedMulGoal);
+		
+		////////////////
+		// Color
+		cColor newColor = pSpotLight.GetDiffuseColor() * (1.f - afTimeStep) + mTinHinan_SpotlightColorGoal * afTimeStep;
+		SetSpotLightColor(newColor);
+		
+		cColor entColor = newColor;
+		entColor.a = 0.5f;
+		mBaseObj.SetEffectBaseColor(entColor);
+	}
+	
+	//------------------------------------------------------------
+	
+	float mfSpotlightFeedback_Timer = 0.05f;
+	int mlSpotlightFOVShakeID = -1;
+	
+	void TinHinan_UpdateSpotlightFeedback(float afTimeStep)
+	{
+		mfSpotlightFeedback_Timer -= afTimeStep;
+		if (mfSpotlightFeedback_Timer > 0) return;
+		mfSpotlightFeedback_Timer = cMath_RandRectf(0.1, 0.15f);
+		
+		if (mbSpotlight_VisualsActive && 
+			mbTinHinan_SpotlightFeedbackActive &&
+			mBaseObj.GetDistanceToPlayer() <= (mfCrystal_SightRange * mfCrystal_SightRangeMul))
+		{
+			float fAngle = cMath_ToDeg(cMath_Vector3Angle(mBaseObj.GetPlayerDir(), mvCrystal_CurrentDir));
+			float fShakeMul = 1.0f - cMath_Clamp((fAngle - 10.0f) / (50.0f - 10.0f), 0.0f, 1.0f);
+			if (fShakeMul > 0)
+			{
+				fShakeMul = cMath_Easing(eEasing_QuadIn, fShakeMul);
+				float fMaxShake = mbCrystal_PlayerDetected ? 0.04f : 0.025f;
+				if (mlSpotlightFOVShakeID == -1)
+					mlSpotlightFOVShakeID = Effect_FOV_Shake_Start(fMaxShake, -1, 0, 0, 0, true, 0.33);
+				Effect_FOV_Shake_SetAmount(mlSpotlightFOVShakeID, fMaxShake*fShakeMul);
+				return;
+			}
+		}
+		
+		if (mlSpotlightFOVShakeID >= 0)
+		{
+			Effect_FOV_Shake_FadeOut(mlSpotlightFOVShakeID, 0);
+			mlSpotlightFOVShakeID = -1;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void TinHinan_UpdateTurning(float afTimeStep)
+	{
+		/////////////////////
+		// Setup vars
+		iLuxEntity@ pCrystal = cLux_ID_Entity(m_idCrystal);
+		int lTurnState = 0;
+				
+		/////////////////////
+		// Turn along with crystal		
+		float fYaw = mBaseObj.GetCharBody().GetYaw();
+		float fCrystalYaw = cMath_GetAngleFromPoints3D(0.f, pCrystal.GetMatrix().GetTranspose().GetForward()).y;
+		float fCrystalYawGoal = cMath_GetAngleFromPoints3D(0.f, mvCrystal_TargetDir).y;
+		float fDiff = cMath_GetAngleDistanceRad(fYaw, fCrystalYawGoal);		
+		float fAbsDiff = cMath_Abs(fDiff);
+		
+		float fMaxAngleDist = cMath_ToRad(20.f);
+		float fMinAngleDist = cMath_ToRad(5.f);
+		
+		if (fAbsDiff > fMaxAngleDist || mbTinHinan_PlayerSeen && fAbsDiff > fMinAngleDist)
+			mbTinHinan_Turn = true;
+		
+		if (mbTinHinan_Turn)
+		{
+			mpMover.TurnToAngle(fCrystalYaw);		
+			
+			if (fAbsDiff < cMath_ToRad(5.f))
+				mbTinHinan_Turn = false;
+				
+			lTurnState = cMath_Sign(fDiff);	
+		}
+		
+		/////////////////////
+		// Update animations
+		cAnimationState@ pCurrentState = mBaseObj.GetCurrentAnimationState();
+		
+		tString sAnim = "idle_" + mlTinHinan_AnimationState;
+		float fFadeSpeed = 0.4f;
+		
+		if (lTurnState == -1)
+		{
+			sAnim = "turn_right_" + mlTinHinan_AnimationState;
+			fFadeSpeed = 0.5f;
+		}
+		else if (lTurnState == 1)
+		{
+			sAnim = "turn_left_" + mlTinHinan_AnimationState;
+			fFadeSpeed = 0.5f;
+		}
+		
+		if (pCurrentState is null || pCurrentState.GetName() != "open_up")
+		{
+			if (mbTinHinan_InStruggle && mbTinHinan_WasInStruggle == false)
+			{
+				sAnim = "taking_control_" + mlTinHinan_AnimationState + "_middle";
+				mBaseObj.PlayAnimation(sAnim, 0.3f, true, true);
+					
+				mbTinHinan_PlayTransitionAnim = true;
+			}
+			else if  (mbTinHinan_InStruggle == false && mbTinHinan_WasInStruggle)
+			{
+				sAnim = "taking_control_" + mlTinHinan_AnimationState + "_end";
+				mBaseObj.PlayAnimation(sAnim, 0.3f, false, true);
+					
+				mbTinHinan_PlayTransitionAnim = true;
+			}	
+		}
+		
+		cAnimationState@ pNextState = mBaseObj.GetMeshEntity().GetAnimationStateFromName(sAnim);
+		if (mbTinHinan_IsDying == false && (pCurrentState is null || pCurrentState.GetName() != "open_up"))
+		{
+			if (mbTinHinan_PlayTransitionAnim && (pCurrentState is null || pCurrentState.IsOver()))
+				mbTinHinan_PlayTransitionAnim = false;
+			
+			if (mbTinHinan_PlayTransitionAnim == false && pNextState.IsActive() == false)
+				mBaseObj.PlayAnimation(sAnim, fFadeSpeed, true, false);
+		}
+	}
+	
+	//------------------------------------------------------------
+
+	bool State_TinHinan_Message(int alMessageId) 
+	{ 
+		return false; 
+	}
+	
+	//------------------------------------------------------------
+	
+	void State_TinHinan_TimerUp(uint64 alId) 
+	{
+		if (alId == H64("SearchForPlayer"))
+		{
+			TinHinan_SearchForPlayer();			
+		}
+		else if (alId == H64("HearBaby"))
+		{
+			TinHinan_HearBaby();
+		}
+		else if (alId == H64("LookAtCoverEdge"))
+		{			
+			TinHinan_LookAtCoverEdge();
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void TinHinan_LookAtCoverEdge()
+	{
+		cLux_AddDebugMessage("[Tin Hinan] Look at cover edge");
+		
+		mTinHinan_SpotlightColorGoal = mTinHinan_SpotlightColorAlert;
+		
+		/////////////////////
+		// Find edges of the closest cover
+		iLuxEntity@ pCrystal = cLux_ID_Entity(m_idCrystal);
+		cBoundingVolume@ pBounds = cLux_ID_Area(mvTinHinan_CoverAreaIds[mlTinHinan_ClosestCoverToPlayerId]).GetAreaBody().GetBoundingVolume();
+			
+		bool bCheckRight = mlTinHinan_LookAtCoverCount % 2 != 0;
+		cVector3f vOffset = pBounds.GetTransform().GetTranspose().GetRight() * (bCheckRight ? pBounds.GetLocalMax().x : pBounds.GetLocalMin().x);
+		cVector3f vPos = pBounds.GetWorldCenter() + vOffset;
+		cVector3f vDir = cMath_Vector3Normalize(vPos - pCrystal.GetPosition());
+		
+		/////////////////////
+		// Look at the edge
+		mlTinHinan_LookAtCoverCount++;			
+		if (mlTinHinan_LookAtCoverCount > 2)
+		{
+			mpStateMachine.AddTimer("SearchForPlayer", cMath_RandRectf(2.f, 3.f));
+			return;
+		}
+			
+		TurnSpotlightToDir(vDir, true, true, 0.4f, 1.f);			
+		mpStateMachine.AddTimer("LookAtCoverEdge", cMath_RandRectf(4.f, 5.f));
+	}
+	
+	//------------------------------------------------------------
+	
+	void TinHinan_SearchForPlayer(bool abPlayerRunning = false)
+	{				
+		cLux_AddDebugMessage("[Tin Hinan] Search for player");
+		
+		if (mbTinHinan_PlayerSeen == false)
+			mTinHinan_SpotlightColorGoal = mTinHinan_SpotlightColorIdle;
+		
+		if (abPlayerRunning)
+			mpStateMachine.StopTimer("HearBaby");
+		
+		/////////////////////
+		// Look in search dir!
+		cVector3f vDir = TinHinan_GetSearchDir(abPlayerRunning);		
+		float fSpeed = abPlayerRunning ? 1.f : 0.4f;
+		float fTime = cMath_RandRectf(4.5f, 5.5f);
+		TurnSpotlightToDir(vDir, true, true, fSpeed, 1.f);
+		
+		if (abPlayerRunning == false)
+			mpStateMachine.AddTimer("SearchForPlayer", fTime);
+		else
+			mpStateMachine.AddTimer("HearBaby", fTime);
+	}
+	
+	//------------------------------------------------------------
+	
+	cVector3f TinHinan_GetSearchDir(bool abPlayerRunning)
+	{
+		/////////////////////
+		// Calculate dir
+		cVector3f vDir = 0.f;
+		cVector3f vTarPos = mBaseObj.GetPlayerFeetPos();
+		cVector3f vCrystalPos = cLux_ID_Entity(m_idCrystal).GetPosition();
+					
+		// A little ahead of player if running
+		if (abPlayerRunning)
+		{
+			cVector3f vPlayerVel = cLux_GetPlayer().GetCharacterBody().GetVelocity(cEngine_GetStepSize());			
+			vTarPos = mBaseObj.GetPlayerFeetPos() + cMath_Vector3Normalize(vPlayerVel) * 13.f;
+		}
+		
+		vDir = vTarPos - vCrystalPos;
+		vDir.y = 0.f;
+		vDir.Normalize();
+		
+		/////////////////////
+		// Look in the same direction a couple of times
+		const int lMinSameDirSweepCount = 2;
+		int lPrevDir = cMath_Sign(mlTinHinan_SweepDir);
+		
+		if (cMath_Abs(mlTinHinan_SweepDir) >= lMinSameDirSweepCount)
+		{
+			int lNewDir = cMath_Sign(cMath_RandRectf(-1.f, 1.f));
+			if (lNewDir != lPrevDir)
+			{
+				mlTinHinan_SweepDir = lNewDir;
+			}
+			else
+			{
+				mlTinHinan_SweepDir += lPrevDir;
+				if (cMath_Abs(mlTinHinan_SweepDir) >= lMinSameDirSweepCount + 2)
+					mlTinHinan_SweepDir = lPrevDir * -1;
+			}
+		}
+		else
+		{
+			mlTinHinan_SweepDir += lPrevDir;
+		}	
+		
+		/////////////////////
+		// Apply angle
+		float fAngle = abPlayerRunning ? 0.f : cMath_ToRad(cMath_RandRectf(20.f, 40.f)) * cMath_Sign(mlTinHinan_SweepDir);
+		
+		if (mbTinHinan_FirstSweep)
+		{
+			fAngle = cMath_ToRad(30.f);
+			mbTinHinan_FirstSweep = false;
+		}
+	
+		vDir = cMath_MatrixMul(cMath_MatrixRotateY(fAngle), vDir);
+		vDir.y = TinHinan_GetPitch();
+		
+		return vDir;
+	}
+	
+	//------------------------------------------------------------
+	
+	float TinHinan_GetPitch()
+	{
+		/////////////////////
+		// Adjust pitch after player pos
+		cVector3f vPos = cLux_ID_Entity(m_idCrystal).GetPosition();
+		cVector3f vDir = cMath_Vector3Normalize(mBaseObj.GetPlayerFeetPos() - vPos);
+		float fPitch = cMath_ATan2(vDir.y, cMath_Sqrt(vDir.x * vDir.x + vDir.z * vDir.z));
+		return -cMath_Abs(fPitch);
+	}
+		
+	//------------------------------------------------------------
+	
+	void TinHinan_HearBaby()
+	{
+		if (mbTinHinan_PlayerSeen || mbTinHinan_Passive)
+			return;
+			
+		cLux_AddDebugMessage("[Tin Hinan] Heard baby");		
+		
+		mTinHinan_SpotlightColorGoal = mTinHinan_SpotlightColorAlert;		
+		mpStateMachine.StopTimer("SearchForPlayer");
+		
+		/////////////////////
+		// Play anim
+		if (Struggle_IsActive(true) == false && 
+			mpStateMachine.TimerExists("PlayedAlertAnim") == false &&
+			mbTinHinan_PlayTransitionAnim == false)
+		{
+			mbTinHinan_PlayTransitionAnim = true;
+			mBaseObj.PlayAnimation("alert_" + mlTinHinan_AnimationState, 0.3f, false, true);
+			
+			mpStateMachine.AddTimer("PlayedAlertAnim", 10.f);
+		}
+		
+		/////////////////////
+		// Find closest cover
+		int lClosestId = -1;
+		float fShortestDistSqr = 1000.f * 1000.f;
+		cVector3f vPlayerPos = mBaseObj.GetPlayerFeetPos();
+		
+		for (int i = 0; i < mvTinHinan_CoverAreaIds.size(); i++)
+		{
+			cLuxArea@ pArea = cLux_ID_Area(mvTinHinan_CoverAreaIds[i]);
+			cVector3f vAreaPos = pArea.GetPosition();
+			vAreaPos.y = vPlayerPos.y;
+			
+			float fDistSqr = (vPlayerPos - vAreaPos).SqrLength();
+			if (fDistSqr < fShortestDistSqr)
+			{
+				lClosestId = i;
+				fShortestDistSqr = fDistSqr;
+			}
+		}
+		
+		mlTinHinan_ClosestCoverToPlayerId = lClosestId;			
+		mlTinHinan_LookAtCoverCount = 0;
+		
+		/////////////////////
+		// Look towards player
+		cVector3f vDir = mBaseObj.GetPlayerDir();
+		vDir.y = TinHinan_GetPitch();		
+		
+		TurnSpotlightToDir(vDir, true, true, 1.f, 1.f);
+		
+		mpStateMachine.StopTimer("LookAtCoverEdge");
+		mpStateMachine.AddTimer("LookAtCoverEdge", cMath_RandRectf(2.f, 3.5f));
+	}
+		
+	//------------------------------------------------------------
+	
+	//} END STATE TIN HINAN
+	
+	//===========================================================
+	
+	//} END STATES
+	
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// DEBUG
+	//{//////////////////////////////////////
+
+	//------------------------------------------------------------
+	
+	void OnRenderSolid(cRendererCallbackFunctions@ apFunctions)
+	{
+	}
+	
+	//------------------------------------------------------------
+	/////////////////////////////////////////
+	// PROPERTIES
+	//{//////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool mbRegisteredWithFearHandler = false;
+	bool mbStarted = false;
+	bool mbFlyMode_Active = false;
+	float mfDefaultSoundRadiusMul = 1.5f;
+	float mfSoundRadiusMul = 1.5f;
+	
+	tString msHeadTracker_TargetEntity = "";
+	
+	cLuxStateMachine@ mpStateMachine;
+	cLuxHeadTracker@ mpHeadTracker;
+
+	//------------------------------------------------------------
+	
+	//} END PROPERTIES
+	
+	//------------------------------------------------------------
+}

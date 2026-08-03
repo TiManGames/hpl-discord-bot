@@ -1,0 +1,248 @@
+#include "interfaces/UserModule_Interface.hps"
+#include "custom/modules/ModuleInterfaces_Custom.hps"
+#include "custom/components/ComponentInterfaces_Custom.hps"
+#include "custom/helpers/helper_items.hps"
+#include "helpers/helper_audio.hps"
+#include "helpers/helper_modules.hps"
+
+//---------------------------------------------------
+
+const float gfAmuletReminderHintTime = 40.f;
+
+//---------------------------------------------------
+
+class cScrRiftHandler : iScrUserModule, iScrUserModule_Interface, iScrRiftHandler_Interface
+{
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		mbActive = true;
+		mfHintCount = gfAmuletReminderHintTime;
+		mbAllowHint = true;
+	}
+	
+	//------------------------------------------------------------
+	
+	void LoadUserConfig(){}
+	void SaveUserConfig(){}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// MAP LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+		mfHintCount = gfAmuletReminderHintTime;
+		mbAllowHint = true;
+		
+		mbActive = CheckShouldUpdate(apMap);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnMapLeave(cLuxMap @apMap){}	
+	void PreloadData(cLuxMap @apMap){}
+	void CreateWorldEntities(cLuxMap @apMap){}
+	void DestroyWorldEntities(cLuxMap @apMap){}	
+	void OnEnterContainer(const tString&in asOldContainer){}
+	void OnLeaveContainer(const tString&in asNewContainer){}
+	
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+	}
+	
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// PER-FRAME
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep){}	
+	void PostUpdate(float afTimeStep){}
+	
+	//------------------------------------------------------------
+	
+	void VariableUpdate(float afDeltaTime)
+	{		
+		cLuxMap@ pMap = cLux_GetCurrentMap();
+		if (pMap is null)
+			return;
+			
+		if (mbActive == false)
+		{
+			if (CheckShouldUpdate(pMap))
+				mbActive = true;
+			else return;
+		}
+		
+		//////////////////////
+		// Setup vars
+		bool bUsingAmulet = false;
+		bool bGotAmulet = ItemType_GetCountInInventory("CurseMedallion") > 0;
+		
+		tID idAmuletTrackTarget = tID_Invalid;
+		
+		if (bGotAmulet)
+		{
+			bUsingAmulet = Amulet_IsHeld() && Amulet_IsBeingPutAway() == false;
+			idAmuletTrackTarget = Amulet_GetTrackTarget();
+		}
+		
+		m_idActiveRift = bUsingAmulet ? idAmuletTrackTarget : tID_Invalid;
+		
+		//////////////////////
+		// Update rifts	
+		cLuxEntityComponentIterator@ pIt = pMap.GetEntityComponentIterator(eComponentType_Custom_RiftComponent);		
+		while (pIt.HasNext())
+		{
+			iLuxEntity@ pEnt = pIt.Next().GetEntity();
+			iCharacterBody@ pBody = cLux_GetPlayer().GetCharacterBody();
+			
+			if (pEnt is null || pBody is null)
+				continue;
+							
+			iScrRiftComponent_Interface@ pComp = UserComponent_Rift_Get(pEnt);			
+			pComp.SetAmuletHeld(bUsingAmulet);
+			
+			float fActiveDist = pComp.GetStartOpeningDistance() + 2.f;			
+			float fActiveDistSqr = fActiveDist * fActiveDist;
+			float fDistToPlayerSqr = (pBody.GetPosition() - pComp.GetClosestTrackingPoint()).SqrLength();
+			
+			bool bSleep = pEnt.IsSleeping() == false && 
+						  pComp.GetPlayerIsInside() == false && 
+						  fDistToPlayerSqr > fActiveDistSqr;
+						  
+			bool bWakeUp = pEnt.IsSleeping() && 
+							(fDistToPlayerSqr < fActiveDistSqr || 
+							 pComp.GetForceOpen() || 
+							 pComp.GetForceClose() ||
+							 pComp.GetPlayerIsInside());
+			
+			if (bWakeUp) 		pEnt.WakeUp();
+			else if (bSleep)	pEnt.Sleep();			
+		}
+		
+		//////////////////////
+		// Hints		
+		if (mbAllowHint && bUsingAmulet == false && idAmuletTrackTarget != tID_Invalid)
+		{
+			mfHintCount -= afDeltaTime;
+			if (mfHintCount <= 0.f)
+			{
+				mbAllowHint = false;
+				mfHintCount = gfAmuletReminderHintTime;
+				Hint_ShowHint_Hold("Hints", "HintAmulet", true, 1.5f, false, 15.f);
+			}
+		}
+		
+		if (bUsingAmulet && m_idActiveRift != tID_Invalid)
+			mbAllowHint = false;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool CheckShouldUpdate(cLuxMap@ apMap)
+	{
+		cLuxEntityComponentIterator@ pIt = apMap.GetEntityComponentIterator(eComponentType_Custom_RiftComponent);		
+		while (pIt.HasNext())
+		{
+			iLuxEntity@ pEnt = pIt.Next().GetEntity();
+			if (pEnt !is null && pEnt.IsActive())
+				return true;
+		}
+		
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnDraw(float afFrameTime){}
+	void OnPostRender(float afFrameTime){}
+	
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// INTERFACE
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetActive(bool abX)
+	{
+		mbActive = abX;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool IsActive()
+	{
+		return mbActive;
+	}
+	
+	//------------------------------------------------------------
+	
+	tID GetActiveRiftId()
+	{
+		return m_idActiveRift;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetAllowHint(bool abX)
+	{
+		mbAllowHint = abX;
+	}
+	
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// GLOBALS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnAction(int alAction, bool abPressed){}	
+	void OnAnalogInput(int alAnalogId, const cVector3f &in avAmount){}
+	void OnExitPressed(){}
+	void AppGotInputFocus(){}
+	void AppLostInputFocus(){}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool mbAllowHint;
+	float mfHintCount;
+	bool mbActive;	
+	tID m_idActiveRift;
+	
+	//------------------------------------------------------------
+}

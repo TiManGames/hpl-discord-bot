@@ -1,0 +1,104 @@
+/**
+ * Copyright (C) 2012 Jorge Jimenez (jorge at iryoku.com)
+ * Copyright (C) 2012 Diego Gutierrez (diegog at unizar.es)
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met
+ * 
+ *    1. Redistributions of source code must retain the above copyright notice,
+ *       this list of conditions and the following disclaimer.
+ *
+ *    2. Redistributions in binary form must reproduce the following disclaimer
+ *       in the documentation and/or other materials provided with the 
+ *       distribution
+ *
+ *       "Uses Separable SSS. Copyright (C) 2012 by Jorge Jimenez and Diego
+ *        Gutierrez."
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS ``AS 
+ * IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, 
+ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR 
+ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL COPYRIGHT HOLDERS OR CONTRIBUTORS 
+ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR 
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF 
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS 
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN 
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) 
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE 
+ * POSSIBILITY OF SUCH DAMAGE.
+ *
+ * The views and conclusions contained in the software and documentation are 
+ * those of the authors and should not be interpreted as representing official
+ * policies, either expressed or implied, of the copyright holders.
+ */
+
+uniform cVector2f avStepSizeMax;
+uniform float afFarPlane;
+
+uniform float afRadius;
+uniform float afDensity;
+
+uniform cTexture2D colorMap : 0;
+uniform cTexture2D depthMap : 1;
+uniform cTexture3D aDissolveMap : 2;
+
+//--------------------------------------------
+
+void main(in cVector4f px_vPosition,
+		  in cVector4f px_vTexCoord0,
+		  out cVector4f out_vColor : 0)
+{	
+	const cVector4f kvKernel[11] = cVector4f [11](
+		cVector4f(0.560479, 0.669086, 0.784728, 0),
+		cVector4f(0.00471691, 0.000184771, 5.07566e-005, -2),
+		cVector4f(0.0192831, 0.00282018, 0.00084214, -1.28),
+		cVector4f(0.03639, 0.0130999, 0.00643685, -0.72),
+		cVector4f(0.0821904, 0.0358608, 0.0209261, -0.32),
+		cVector4f(0.0771802, 0.113491, 0.0793803, -0.08),
+		cVector4f(0.0771802, 0.113491, 0.0793803, 0.08),
+		cVector4f(0.0821904, 0.0358608, 0.0209261, 0.32),
+		cVector4f(0.03639, 0.0130999, 0.00643685, 0.72),
+		cVector4f(0.0192831, 0.00282018, 0.00084214, 1.28),
+		cVector4f(0.00471691, 0.000184771, 5.07565e-005, 2)
+	);
+
+	cVector2f vUV = px_vTexCoord0.xy;
+	float fLinearDepth = sample(depthMap, vUV.xy).r;
+	cVector4f vColor = sample(colorMap, vUV.xy);
+	float fSkinAmount = vColor.a;
+	
+	cVector2f vStepSize = avStepSizeMax * abs(afRadius / (fLinearDepth * afFarPlane)) * fSkinAmount;
+	float fFade = clamp(2.0 - fLinearDepth * afFarPlane / 32.0, 0.0, 1.0);
+	vStepSize /= 3.0;
+
+	if(fFade > 0.0 && fSkinAmount > 0.0) //skin shading amount stored in a
+	{
+		cVector4f vColorBlurred = vColor * kvKernel[0];
+
+		// Apply dither to offset
+		cVector2f vDissolveCoords = px_vPosition.xy * (1.0/128.0);//128 = size of dissolve texture.
+		float fDither = sample(aDissolveMap, cVector3f(vDissolveCoords, 0.625)).w - 0.5;
+
+		vUV += vStepSize * (fDither);
+
+		for(int i = 1; i < 11; ++i)
+		{
+			cVector2f vOffset = vUV + vStepSize * kvKernel[i].a;
+			cVector4f vSampleColor = sample(colorMap, vOffset);
+
+			@ifdef FollowSurface
+				// If the difference in depth is huge, we lerp color back to original color
+				float fSampleDepth = sample(depthMap, vOffset).r;
+				float fSeparation = min(afDensity * abs(fLinearDepth - fSampleDepth), 1.0);
+				vSampleColor = mix(vSampleColor, vColor, fSeparation);
+			@endif
+
+			vColorBlurred += vSampleColor * kvKernel[i];
+		}
+
+		vColor = mix(vColor, vColorBlurred, fFade);
+	}
+
+	out_vColor = cVector4f(cVector3f(vColor), fSkinAmount);
+}

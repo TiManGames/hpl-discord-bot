@@ -1,0 +1,320 @@
+#include "props/Prop_Rigid.hps"
+#include "modules/ModuleInterfaces.hps"
+#include "custom/player/PlayerTypes_Custom.hps"
+#include "custom/helpers/helper_player_custom.hps"
+#include "helpers/helper_player.hps"
+
+//------------------------------------------------------------
+
+const tString gsBabyFussedAnim = "baby_idle_fussed";
+const tString gsBabyIdleAnim = "baby_idle_stand";
+const tString gsBabyIdleCrouchAnim = "baby_idle_crouched";
+const tString gsBabyCalmedLoopAnimA = "baby_calmed_a";
+const tString gsBabyCalmedLoopAnimB = "baby_calmed_b";
+const tString gsBabyCalmedOutroAnim = "baby_calmed_outro";
+const tString gsBabyCalmedLoopCrouchAnimA = "baby_calmed_crouched_a";
+const tString gsBabyCalmedLoopCrouchAnimB = "baby_calmed_crouched_b";
+const tString gsBabyCalmedOutroCrouchAnim = "baby_calmed_crouched_outro";
+const tString gsBabySoundSniffleBase = "04_03_undercity/baby/anim_sniffle/baby_sniffle_";
+const tString gsBabySoundBuildUpBase = "04_03_undercity/baby/anim_build_up/baby_cry_buildup_";
+const tString gsBabySoundCryingBase = "04_03_undercity/baby/anim_crying/baby_crying_";
+
+//------------------------------------------------------------
+
+class cBabyCryEvent
+{
+	//------------------------------------------------------------
+	
+	cBabyCryEvent()
+	{
+		mlStage = -1;
+		mlPrevSoundId = -1;
+		mbPreSootheCry = false;
+		msAnim = "";
+		mvSoundSuffixes.resize(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	cBabyCryEvent(int alStage, const tString &in asAnim, const tString &in asSoundSuffixes, bool abPreSootheCry) 
+	{
+		mlStage = alStage;
+		mlPrevSoundId = -1;
+		mbPreSootheCry = abPreSootheCry;
+		msAnim = asAnim;
+	
+		mvSoundSuffixes.resize(0);
+		cString_GetStringVec(asSoundSuffixes, mvSoundSuffixes, " ");
+	}
+	
+	//------------------------------------------------------------
+	
+	tString GetAnim()
+	{
+		return msAnim;
+	}
+	
+	//------------------------------------------------------------
+	
+	tString GetSound()
+	{
+		if (mvSoundSuffixes.size() == 0)
+			return "";
+		
+		tString sSound = "";
+		
+		if (mlStage == 0) 		sSound = gsBabySoundSniffleBase;
+		else if (mlStage == 1)	sSound = gsBabySoundBuildUpBase;
+		else if (mlStage == 2)	sSound = gsBabySoundCryingBase;
+		
+		int lSoundId = cMath_RandRectl(0, mvSoundSuffixes.size() - 1);
+		if (lSoundId == mlPrevSoundId)
+			lSoundId = (lSoundId + 1) % mvSoundSuffixes.size();
+			
+		sSound += mvSoundSuffixes[lSoundId];
+		mlPrevSoundId = lSoundId;
+		
+		return sSound;
+	}
+	
+	//------------------------------------------------------------
+	
+	int mlStage;
+	int mlPrevSoundId;
+	bool mbPreSootheCry;
+	tString msAnim;
+	array<tString> mvSoundSuffixes;
+	
+	//------------------------------------------------------------
+}
+
+//------------------------------------------------------------
+
+class cScrPropBaby : cScrPropRigid
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init() 
+	{
+		mlStage = -1;
+		mlPrevEventId = -1;
+		mfDelayCount = 0.f;
+		m_idSoundId = tID_Invalid;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{		
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnVariableUpdate(float afDeltaTime)
+	{
+		///////////////////
+		// Not carried -- escape!
+		if (Player_GetHoldingBaby() == false)
+			return;
+			
+		///////////////////
+		// Being calmed by player?
+		int lPlayerState = cLux_GetPlayer().GetCurrentStateId();
+		bool bSoonCalmed = false;
+		
+		if (lPlayerState == ePlayerState_Custom_CheckBaby)
+		{			
+			cScript_RunGlobalFunc("State_CheckBaby", "", "_Global_GetCalmBabyAnimState");
+			
+			int lState = cScript_GetGlobalReturnInt();
+			bool bRet = true;
+			
+			tString sLoopA = gsBabyCalmedLoopAnimA;
+			tString sLoopB = gsBabyCalmedLoopAnimB;
+			tString sOutro = gsBabyCalmedOutroAnim;
+			
+			if (Player_GetCrouching())
+			{
+				sLoopA = gsBabyCalmedLoopCrouchAnimA;
+				sLoopB = gsBabyCalmedLoopCrouchAnimB;
+				sOutro = gsBabyCalmedOutroCrouchAnim;
+			}
+			
+			if (lState == 1 && mlStage == -1) 			PlayCalmAnim(sLoopA, true);
+			else if (lState == 2 && mlStage == -1) 		PlayCalmAnim(sLoopB, true);
+			else if (lState == 3 && mlStage == -1)		PlayCalmAnim(sOutro, false);
+			else 				 						bRet = false;
+			
+			if (bRet)
+				return;
+				
+			bSoonCalmed = lState == 0;
+		}	
+		
+		///////////////////
+		// Setup vars
+		cSoundEntity@ pSound = cLux_ID_SoundEntity(m_idSoundId);
+		cAnimationState@ pState = mBaseObj.GetCurrentAnimationState();
+		tString sIdleAnim = mlStage <= 0 ? gsBabyIdleAnim : gsBabyFussedAnim;
+		
+		if (bSoonCalmed)
+			sIdleAnim = gsBabyFussedAnim;
+		
+		///////////////////
+		// Play idle?
+		if (pSound !is null)
+		{
+			if (pState is null)
+				mBaseObj.PlayAnimation(sIdleAnim, 0.3f, true);			
+			
+			return;
+		}
+		
+		if (pState is null || pState.GetName() != sIdleAnim)
+			mBaseObj.PlayAnimation(sIdleAnim, 0.3f, true);
+			
+		///////////////////
+		// Not fussing -- escape!
+		if (mlStage < 0)
+			return;
+		
+		///////////////////
+		// Delay
+		mfDelayCount -= afDeltaTime;
+		if (mfDelayCount > 0.f)
+			return;
+		
+		///////////////////
+		// Get random cry event
+		array<cBabyCryEvent@> vCandidates(0);	
+		for (int i = 0; i < mBabyCryEvents.length(); ++i)
+		{
+			if (mBabyCryEvents[i].mlStage != mlStage)
+				continue;
+			if (lPlayerState == ePlayerState_Custom_CheckBaby && mBabyCryEvents[i].mbPreSootheCry == false)
+				continue;
+			
+			vCandidates.push_back(mBabyCryEvents[i]);
+		}
+		
+		if (vCandidates.size() > 0)
+		{
+			int lEventId = cMath_RandRectl(0, vCandidates.size() - 1);
+			if (lEventId == mlPrevEventId)
+				lEventId = (lEventId + 1) % vCandidates.size();
+			
+			cBabyCryEvent@ pEvent = vCandidates[lEventId];
+			mlPrevEventId = lEventId;
+			
+			///////////////////
+			// Play event
+			mBaseObj.PlayAnimation(pEvent.GetAnim(), 0.3f, false, true);
+			m_idSoundId = mBaseObj.PlaySound("Sound_BabyCry", pEvent.GetSound(), true, true).GetID();
+			
+			///////////////////
+			// Set delay
+			if (mlStage == 0)		mfDelayCount = cMath_RandRectf(1.1f, 1.6f);
+			else if (mlStage == 1)	mfDelayCount = cMath_RandRectf(0.6f, 1.1f);
+			else if (mlStage == 2)	mfDelayCount = 0.f;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void PlayCalmAnim(const tString &in asAnim, bool abLoop)
+	{
+		cAnimationState@ pState = mBaseObj.GetMeshEntity().GetAnimationStateFromName(asAnim);
+		if (pState.IsActive() == false)
+			mBaseObj.PlayAnimation(asAnim, 0.3f, abLoop);
+	}
+			
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INTERACTION
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+			
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetCryStage()
+	{
+		mlStage = cMath_Clamp(cScript_GetGlobalArgInt(0), -1, 2);
+		
+		mlPrevEventId = -1;
+		mfDelayCount = 0.f;
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetCryStage()
+	{
+		cScript_SetGlobalReturnInt(mlStage);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	int mlStage;
+	int mlPrevEventId;
+	float mfDelayCount;
+	tID m_idSoundId;
+	
+	cBabyCryEvent[] mBabyCryEvents = 
+	{
+		// Stage 0 - (sound 8 & 9 doesn't fit)
+		cBabyCryEvent(0, "a_baby_sniffle_01", "01", false),
+		cBabyCryEvent(0, "a_baby_sniffle_02", "02 04 05 07", false),
+		cBabyCryEvent(0, "a_baby_sniffle_03", "03 06", true),
+		
+		// Stage 1 - (sound 4 & 5 doesn't fit)
+		cBabyCryEvent(1, "a_baby_cry_buildup_01", "01", false),
+		cBabyCryEvent(1, "a_baby_cry_buildup_02", "02 06 08", true),
+		cBabyCryEvent(1, "a_baby_cry_buildup_03", "03 07", false),
+		
+		// Stage 2 - (sound 20 doesn't fit)
+		cBabyCryEvent(2, "a_baby_crying_01", "01 04 07 09 13 17 21 24", false),
+		cBabyCryEvent(2, "a_baby_crying_02", "02 10 11 12 19", true),
+		cBabyCryEvent(2, "a_baby_crying_03", "03 05 06 08 14 15 16 18 22 23", false),
+	};
+	
+	//------------------------------------------------------------
+}	

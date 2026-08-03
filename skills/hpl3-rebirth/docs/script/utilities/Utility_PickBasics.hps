@@ -1,0 +1,182 @@
+//------------------------------------------------------------
+
+cVector2f[] gvPickOffset = 
+{
+		cVector2f(0,0),
+		cVector2f(1,0), cVector2f(-1,0),
+		cVector2f(0,1), cVector2f(0,-1),
+		cVector2f(0.5f,0), cVector2f(-0.5f,0), cVector2f(0, 0.5f), cVector2f(0, -0.5f),
+		cVector2f(-0.5f,0.5f), cVector2f(0.5f,0.5f), cVector2f(0.5f,-0.5f), cVector2f(-0.5f,-0.5f)
+};
+
+const int glPickOffsetNum = 13;
+const float gfPickOffsetSize = 0.04f;
+
+	
+//------------------------------------------------------------
+
+class cUtility_PickBasics
+{
+	//------------------------------------------------------------
+	
+	
+	void Reset()
+	{
+		m_idFocusedEntity = tID_Invalid;
+		m_idFocusedBody = tID_Invalid;
+		mvFocusPosition = cVector3f(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	bool UpdatePickCheck(cCamera @apCam, bool abCheckInteractionSupport, float afCustomMaxInteractDist=-1, bool abForceSkipSpecialDist=false)
+	{
+		/////////////////////////////////////////////
+		// Check if object is in focus. (check on serveral locations)
+		cLuxClosestEntityData outputData;
+		outputData.mfDistance = 100000;
+		bool bFoundEntity = false;
+		cLuxMap@ pMap = cLux_GetCurrentMap();
+
+		if(pMap is null) return false;
+
+		float fMaxRayDist = pMap.GetMaxInteractDistance();
+		
+		cLuxClosestEntityData tempData;
+			
+		int id = mlLastHitRay < 0 ? 0 : mlLastHitRay;
+
+		cVector3f vOffset = cVector3f(0);
+		vOffset += apCam.GetRight()*gvPickOffset[id].x*gfPickOffsetSize;
+		vOffset += apCam.GetUp()*gvPickOffset[id].y*gfPickOffsetSize;
+		
+		////////////////////////////////////////
+		//Ray cast with a certain offset		
+		if(cLux_GetClosestEntity(apCam.GetPosition()+vOffset,apCam.GetForward(),fMaxRayDist, 0, false, tempData))
+		{
+			iLuxEntity @pEntity = tempData.mpEntity;
+			//cLux_AddDebugMessage("Closest ent is "+pEntity.GetName());
+				
+			cVector3f vFocusPos = apCam.GetPosition()+vOffset + apCam.GetForward() * tempData.mfDistance;
+				
+			bool bInteractionCheck = true;
+			if(abCheckInteractionSupport)
+			{
+				bInteractionCheck = pEntity.GetInteractionDisabled()==false &&
+									pEntity.CanInteract(0, tempData.mpBody);
+			}
+				
+			//////////////////////////////////////////////////////////
+			//Check if closest body, can be interacted with and in range
+			bool bSpecialDistCheck = (@apCam is cLux_GetPlayer().GetCharacterBody().GetCamera() && abForceSkipSpecialDist==false);
+			if(	outputData.mfDistance > tempData.mfDistance && 
+				bInteractionCheck &&
+				EntityInRange(pEntity, vFocusPos, tempData.mfDistance, bSpecialDistCheck, afCustomMaxInteractDist))
+			{
+				outputData.mfDistance = tempData.mfDistance;
+				@outputData.mpEntity = tempData.mpEntity;
+				@outputData.mpBody = tempData.mpBody;
+				mvFocusPosition = vFocusPos;
+					
+				bFoundEntity = true;
+			}
+		}
+
+		/////////////////////////////////////////////
+		// Process object
+		if(bFoundEntity)
+		{
+			iLuxEntity @pEntity = outputData.mpEntity;
+			
+			m_idFocusedEntity = pEntity.GetID();
+			m_idFocusedBody =  outputData.mpBody.GetID();
+			msFocusedEntityName = pEntity.GetName();
+			
+			bFoundEntity = true;
+		}
+		else
+		{
+			m_idFocusedEntity = tID_Invalid;
+			m_idFocusedBody =  tID_Invalid;
+			msFocusedEntityName = "";
+
+			/////////////
+			// Previus ray did not hit, update which ray offset to use next time
+			if(mlLastHitRay < 0)
+			{
+				mlLastHitRay *= -1;
+			}
+			else
+			{
+				mlLastHitRay -= 1;
+				mlLastHitRay = ((mlLastHitRay + 1) % (glPickOffsetNum - 1));
+				mlLastHitRay += 1;
+
+				mlLastHitRay *= -1;
+			}
+		}
+		
+		return bFoundEntity;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool EntityInRange(iLuxEntity @apEntity, const cVector3f& in avPos, float afDistance, bool abSpecialDistanceCheck, float afCustomMaxInteractDist)
+	{
+		float fMaxDistance = afCustomMaxInteractDist >=0 ? afCustomMaxInteractDist : apEntity.GetMaxInteractDistance();
+			
+		if(abSpecialDistanceCheck)
+		{
+			iCharacterBody @pCharBody = cLux_GetPlayer().GetCharacterBody(); 
+			
+			cVector3f vPlayerFeetPos = pCharBody.GetFeetPosition();
+			float fMinHeight = vPlayerFeetPos.y;
+			float fMaxHeight = fMinHeight + pCharBody.GetSize().y;
+			
+			////////////////////////////////////////////////
+			//Check if position is "inside" the player height, and if so use a 2D distance!
+			// - Want an offset for min, for extra help with stuff on the ground
+			if(avPos.y+0.05f > fMinHeight && avPos.y < fMaxHeight)
+			{
+				float fDist2D = cMath_Vector2DistXZ(vPlayerFeetPos, avPos);
+				return fDist2D < fMaxDistance;
+			}
+			return afDistance < fMaxDistance;
+		}
+		else
+		{
+			return afDistance < fMaxDistance;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	iPhysicsBody@ GetFocusedBody()
+	{
+		return cLux_ID_Body(m_idFocusedBody);
+	}
+	
+	//------------------------------------------------------------
+	
+	iLuxEntity@ GetFocusedEntity()
+	{
+		return cLux_ID_Entity(m_idFocusedEntity);
+	}
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	tID m_idFocusedBody;
+	tID m_idFocusedEntity;
+	cVector3f mvFocusPosition;
+	tString msFocusedEntityName;
+
+	int mlLastHitRay = 1;
+	
+	//------------------------------------------------------------
+		
+}

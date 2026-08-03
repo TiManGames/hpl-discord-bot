@@ -1,0 +1,356 @@
+#include "interfaces/Area_Interface.hps"
+#include "custom/modules/ModuleInterfaces_Custom.hps"
+#include "helpers/helper_areas.hps"
+#include "helpers/helper_player.hps"
+#include "helpers/helper_map.hps"
+#include "helpers/helper_audio.hps"
+
+class cScrAreaGhoulStalkCorner : iScrArea, iScrArea_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject @apVars)
+	{
+		msFirstDir = apVars.GetVarString("FirstCornerDirection", "Forward");
+		msSecondDir = apVars.GetVarString("SecondCornerDirection", "Forward");
+		
+		mvFirstDir = GetDir(msFirstDir);
+		mvSecondDir = GetDir(msSecondDir);
+		
+		mfFirstMaxDist = apVars.GetVarFloat("FirstDirectionMaxDistance", 0.0f);
+		mfFirstMinDist = apVars.GetVarFloat("FirstDirectionMinDistance", 0.0f);
+		mfSecondMaxDist = apVars.GetVarFloat("SecondDirectionMaxDistance", 0.0f);
+		mfSecondMinDist = apVars.GetVarFloat("SecondDirectionMinDistance", 0.0f);
+		
+		msStartStalkCallback = apVars.GetVarString("OnStalkStart", "");
+		
+//		mBaseObj.SetCheckCollision(false);
+	}
+	
+	//------------------------------------------------------------
+		
+	void OnAfterWorldLoad()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnVariableUpdate(float afDeltaTime)
+	{
+		if (mbStalkEventActive == false && mBaseObj.CheckIsOnScreen(true) && cScript_GetGlobalVarBool("02_04_living_quarters_stalking_cooldown") == false)
+		{
+			cVector3f vPlayerToAreaDir = mBaseObj.GetPosition() - Player_GetPosition();
+			float fDist = vPlayerToAreaDir.Length();
+			vPlayerToAreaDir.Normalize();
+			
+			bool bPlayerAlongFirstDir = cMath_Vector3Dot(vPlayerToAreaDir, mvFirstDir) < -0.8f && fDist <= mfFirstMaxDist && fDist >= mfFirstMinDist;
+			bool bPlayerAlongSecondDir = cMath_Vector3Dot(vPlayerToAreaDir, mvSecondDir) < -0.8f && fDist <= mfSecondMaxDist && fDist >= mfSecondMinDist;
+			if (bPlayerAlongFirstDir || bPlayerAlongSecondDir)
+			{
+				StartStalkEvent(bPlayerAlongSecondDir);
+			}
+		}
+		
+		if (mbMoving)
+		{
+			mfMoveTimer += afDeltaTime;
+			if (mfMoveTimer > 1.0f)
+			{
+				mfMoveTimer = 1.0f;
+				mbMoving = false;
+				cScript_RunGlobalFunc(mBaseObj.GetName(), "cScrAreaGhoulStalkCorner", msMoveCallback);
+			}
+			float fMovePercent = cMath_Easing(eEasing_QuadInOut, mfMoveTimer / 1.0f, 0.0f, 1.0f);
+			iLuxEntity@ pEnt = Map_GetEntity("ghoul_corner_stalk");
+			pEnt.SetPosition(mvMoveFromPos * (1.0f - fMovePercent) + mvMoveToPos * fMovePercent);
+			
+			if (mbMoving == false)
+			{
+				mfMoveTimer = 0.0f;
+			}
+		}
+		
+		if (mbTrackingPlayer)
+		{
+			float fMoveAmount = cMath_Abs(mfMoveOutPlayerDistance - cMath_Vector3Dist(mBaseObj.GetPosition(), Player_GetPosition()));
+			if (fMoveAmount >= 2.0f)
+			{
+				mbTrackingPlayer = false;
+				
+				mBaseObj.Timer_Remove(7);
+				mBaseObj.Timer_Add(7, 0.2f, "Timer_MoveBack");
+			}
+		}
+	}
+	
+	
+	
+	//------------------------------------------------------------
+	
+	bool OnUpdateAutoSleep()
+	{
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetProperties()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void BeforeEntityDestruction()
+	{
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INTERACTION
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	bool CanInteract(int alType, iPhysicsBody@ apBody)
+	{
+		return false;
+	}
+	
+	//------------------------------------------------------------
+		
+	bool OnInteract(int alType, iPhysicsBody@ apBody, const cVector3f &in avFocusPos, const tString&in asData)
+	{
+		return false;
+	}
+	//------------------------------------------------------------
+	
+	int GetInteractIconId(int alType, iPhysicsBody@ apBody)
+	{
+		return 0;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// COLLISIONS
+	/////////////////////////////////////////
+	
+	//-----------------------------------------------------------------------
+
+	bool OnStartCheckCollision(float afTimeStep, float afTimeSinceCheck)
+	{
+		return true;
+	}
+	
+	//-----------------------------------------------------------------------
+
+	bool OnCheckCollision(iPhysicsBody@ apBody, iLuxEntity@ apEntity)
+	{
+		return true;
+	}
+	
+	//-----------------------------------------------------------------------
+
+	void OnEndCheckCollision(float afTimeStep)
+	{
+	}
+	
+	//-----------------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//-----------------------------------------------------------------------
+	
+	void OnSetActive(bool abX)
+	{
+	}
+	
+	//-----------------------------------------------------------------------
+	
+	
+	void OnConnectionStateChange(iLuxEntity@ apEntity,int alState)
+	{
+	}
+	
+	//-----------------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPERS
+	/////////////////////////////////////////
+	
+	//-----------------------------------------------------------------------
+	
+	void StartStalkEvent(bool abStartAlongFirstDir)
+	{
+		cLux_AddDebugMessage("[GhoulStalkCorner] Start stalk event");
+		mbStalkEventActive = true;
+		
+		Entity_SetActive("ghoul_corner_stalk", true);
+		iLuxEntity@ pEnt = Map_GetEntity("ghoul_corner_stalk");
+		
+		cVector3f vGhoulPos = mBaseObj.GetPosition();
+		vGhoulPos.y -= mBaseObj.GetSize().y / 2.0f;
+		vGhoulPos.y += pEnt.GetMainBody().GetShape().GetSize().y / 2.0f;
+		cVector3f vOffset = abStartAlongFirstDir ? mvFirstDir : mvSecondDir;
+		vOffset *= 2.0f;
+		vGhoulPos += vOffset;
+
+		pEnt.SetPosition(vGhoulPos);	
+				
+		float fAngle = cMath_Vector3Angle(cVector3f_Forward, abStartAlongFirstDir ? mvSecondDir : mvFirstDir);
+		
+		cMatrixf mtxEnt = cMath_MatrixRotateY(fAngle);
+		mtxEnt.SetTranslation(pEnt.GetPosition());
+		pEnt.SetMatrix(mtxEnt);
+		
+		
+		mvOriginalPos = mvMoveFromPos = mvMoveToPos = pEnt.GetPosition();
+		mvMoveToPos -= abStartAlongFirstDir ? mvFirstDir * 1.3f : mvSecondDir * 1.3f;
+		mbMoving = true;
+		msMoveCallback = "EndMoveOut";
+		
+		ExecuteStartStalkCallback();
+		
+//		mBaseObj.Timer_Add(0, 1.0f, "Timer_GhoulSound");
+		
+	}
+	
+	void ExecuteStartStalkCallback()
+	{
+		if (msStartStalkCallback == "") return;
+		
+		tString sMethodName = "void " + msStartStalkCallback + "(const tString &in asStalkArea)";
+		cLuxMap@ pMap = mBaseObj.GetMap();
+		if (pMap.ScriptMethodExists(sMethodName) && pMap.ScriptPrepare(sMethodName))
+		{
+			pMap.SetArgString(0, mBaseObj.GetName());
+			pMap.ScriptExecute();
+		}
+	}
+	
+	void Timer_GhoulSound(uint64 aTimerID)
+	{
+		Sound_CreateAtEntity("ghoul_growl", "creatures/vocalisations/creature/ghoul/ghoul_idle", "ghoul_corner_stalk");
+	}
+	
+	void EndMoveOut()
+	{
+		mbTrackingPlayer = true;
+		mfMoveOutPlayerDistance = cMath_Vector3Dist(mBaseObj.GetPosition(), Player_GetPosition());
+		mBaseObj.Timer_Add(7, 5.0f, "Timer_MoveBack");
+	}
+	
+	void EndMoveIn()
+	{
+		Entity_SetActive("ghoul_corner_stalk", false);
+		mbStalkEventActive = false;
+		mBaseObj.SetActive(false);
+	}
+	
+	void Timer_MoveBack(uint64 aTimerID)
+	{
+		mvMoveFromPos = Map_GetEntity("ghoul_corner_stalk").GetPosition();
+		mvMoveToPos = mvOriginalPos;
+		mbMoving = true;
+		msMoveCallback = "EndMoveIn";
+		mBaseObj.Timer_Add(0, 0.8f, "Timer_GhoulSound");
+	}
+	
+	//-----------------------------------------------------------------------
+	
+	cVector3f GetDir(const tString &in asDir)
+	{
+		if (asDir == "Forward")
+		{
+			return mBaseObj.GetMatrix().GetForward();
+		}
+		else if (asDir == "Back")
+		{
+			return cVector3f_Zero - mBaseObj.GetMatrix().GetForward();
+		}
+		else if (asDir == "Left")
+		{
+			return mBaseObj.GetMatrix().GetRight();
+		}
+		else if (asDir == "Right")
+		{
+			return cVector3f_Zero - mBaseObj.GetMatrix().GetRight();
+		}
+		return cVector3f_Zero;
+	}
+	
+	//-----------------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL
+	/////////////////////////////////////////
+	
+	//-----------------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	tString msFirstDir = "";
+	tString msSecondDir = "";
+	tString msMoveCallback = "";
+	tString msStartStalkCallback = "";
+	cVector3f mvFirstDir;
+	cVector3f mvSecondDir;
+	cVector3f mvMoveFromPos;
+	cVector3f mvMoveToPos;
+	cVector3f mvOriginalPos;
+	float mfFirstMaxDist;
+	float mfSecondMaxDist;
+	float mfFirstMinDist;
+	float mfSecondMinDist;
+	float mfMoveTimer = 0;
+	float mfMoveOutPlayerDistance;
+	bool mbStalkEventActive = false;
+	bool mbMoving = false;
+	bool mbTrackingPlayer = false;
+	
+	//------------------------------------------------------------
+}	

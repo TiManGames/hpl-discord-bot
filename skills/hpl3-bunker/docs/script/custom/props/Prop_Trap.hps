@@ -1,0 +1,838 @@
+#include "interfaces/Prop_Interface.hps"
+
+#include "helpers/helper_game.hps"
+#include "custom/helpers/helper_props_custom.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_audio.hps"
+
+#include "custom/helpers/helper_particle_settings.hps"
+
+//------------------------------------------------------------
+
+const tString[] gvPayload_PreTrigger = 		{ "trap_grenade.ent", 				"trap_gas.ent", 				"trap_flare.ent" };
+const tString[] gvPayload_PostTrigger = 	{ "grenade_trap.ent", 			"gas_grenade_thrown.ent", 		"flare_thrown.ent" };
+const bool[] gvPayload_PostTrigger_UseQuality = { false, false, true };
+
+const tString[] gvPayload_Pin = 			{ "pin_wire_grenade.ent", 			"pin_wire_gas.ent", 			"pin_wire_flare.ent" };
+const tString[] gvPayload_Holder = 			{ "holder_grenade_wire.ent", 		"holder_gas_wire.ent", 			"" };
+
+const cVector3f[] gvPayloadPostOffsetPos = 	{ cVector3f(-0.0125, 0, 0.0675), 	cVector3f(-0.0125, 0.045, 0.0675), 	cVector3f(0.01875, -0.125, 0.045) };
+const cVector3f[] gvPayloadPostOffsetRot = 	{ cVector3f(0, -cMath_PiDiv2, 0), 	cVector3f(0, -cMath_PiDiv2, 0), cVector3f(cMath_Pi, -cMath_PiDiv2, 0) };
+
+const float gfTrap_AISoundRadius = 30.f;
+const int glTrap_AISoundPrio = 5;
+
+const float gfTrap_GrenadeFuseTime = 2.f;
+const float gfTrap_GasFuseTime = 1.f;
+
+const float gfTrap_MinimumJumpPenetration = 0.4f;
+
+const float gfTrap_WireEntLength = 3.0f;
+cVector3f gvTrap_WireAttachOffset = cVector3f(0, 0.115, 0.1);
+
+//------------------------------------------------------------
+
+class cScrPropTrap : iScrProp, iScrProp_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		tString sTriggerBodyName = apVars.GetVarString("Trap_TriggerBody", "");
+		mlTriggerBodyIndex = mBaseObj.GetBodyIndexFromName(sTriggerBodyName);
+		tString sPayloadBodyName = apVars.GetVarString("Trap_PayloadBody", "");
+		mlPayloadBodyIndex = mBaseObj.GetBodyIndexFromName(sPayloadBodyName);
+		tString sBlockerBodyName = apVars.GetVarString("Trap_BlockerBody", "");
+		mlBlockerBodyIndex = mBaseObj.GetBodyIndexFromName(sBlockerBodyName);
+		
+		if (mlTriggerBodyIndex == -1) mlTriggerBodyIndex = 0;
+		
+		msDoorAttachPointName = apInstanceVars.GetVarString("Trap_DoorAttachPoint", "");
+		msDoorName = apInstanceVars.GetVarString("Trap_DoorName", "");
+		mfDoorAttachPointDist = apInstanceVars.GetVarFloat("Trap_MaxAttachPointDist", 0.3);
+		mbIsDoorTrap = msDoorAttachPointName != "";
+		
+		mbExcludeFromRandomization = apInstanceVars.GetVarBool("Trap_ExcludeFromRandomization", false);
+		mvAllowedTypes.resize(eTrapType_LastEnum);
+		mvAllowedTypes[eTrapType_Grenade] = apInstanceVars.GetVarBool("Trap_CanBeGrenade", true);
+		mvAllowedTypes[eTrapType_Fire] = apInstanceVars.GetVarBool("Trap_CanBeFire", true);
+		mvAllowedTypes[eTrapType_Gas] = apInstanceVars.GetVarBool("Trap_CanBeGas", true);
+		
+		mBaseObj.GetMainBody().SetCollideFlags(mBaseObj.GetMap().GetCollideFlag("+trap"));
+		
+		////////////
+		// Preload all types
+		for(int i = 0; i < gvPayload_PostTrigger.length(); ++i)
+		{
+			if(gvPayload_PostTrigger_UseQuality[i])
+				ParticleSetting_PreloadEntity(gvPayload_PostTrigger[i]);
+			else
+				Entity_Preload(gvPayload_PostTrigger[i]);
+		}
+		for(int i = 0; i < gvPayload_PreTrigger.length(); ++i)
+			Entity_Preload(gvPayload_PreTrigger[i]);
+		for(int i = 0; i < gvPayload_Pin.length(); ++i)
+			Entity_Preload(gvPayload_Pin[i]);
+		for(int i = 0; i < gvPayload_Holder.length(); ++i)
+			Entity_Preload(gvPayload_Holder[i]);
+
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnUpdate(float afTimeStep)
+	{
+		if (!GetIsArmed()) return;
+		
+		/////////////////////////////////
+		// Setup on first frame
+		if (!mbSetup)
+		{
+			SetupTrap();
+		}
+		
+		/////////////////////////////////
+		// Update door attachment
+		if (mbIsDoorTrap)
+		{
+			if (!Entity_IsActive(msDoorName))
+			{	
+				tString sCause = "Unknown";
+				tString sLastDoorBrokenByStalker = cScript_GetGlobalVarString("Stalker_LastBrokenDoor");
+				
+				if (sLastDoorBrokenByStalker == msDoorName)
+				{
+					array<iLuxEntity@> vAgents;
+					mBaseObj.GetMap().GetEntityArray("*", eLuxEntityType_Agent, "cScrAgentStalker", vAgents);
+					if (vAgents.size() > 0)
+						sCause = vAgents[0].GetName();
+				}
+				
+				Trigger(sCause);
+				return;
+			}
+			
+			cVector3f vAttachPos = m_idDoorAttachPoint == tID_Invalid ? cVector3f_Zero : cLux_ID_Entity(m_idDoorAttachPoint).GetPosition();
+			
+			if (mvLastAttachPointPos == vAttachPos) return;
+			mvLastAttachPointPos = vAttachPos;
+			
+			cVector3f vFwd = vAttachPos - m_mtxSetupTriggerOrientation.GetTranslation();
+			float fLength = vFwd.Length();
+			
+			iPhysicsBody@ pTriggerBody = mBaseObj.GetBody(mlTriggerBodyIndex);
+			
+			/////////////////////////////
+			// Recalculate rotation of body
+			cMatrixf mtxBodyMtx = GetLookAtMtx(vFwd);
+			cVector3f vPos = m_mtxSetupTriggerOrientation.GetTranslation();
+			mtxBodyMtx.SetTranslation(vPos);
+			pTriggerBody.SetMatrix(mtxBodyMtx);
+			
+			/////////////////////////////
+			// Update wire rotation
+			mtxBodyMtx = cMath_MatrixMul(mtxBodyMtx, cMath_MatrixScale(cVector3f(1, 1, fLength)));
+			iLuxEntity@ pWire = cLux_GetCurrentMap().GetEntityByName(mBaseObj.GetName() + "_Wire");
+			cMatrixf mtxWire = cMath_MatrixMul(mtxBodyMtx, cMath_MatrixScale(cVector3f(1, 1, 1.0f/gfTrap_WireEntLength)));
+			vPos = mBaseObj.GetBasePosition() + cMath_MatrixMul(mBaseObj.GetBaseMatrix().GetRotation(), gvTrap_WireAttachOffset);
+			mtxWire.SetTranslation(vPos);
+			pWire.SetMatrix(mtxWire);
+			
+			//////////////////////////////
+			// Check if trap should trigger
+			if (fLength > mfDoorAttachPointDist)
+			{
+				Trigger(Entity_IsInteractedWith(msDoorName) ? "Player" : "Unknown");
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/*void OnPostUpdate(float afTimeStep)
+	{
+	
+	}*/
+	
+	//------------------------------------------------------------
+	
+	void OnVariableUpdate(float afTimeStep)
+	{
+		if (!GetIsArmed() || mbIsDoorTrap) return;
+		
+		////////////////////////////
+		// Handle wire collisions
+		iPhysicsBody@ pTriggerBody = mBaseObj.GetBody(mlTriggerBodyIndex);
+		cBoundingVolume boundingVolume = pTriggerBody.GetBoundingVolume();
+		array<iPhysicsBody@> vBodies;
+		cLux_GetCurrentMap().GetPhysicsWorld().GetBodiesInAABB(boundingVolume.GetMin(), boundingVolume.GetMax(), true, false, vBodies);
+		for (uint i = 0; i < vBodies.length(); i++)
+		{
+			iPhysicsBody@ pBody = vBodies[i];
+			
+			//////////////////////////
+			// Check if body should trigger the trap
+			if (pBody.IsActive()==false) continue;
+			if (pBody.IsCharacter()==false && pBody.GetMass()==0) continue;
+			if (mvIgnoredCollisionEntities.find(pBody.GetID()) >= 0) continue;
+			
+			tString sCollideName = Body_GetEntityName(pBody.GetName());
+			if (msDoorName == sCollideName) continue;
+			
+			bool bIsPlayerBody = pBody.IsCharacter() && pBody is cLux_GetPlayer().GetCharacterBody().GetCurrentBody();
+			
+			/////////////////////////
+			// Check if the player is jumping and ignore low part of body if so
+			if (bIsPlayerBody)
+			{
+				iCharacterBody@ pCharBody = cLux_GetPlayer().GetCharacterBody();
+				if (pCharBody.IsOnGround() == false)
+				{
+					float fMinPlayerPos = pCharBody.GetPosition().y - pCharBody.GetSize().y*0.5f;
+					float fTriggerPos = pTriggerBody.GetWorldPosition().y;
+					
+					float fPenetration = fTriggerPos-fMinPlayerPos;
+					if (fPenetration < gfTrap_MinimumJumpPenetration)
+					{
+						continue;
+					}
+				}
+			}
+			
+			/////////////////////////
+			// Agents
+			else if (pBody.IsCharacter())
+			{
+				iLuxEntity@ pCollideEnt = Map_GetEntity(sCollideName, eLuxEntityType_Agent);
+				if (pCollideEnt !is null)
+				{
+					tString sClass = pCollideEnt.GetClassName();
+					
+					if (sClass == "cScrAgentRat" && !mbCanBeTriggeredByRats)
+					{
+						continue;
+					}
+					
+					if (sClass == "cScrAgentStalker" && 
+						pCollideEnt.CheckIsOnScreen(true) == false)
+					{
+						continue;
+					}
+				}
+			}
+			
+			//////////////////////////
+			// Do a full collision check since the AABB can contain bodies that don't collide with the wire
+			cCollideData data;
+			data.SetMaxSize(1);
+			if (cLux_GetCurrentMap().GetPhysicsWorld().CheckShapeCollision(pBody.GetShape(), pBody.GetWorldMatrix(), pTriggerBody.GetShape(), pTriggerBody.GetWorldMatrix(), data, 1, false))
+			{
+				/////////////////////////
+				// Add extra force to make it more likely that the player sees the payload
+				cVector3f vExtraForce;
+				if (bIsPlayerBody && mType != eTrapType_Fire)
+				{
+					vExtraForce = mBaseObj.GetMatrix().GetTranspose().GetRight()*3.0f;
+					float fDot = cMath_Vector3Dot(pBody.GetWorldPosition()-pTriggerBody.GetWorldPosition(), vExtraForce);
+					if (fDot > 0) vExtraForce *= -1.0f;
+				}
+				
+				bool bTriggeredByPlayer = bIsPlayerBody || pBody.GetThrownByPlayer() || Entity_IsInteractedWith(sCollideName);
+				
+				Trigger(bTriggeredByPlayer ? "Player" : sCollideName, vExtraForce);
+				break;
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetProperties()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void BeforeEntityDestruction()
+	{
+	}
+		
+	//------------------------------------------------------------
+	
+	void OnStartMove()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnSetActive(bool abX)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void GiveDamage(iPhysicsBody@ apBodyHit, const cVector3f&in avOrigin, const cVector3f&in avHitPos, cLuxDamageProperties@ apDamageProps)
+	{
+		if (apDamageProps.mfDamage <= 0 || apDamageProps.mDamageType == eDamageType_Spark)
+			return;
+		
+		iLuxEntity@ pEnt = cLux_ID_Entity(apDamageProps.m_idSource);
+		
+		tString sTriggerCause = pEnt is null ? "Unknown" : pEnt.GetName();
+		if (pEnt !is null)
+		{
+			if (pEnt.GetVarBool("IsTrap"))
+				sTriggerCause = pEnt.GetVarString("TriggerCause");
+			else if (pEnt.GetClassName() == "cScrPropGrenade")
+				sTriggerCause = "Player";
+		}
+		
+		Trigger(sTriggerCause, 0, apDamageProps.mDamageType == eDamageType_Gun && mBaseObj.GetBody(mlPayloadBodyIndex) is apBodyHit);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnHealthChange()
+	{
+		
+	}
+	//------------------------------------------------------------
+	
+	void OnConnectionStateChange(iLuxEntity@ apEntity,int alState)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnUpdateAutoSleep()
+	{
+		return !GetIsArmed();
+	}
+	
+	//------------------------------------------------------------
+	
+	//NOTE: This is only useable if SetScriptCollisionCallbackActive is true
+	void OnPhysicsCollision(iPhysicsBody @apBody, iPhysicsBody @apCollideBody, cPhysicsContactData&in apContactData)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	bool CanInteract(int alType, iPhysicsBody@ apBody)
+	{
+		return apBody is mBaseObj.GetBody(mlTriggerBodyIndex) && GetIsArmed();
+	}
+	
+	//------------------------------------------------------------
+		
+	bool OnInteract(int alType, iPhysicsBody@ apBody, const cVector3f &in avFocusPos, const tString&in asData)
+	{
+		return false;
+	}
+    
+    //------------------------------------------------------------
+	
+	int GetInteractIconId(int alType, iPhysicsBody@ apBody)
+	{
+		return eCrossHairState_Default;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL
+	/////////////////////////////////////////
+		
+	//------------------------------------------------------------
+	
+	void _Global_SetTrapType()
+	{
+		eTrapType type = eTrapType(cScript_GetGlobalArgInt(0));
+		SetTrapType(type);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetTypeAvailable()
+	{
+		eTrapType type = eTrapType(cScript_GetGlobalArgInt(0));
+		
+		bool bAvailable = true;
+		if (mvAllowedTypes[type] == false) 
+			bAvailable = false;
+		else if (mbIsDoorTrap) 
+			bAvailable = type != eTrapType_Gas;
+			
+		cScript_SetGlobalReturnBool(bAvailable);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetIsTriggered()
+	{
+		cScript_SetGlobalReturnBool(mbTriggered);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetIsArmed()
+	{
+		cScript_SetGlobalReturnBool(GetIsArmed());
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetHitboxActive()
+	{
+		bool bX = cScript_GetGlobalArgBool(0);
+		
+		{
+			iPhysicsBody@ pBody = mBaseObj.GetBody(mlTriggerBodyIndex);
+			if (pBody !is null)
+				pBody.SetCollide(bX);
+		}
+		
+		if (mlPayloadBodyIndex >= 0)
+		{
+			iPhysicsBody@ pBody = mBaseObj.GetBody(mlPayloadBodyIndex);
+			if (pBody !is null)
+				pBody.SetCollide(bX);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_Disarm()
+	{
+		Disarm();
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetCanBlockPath()
+	{
+		tID idBody = cScript_GetGlobalArgID(0);
+		iPhysicsBody@ pBody = mBaseObj.GetBody(mlBlockerBodyIndex);
+		
+		bool bRet = mbTriggered == false &&
+					pBody !is null &&
+					 (pBody.GetID() == idBody || idBody == tID_Invalid);
+		
+		cScript_SetGlobalReturnBool(bRet);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetExcludeFromRandomization()
+	{
+		cScript_SetGlobalReturnBool(mbExcludeFromRandomization);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetCanBeTriggeredByRats()
+	{
+		mbCanBeTriggeredByRats = cScript_GetGlobalArgBool(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPERS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupTrap()
+	{
+		iPhysicsBody@ pTriggerBody = mBaseObj.GetBody(mlTriggerBodyIndex);
+		
+		/////////////////////////////////////
+		// Setup door trap attachment
+		if (mbIsDoorTrap)
+		{
+			iLuxEntity@ pAttachPoint = cLux_GetCurrentMap().GetEntityByName(msDoorAttachPointName);
+			m_idDoorAttachPoint = pAttachPoint is null ? tID_Invalid : pAttachPoint.GetID();
+			m_mtxSetupTriggerOrientation = pTriggerBody.GetLocalMatrix();
+			
+			cVector3f vPos = cVector3f_Forward*mfDoorAttachPointDist*0.5f;
+			
+			iCollideShape@ pTriggerShape = cLux_GetCurrentMap().GetPhysicsWorld().CreateBoxShape(cVector3f(0.1, 0.1, mfDoorAttachPointDist),  cMath_MatrixTranslate(vPos));
+			pTriggerBody.SetShape(pTriggerShape);
+		}
+		
+		////////////////////
+		// Setup trigger bodies
+		else
+		{
+			////////////////////
+			// Scale tripwire to opposite wall
+			float fRayOffset = 0.6f;
+			cVector3f vFwd = mBaseObj.GetMatrix().GetTranspose().GetForward();
+			cVector3f vRayStart = mBaseObj.GetBasePosition()+vFwd*fRayOffset;
+			
+			float fWallDist;
+			cVector3f vHitNrm;
+			cLux_GetClosestBody(vRayStart, vFwd, 100, fWallDist, vHitNrm);
+			fWallDist += fRayOffset;
+			
+			cMatrixf mtxTriggerMtx = cMatrixf_Identity;//cMath_MatrixMul(pTriggerBody.GetLocalMatrix(), cMath_MatrixScale(cVector3f(1, 1, fWallDist)));
+			cVector3f vPos = cVector3f_Forward*fWallDist*0.5f+cVector3f_Up*gvTrap_WireAttachOffset.y;//vFwd*fWallDist*0.5f;
+			mtxTriggerMtx.SetTranslation(vPos);
+			
+			iCollideShape@ pTriggerShape = cLux_GetCurrentMap().GetPhysicsWorld().CreateBoxShape(cVector3f(0.1, 0.1, fWallDist),  mtxTriggerMtx);
+			pTriggerBody.SetShape(pTriggerShape);
+			
+			////////////////////
+			// Scale blocker body down to the floor
+			if (mlBlockerBodyIndex > 0)
+			{					
+				float fFloorDist;
+				iPhysicsBody@ pBlockerBody = mBaseObj.GetBody(mlBlockerBodyIndex);
+				cLux_GetClosestBody(mBaseObj.GetBasePosition() + vPos, mBaseObj.GetMatrix().GetTranspose().GetUp()*-1.0f, 5, fFloorDist, vHitNrm);
+				cMatrixf mtxBlockerMtx = mtxTriggerMtx;
+				mtxBlockerMtx.SetTranslation(mtxBlockerMtx.GetTranslation() + cVector3f_Down * fFloorDist * 0.5);
+				iCollideShape@ pBlockerShape = cLux_GetCurrentMap().GetPhysicsWorld().CreateBoxShape(cVector3f(0.75, fFloorDist, fWallDist),  mtxBlockerMtx);
+				pBlockerBody.SetShape(pBlockerShape);
+			}
+			
+			////////////////////
+			// Scale the wire entity
+			{
+				cMatrixf mtxWire = mBaseObj.GetBaseMatrix();
+				cVector3f vWirePos = mtxWire.GetTranslation() +
+									mtxWire.GetTranspose().GetUp()*gvTrap_WireAttachOffset.y +
+									mtxWire.GetTranspose().GetForward()*gvTrap_WireAttachOffset.z;
+									
+				mtxWire.SetTranslation(vWirePos);
+			
+				iLuxEntity@ pWire = cLux_GetCurrentMap().GetEntityByName(mBaseObj.GetName() + "_Wire");
+				mtxWire = cMath_MatrixMul(mtxWire, cMath_MatrixScale(cVector3f(1, 1, (fWallDist-gvTrap_WireAttachOffset.z)/gfTrap_WireEntLength)));
+				pWire.SetMatrix(mtxWire);
+			}
+		}
+		
+		if (mlPayloadBodyIndex >= 0)
+		{
+			iPhysicsBody@ pPayloadBody = mBaseObj.GetBody(mlPayloadBodyIndex);
+			
+			iLuxEntity@ pPayloadEnt = cLux_ID_Entity(m_idPreTriggerPayload);
+			iPhysicsBody@ pPayloadEntBody = pPayloadEnt is null ? null : pPayloadEnt.GetMainBody();
+			
+			if (pPayloadEntBody !is null)
+			{
+				cBoundingVolume payloadBV = pPayloadEntBody.GetBoundingVolume();
+			
+				cVector3f vPayloadHitboxSize = cVector3f(0.2, payloadBV.GetSize().y*2.0, 0.15);
+				
+				cMatrixf mtxPayloadMtx = cMatrixf_Identity;
+				cVector3f vPayloadPos = cMath_MatrixMul(cMath_MatrixInverse(mBaseObj.GetBaseMatrix()), payloadBV.GetWorldCenter());
+				mtxPayloadMtx.SetTranslation(vPayloadPos + cVector3f_Forward*(vPayloadHitboxSize.z*0.5f - payloadBV.GetSize().z*0.5f));
+			
+				iCollideShape@ pPayloadShape = cLux_GetCurrentMap().GetPhysicsWorld().CreateBoxShape(vPayloadHitboxSize,  mtxPayloadMtx);
+				pPayloadBody.SetShape(pPayloadShape);
+			}
+		}
+		
+		cBoundingVolume boundingVolume = pTriggerBody.GetBoundingVolume();
+		array<iPhysicsBody@> vBodies;
+		cLux_GetCurrentMap().GetPhysicsWorld().GetBodiesInAABB(boundingVolume.GetMin(), boundingVolume.GetMax(), true, false, vBodies);
+		for (int i = 0; i < vBodies.length(); i++)
+			mvIgnoredCollisionEntities.push_back(vBodies[i].GetID());
+		
+		mbSetup = true;
+	}
+	
+	//------------------------------------------------------------
+	
+	void Trigger(const tString &in asTriggerCause, const cVector3f &in avExtraForce = 0, bool abDamageToPayload = false)
+	{		
+		if (!GetIsArmed()) return;
+		
+		if (asTriggerCause == "Player")
+			GameStats_IncreaseEntryAmount(eHeroStats_TrapsTriggered);
+		
+		mbTriggered = true;
+		
+		////////////////////////////
+		// Disable wire
+		iPhysicsBody@ pTriggerBody = mBaseObj.GetBody(mlTriggerBodyIndex);
+		pTriggerBody.SetCollide(false);
+		pTriggerBody.SetCollideCharacter(false);
+		Entity_SetActive(mBaseObj.GetName() + "_Wire", false);
+		Entity_SetActive(mBaseObj.GetName() + "_Pin", false);
+		if (mType != eTrapType_Grenade) Entity_SetActive(mBaseObj.GetName() + "_Holder", false);
+		
+		////////////////////////////
+		// Activate payload
+		iLuxEntity@ pPreTriggerPayload = cLux_ID_Entity(m_idPreTriggerPayload);
+		iLuxEntity@ pPostTriggerPayload = cLux_ID_Entity(m_idPostTriggerPayload);
+		
+		pPreTriggerPayload.SetActive(false);
+		pPostTriggerPayload.SetActive(true);
+		if (mType == eTrapType_Grenade)
+			Prop_SetStaticPhysics(pPostTriggerPayload.GetName(), true);
+		else
+		{
+			float fForceMul = mType == eTrapType_Fire ? 1.0f : 3.0f;
+			pPostTriggerPayload.GetMainBody().AddImpulse(mBaseObj.GetBaseMatrix().GetTranspose().GetForward()*fForceMul+avExtraForce);
+			pPostTriggerPayload.GetMainBody().SetCollideFlags(mBaseObj.GetMap().GetCollideFlag("-trap"));
+		}
+		
+		if (mType == eTrapType_Grenade)
+			Grenade_SetFuseTime(pPostTriggerPayload.GetName(), abDamageToPayload ? 0.1 : gfTrap_GrenadeFuseTime);
+		if (mType == eTrapType_Gas)
+			GasGrenade_SetFuseTime(pPostTriggerPayload.GetName(), gfTrap_GasFuseTime);
+			
+		pPostTriggerPayload.SetVarString("TriggerCause", asTriggerCause);
+			
+		mBaseObj.PlaySound("SoundTrap", "level_entity_shared/traps/tripwire/trigger", true, false);
+		mBaseObj.GetMap().BroadcastSoundHeardEvent("SoundTrap", mBaseObj.GetPosition(), gfTrap_AISoundRadius, 
+													glTrap_AISoundPrio, false, false, mBaseObj.GetMainBody().GetID());
+												
+		Effect_Rumble_Start(0.5, 0.25);
+		//Sound_PlayGui("level_entity_shared/traps/tripwire/stinger", 1.0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void Disarm()
+	{
+		mbDisarmed = true;
+		
+		////////////////////////////
+		// Disable wire
+		iPhysicsBody@ pTriggerBody = mBaseObj.GetBody(mlTriggerBodyIndex);
+		pTriggerBody.SetCollide(false);
+		pTriggerBody.SetCollideCharacter(false);
+		Entity_SetActive(mBaseObj.GetName() + "_Wire", false);
+		
+		
+		/////////////////////////////
+		// Allow picking up item
+		iLuxEntity@ pPayload = cLux_ID_Entity(m_idPreTriggerPayload);
+		pPayload.SetInteractionDisabled(false);
+		
+		Achievement_Unlock(eAchievement_Tinkerer);
+		
+		Sound_PlayGui("extra/trap/wire_cut", 1.f, eSoundEntryType_GuiWorld);
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetIsArmed()
+	{
+		return !mbTriggered && !mbDisarmed;
+	}
+	
+	//------------------------------------------------------------
+	
+	cMatrixf GetLookAtMtx(cVector3f avDir)
+	{
+		cVector3f vForward = avDir;
+		vForward.Normalize();
+		
+		cVector3f vRight = cMath_Vector3Cross(vForward, cVector3f_Down);
+		vRight.Normalize();
+		
+		cVector3f vUp = cMath_Vector3Cross(vForward, vRight);
+		vUp.Normalize();
+		
+		return cMath_MatrixUnitVectors(vRight, vUp, vForward, 0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetTrapType(eTrapType aType)
+	{
+		if (mType != eTrapType_LastEnum)
+		{
+			Error("[Trap] Attempting to set the trap type of the same trap ('"+mBaseObj.GetName()+"') multiple times!");
+			return;
+		}
+		
+		mType = aType;
+		
+		//////////////////
+		// Create props
+		cLuxMap@ pMap = cLux_GetCurrentMap();
+		if (pMap is null) return;
+		
+		cMatrixf mtxPos = mBaseObj.GetBaseMatrix();
+		
+		iLuxEntity@ pEnt = null;
+		
+		//if (aType != eTrapType_Fire)
+		{
+			tString sPreTriggerEnt = gvPayload_PreTrigger[aType];
+			tString sPostTriggerEnt = gvPayload_PostTrigger[aType];
+			tString sPinEnt = gvPayload_Pin[aType];
+			tString sHolderEnt = gvPayload_Holder[aType];
+			
+			///////////////////
+			// Pre-trigger payload
+			if(gvPayload_PostTrigger_UseQuality[aType])
+			{
+				@pEnt = ParticleSetting_CreateEntityFromSetting(pMap, mBaseObj.GetName() + "_Payload", sPreTriggerEnt, mtxPos, cVector3f(1.f));
+			}
+			else
+			{
+				pMap.CreateEntity(mBaseObj.GetName() + "_Payload", sPreTriggerEnt, mtxPos, cVector3f(1.f));
+				@pEnt = pMap.GetLatestEntity();
+			}
+			
+			if (pEnt is null)
+			{
+				Error("[Trap] Unable to create payload prop '"+sPreTriggerEnt+"'");
+				return;
+			}
+			pEnt.SetInteractionDisabled(true);
+			cLuxProp@ pProp = cLux_ToProp(pEnt);
+			if (pProp !is null)
+				pProp.SetStaticPhysics(true);
+			m_idPreTriggerPayload = pEnt.GetID();
+			mvIgnoredCollisionEntities.push_back(pEnt.GetMainBody().GetID());
+			Pickup_SetExcludeFromRandomization(pEnt.GetName(), true);
+			
+			pMap.CreateEntity(mBaseObj.GetName() + "_Pin", sPinEnt, mBaseObj.GetBaseMatrix(), cVector3f(1.f));
+			if (sHolderEnt != "") pMap.CreateEntity(mBaseObj.GetName() + "_Holder", sHolderEnt, mBaseObj.GetBaseMatrix(), cVector3f(1.f));
+			
+			///////////////////
+			// Post-trigger payload
+			cMatrixf mtxPostTrigger = mtxPos;
+			mtxPostTrigger = cMath_MatrixMul(mtxPostTrigger, cMath_MatrixRotateXYZ(gvPayloadPostOffsetRot[aType]));
+			cVector3f vOffset = cMath_MatrixMul(mBaseObj.GetBaseMatrix().GetRotation(), gvPayloadPostOffsetPos[aType]);
+			mtxPostTrigger.SetTranslation(mtxPostTrigger.GetTranslation()+vOffset);
+		
+			pMap.CreateEntity(mBaseObj.GetName() + "_Triggered", sPostTriggerEnt, mtxPostTrigger, cVector3f(1.f));
+			@pEnt = pMap.GetLatestEntity();
+			if (pEnt is null)
+			{
+				Error("[Trap] Unable to create triggered prop '"+sPostTriggerEnt+"'");
+				return;
+			}
+			pEnt.SetActive(false);
+			pEnt.SetVarBool("IsTrap", true); // Used to mark death from a trap entity
+			m_idPostTriggerPayload = pEnt.GetID();
+			mvIgnoredCollisionEntities.push_back(pEnt.GetMainBody().GetID());
+		}
+		
+		if (mType != eTrapType_Grenade && Map_GetEntityCount(mBaseObj.GetName()+"_Type_Grenade_*") > 0) 
+			Entity_SetActive(mBaseObj.GetName()+"_Type_Grenade_*", false);
+		if (mType != eTrapType_Gas && Map_GetEntityCount(mBaseObj.GetName()+"_Type_Gas_*") > 0) 
+			Entity_SetActive(mBaseObj.GetName()+"_Type_Gas_*", false);
+		if (mType != eTrapType_Fire && Map_GetEntityCount(mBaseObj.GetName()+"_Type_Fire_*") > 0) 
+			Entity_SetActive(mBaseObj.GetName()+"_Type_Fire_*", false);
+		
+		//////////////////
+		// Activate type entities
+		// Needed due to extra traps added in Fall Patch
+		tString sType;
+		switch (mType)
+		{
+			case eTrapType_Grenade: sType = "Grenade"; break;
+			case eTrapType_Gas: sType = "Gas"; break;
+			case eTrapType_Fire: sType = "Fire"; break;
+		}
+		if (Map_GetEntityCount(mBaseObj.GetName()+"_Type_"+sType+"_*") > 0)
+			Entity_SetActive(mBaseObj.GetName()+"_Type_"+sType+"_*", true);
+		
+		///////////////////
+		// Wire
+		pMap.CreateEntity(mBaseObj.GetName() + "_Wire", "wire_uncut.ent", mtxPos, cVector3f(1.f));
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+/*	void OnRenderSolid(cRendererCallbackFunctions@ apFunctions)
+	{
+		apFunctions.GetLowLevelGfx().DrawLine(mBaseObj.GetBasePosition(), mBaseObj.GetBasePosition()+cVector3f_Up*8, (mbTriggered ? cColor_Green : cColor_Red) * 10.f);
+	}*/
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	eTrapType mType = eTrapType_LastEnum;
+	
+	bool mbIsDoorTrap = false;
+	bool mbCanBeTriggeredByRats = false;
+	
+	tID m_idPreTriggerPayload;
+	tID m_idPostTriggerPayload;
+	
+	tString msDoorName;
+	tString msDoorAttachPointName;
+	tID m_idDoorAttachPoint;
+	float mfDoorAttachPointDist;
+	
+	int mlTriggerBodyIndex = 0;
+	int mlPayloadBodyIndex = -1;
+	int mlBlockerBodyIndex = 0;
+	cMatrixf m_mtxSetupTriggerOrientation;
+	cVector3f mvLastAttachPointPos = 0;
+	
+	array<tID> mvIgnoredCollisionEntities;
+	[nosave] bool mbSetup = false;
+	bool mbTriggered = false;
+	bool mbDisarmed = false;
+	
+	bool mbExcludeFromRandomization = false;
+	array<bool> mvAllowedTypes;
+	
+	//------------------------------------------------------------
+}

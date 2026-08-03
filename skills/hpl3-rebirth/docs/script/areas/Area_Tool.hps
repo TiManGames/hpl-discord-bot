@@ -1,0 +1,304 @@
+#include "interfaces/Area_Interface.hps"
+#include "helpers/helper_player.hps"
+#include "helpers/helper_modules.hps"
+
+class cScrAreaTool: iScrArea, iScrArea_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		mBaseObj.SetAutoSleep(false);
+		mBaseObj.SetVariableUpdateRate(0.3f); //call variable update no faster than once per 0.3 sec
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject @apVars)
+	{			
+		cString_GetStringVec(apVars.GetVarString("ToolsToEquip", ""), mvTools, " ,");
+		msConnectedToolAreas = apVars.GetVarString("ConnectedToolAreas", "");
+		
+		msLookEntities = apVars.GetVarString("LookEntities", "");
+		mbLookEntityLOS = apVars.GetVarBool("LookEntityLOS", false);
+				
+		mBaseObj.SetCheckCollision(false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnAfterWorldLoad()
+	{
+		/////////////////////////////////////
+		// Connected Tool areas
+		if(msConnectedToolAreas != "")
+		{
+			array<tString> vAreaStrings;
+			cString_GetStringVec(msConnectedToolAreas, vAreaStrings, " ,");
+			
+			for(int i=0; i<vAreaStrings.size(); ++i)
+			{
+				array<iLuxEntity@> vEntities;
+				
+				mBaseObj.GetMap().GetEntityArray(vAreaStrings[i], eLuxEntityType_LastEnum, "", vEntities);
+				if(vEntities.size()==0)
+				{
+					Error("Could not find any connected tool area entities '"+vAreaStrings[i]+"' for Tool Area '"+mBaseObj.GetName()+"'");
+					continue;
+				}
+
+				for(int j=0; j<vEntities.size(); ++j)
+				{
+					if(vEntities[j].GetName() == mBaseObj.GetName()) continue;
+					
+					mvConnectedToolAreas.push_back(vEntities[j].GetID());
+				}
+			}
+		}
+		
+		/////////////////////////////////////
+		// Look Entities
+		if(msLookEntities != "")
+		{
+			array<tString> vEntityStrings;;
+			cString_GetStringVec(msLookEntities, vEntityStrings, " ,");
+			
+			for(int i=0; i<vEntityStrings.size(); ++i)
+			{
+				array<tID> vEntities;
+				
+				mBaseObj.GetMap().GetEntityArrayID(vEntityStrings[i], eLuxEntityType_LastEnum, "", vEntities);
+				if(vEntities.size()==0)
+				{
+					Error("Could not find any look entities '"+vEntityStrings[i]+"' for Tool Area '"+mBaseObj.GetName()+"'");
+					continue;
+				}
+
+				for(int j=0; j<vEntities.size(); ++j)
+				{
+					mvLookEntities.push_back(vEntities[j]);
+				}
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool OnUpdateAutoSleep()
+	{
+		return false;
+	}
+	
+	//------------------------------------------------------------
+
+	void OnVariableUpdate(float afDeltaTime)
+	{
+		bool bPrevPlayerIsInside = mbPlayerIsInside;
+		
+		if(ToolHandler_CanEquipToolAreaTool()==false)
+		{
+			return;
+		}
+		
+		/////////////////////////////
+		// Check collision
+		mbPlayerIsInside = mBaseObj.CheckCharacterCollision(cLux_GetPlayer().GetCharacterBody(), cLux_GetCurrentMap());
+		
+		int lState = cLux_GetPlayer().GetCurrentStateId();
+		if(lState != ePlayerState_Normal) mbPlayerIsInside=false;
+		//cLux_AddDebugMessage("Get Focus: "+Player_GetFocusEntityName());
+		//if(Player_GetFocusEntityName()!="") mbPlayerIsInside=false;
+		
+		tString sLookEntities;
+		
+		if(mbPlayerIsInside && mvLookEntities.size()>0)
+		{
+			mbPlayerIsInside = false;
+			
+			for(int i=0; i<mvLookEntities.size(); ++i)
+			{
+				iLuxEntity @pEntity = cLux_ID_Entity(mvLookEntities[i]);
+				
+				if(pEntity.CheckIsOnScreen(mbLookEntityLOS))
+				{
+					sLookEntities += pEntity.GetName()+",";
+					mbPlayerIsInside = true;
+				}
+			}
+		}
+
+		/////////////////////////////
+		// Player is inside, equip.
+		if (mbPlayerIsInside)
+		{
+			// Try equipping the tools
+			for (uint i = 0; i < mvTools.length(); i++)
+			{
+				if (Player_EquipTool(mvTools[i], sLookEntities))
+					break;
+			}
+		}
+		
+		/////////////////////
+		// Check if player left the area
+		if (bPrevPlayerIsInside && !mbPlayerIsInside)
+		{
+			UnequipCurrentTool();
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	
+	void UnequipCurrentTool()
+	{
+		/////////////////////////
+		// Check if a tool is equipped
+		tString sEquippedTool = Player_GetCurrentToolEntityName();
+		if (sEquippedTool == "") return;
+		
+		/////////////////////////
+		// Check if player is inside any of the connected areas.	
+		for (uint i = 0; i < mvConnectedToolAreas.length(); i++)
+		{
+			tID idEntity = mvConnectedToolAreas[i];
+			
+			cScript_RunGlobalFunc(cLux_ID_Entity(idEntity).GetName(), "cScrAreaTool", "_Global_GetPlayerIsInside");
+			if (cScript_GetGlobalReturnBool())
+				return;
+		}
+		
+		/////////////////////////
+		// Unequip
+		for (uint i = 0; i < mvTools.length(); i++)
+		{
+			if (sEquippedTool == mvTools[i])
+			{
+				Player_UnequipTool();
+				break;
+			}
+		}
+	}
+
+	//------------------------------------------------------------
+	
+	void ResetProperties()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void BeforeEntityDestruction()
+	{
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INTERACTION
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	bool CanInteract(int alType, iPhysicsBody@ apBody)
+	{
+		return false;
+	}
+		
+	//-----------------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//-----------------------------------------------------------------------
+	
+	void OnSetActive(bool abX)
+	{
+		if (abX) return;
+		
+		if(mbPlayerIsInside)
+			UnequipCurrentTool();
+		
+		mbPlayerIsInside = false;
+	}
+	
+	//-----------------------------------------------------------------------
+	
+	
+	void OnConnectionStateChange(iLuxEntity@ apEntity,int alState)
+	{
+		if(alState==0) return;
+	}
+	
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetPlayerIsInside()
+	{
+		cScript_SetGlobalReturnBool(mbPlayerIsInside);
+	}	
+	
+	//-----------------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	[nosave] array<tString> mvTools;
+	
+	//------------------------------------------------------------
+	
+	array<tID> mvLookEntities;
+	array<tID> mvConnectedToolAreas;
+		
+	//------------------------------------------------------------
+	
+	bool mbPlayerIsInside = false;
+	
+	tString msLookEntities;
+	tString msConnectedToolAreas;
+	bool mbLookEntityLOS;
+	
+	//------------------------------------------------------------
+		
+}	

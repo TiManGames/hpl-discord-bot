@@ -1,0 +1,297 @@
+#include "interfaces/UserComponent_Interface.hps"
+#include "custom/components/ComponentInterfaces_Custom.hps"
+#include "base/Base_Types.hps"
+#include "custom/helpers/helper_agent.hps"
+
+//---------------------------------------------------
+
+class cScrMeatComponent : iScrUserComponent, iScrUserComponent_Interface, iScrMeatComponent_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool mbLockedAgent = false;
+	bool mbAttractEnabled = false;
+	bool mbUnreachable = false;
+	
+	cLuxAgent@ mpCurrentAttraction;
+	float mfAttractDistance;
+	float mfAttractDistanceMax;
+	float mfAttractGrowthMul = 0.05f;	// Just multiplies the timestep used in cMath_InterpolateLinear to grow the attract radius
+	
+	
+	tString sMeatAttract = "CurrentMeatAttraction";
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		
+	}
+	
+	/////////////////////////////////////////
+	// SETUP
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	void OnSetupAfterLoad(cWorld@ apWorld)
+	{
+		mfAttractDistance = mBaseObj.GetEntity().GetVarFloat("MeatAttractDistance");
+		cLux_AddDebugMessage("Attract Distance = " + mBaseObj.GetEntity().GetVarFloat("MeatAttractDistance"));
+		mfAttractDistanceMax = mBaseObj.GetEntity().GetVarFloat("MeatAttractDistanceMax");
+		cLux_AddDebugMessage("Max Attract Distance = " + mBaseObj.GetEntity().GetVarFloat("MeatAttractDistance"));
+	}
+	
+	void OnAfterWorldLoad()
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INTERFACE
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void TestFunc()
+	{
+		cLux_AddDebugMessage("Meat Test func output: "+mBaseObj.GetEntity().GetName());
+		mBaseObj.Timer_Add("Meat Test", cMath_RandRectf(2,4),"TestTimerOver");
+	}
+	
+	//------------------------------------------------------------
+	
+	void TestTimerOver(uint64 alId)
+	{
+		cLux_AddDebugMessage("Meat Test timer over! "+mBaseObj.GetEntity().GetName());
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetAttractDistance(float afDistance)
+	{
+		mfAttractDistance = afDistance;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetMaxAttractDistance(float afDistance)
+	{
+		mfAttractDistanceMax = afDistance;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetAttractEnabled(bool abX)
+	{
+		mbAttractEnabled = abX;
+	}
+	
+	void SetUnreachable()
+	{
+		mbUnreachable = true;
+	}
+	
+	//------------------------------------------------------------
+	
+	void ClearCurrentAttraction()
+	{
+		mbUnreachable = false;
+		
+		if (mpCurrentAttraction is null) return;
+		
+		mpCurrentAttraction.SetVarString(sMeatAttract,"");
+		@mpCurrentAttraction = null;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	int mlCount=0;
+	float mfCountUpdate=0;
+	float mfGiveUp = 0.0f;
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep)
+	{
+		mfGiveUp += afTimeStep;
+		
+		//cLux_AddDebugMessage("Attract Distance = " + mfAttractDistance);
+		//cLux_AddDebugMessage("Max Attract Distance = " + mfAttractDistanceMax);
+		
+		mfAttractDistance = cMath_InterpolateLinear(mfAttractDistance,mfAttractDistanceMax,afTimeStep*mfAttractGrowthMul);
+		
+		if( (mfCountUpdate+=afTimeStep) < 2) return;
+		mfCountUpdate=0;
+		
+		// Step 1, iterate the components! We need a meat sensor!
+		
+		UpdateAttraction(afTimeStep);
+		
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateAttraction(float afTimeStep)
+	{
+		if (mBaseObj.GetEntity().IsActive() == false) return;
+		if (mBaseObj.GetEntity().IsInteractedWith()) return;
+		if (mbAttractEnabled == false) return;
+		if (mbUnreachable) return;
+
+		// If object is moving quite fast (i.e thrown)
+		float fVel = mBaseObj.GetEntity().GetMainBody().GetLinearVelocity().Length();
+		if (fVel > 0.5f) return;
+		
+		cVector3f vMeatPos = mBaseObj.GetEntity().GetPosition();
+		cVector3f vAgentPos;
+		float fDist = -1;
+		
+		
+		
+		///////////////////////////
+		// Already locked on to agent
+		if (mpCurrentAttraction !is null)
+		{
+			// 1.1 Check for attracted enemy
+			vAgentPos = mpCurrentAttraction.GetCharBody().GetFeetPosition();
+			fDist = cMath_Vector3Dist(vAgentPos,vMeatPos);
+						
+			if (fDist < 1.5f)
+			{
+				Ghoul_EatMeat(mpCurrentAttraction.GetName(),mBaseObj.GetEntity().GetName());
+			}
+			else
+			{
+				
+				mpCurrentAttraction.BroadcastMessage(eCustomEntityMessage_AttractAgent, null, vMeatPos,0);
+			}
+			
+			/*if (mfGiveUp > 20.0f)
+			{
+				mpCurrentAttraction.BroadcastMessage(eCustomEntityMessage_GiveUpAttraction, null, vMeatPos,0);
+				@mpCurrentAttraction = null;
+			}*/
+			// 1.1 Check if the attracted enemy has become busy, eaten us etc - remove entity once its eating
+		}
+		
+		///////////////////////////
+		// Looking for agent to attract
+		else
+		{
+			float fClosestDistance = 10000.0f;
+			
+			bool bMeatIsClose = false;
+			
+			
+			cLuxEntityComponentIterator @pIt = cLux_GetCurrentMap().GetEntityComponentIterator(eComponentType_Custom_AIMeatSensor);
+			while (pIt.HasNext())
+			{
+				// Get next component
+				iLuxEntityComponent @pComp = pIt.Next();
+				iLuxEntity @pEnt = pComp.GetEntity();
+				
+				if(pEnt.GetEntityType() != eLuxEntityType_Agent)
+					continue;
+					
+				cLuxAgent @pAgent = cLux_ToAgent(pEnt);
+				
+				//cLux_AddDebugMessage("Yep");
+				// Is the enemy already attracted by a piece of meat?
+				if (pAgent.GetVarString(sMeatAttract) != "") continue;
+				if (pAgent.GetSensesActive()==false) continue;
+				if (Ghoul_IsAggressive(pAgent.GetName())) continue;
+				if (Ghoul_CanBeAttracted(pAgent.GetName())==false) continue;
+				
+				vAgentPos = pAgent.GetCharBody().GetFeetPosition();
+				fDist = cMath_Vector3Dist(vMeatPos,vAgentPos);
+				
+				// Too far? Skip (but actually pay attention to meat that is really close!)
+				bMeatIsClose = fDist > 2.5f ? false : true;
+				if (fDist > mfAttractDistance+1.0f && !bMeatIsClose) continue;
+				
+				//TODO: Check LOS
+				// bool bLOS=...
+				/*cVector3f vFwd = pAgent.GetCharBody().GetForward();
+				float fFOV = pAgent.GetFOV()*pAgent.GetFOVMul();
+				fFOV += cMath_ToRad(20.0f);	// Allow a little bit extra
+				cLux_AddDebugMessage("FOV = " = fFOV);
+				if (pAgent.GetPointIsInFOV(vMeatPos,fFOV,vFwd)==false && !bMeatIsClose) continue;*/
+
+				if (fDist < fClosestDistance) // && bLOS
+				{
+					fClosestDistance = fDist;
+					@mpCurrentAttraction = pAgent;
+				}
+			}
+			
+			
+			// If we found an agent..
+			if (mpCurrentAttraction !is null)
+			{
+				//1. Remember this piece of meat!
+				mpCurrentAttraction.SetVarString(sMeatAttract,mBaseObj.GetEntity().GetName());
+				
+				//2. Broadcast
+				cLux_AddDebugMessage("Broadcasting as : " + mBaseObj.GetEntity().GetID());
+				mpCurrentAttraction.BroadcastMessage(eCustomEntityMessage_AttractAgent, null, vMeatPos,0);
+				mfGiveUp = 0.0f;
+				
+			}
+			
+			//	  1.0 Is that piece of meat us? --> Continue. Shouldn't happen though due to mpCurrentAttraction
+			//    1.1 If yes, then check if we're actually closer.
+			//	  1.2 If yes and we're not closer then continue to next enemy.
+			
+			
+		}
+		
+		
+	}
+	
+	bool MeatLOSCheck(bool abClear)
+	{
+		return abClear;
+	}
+	
+	/////////////////////////////
+	// DEBUG
+	/////////////////////////////
+	
+	void OnRenderSolid(cRendererCallbackFunctions@ apFunctions)
+	{
+		if (mbAttractEnabled)
+		{
+			apFunctions.GetLowLevelGfx().DrawSphere(mBaseObj.GetEntity().GetPosition(), 0.5, cColor(0,1,0,1));	
+			apFunctions.GetLowLevelGfx().DrawSphere(mBaseObj.GetEntity().GetPosition(), mfAttractDistance, cColor(1,0,0,1));	
+		}
+		else
+		{
+			apFunctions.GetLowLevelGfx().DrawSphere(mBaseObj.GetEntity().GetPosition(), 0.5, cColor(0,1,0,1));	
+		}
+	}
+
+}
+
+
+
+//---------------------------------------------------

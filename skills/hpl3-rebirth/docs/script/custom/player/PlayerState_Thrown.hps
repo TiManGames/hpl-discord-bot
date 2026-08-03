@@ -1,0 +1,412 @@
+#include "interfaces/PlayerState_Interface.hps"
+#include "base/InputHandler_Types.hps"
+#include "player/Player_Types.hps"
+#include "custom/modules/ModuleInterfaces_Custom.hps"
+#include "helpers/helper_modules.hps"
+#include "custom/player/PlayerTypes_Custom.hps"
+#include "helpers/helper_player.hps"
+#include "helpers/helper_components.hps"
+#include "helpers/helper_map.hps"
+
+/////////////////////////////////////////
+// SETTINGS
+/////////////////////////////////////////
+
+//------------------------------------------------------------
+
+class cScrPlayerState_Thrown : iScrPlayerState, iScrPlayerState_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+
+	void OnAttachBodyToStickyArea()
+	{
+	}
+	
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// USER SETTINGS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void LoadUserConfig() {}
+	void SaveUserConfig() {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ENTER MAP
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap) {}
+	void OnMapLeave(cLuxMap @apMap) {}
+	
+	//------------------------------------------------------------
+	
+	void CreateWorldEntities(cLuxMap @apMap) {}	
+	void DestroyWorldEntities(cLuxMap @apMap) {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetupThrown()
+	{
+		mvTarget = cScript_GetGlobalArgVector3f(0);
+		msBaseAnimation = cScript_GetGlobalArgString(1);
+		mvAnimPosition = cScript_GetGlobalArgVector3f(2);
+		mfAnimationAngle = cScript_GetGlobalArgFloat(3);
+		
+		cLux_GetPlayer().ChangeState(ePlayerState_Custom_Thrown);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnEnterState(int alPrevStateId)
+	{
+		FootPlacement_FadeOut(PlayerBody_GetEntityName(), 0.3f);
+		PlayerBody_StartCustomAnimation("", true, 0.3f, true, mvAnimPosition, mfAnimationAngle);
+		
+		mlThrowState = 0;
+		
+		///////////////
+		// Get pos for where to play end animation
+		cVector3f vDistance = cMath_Vector3Normalize(mvAnimPosition - mvTarget);
+		mvEndAnimStartPos = mvTarget + vDistance * GetEndDistanceFromAnimationName(msBaseAnimation);
+		
+		float fDist = 0;
+		cVector3f vNrm = 0;
+		cVector3f vRaycastStart = mvEndAnimStartPos + cVector3f_Up * 2.0f;
+		cLux_GetClosestBody(vRaycastStart, cVector3f_Down, 4, fDist, vNrm);
+		mvEndAnimStartPos.y = (vRaycastStart + cVector3f_Down * fDist).y;
+		mvEndAnimStartPos.y += 0.2f;
+		
+		Debug_DrawSphere(mvEndAnimStartPos, 0.29, cColor(1, 0, 1) * 2, 5);
+		Debug_DrawSphere(mvTarget, 0.29, cColor(1, 0, 1) * 2, 5);
+
+		///////////////
+		// See if total distance is too short
+		float fMinDist = 6.f;
+		float fTotalDist = cMath_Vector3Dist(mvTarget, mvAnimPosition);
+		mbTooShort = fTotalDist < fMinDist;
+		
+		Debug_DrawSphere(mvAnimPosition, 0.5f, cColor_Green * 2, 5);
+	}
+	
+	//------------------------------------------------------------
+
+	void OnLeaveState(int alNextStateId)
+	{
+		PlayerBody_StopCustomAnimation();
+		FootPlacement_FadeIn(PlayerBody_GetEntityName(), 0.3f);
+	}
+		
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+	}
+	
+	//------------------------------------------------------------
+
+	void Update(float afTimeStep)
+	{
+		mfTime = cMath_IncreaseTo(mfTime, afTimeStep, 0.f);
+		iCharacterBody@ pBody = cLux_GetPlayer().GetCharacterBody();
+		
+		/////////////////////
+		// Play start animation
+		if(mlThrowState == 0)
+		{
+			msCurrentAnim = msBaseAnimation + "_start";
+			PlayerBody_PlayAnimation(msCurrentAnim, ePlayerBodyAnimationLayer_FullBody, false, false, false, 0.0f);
+			cAnimationState@ pState = PlayerBody_GetAnimationState(msCurrentAnim);
+			float fSpeed = 1.0;
+			pState.SetSpeed(fSpeed);
+			mfTime = pState.GetLength() * (1 / fSpeed);
+			mlThrowState++;
+		}
+		/////////////////////
+		// Play loop animation when start animation is done
+		else if(mlThrowState == 1 && mfTime == 0.f)
+		{
+			PlayerBody_StopAnimation(msCurrentAnim, 0.0);
+			
+			UpdatePosition();
+			ResetMove();
+			
+			msCurrentAnim = msBaseAnimation + "_loop";
+			PlayerBody_PlayAnimation(msCurrentAnim, ePlayerBodyAnimationLayer_FullBody, true, false, false, 0.0f);
+			
+			if(mbTooShort == true)
+			{
+				// Skip next state if distance is too short by incrementing state counter an extra time
+				mlThrowState++;
+			}
+			else
+			{
+				///////////////////////
+				// Set interpolation speed for next state
+				iCharacterBody@ pBody = cLux_GetPlayer().GetCharacterBody();
+				cVector3f vFeetPos = pBody.GetFeetPosition();
+				float fTotalDist = cMath_Vector3Dist(mvTarget, vFeetPos);
+				mfMoveSpeed = 20.f / fTotalDist;
+			}
+			
+			mlThrowState++;
+		}
+		/////////////////////
+		// Move player during looping
+		else if(mlThrowState == 2)
+		{
+			if(MoveToTarget(afTimeStep))
+				mlThrowState++;
+		}
+		/////////////////////
+		// Start end
+		else if(mlThrowState == 3)
+		{
+			msCurrentAnim = msBaseAnimation + "_end";
+			PlayerBody_PlayAnimation(msCurrentAnim, ePlayerBodyAnimationLayer_FullBody, false, false, false, 0.f);
+			cAnimationState@ pState = PlayerBody_GetAnimationState(msCurrentAnim);
+			float fSpeed = 1.0;
+			pState.SetSpeed(fSpeed);
+			mfTime = pState.GetLength() * (1 / fSpeed);
+			
+			mvEndAnimStartPos.y = mvTarget.y;
+			
+			/////////////////
+			// Update and set move stuff
+			ResetMove();
+			mfMoveSpeed = 1.f / (mfTime / 2.f);
+			
+			mlThrowState++;
+		}
+		/////////////////////
+		// Move one last time, 
+		// this is needed when distance is too short
+		else if(mlThrowState == 4)
+		{
+			if(MoveToTarget(afTimeStep))
+				mlThrowState++;
+		}
+		/////////////////////
+		// Done!
+		else if(mlThrowState == 5 && mfTime == 0)
+		{
+			UpdatePosition();
+			PlayerBody_StopAnimation(msCurrentAnim, 0);
+			mBaseObj.mpPlayer.ChangeState(ePlayerState_Normal);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void PostUpdate(float afTimeStep) {}
+	void OnGui(float afTimeStep) {}
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool OnAction(int alAction, bool abPressed)
+	{
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnAnalogInput(int alAnalogId, const cVector3f &in avAmount)
+	{
+		///////////////////////////////////
+		// Override move
+		if(alAnalogId == eAnalogType_GamepadMove)
+		{
+			return false;
+		}
+		else if (alAnalogId == eAnalogType_Move)
+		{
+			return false;
+		}
+		
+		///////////////////////////////////
+		// Override look
+		else if(alAnalogId == eAnalogType_Look)
+		{
+			float fLookSpeedMul = Player_GetLookSpeedMul();
+			
+			iScrPlayerBodyHandler_Interface @pBody = cast<iScrPlayerBodyHandler_Interface>(cLux_GetUserModuleFromID(eModuleType_PlayerBodyHandler));
+			pBody.Cutscene_AddPitch(avAmount.y*fLookSpeedMul);
+			pBody.Cutscene_AddYaw(avAmount.x*fLookSpeedMul);
+			return false;
+		}
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnExitPressed()
+	{
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// BODY CALLBACKS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool AllowBuoyancy(iPhysicsBody @apBody)
+	{
+		return true;
+	}
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// CHARACTER CALLBACK
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void CharBody_GravityCollide(iCharacterBody@ apCharBody, iPhysicsBody@ apBody, cCollideData @apCollideData) {}
+	void CharBody_HitGround(iCharacterBody@ apCharBody,const cVector3f &in avVel) {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPERS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void UpdatePosition()
+	{
+		iCharacterBody@ pBody = cLux_GetPlayer().GetCharacterBody();
+		
+		iLuxEntity@ pEnt = Map_GetEntity(PlayerBody_GetEntityName());
+		cBoneState@ pBone = pEnt.GetMeshEntity().GetBoneStateFromName("j_Char_root");
+		cVector3f vPos = pBone.GetWorldPosition();
+		pBody.SetFeetPosition(vPos, false);
+		
+		PlayerBody_SetCameraAnimationPositionAndYaw(false, cVector3f_Zero, 0.f, 0.f);
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetMove()
+	{
+		mfMoveT = 0.f;
+		
+		iCharacterBody@ pBody = cLux_GetPlayer().GetCharacterBody();
+		mvMoveStart = pBody.GetFeetPosition();
+	}
+	
+	
+	bool MoveToTarget(float afTimeStep)
+	{
+		iCharacterBody@ pBody = cLux_GetPlayer().GetCharacterBody();
+
+		mfMoveT = cMath_IncreaseTo(mfMoveT, afTimeStep * mfMoveSpeed, 1.f);
+
+		pBody.SetFeetPosition(mvMoveStart * (1.f - mfMoveT) + mvEndAnimStartPos * mfMoveT, true);
+		
+		if(mfMoveT == 1.0)
+			return true;
+			
+		return false;
+	}
+	
+	//------------------------------------------------------------
+		
+	float GetEndDistanceFromAnimationName(const tString&in asAnimationBase)
+	{
+		if(asAnimationBase == "thrown_forward_by_ghoul")
+			return 2.4f;
+		
+		if(asAnimationBase == "thrown_left_by_ghoul")
+			return 2.5f;
+		
+		if(asAnimationBase == "thrown_back_by_ghoul")
+			return 2.75f;
+		
+		if(asAnimationBase == "thrown_right_by_ghoul")
+			return 2.5f;
+		
+		return 3.f;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+
+	int mlThrowState;
+	
+	float mfMoveSpeed = 1.f;
+
+	float mfTime = 0;
+	float mfMoveT = 0;
+	
+	cVector3f mvMoveStart;
+	
+	bool mbTooShort = false;
+	tString msBaseAnimation = "";
+	tString msCurrentAnim = "";
+
+	cVector3f mvAnimPosition;
+	float mfAnimationAngle;
+	
+	cVector3f mvEndAnimStartPos = 0;
+	cVector3f mvTarget = 0;
+
+	//------------------------------------------------------------
+}

@@ -1,0 +1,717 @@
+#include "interfaces/Prop_Interface.hps"
+#include "utilities/Utility_JointFix.hps"
+#include "base/Player_Types.hps"
+
+class cScrPropSlideLock : iScrProp, iScrProp_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		mlAutoMoving = 0;
+		
+		mForcePid.SetErrorNum(10);;
+		mForcePid.p = 6;
+		mForcePid.i = 0;
+		mForcePid.d = 0.1f;
+		
+		mbStuck = false;	
+		
+		mfInteractSoundCount =0;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{		
+		mfHandleMaxSpeed = apVars.GetVarFloat("HandleMaxSpeed", 10);
+		mfHandleSlowDownFactor = apVars.GetVarFloat("HandleSlowDownFactor", 1);
+		mfHandleSpeedFactor = apVars.GetVarFloat("HandleSpeedFactor", 1);
+		
+		mfAutoOpenAmount = apVars.GetVarFloat("AutoOpenAmount", 1);
+		mbAutoOpen = apInstanceVars.GetVarBool("AutoOpen", false); 
+		
+		msSoundHandleUp = apVars.GetVarString("SoundHandleUp", "");
+		msSoundHandleDown = apVars.GetVarString("SoundHandleDown", "");
+		msSoundHandleMove = apVars.GetVarString("SoundHandleMove", "");
+		msSoundHandleGrab = apVars.GetVarString("SoundHandleGrab", "");
+		msSoundHandleGrabStuck = apVars.GetVarString("SoundHandleGrabStuck", "");
+		msSoundHandleGrabStart = apVars.GetVarString("SoundHandleGrabStart", "");
+		msSoundHandleGrabEnd = apVars.GetVarString("SoundHandleGrabEnd", "");
+		msSoundTeethIn = apVars.GetVarString("SoundTeethIn", "");
+		msSoundTeethOut = apVars.GetVarString("SoundTeethOut", "");
+		msSoundTeethMove = apVars.GetVarString("SoundTeethMove", "");
+	
+		mfHandlePadMultiplier = apVars.GetVarFloat("HandlePadMultiplier",1.0f);
+		mCustomInteractIcon = PlayerTypes_StringToCrossHairState( apVars.GetVarString("CustomInteractIcon", "None"));
+				
+		int lHandleJointIndex = (mBaseObj.GetJoint(0).GetName() == mBaseObj.GetName()+"_JointSlider_Handle") ? 1 : 0;
+		int lTeethJointIndex = (lHandleJointIndex == 0) ? 1 : 0;
+		
+		@mpHandleJoint = cPhysics_ToJointSlider(mBaseObj.GetJoint(lHandleJointIndex));
+		@mpHandleBody = mpHandleJoint.GetChildBody();
+		
+		@mpTeethJoint = cPhysics_ToJointSlider(mBaseObj.GetJoint(lTeethJointIndex));
+		@mpTeethBody = mpTeethJoint.GetChildBody();
+		
+		///////////////////////
+		//Set up data
+		
+		mbInteractOnlyWithMainBody = apVars.GetVarBool("InteractOnlyWithMainBody", false);
+		
+		mfHandleMaxDistance = mpHandleJoint.GetMaxDistance();
+		mfTeethMaxDistance = mpHandleJoint.GetMaxDistance();
+		
+		mvHandleInitialPosition = mpHandleBody.GetLocalPosition() - mpHandleJoint.GetPinDir() * mpHandleJoint.GetDistance();
+		
+		mvTeethInitialPosition = mpTeethBody.GetLocalPosition() + mpTeethJoint.GetPinDir() * mpTeethJoint.GetMinDistance();
+		mvTeethFinalPosition = mpTeethBody.GetLocalPosition() + mpTeethJoint.GetPinDir() * mpTeethJoint.GetMaxDistance();
+		
+		SetStuck(apInstanceVars.GetVarBool("Stuck",false),false);
+		
+		mbStartLocked = apInstanceVars.GetVarBool("StartLocked",false);
+		
+		if (mbStartLocked)
+		{
+			SetOpenAmount(1);
+			ChangeState(1,false,true);
+		}
+		else
+		{
+			SetOpenAmount(0);
+			ChangeState(-1,false,true);
+		}
+		
+/*		float fOpenAmount = apInstanceVars.GetVarFloat("OpenAmount", -1);
+		if(fOpenAmount > 0) 
+		{
+			SetOpenAmount(fOpenAmount);
+			SetTeethOut(true);
+		}
+		else
+		{
+			SetTeethOut(false);
+		}*/
+		
+		///////////////////////
+		// Setup joint sounds
+
+		if (msSoundHandleMove != "")
+		{
+			mpHandleJoint.SetMoveSound(msSoundHandleMove);
+			mpHandleJoint.SetMoveSpeedType(ePhysicsJointSpeed_Linear);
+		}
+		if (msSoundTeethMove != "")
+		{
+			mpTeethJoint.SetMoveSound(msSoundTeethMove);
+			mpTeethJoint.SetMoveSpeedType(ePhysicsJointSpeed_Linear);
+		}
+		float fMinMoveSoundSpeed = apVars.GetVarFloat("MinMoveSoundSpeed", -1);
+		if (fMinMoveSoundSpeed >= 0)
+		{
+			mpHandleJoint.SetMinMoveSpeed(fMinMoveSoundSpeed);
+			mpTeethJoint.SetMinMoveSpeed(fMinMoveSoundSpeed);
+		}
+		
+		mfSoundHandleUpMinSpeed = apVars.GetVarFloat("SoundHandleUpMinSpeed", 0);
+		mfSoundHandleDownMinSpeed = apVars.GetVarFloat("SoundHandleDownMinSpeed", 0);
+		mfSoundTeethInMinSpeed = apVars.GetVarFloat("SoundTeethInMinSpeed", 0);
+		mfSoundTeethOutMinSpeed = apVars.GetVarFloat("SoundTeethOutMinSpeed", 0);
+		
+		if (msSoundHandleDown != "")
+			mpHandleJoint.SetMaxLimitSound(msSoundHandleDown, mfSoundHandleDownMinSpeed);
+		if (msSoundTeethIn != "")
+			mpTeethJoint.SetMinLimitSound(msSoundTeethIn, mfSoundTeethInMinSpeed);
+		
+		if (msSoundHandleUp != "")
+			mpHandleJoint.SetMinLimitSound(msSoundHandleUp, mfSoundHandleUpMinSpeed);
+		if (msSoundTeethOut != "")
+			mpTeethJoint.SetMaxLimitSound(msSoundTeethOut, mfSoundTeethOutMinSpeed);
+		
+		mJointFix.Init(mpHandleBody);
+			
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//-------------------------------------------------------
+	
+	float mfTeethMoveAmount;
+	float mfTeethOpenSpeedMul = 6;
+	float mfTeethCloseSpeedMul = 8;
+	
+	void OnUpdate(float afTimeStep)
+	{
+		if(mfInteractSoundCount>0)
+			mfInteractSoundCount-=afTimeStep;
+		
+		float fOpenAmount = GetOpenAmount();
+		
+		if(!mbStuck && fOpenAmount > mfAutoOpenAmount && mpHandleBody.GetMass() > 0.0f && mbAutoOpen)
+		{
+			////////////
+			// Open the door fully
+			mpHandleBody.AddForce(mpHandleJoint.GetPinDir() * afTimeStep * mfHandleMaxSpeed * 512.0f);
+			if(fOpenAmount >= 1.0)
+			{
+				mpHandleBody.SetMass(0.0f);
+				mpHandleBody.SetLinearVelocity(cVector3f(0));
+				mpHandleBody.SetAngularVelocity(cVector3f(0));
+			} 
+		}
+		
+		if (mpHandleBody.GetMass()>0.0f)
+		{
+			if (mlAutoMoving==-1)
+			{
+				if (fOpenAmount>mfAutoMoveTarget)
+					mpHandleBody.AddForce(mpHandleJoint.GetPinDir() * -afTimeStep * mfHandleMaxSpeed * 512.0f);
+				else
+					mlAutoMoving=0;
+			}
+			else if (mlAutoMoving==1)
+			{
+				if (fOpenAmount<mfAutoMoveTarget)
+					mpHandleBody.AddForce(mpHandleJoint.GetPinDir() * afTimeStep * mfHandleMaxSpeed * 512.0f);
+				else
+					mlAutoMoving=0;
+			}
+		}
+		
+		//cLux_AddDebugMessage(""+mbTeethOut);
+		
+		///////////////////////////////
+		// Move teeth
+		if (mbMoveTeeth)
+		{		
+			float fTeethOpenAmount = GetTeethOpenAmount();
+			
+			cVector3f vStartPos, vGoalPos;
+			cVector3f vCurrentPos;
+			float fT;
+			
+			if (mbTeethOut)
+			{
+				mfTeethMoveAmount += afTimeStep*mfTeethOpenSpeedMul;
+				vStartPos = mvTeethInitialPosition;
+				vGoalPos = mvTeethFinalPosition;
+			}
+			else
+			{
+				mfTeethMoveAmount += afTimeStep*mfTeethCloseSpeedMul;
+				vStartPos = mvTeethFinalPosition;
+				vGoalPos = mvTeethInitialPosition;
+			}
+			
+			vCurrentPos = vStartPos + (vGoalPos-vStartPos)*mfTeethMoveAmount;
+			mpTeethBody.SetPosition(vCurrentPos);
+			
+			//Snap
+			if(mfTeethMoveAmount>0.9f)
+			{
+				if (mbTeethOut) 
+					mBaseObj.PlaySound("SoundTeethOut",msSoundTeethOut,true, true);
+				else
+					mBaseObj.PlaySound("SoundTeethIn",msSoundTeethIn,true, true);
+					
+				mpTeethBody.SetPosition(vGoalPos);
+				mbMoveTeeth = false;
+				if (!mbIsReady)
+					mbIsReady = true;
+			}
+		}
+		
+		///////////////////////////////
+		// Change state
+		if (mbIsReady)
+		{
+			float fAmount = GetOpenAmount();
+			if (fAmount<=0.01f)
+			{
+				ChangeState(-1, false, true);
+			}
+			else if (fAmount>=.5f)
+			{
+				ChangeState(1, false, true);
+			}
+		}
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetTeethOut(bool abOut)
+	{
+		mbMoveTeeth = true;
+		mbTeethOut = abOut;
+		mfTeethMoveAmount = 0;
+	}
+	
+	//------------------------------------------------------------
+	
+	void ChangeState(int alState, bool abEffects, bool abChangeConnectionState = true)
+	{
+		
+		if(mlCurrentState == alState) return;
+		
+		mBaseObj.SetSaveDataIsUpdated(true);
+		
+		mlCurrentState = alState;
+		
+		/////////////////
+		//Min - Unlock
+		if(mlCurrentState == -1)
+		{
+			if (abChangeConnectionState) 
+			{
+				
+				mBaseObj.ChangeConnectionState(1);
+				mBaseObj.PlaySound("SoundHandleUp",msSoundHandleUp,true, true);
+				// CLOSE TEETH
+				SetTeethOut(false);
+			}
+		}
+		/////////////////
+		//Max - Lock
+		else if(mlCurrentState == 1)
+		{
+			if (abChangeConnectionState) 
+			{
+				
+				mBaseObj.ChangeConnectionState(-1);
+				mBaseObj.PlaySound("SoundHandleDown",msSoundHandleDown,true, true);
+				// OPEN TEETH
+				SetTeethOut(true);
+			}
+		}
+		/////////////////
+		//Middle
+		else if(mlCurrentState == 0)
+		{
+			if (abChangeConnectionState) mBaseObj.ChangeConnectionState(0);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnPostUpdate(float afTimeStep)
+	{
+		// Hack for trying to cure Newton instability
+		mJointFix.Update(mBaseObj,mpHandleBody);	
+	}
+	//------------------------------------------------------------
+	
+	void ResetProperties()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void BeforeEntityDestruction()
+	{
+	}
+		
+	//------------------------------------------------------------
+	
+	void OnStartMove()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnSetActive(bool abX)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void GiveDamage(iPhysicsBody@ apBodyHit, const cVector3f&in avOrigin, const cVector3f&in avHitPos, cLuxDamageProperties@ apDamageProps)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnHealthChange()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnConnectionStateChange(iLuxEntity@ apEntity,int alState)
+	{
+		AutoMoveTo(alState == 1 ? 1 : 0);
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnUpdateAutoSleep()
+	{
+		return mbMoveTeeth == false;
+	}
+	
+	//------------------------------------------------------------
+	
+	//NOTE: This is only useable if SetScriptCollisionCallbackActive is true
+	void OnPhysicsCollision(iPhysicsBody @apBody, iPhysicsBody @apCollideBody, cPhysicsContactData&in apContactData)
+	{
+	
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INTERACT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	bool CanInteract(int alType, iPhysicsBody@ apBody)
+	{
+		if(apBody.GetMass()==0) return false;
+		
+		//Avoid interacting with teeth
+		if(mbInteractOnlyWithMainBody && apBody !is mBaseObj.GetMainBody()) return false;
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+		
+	bool OnInteract(int alType, iPhysicsBody@ apBody, const cVector3f &in avFocusPos, const tString&in asData)
+	{
+		if(mbStuck)
+		{
+			if(mfInteractSoundCount <= 0)
+			{
+				mBaseObj.PlaySound("SoundHandleGrab",msSoundHandleGrab,true, true);
+				mfInteractSoundCount = 0.5f;
+			}
+		}
+		
+		///////////////////////////////
+		// First time you interact, enable all bodies that are inside the BV in case this is drawer.
+		if(mbFirstInteract)
+		{
+			mbFirstInteract = false;
+			cBoundingVolume @pBV = apBody.GetBoundingVolume();
+			array<iPhysicsBody@> vBodies;
+			
+			mBaseObj.GetMap().GetPhysicsWorld().GetBodiesInAABB(pBV.GetMin(), pBV.GetMax(),vBodies);
+			
+			for(int i=0; i<vBodies.size();++i)
+			{
+				iPhysicsBody @pBody = vBodies[i];
+				
+				if(pBody.GetFrozen() && pBody.GetMass()>0 && pBody.IsActive())
+				{
+					pBody.Enable();
+				}
+			}
+		}
+		
+		///////////////////////////////
+		//Set up the slide state
+		cScript_SetGlobalArgID(0, mBaseObj.GetID()); //Object ID
+		cScript_SetGlobalArgInt(1, apBody.GetUniqueID()); //Body Id
+		cScript_SetGlobalArgVector3f(2, avFocusPos);//The grab postion
+		
+		cScript_SetGlobalArgFloat(3, mfHandleMaxSpeed);
+		cScript_SetGlobalArgFloat(4, mfHandleSlowDownFactor);
+		cScript_SetGlobalArgFloat(5, mfHandleSpeedFactor);
+		cScript_SetGlobalArgBool(6, mbStuck);
+		cScript_SetGlobalArgString(7, msSoundHandleGrabStuck);
+		cScript_SetGlobalArgString(8, msSoundHandleGrabStart);
+		cScript_SetGlobalArgString(9, msSoundHandleGrabEnd);
+		cScript_SetGlobalArgFloat(10, mfHandlePadMultiplier);
+		
+		cScript_RunGlobalFunc("State_Interact_Slide", "", "SetupSlide");
+		
+		///////////////////////////////
+		//Change the player state
+		cLux_GetPlayer().ChangeState(ePlayerState_Slide);	
+		
+		
+	
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	int GetInteractIconId(int alType, iPhysicsBody@ apBody)
+	{
+		if(mCustomInteractIcon != eCrossHairState_None)
+		{
+			return mCustomInteractIcon;
+		}
+		return eCrossHairState_PullOut;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// SLIDER ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void AutoMoveTo(float afAmount)
+	{
+		mBaseObj.SetSaveDataIsUpdated(true);
+		
+		float fOpenAmount = GetOpenAmount();
+		if (fOpenAmount>afAmount)
+			mlAutoMoving=-1;
+		else if (fOpenAmount<afAmount)
+			mlAutoMoving=1;
+		mfAutoMoveTarget = afAmount;
+		mBaseObj.WakeUp();
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetAutoMove()
+	{
+		mlAutoMoving = 0;
+		mForcePid.Reset();
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetOpenAmount()
+	{
+		float fAmount = cScript_GetGlobalArgFloat(0);
+		SetOpenAmount(fAmount);
+		AutoMoveTo(fAmount);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_AutoMoveTo()
+	{
+		AutoMoveTo(cScript_GetGlobalArgFloat(0));
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetOpenAmount(float afX)
+	{	
+		mBaseObj.SetSaveDataIsUpdated(true);
+		
+		cVector3f vPinDir = mpHandleJoint.GetPinDir();
+		cVector3f vMinPos = mvHandleInitialPosition + vPinDir * mpHandleJoint.GetMinDistance();
+		cVector3f vMaxPos = mvHandleInitialPosition + vPinDir * mpHandleJoint.GetMaxDistance();
+		
+		mpHandleBody.SetPosition(vMinPos *(1-afX) + vMaxPos*afX);
+		
+		mpHandleBody.AddForce(cVector3f(.1f,0,.0)); //Updates the joints
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetSlideAmount()
+	{
+		float fResult = GetOpenAmount();
+		cScript_SetGlobalReturnFloat(fResult);
+	}
+	
+	//------------------------------------------------------------
+	
+	float GetOpenAmount()
+	{
+		return (mpHandleJoint.GetDistance() - mpHandleJoint.GetMinDistance())/(mpHandleJoint.GetMaxDistance() - mpHandleJoint.GetMinDistance());
+	}	
+	
+	//------------------------------------------------------------
+	
+	float GetTeethOpenAmount()
+	{
+		// put Abs because mpTeethJoint.GetDistance() returns -0.000
+		return (mpTeethJoint.GetDistance() - mpTeethJoint.GetMinDistance())/(mpTeethJoint.GetMaxDistance() - mpTeethJoint.GetMinDistance());
+	}	
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetSlideVel()
+	{
+		cVector3f vResult = GetSlideVel();
+		cScript_SetGlobalReturnVector3f(vResult);
+	}
+	
+	//------------------------------------------------------------
+	
+	cVector3f GetSlideVel()
+	{
+		cVector3f vel = mpHandleJoint.GetVelocity()*mpHandleJoint.GetPinDir();
+		return vel;
+	}
+
+	//------------------------------------------------------------
+	
+	void _Global_SetStuck()
+	{
+		SetStuck(cScript_GetGlobalArgBool(0), cScript_GetGlobalArgBool(1));
+	}
+
+	//------------------------------------------------------------
+
+	void SetStuck(bool abStuck, bool abEffects)
+	{
+		if(mbStuck == abStuck) return;
+		
+		mBaseObj.SetSaveDataIsUpdated(true);
+
+		mbStuck = abStuck;
+		
+		if(mbStuck)
+		{
+			// Remove Min/Max joint sounds until unlocked
+			if (msSoundHandleDown != "") mpHandleJoint.SetMaxLimitSound("", 0);
+			if (msSoundHandleUp != "") mpHandleJoint.SetMinLimitSound("", 0);
+			
+			if (msSoundTeethIn != "") mpTeethJoint.SetMaxLimitSound("", 0);
+			if (msSoundTeethOut != "") mpTeethJoint.SetMinLimitSound("", 0);
+			
+			mpHandleJoint.SetMaxDistance(0.01f);
+
+			//Add force to body so that the door really closes.
+			mpHandleBody.AddForce(cVector3f_One);
+		}
+		else
+		{
+			
+			if (msSoundHandleDown != "") mpHandleJoint.SetMaxLimitSound(msSoundHandleDown, mfSoundHandleDownMinSpeed);
+			if (msSoundHandleUp != "") mpHandleJoint.SetMinLimitSound(msSoundHandleUp, mfSoundHandleUpMinSpeed);
+			
+			if (msSoundTeethIn != "") mpTeethJoint.SetMaxLimitSound(msSoundTeethIn, mfSoundTeethInMinSpeed);
+			if (msSoundTeethOut != "") mpTeethJoint.SetMinLimitSound(msSoundTeethOut, mfSoundTeethOutMinSpeed);
+
+			mpHandleJoint.SetMaxDistance(mfHandleMaxDistance);
+		}
+
+		if(abEffects)
+		{
+		}
+	}
+
+	//------------------------------------------------------------
+
+	void _Global_GetStuck()
+	{
+		cScript_SetGlobalReturnBool(mbStuck);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// SLIDER SPECIFIC UPDATES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	[nosave] iPhysicsJointSlider@ mpHandleJoint;
+	[nosave] iPhysicsBody@ mpHandleBody;
+	[nosave] cPidControllerVec3 mForcePid;
+	
+	[nosave] iPhysicsJointSlider@ mpTeethJoint;
+	[nosave] iPhysicsBody@ mpTeethBody;
+	
+	//------------------------------------------------------------
+	
+    [nosave] float mfHandleMaxDistance;
+	[nosave] float mfTeethMaxDistance;
+	
+	[nosave] float mfHandleMaxSpeed;
+	[nosave] float mfHandleSlowDownFactor;
+	[nosave] float mfHandleSpeedFactor;
+	[nosave] float mfAutoOpenAmount;
+	[nosave] bool mbAutoOpen;
+	
+	[nosave] tString msSoundHandleUp;
+	[nosave] tString msSoundHandleDown;
+	[nosave] tString msSoundHandleMove;
+	[nosave] tString msSoundHandleGrab;
+	[nosave] tString msSoundHandleGrabStuck;
+	[nosave] tString msSoundHandleGrabStart;
+	[nosave] tString msSoundHandleGrabEnd;
+	[nosave] float mfSoundHandleUpMinSpeed;
+	[nosave] float mfSoundHandleDownMinSpeed;
+
+	[nosave] tString msSoundTeethOut;
+	[nosave] tString msSoundTeethIn;
+	[nosave] tString msSoundTeethMove;
+	[nosave] float mfSoundTeethInMinSpeed;
+	[nosave] float mfSoundTeethOutMinSpeed;
+
+	[nosave] float mfHandlePadMultiplier;
+	[nosave] eCrossHairState mCustomInteractIcon;
+	[nosave] bool mbLockConnectedEntity;
+	[nosave] bool mbInteractOnlyWithMainBody;
+	
+	[nosave] bool mbMoveTeeth = false;
+	[nosave] bool mbTeethOut = true;
+	[nosave] bool mbStartLocked = false;
+	[nosave] bool mbIsReady = false;
+
+	cVector3f mvHandleInitialPosition;
+	cVector3f mvTeethInitialPosition;
+	cVector3f mvTeethFinalPosition;
+
+	//------------------------------------------------------------
+	
+	int mlAutoMoving;
+	float mfAutoMoveTarget;
+	bool mbStuck;
+	int mlCurrentState = 0;
+	
+	bool mbFirstInteract=true;
+	
+	float mfInteractSoundCount;
+	
+	cUtility_JointFix mJointFix;
+		
+	//------------------------------------------------------------
+		
+}	

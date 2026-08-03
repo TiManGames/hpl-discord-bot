@@ -1,0 +1,3013 @@
+#include "interfaces/Map_Interface.hps"
+#include "base/Inputhandler_Types.hps"
+
+#include "helpers/helper_map.hps"
+#include "helpers/helper_menu.hps"
+#include "helpers/helper_areas.hps"
+#include "helpers/helper_props.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_audio.hps"
+#include "helpers/helper_imgui.hps"
+#include "helpers/helper_sequences.hps"
+#include "helpers/helper_game.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_ai.hps"
+#include "helpers/helper_audio.hps"
+#include "helpers/helper_player.hps"
+#include "helpers/helper_physics.hps"
+#include "helpers/helper_components.hps"
+#include "custom/helpers/helper_agent.hps"
+#include "custom/helpers/helper_props_custom.hps"
+#include "custom/helpers/helper_player_custom.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+#include "custom/helpers/helper_effects_custom.hps"
+#include "base/AchievementHandler_Types.hps"
+
+//--------------------------------------------------
+ 
+/*Place any global values here. These must be const variables as they will not be saved*/
+/*This is also the place for enums and classes, but these should be avoided whenever possible*/
+
+const float gfTimerTeleportCheckTime = 2.5f; // How often the game will check if the player is just wandering around for too long
+const float gfTimerTeleportLimit = 22.50f;    // How long the game will allow the player to wander before auto-teleporting them
+ 
+//--------------------------------------------------
+ 
+class cScrMap : iScrMap
+{
+	//--------------------------------------------
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN CALLBACKS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+ 
+	////////////////////////////
+	// Set up map environment
+	void Setup()
+	{
+		// Put display name entry in english.lang / Levels
+		GetBase().SetDisplayNameEntry("04-02-sandstorm");
+		
+		Pregnancy_SetStage(ePregStage_Stage3);
+		Pregnancy_SetBarksActive(true);
+		Pregnancy_SetBabyTalkStage(eBabyTalkStage_Town);
+		GhoulProgression_SetBarkStage(eGhoulBarkStage_BecomingGhoul);
+		Player_SetAllowCheckBaby(true);
+		FearHandler_SetWhisperStage(eFearWhisperStage_TownToBirth);
+		
+		// Set up color grading etc.
+		//Map_Preset_Fade("Inside", 0.1f);
+		Map_Preset_SetupDirLight("Inside", true, cColor(1,0.931,0.867,0.529), 0.7f, cVector3f(0.446,-0.711,-0.544), cColor(0.088,0.08,0.071,1), cColor(0.381,0.321,0.287,1));
+		Map_Preset_SetupFog("Inside", true, 15, 200, 1, cColor(0.459,0.443,0.42,0.959), 1, false, true);
+		Map_Preset_SetupDirLight("Outside", true, cColor(1,0.931,0.867,0.529), 0.3f, cVector3f(0.446,-0.711,-0.544), cColor(0.396,0.297,0.2,1), cColor(0.709,0.642,0.604,1));
+		//Map_Preset_SetupFog("Outside", true, 1, 40, 1, cColor(0.455,0.441,0.42,1), 1, false, true);
+		Map_SetSecondaryFogActive(false);
+		Map_Preset_SetupFog("Darkworld", true, 1, 300, 1, cColor(0.057,0.1,0.082,0.85), 1, false, false);
+		
+		Map_Preset_SetupDirLight("Darkworld", true, cColor(0.578,1,0.827,0.8), 0.5f, cVector3f(0.411, -0.725, -0.553), cColor(0.134,0.194,0.225,1), cColor(0.373,0.352,0.34,1));
+		
+		Map_Preset_SetupSkybox("Darkworld", cColor(1,1,1,1), 1.0f);
+		
+		Storm_SetStrength(0,1);
+		
+		StruggleFlashHandler_SetActive(true);
+		StruggleFlashHandler_PreloadFlashGroupTextures(2);
+		StruggleFlashHandler_SetProgression(2);
+		
+		cScript_SetGlobalVarBool("Global_LanternLost", true);
+		
+		Prop_SetRenderLayer("sandstorm_wall_layer1",-1);
+		Prop_SetRenderLayer("sandstorm_wall_layer2",0);
+		Prop_SetRenderLayer("sandstorm_wall_layer2",1);
+
+	    cWorld@ pWorld = mBaseObj.GetWorld();
+		cLightMaskBox@ pMask = pWorld.GetLightMask("lightmask_mine");		
+		pWorld.GetDirectionalLight().SetMask(pMask);
+		
+		Player_SetAutoTeleportWhenBelowAltitude(0.f);
+		
+	}
+	
+	//-------------------------------------------------------
+		
+	void PreloadData()
+	{
+		/////////////////
+		// Preload gui
+		//ImGui_PreloadImage("some_image");
+
+		///////////////
+		// Preload particles
+		Material_Preload("sandstorm_swipe.mat");
+		ParticleSystem_Preload("storm_dirt_swipe.ps");
+		ParticleSystem_Preload("storm_dirt_swipe_vortex.ps");
+		ParticleSystem_Preload("storm_dirt_swipe_vortex_full.ps");
+		ParticleSystem_Preload("dust_impact_simple_oneshot.ps");
+		
+		//////////////
+		// Preload screen effects
+		//Material_Preload("some_material.mat");
+		
+		Sound_PreloadGroup("new_sounds/post_birth", true);
+	}
+	
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run first time starting map
+	void OnStart()
+	{
+		//Set GhoulProgresison limit
+		GhoulProgression_SetLimit(16);
+		
+		// Any general setup of script / entities
+		//Storm_SetStrength(0,0);
+		//Entity_SetActive("Patient_Anim",true);
+		//Entity_PlayAnimation("Patient_Anim","f_gnaw_on_fairchild_loop",.1f,true);
+		Entity_SetActive("darkworld_*", false);
+		Entity_SetActive("rift_replacement_rock_*", false);
+		ParticleSystem_SetVisible("darkworld_effect_*", false);
+		FogArea_SetVisible("darkworld_fog_*", false);
+		
+		Entity_PlayAnimation("Cart_Rigid","cart_idle",0,true);
+		
+		Entity_SetActive("Tile_*",false);
+		
+		mvBaseDir = cVector3f(0.446f,-0.711,-0.544);
+				
+		/*iLuxEntity@ pPlayer = Map_GetEntity("player");
+		iLuxEntity@ pParticles = Map_GetEntity("sandstorm_player");
+		pParticles.AttachToEntity(pPlayer,pPlayer.GetMainBody(),true,true,true);*/
+		//Entity_SetEffectsActive("sandstorm_player",false,false);		
+		Tasi_SetFatigueActive(true);
+		
+		//Voice_SetSource("Doctor_Sandstorm_1","Doctor_Sandstorm_1",20,35,true);
+		
+		Player_SetRunSpeedMul(0.3f);
+		Player_SetJumpDisabled(true);
+		
+		Visibility_SetTerrainActive(true);
+		Pregnancy_SetBabyKicksEnabled(false);
+		
+		Player_SetFootStepDecalFadeOutTime(5.0f);
+
+		//PlayerBody_PlayCutsceneAtEntity("wake_up_ghoul","PosArea_WakeUp",false,0,"",1,0,0,0,true);
+				
+		//Sound_CreateAtEntity("Sound_Grawl","player/vocalisations/temp/ghoul_trasform","player");
+				
+		//ParticleSystem_CreateAtEntity("PS_Dust","alex_sandstorm_circular.ps","player",true);		
+		
+		ItemType_RemoveFromInventory("CurseMedallion");
+		Entity_StopAnimation("Amulet");
+		Entity_SetEffectsActive("Amulet", false, false);
+		Entity_StopAnimation("Bracelet_Birth");
+		Entity_StopAnimation("Stretcher");
+		
+		Entity_SetCollideCharacter("darkworld_plant_*", false);
+		
+		Sound_FadeGlobalVolume(1.0f,0.0f,eSoundEntryType_WorldAll);
+		Music_FadeVolumeMul(1.0f,0.0f);
+		
+		/////////////////////////
+		// Debug
+		if(cLux_ScriptDebugOn())
+		{
+			Pregnancy_SetStage(ePregStage_Born);
+		}
+		else
+		{
+			StartBirth();
+		}
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when entering map
+	void OnEnter()
+	{	
+		cLux_ClearAllMapSaveData();
+		Game_AutoSave();
+		
+		Debug_Log("ONENTER");
+		//PlayerBody_SetModel("player.ent");
+		//PlayerBody_SetModel("player9skirt.ent");
+		PlayerBody_SetActive(true);
+		FearHandler_SetPermaFailEnabled(false);
+        Heat_SetActive(false);
+//		iTexture@ pSkybox = cResources_CreateTextureCubeMap("environment_sandstorm.dds",true);
+//        cLux_GetCurrentMap().GetWorld().SetFogSkyboxTexture(pSkybox);
+		
+		if(cLux_ScriptDebugOn())	
+		{
+			Effect_Fade_In(1);
+		}
+	}
+
+	//-------------------------------------------------------
+		
+	void OnGui(float afTimeStep)
+	{
+		cImGuiGfx gfxScarf("gui_scarf", eImGuiGfx_Texture);	
+		gfxScarf.mColor =  ImGui_GetStateColor("color", cColor(1,1,1,0));
+		
+		cImGuiGfx gfxSquint("gui_squint", eImGuiGfx_Texture);	
+		gfxSquint.mColor =  ImGui_GetStateColor("colorsquint", cColor(1,1,1,0));
+				
+		cGuiSet@ pSet = cLux_GetCurrentImGui().GetSet();
+		
+		if (mbScarf)
+			ImGui_FadeStateColor("color",cColor(1,1,1,1),1,eEasing_QuadIn,false);
+		else
+			ImGui_FadeStateColor("color",cColor(1,1,1,0),1,eEasing_QuadIn,false);
+			
+		//Debug_Log("SCARF: "+mbScarf+" - Squint: "+mbSquint);	
+			
+		if (mbSquint)
+			ImGui_FadeStateColor("colorsquint",cColor(1,1,1,1),1,eEasing_QuadIn,false);
+		else
+			ImGui_FadeStateColor("colorsquint",cColor(1,1,1,0),1,eEasing_QuadIn,false);
+			
+		ImGui_DrawGfx(gfxScarf,ImGui_FullScreenPos(1),ImGui_FullScreenSize());
+		ImGui_DrawGfx(gfxSquint,ImGui_FullScreenPos(1),ImGui_FullScreenSize());
+		
+	}
+
+	////////////////////////////
+	// Run when leaving map
+	void OnLeave()
+	{
+	}
+	
+	float mfTime = 0;
+	float mfFogRadiusMin = 50;
+	float mfSecondaryFogRadiusMin = 36;
+	
+	//-------------------------------------------------------
+	
+	void Update(float afTimeStep)
+	{
+		UpdatePlayerTripping(afTimeStep);
+		UpdateFogRadius(afTimeStep);
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// The player has died.
+	void OnPlayerKilled(int alRecentDeaths, const tString&in asSource)
+	{
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnRenderSolid(cRendererCallbackFunctions@ apFunctions)
+	{
+/*		if (cLux_ScriptDebugOn())
+		{
+			apFunctions.GetLowLevelGfx().DrawLine(cLux_GetPlayer().GetCharacterBody().GetPosition(),cLux_GetPlayer().GetCharacterBody().GetPosition() + cVector3f_Forward*10,cColor(5,5,20)); //NORTH
+			apFunctions.GetLowLevelGfx().DrawLine(cLux_GetPlayer().GetCharacterBody().GetPosition(),cLux_GetPlayer().GetCharacterBody().GetPosition() + cVector3f_Right,cColor(1,1,20)); //WEST
+			apFunctions.GetLowLevelGfx().DrawLine(cLux_GetPlayer().GetCharacterBody().GetPosition(),cLux_GetPlayer().GetCharacterBody().GetPosition() + cVector3f_Left,cColor(1,1,20)); //EAST
+			apFunctions.GetLowLevelGfx().DrawLine(cLux_GetPlayer().GetCharacterBody().GetPosition(),cLux_GetPlayer().GetCharacterBody().GetPosition() + cVector3f_Forward*-1,cColor(5,5,20));
+		}*/
+	}
+	
+	//-------------------------------------------------------
+	
+	////////////////////////////////////
+	// Called when player HP reaches 0
+	bool OnDeath(const tString &in asSource)
+	{
+		cLux_AddTodoMessage("DEAD : SOURCE = " + asSource);
+		
+		if (asSource == "SomeReason")
+		{
+			Effect_Fade_Out(1.0f);
+			return true; // return true to completely override base behaviour
+		}
+		
+		// return false for default behaviour
+		return false;
+	}
+	
+	//-------------------------------------------------------
+	
+	////////////////////////////////////
+	// Called when player should respawn (after death)
+	bool OnRespawn(const tString &in asSource)
+	{		
+		// return false for default behaviour (fadeout and death area)
+		return false;
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// To get when player makes input (mostly used for debug)
+	void OnAction(int alAction, bool abPressed) 
+	{
+		if(abPressed==false) return;
+		
+		if(alAction == eAction_Test1)
+		{
+			OnCollide_PlayChaseMusic("","",1);
+			Player_Teleport("Start_Rift_Dunes");
+			mbStormActive = true;
+			Storm_SetStrength(2,0);
+		}
+		if(alAction == eAction_Test2)
+		{
+			Doctor_Setup(msCurrentDoctor,"Baby_Intro");		
+			Doctor_SetupSounds(msCurrentDoctor, "Baby_Intro");
+			Voice_SetSource("Doctor","Doctor_Intro",20,35,true);	
+			//CameraAnimation_Begin("CameraAnimation_Rage","",false);
+			Pathfinder_Track_Clear(msCurrentDoctor);
+			CharMover_SetSpeedState(msCurrentDoctor,eHumanoidSpeed_Walk_Fast);
+			Pathfinder_Track_Add(msCurrentDoctor,"PathNode_16");
+			Pathfinder_Track_Start(msCurrentDoctor,false,1,"OnEndOfTrack_Blockage");
+			
+		}
+		if (alAction == eAction_Test3)
+		{
+			/*Entity_SetEffectsActive("sandstorm_player",true,true);	
+			Entity_SetActive("storm_radius_small",true);	
+			Entity_SetActive("storm_radius_medium",true);	
+			Entity_SetActive("storm_radius_large",true);
+			Storm_SetStrength(1,0);*/
+			FearHandler_SetLevelTo(0.4f);
+			Player_Teleport("Start_Rift_Dunes");
+		}
+		
+		if(alAction == eAction_Test4)
+		{
+			Pregnancy_SetStage(ePregStage_Born);
+			PlayerBody_SetModel("player_birth.ent");
+			Entity_SetActive("Doctor_Birth", true);
+			Agent_SetStaticCollider("Doctor_Birth", true);
+			Voice_SetSource("Doctor","Doctor_Birth",20,35,true);
+			Entity_SetActive("Amulet", true);
+			Entity_AttachToSocket("Amulet", PlayerBody_GetEntityName(), "AmuletSocket", true, true);
+			OnBirthComplete();
+		}
+		if(alAction == eAction_Test5)
+		{
+			//Item_AddToInventory("Orb");
+			Entity_SetActive("Doctor_Sandstorm_1",true);
+			Entity_SetActive("Baby_1",true);
+			Agent_TeleportFeetToEntity("Doctor_Sandstorm_1","PosArea_Rift");
+			Rift_SetForceOpen("Rift_1",true);
+			//ParticleSystem_CreateAtEntity("StormDirtSwipe", "storm_dirt_swipe.ps", "Camera", true);
+			Map_AddTimer("Timer_DoctorRift",1,"OnTimer_DoctorRift");
+		}
+		if(alAction == eAction_Test6)
+		{
+			Sound_PlayGui("player/tools/lantern/lantern_refill", 1); return;
+			//Entity_SetActive("Doctor_Birth", true);
+			//mBaseObj.PlayAnimation(asAnim, afFadeTime, abLoop, true, asCallback, false, false);
+			//Agent_PlayCutsceneAtEntity("Doctor_Birth", "doctor_birth_idle", "BirthCutscenePos", 1, true);
+			mlSandstormStrength = Storm_SetStrength(0,1);
+		}
+		if(alAction == eAction_Test7)
+		{
+			Effect_FearTentacles_Start();
+		//mBaseObj.StopAllAnimations(afFadeTime);
+		//mBaseObj.PlayAnimation(asAnim, afFadeTime, abLoop, true, asCallback, false, false);
+			//Agent_PlayCutsceneAtEntity("Doctor_Birth", "doctor_birth_getting_tasi_to_focus_start_1", "BirthCutscenePos", 1, false, "OnAnim_DoctorTransition", 1, 0, 0, 0, true, false, true);
+			mlSandstormStrength = Storm_SetStrength(1,1);
+		}
+		if(alAction == eAction_Test8)
+		{
+			OnBirthComplete(); return;
+			Effect_FearTentacles_Stop();
+			//BirthState_StartPush();
+			/*mlSandstormStrength = Storm_SetStrength(2,1);
+			ParticleSystem_AttachToEntity("PS_4","player");*/
+			//Prop_SetActiveAndFade("sandstorm_wall_*", false, 5);
+			mlSandstormStrength = Storm_SetStrength(2,1);
+		}
+		if(alAction == eAction_Test9)
+		{
+			FearHandler_FadeLevelTo(0,1); return;
+			//mlSandstormStrength = Storm_SetStrength(3,1);
+			//OnCollide_Player_GridTeleport("Trigger_10","player",1);
+			//OnCollide_Player_Rift("", "", 1);
+			//Player_Teleport("start_AtTower");
+			mlSandstormStrength = Storm_SetStrength(3,1);
+		}
+		if(alAction == eAction_Test0)
+		{
+			FearHandler_FadeLevelTo(1,1); return;
+			Sketchbook_AddAllIdeas(true);
+			//mlSandstormStrength = Storm_SetStrength(0,1);
+			//OnCollide_Player_GridTeleport("Trigger_10","player",1);
+		}
+		if (alAction == eAction_TestPlus)
+		{
+			Entity_SetActive("Amulet", true);
+			Entity_AttachToSocket("Amulet", PlayerBody_GetEntityName(), "AmuletSocket", true, true);
+		}
+		if (alAction == eAction_TestMinus)
+		{
+			
+			PlayerBody_PlayCutsceneAtEntity("player_post_birth_scene_2", "BirthCutscenePos", false, 0, "", 1, 0);
+			Entity_SetCollideCharacter("Amulet", false);
+			Entity_PlaceAtEntity("Amulet", "BirthCutscenePos", 0, true, true);
+			Entity_RemoveEntityAttachment("Amulet");
+			Entity_PlayAnimation("Amulet", "amulet_post_birth_scene_2", 0, false);
+		}
+		
+		
+		
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// This only used for pure debug purposes when info needs to printed.
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afY)
+	{
+		//afY = cLux_DrawDebugText("My Debug value:"+..., afY);
+		return afY;
+	}
+ 
+	//-------------------------------------------------------
+ 
+	//} END MAIN CALLBACKS
+ 
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN FUNCTIONS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+ 
+	/*Put any variables that are used in more than one scene here.*/
+	
+	bool mbScarf = false;
+	
+	float mfBaseWalkSpeed = 0.8f;
+	
+	int m_idSand = -1;
+	int m_idBlur = -1;
+	
+	int mlBlurStatus = 0;
+	bool mbFatigue = true;
+	bool mbIsTripping = false;
+	bool mbCanTrip = true;
+	
+	float mfTripAmount = 0.2f;
+	int mlTripDir = 1;
+	
+	//-------------------------------------------------------
+	
+	////////////////////////////////////
+	// TELEPORTATION
+	////////////////////////////////////
+	
+	int mlTileSize = 128;
+	int mlTileSizeMul = 1;
+	int mlTileShiftX = -5;
+	int mlTileShiftY = -5;
+	cVector2l mvTileShift = cVector2l(-4,-4);
+	int mlTeleportationAmount = 0;
+	bool mbTeleportationActive = false;
+	bool mbSquint = false;
+	
+	//-------------------------------------------------------
+	
+	void Sandstorm_Swipe(int alIntensity, float afTimeMul=1.0f, float afFadeInMul=1.0f)
+	{
+		if (mbPlayerThroughRift) return;
+		
+		mbSquint = true;
+		float fSquintTime;
+		if (alIntensity == 3) // Used when teleporting to correct the player position and when hiding the doctor's rift entrance
+		{
+			fSquintTime = 5.f;
+			Effect_Screen_Start("sandstorm_screen_diffuse.mat", cVector2f(0.5, 0.5), cVector2f(1.3, 0.7), 1, 1.5f*afTimeMul*afFadeInMul, 0.5f*afTimeMul, 1.5f*afTimeMul);
+			Effect_Screen_Start("sandstorm_swipe.mat", cVector2f(0.5, 0.5), cVector2f(1.3, 0.7), 1, 0.3f*afTimeMul*afFadeInMul, 4.0f*afTimeMul, 1.0f*afTimeMul);
+			Tasi_ProtectFromStorm(2);
+		}
+		else if (alIntensity == 2)
+		{
+			fSquintTime = 5.f;
+			//Effect_Screen_Start("sandstorm_swipe.mat", cVector2f(0.5, 0.5), cVector2f(1.3, 0.7), 1, 1.0f, 3.0f, 4.0f); 
+			Effect_Screen_Start("sandstorm_swipe.mat", cVector2f(0.5, 0.5), cVector2f(1.3, 0.7), 0.7f, 0.8f*afTimeMul*afFadeInMul, 4.0f*afTimeMul, 1.0f*afTimeMul);
+			Effect_Screen_Start("sandstorm_swipe.mat", cVector2f(0.5, 0.5), cVector2f(1.3, 0.7), 1, 0.3f*afTimeMul*afFadeInMul, 4.0f*afTimeMul, 1.0f*afTimeMul);
+			Tasi_ProtectFromStorm(2);
+		}
+		else if (alIntensity == 1)
+		{
+			fSquintTime = 9.f;
+			Effect_Screen_Start("sandstorm_swipe.mat", cVector2f(0.5, 0.5), cVector2f(1.3, 0.7), 0.3f, 2.0f*afTimeMul*afFadeInMul, 4.0f*afTimeMul, 6.0f*afTimeMul); 
+			Effect_Screen_Start("sandstorm_swipe.mat", cVector2f(0.5, 0.5), cVector2f(1.3, 0.7), 1, 2.0f*afTimeMul*afFadeInMul, 4.0f*afTimeMul, 2.0f*afTimeMul); 
+		}
+		else
+		{
+			fSquintTime = 5.f;
+			Effect_Screen_Start("sandstorm_swipe.mat", cVector2f(0.5, 0.5), cVector2f(1.3, 0.7), 0.7f, 2.0f*afTimeMul*afFadeInMul, 1.0f*afTimeMul, 2.0f*afTimeMul); 
+		}
+		
+		Map_AddTimer("Timer_StopSquint",fSquintTime*afTimeMul,"OnTimer_StopSquint");
+		
+		Sound_CreateAtEntity("Sound_WindGust", "04_02_sandstorm/wind/sandstorm_wind_gust", "player");
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_StopSquint(const tString &in asTimer)
+	{
+		mbSquint = false;
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnCollide_Player_DressingSwipe(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		if (alState != 1) return true;
+		
+		Sandstorm_StartDressingSwipes();
+		return false;
+	}
+	
+	//-------------------------------------------------------
+	
+	void Sandstorm_StartDressingSwipes()
+	{
+		//Debug_Log("DRESSING SWIPE");
+		Sandstorm_Swipe(0);
+		if (Map_TimerExists("Timer_DressingSwipes") == true) return;
+		
+		Map_AddTimer("Timer_DressingSwipes",cMath_RandRectf(15,35),"OnTimer_DressingSwipes");
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_DressingSwipes(const tString &in asTimer)
+	{
+		Sandstorm_StartDressingSwipes();
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnCollide_Player_GridTeleport(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		if (mbTeleportationActive) return true;
+		iLuxEntity@ pTrigger = Map_GetEntity(asParent);
+		if (alState == 1)
+		{
+			cLux_AddDebugMessage("Enter");
+			pTrigger.SetVarVector3f("EnterPos", Player_GetPosition());
+			pTrigger.SetVarBool("EnteredInFront", Entity_PlayerIsInFront(asParent));
+		}
+		else
+		{
+			if (Entity_PlayerIsInFront(asParent) == Entity_GetVarBool(asParent,"EnteredInFront")) 
+			{
+				Debug_Log("Did not go through"); 
+				return true;
+			}
+			
+			cVector3f vEnterPos = pTrigger.GetVarVector3f("EnterPos");
+			cVector3f vDir = Player_GetPosition() - vEnterPos;
+			vDir.Normalize();
+			float fDot = cMath_Vector3Dot(vDir, pTrigger.GetMatrix().GetTranspose().GetForward());
+			if (fDot > 0)
+			{
+				cLux_AddDebugMessage("Player follows trigger direction");
+				
+				tString sUserVar = Entity_GetVarString(asParent,"");
+				StartGridTeleport(asParent, sUserVar);
+			}
+			else
+			{
+				cLux_AddDebugMessage("Player in opposite trigger direction");
+			}
+
+		}
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	void StartGridTeleport(const tString &in asTrigger, const tString &in asUserVar)
+	{
+		Sound_CreateAtEntity("Sound_WindGust", "04_02_sandstorm/wind/sandstorm_wind_gust", "player");
+
+		Debug_Log("TELEPORTING IN 1.5s");
+		
+		Sound_Fade("Sound_BabyCry_1",0,1);
+		Sound_Fade("Sound_BabyCry_2",0,1);
+		Sound_Fade("Sound_BabySweet_*", 0, 1.5f);
+		
+		mbTeleportationActive = true;
+		
+		if (mlTeleportationAmount == 0)
+		{
+			Sketchbook_Microflash("Microflash_1");
+		}
+		else if (mlTeleportationAmount == 1) 
+		{
+			Sketchbook_Microflash("Microflash_3");
+		}
+		
+		if (asUserVar != "")
+		{
+			Sandstorm_Swipe(2);
+		
+			//Map_RemoveTimer("OnTimer_DustSwipe");
+			Map_AddTimer(asTrigger,1.5f,"OnTimer_GridTeleport");
+			Map_SetTimerUserVarString(asTrigger,asUserVar);
+		}
+		
+		// No uservar = player is walking in the wrong direction
+		else
+		{
+			Sandstorm_Swipe(3);
+			Map_AddTimer(asTrigger,1.5f,"OnTimer_WrongDirTeleport");
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnCollide_Player_GridTeleportOld(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		if (alState != 1) return true;
+		if (mbTeleportationActive) return true;
+		if (!Entity_PlayerIsInFront(asParent)) 
+		{
+			Debug_Log("NOT IN FRONT");
+			return true;
+		}
+		
+		if (cString_GetFirstStringPos(asParent,"Trigger_Teleport_Intro") == 0)
+		{
+			Sketchbook_Microflash("Microflash_1");
+			//Voice_Play("Microflash_1");
+		}
+		else if (cString_GetFirstStringPos(asParent,"Trigger_Teleport_Second") == 0) 
+		{
+			Sketchbook_Microflash("Microflash_3");
+			//Voice_Play("Microflash_2");
+		}
+		
+		Sound_CreateAtEntity("Sound_WindGust", "04_02_sandstorm/wind/sandstorm_wind_gust", "player");
+		
+		Debug_Log("TELEPORTING IN 1s");
+		
+		Sandstorm_Swipe(2);
+		
+		tString sUserVar = Entity_GetVarString(asParent,"");
+		//Map_RemoveTimer("OnTimer_DustSwipe");
+		Map_AddTimer(asParent,1.5f,"OnTimer_GridTeleport");
+		Map_SetTimerUserVarString(asParent,sUserVar);
+		
+		Sound_Fade("Sound_BabyCry_1",0,1);
+		Sound_Fade("Sound_BabyCry_2",0,1);
+		
+		mbTeleportationActive = true;
+		
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_GridTeleport(const tString &in asTimer)
+	{		
+		tString sUserVar = Map_GetTimerUserVarString(asTimer);
+		array <tString> vsStrings;
+		cString_GetStringVec(sUserVar, vsStrings,",");
+		int lX = cString_ToInt(vsStrings[0],0);
+		int lY = cString_ToInt(vsStrings[1],0);
+		
+		mlTeleportationAmount++;
+		Grid_Teleport(lX,lY);	
+		Grid_Teleport_Event(mlTeleportationAmount);			
+		
+		if (mlTeleportationAmount > 0) 
+		{
+			Entity_SetActive(msCurrentDoctor,false);
+			msCurrentDoctor = "Doctor_Sandstorm_2";
+			Doctor_SetAdaptiveSpeed(msCurrentDoctor,true);
+			Doctor_SetCallback_AdaptiveSpeedChanged(msCurrentDoctor,"Doctor_OnAdaptiveSpeedChange");
+			Doctor_SetupSounds("Doctor_Sandstorm_2","Baby_2");
+		}
+		
+		StartTimerTeleportChecks();
+		
+		mbTeleportationActive = false;
+		
+		//Map_AddTimer("Timer_DustSwipe",12,"OnTimer_DustSwipe");
+	}
+	
+	//-------------------------------------------------------
+	
+	void Grid_Teleport(int alTilesX, int alTilesY)
+	{	
+		iCharacterBody@ pCharBody = cLux_GetPlayer().GetCharacterBody();
+		
+		/////////////
+		// Player pos
+		cVector3f vPlayerPos = pCharBody.GetFeetPosition();
+		cVector2f vPlayerTile(0,0);
+		cVector2f vPlayerLocalPos(0,0);
+		
+		vPlayerTile.x = cMath_Floor((vPlayerPos.x+cMath_Abs(mvTileShift.x*mlTileSize))/mlTileSize+1);
+		vPlayerTile.y = cMath_Floor((vPlayerPos.z+cMath_Abs(mvTileShift.y*mlTileSize))/mlTileSize+1);
+		vPlayerLocalPos = cVector2f(cMath_Abs((vPlayerTile.x-1+mvTileShift.x)*mlTileSize-vPlayerPos.x),cMath_Abs((vPlayerTile.y-1+mvTileShift.y)*mlTileSize-vPlayerPos.z));
+		
+		/////////////
+		// Target pos
+		cVector2f vTargetTile(alTilesX,alTilesY);
+		cVector2f vTargetTilePos(0,0);
+		
+		vTargetTile.x += mvTileShift.x-1;
+		vTargetTile.y += mvTileShift.y-1;												
+		vTargetTile *= mlTileSizeMul;
+		vTargetTilePos = vTargetTile*mlTileSize;
+		
+		/////////////
+		// Teleport
+		cVector3f vTargetPos(vTargetTilePos.x+vPlayerLocalPos.x,vPlayerPos.y,vTargetTilePos.y+vPlayerLocalPos.y);
+		//ParticleSystem_CreateAtEntity("PS_TeleportSwipe2", "storm_dirt_swipe_vortex_full.ps", "Player", true);
+		
+		//cLux_GetCurrentMap().GetWorld().GetParticleSystem("PS_TeleportSwipe2").SetWorldPosition(vTargetPos);
+		pCharBody.SetFeetPosition(vTargetPos, false);
+		
+		Debug_Log("============================");
+		Debug_Log("Teleport from Tile ("+vPlayerTile.x+","+vPlayerTile.y+") to ("+alTilesX+","+alTilesY+")");
+		Debug_Log("Teleport from Pos ("+vPlayerPos.x+","+vPlayerPos.z+") to ("+vTargetPos.x+","+vTargetPos.z+")");
+		Debug_Log("============================");
+	}
+	
+	//-------------------------------------------------------
+	
+	int mlWrongDirCount = 0;
+	void OnTimer_WrongDirTeleport(const tString &in asTimer)
+	{
+		mlTeleportationAmount++;
+		
+		/////////////
+		// Teleport
+		int lTargetId = cMath_Min(mlTeleportationAmount, 3);
+		Player_PlaceAtEntity("CorrectionPos_"+lTargetId, true);
+		PlayerBody_AlignLowerBodyToCameraYaw(true);
+		
+		Grid_Teleport_Event(mlTeleportationAmount);			
+		
+		if (mlTeleportationAmount > 0) 
+		{
+			Entity_SetActive(msCurrentDoctor,false);
+			msCurrentDoctor = "Doctor_Sandstorm_2";
+			Doctor_SetAdaptiveSpeed(msCurrentDoctor,true);
+			Doctor_SetCallback_AdaptiveSpeedChanged(msCurrentDoctor,"Doctor_OnAdaptiveSpeedChange");
+			Doctor_SetupSounds("Doctor_Sandstorm_2","Baby_2");
+			
+			// Trigger a shorter glimpse of the doctor
+			if (mlTeleportationAmount==1)
+			{
+				Agent_TeleportFeetToEntity("Doctor_Sandstorm_2","PosArea_DoctorGlimpse_2_Short");
+				
+				Pathfinder_Track_Clear("Doctor_Sandstorm_2");
+				for (int i = 25; i<=52; i++)
+					Pathfinder_Track_Add("Doctor_Sandstorm_2","PathNodeGlimpse2_"+i);
+				Pathfinder_Track_Start("Doctor_Sandstorm_2");
+				CharMover_SetSpeedState("Doctor_Sandstorm_2",eHumanoidSpeed_Walk_Fast);
+			}
+			
+		}
+		
+		StartTimerTeleportChecks();
+		
+		mbTeleportationActive = false;
+	}
+	
+	//-------------------------------------------------------
+	
+	void Grid_Teleport_Event(int alX)
+	{
+		if (alX == 1)
+		{			
+			Sound_Fade("Sound_BabyCry_2",0,0);
+			Sound_Fade("Sound_BabyCry_2",1,5);
+			
+			//Voice_StopAll();
+			//Voice_Play("Tasi_GiveMeMyBaby");
+		}	
+	}
+	
+	//-------------------------------------------------------
+	
+	float mfWanderTime = 0;
+	cVector3f mvWanderPos = cVector3f_Zero;
+	void StartTimerTeleportChecks()
+	{
+		mvWanderPos = Player_GetFeetPosition();
+		mfWanderTime = 0;
+		
+		Map_RemoveTimer("OnTimer_TimerTeleport");
+		Map_AddTimer("OnTimer_TimerTeleport", gfTimerTeleportCheckTime, "OnTimer_TimerTeleport");
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_TimerTeleport(const tString &in asTimer)
+	{
+		if (mbPlayerThroughRift || mbTeleportationActive) return;
+		
+		//Make sure player is actually moving around
+		if ((mvWanderPos-Player_GetFeetPosition()).Length() > 0.4*gfTimerTeleportCheckTime)
+		{
+			mfWanderTime += gfTimerTeleportCheckTime;
+			cLux_AddDebugMessage("Wander Time: "+mfWanderTime);
+			mvWanderPos = Player_GetFeetPosition();
+			//cLux_AddDebugMessage("Player is wandering for "+mfWanderTime+"s");
+		}
+		
+		if (mfWanderTime >= gfTimerTeleportLimit && Entity_GetCollide("Player", "RiftProximity") == false)
+		{
+			StartGridTeleport("TimerTeleport", "");
+			return;
+		}
+		
+		Map_AddTimer("OnTimer_TimerTeleport", gfTimerTeleportCheckTime, "OnTimer_TimerTeleport");
+	}
+	
+	//-------------------------------------------------------
+	
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	// BIRTH
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+	
+	int mlRollBlur = -1;
+	
+	void OnAnimMessage_PlayerBody(const tString &in asEntityName, const tString &in asAnimName, int alMessageEventID)
+	{
+		if (alMessageEventID == 0)
+		{
+			DisableIntroDoctor();
+		}
+		if (alMessageEventID == 2)
+		{
+			/*Entity_SetAnimationSpeed(PlayerBody_GetEntityName(), "player_post_birth_scene_2", 0.5f);
+			Entity_SetAnimationSpeed("Stretcher", "stretcher_post_birth_scene_2", 0.5f);
+			Entity_SetAnimationSpeed("Bracelet_Birth", "bracelet_birth_sequence_after_birth", 0.5f);*/
+			//Voice_Play("Emote_Extra_RipFree");
+		}
+		if (alMessageEventID == 3)
+		{
+			/*Entity_SetAnimationSpeed(PlayerBody_GetEntityName(), "player_post_birth_scene_2", 0.6f);
+			Entity_SetAnimationSpeed("Stretcher", "stretcher_post_birth_scene_2", 0.6f);
+			Entity_SetAnimationSpeed("Bracelet_Birth", "bracelet_birth_sequence_after_birth", 0.6f);*/
+		}
+		if (alMessageEventID == 4)
+		{
+			/*Entity_SetAnimationSpeed(PlayerBody_GetEntityName(), "player_post_birth_scene_2", 1.0f);
+			Entity_SetAnimationSpeed("Stretcher", "stretcher_post_birth_scene_2", 1.0f);
+			Entity_SetAnimationSpeed("Bracelet_Birth", "bracelet_birth_sequence_after_birth", 1.0f);*/
+		}
+		if (alMessageEventID == 9)
+		{
+			cLux_AddDebugMessage("VBLUR");
+			mlRollBlur = Effect_Blur_Start(2,0.6);
+			Map_AddTimer("Timer_RemoveRollBlur",2,"OnTimer_RemoveRollBlur");
+			/*Entity_SetAnimationSpeed(PlayerBody_GetEntityName(), "player_post_birth_scene_2", 1.0f);
+			Entity_SetAnimationSpeed("Stretcher", "stretcher_post_birth_scene_2", 1.0f);
+			Entity_SetAnimationSpeed("Bracelet_Birth", "bracelet_birth_sequence_after_birth", 1.0f);*/
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_RemoveRollBlur(const tString &in asTimer)
+	{
+		Effect_Blur_FadeOut(mlRollBlur,1);
+	}
+	
+	void OnAnimMessage_Doctor(const tString &in asEntityName, const tString &in asAnimName, int alMessageEventID)
+	{
+	}
+	
+	//-------------------------------------------------------
+	
+	void StartBirth()
+	{		
+		Player_Teleport("Start_Begin");
+		Effect_Fade_Out(0.0f);
+		
+		PlayerBody_SetModel("player_birth.ent");
+		
+		Seq_Birth();
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnBirthComplete()
+	{
+		// Next!
+		FearHandler_SetWhisperStage(eFearWhisperStage_BirthToThroneRoom);
+		Seq_AfterBirth();
+	}
+	
+	//-------------------------------------------------------
+	
+	void Tasi_Contractions(float afTime)
+	{
+		Sound_CreateAtEntity("Sound_ContractionStinger", "04_01_town/contraction_pain/contraction_pain_stingers", "player");
+		Sound_CreateAtEntity("Sound_ContractionStingerLoop", "04_02_sandstorm/contractions/birth_push_loop", "player");
+
+		Map_AddTimer("Timer_ContractionsStop",afTime,"OnTimer_ContractionsStop");
+		Map_AddTimer("Timer_Contraction",0.3f,"OnTimer_Contraction");
+		Effect_ImageTrail_Start(1.5f,afTime/5,afTime+4,4);
+		Effect_Shake_Start(.005f,afTime-1,afTime/2,afTime/4);
+		Effect_Rumble_Start(.17f,3,0,0.1f);
+		
+		cLux_AddDebugMessage("Tasi_Contractions!");
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_ContractionsStop(const tString &in asTimer)
+	{
+		cLux_AddDebugMessage("Contractions stop");
+		if (Sound_Exists("Sound_ContractionStingerLoop"))
+			Sound_Stop("Sound_ContractionStingerLoop", 5.0f);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_Contraction(const tString &in asTimer)
+	{
+		////////////////
+		// Pulsating effect
+		
+		if (Map_TimerExists("Timer_ContractionsStop")  == false) 
+		{
+			Debug_Log("FINAL");
+			Effect_DollyZoom_Start(-.1,.3f,.4f,5);
+			return;
+		}
+		
+		float fTime = 0.02f;//cMath_RandRectf(.05f,.2f);
+		float fFadeIn = .2f;//cMath_RandRectf(.1f,.3f);
+		float fFadeOut = .9f;
+		
+		float fTotalTime = fTime+fFadeIn+fFadeOut;
+		
+		Effect_Rumble_Start(0.17f,fTime+fFadeIn,0,0.1f);
+		Effect_DollyZoom_Start(cMath_RandRectf(-.15f,-0.05f),fTime,fFadeIn,fFadeOut);
+		Map_RestartCurrentTimer(fTotalTime+0.001f);
+		FearHandler_SetForcedAddFearRate(1,fTime+fFadeIn+fFadeOut,false,3,0.1f);
+		
+		cLux_AddDebugMessage("OnTimer_Contraction!");
+	}
+	
+	//-------------------------------------------------------
+	
+	// ====================== OVERALL BIRTH SEQUENCE ======================
+	float mfBirth_fPrevMoveSpeed = 0.f;
+	int mlBirth_Stage = 0;
+	int mlBirthStruggleFailCount = 0;
+	bool mbBirth_FinalPush = false;
+	float mfBirth_FadeStruggleDuration = 4.f;
+	float mfBirth_PushStruggleDuration = 6.f;
+	
+	cSequenceStatesData seqBirth;
+	
+	void Seq_Birth(const tString &in asTimer = "")
+	{
+		Sequence_Begin("Seq_Birth", seqBirth);
+		
+		if (Sequence_DoStepAndWait(0.02f))
+		{
+			Effect_Fade_Out(0.f);
+			Player_SetLookSpeedMul(0);
+			//PlayerBody_AlignLowerBodyToCameraYaw();
+			
+		}
+		else if (Sequence_DoStepAndWait(0.48f))
+		{
+			Player_Teleport("Start_Begin");
+		}
+		else if (Sequence_DoStepAndWait(2.0f))
+		{
+			Entity_AttachToSocket("DoctorAudioSource", "Doctor_Birth", "VoiceSocket", false, true);
+			Voice_SetSource("Doctor","Doctor_Birth",20,35,true);
+			
+			Tasi_SetFatigueActive(false);
+			FearHandler_SetActive(false);
+			Effect_FearTentacles_Start();
+			
+			Player_SetAllowCheckBaby(false);
+			cLux_GetPlayer().GetCharacterBody().SetActive(false);			
+		}
+		else if (Sequence_DoStepAndWait(5.0f))
+		{
+			Effect_Fade_In(3.0f);
+			Player_SetLookSpeedMul(1);
+			
+			PlayerBody_PlayCutsceneAtEntity("player_pre_birth_scene", "BirthCutscenePos", false, 0, "OnCutsceneOver_BirthSequence");
+			PlayerBody_SetCutsceneAutoEnd(false);
+			PlayerBody_SetCutsceneMaxPitch(0);
+			PlayerBody_SetCutsceneMaxYaw(0);
+			Entity_SetActive("Doctor_Birth",true);
+			Agent_SetStaticCollider("Doctor_Birth", true);
+			
+			msNextDoctorAnim = "doctor_birth_pre_focus_idle";
+			Agent_PlayCutsceneAtEntity("Doctor_Birth", "doctor_pre_birth_scene", "BirthCutscenePos", 0, false, "OnAnim_DoctorTransition");
+			
+			Entity_PlaceAtEntity("Stretcher", "BirthCutscenePos", 0, true);
+			Entity_PlayAnimation("Stretcher", "stretcher_pre_birth_scene", 0, false);
+			
+			//Entity_AttachToSocket("Amulet", PlayerBody_GetEntityName(), "AmuletSocket", true, true);
+			Entity_SetActive("Amulet", true);
+			Entity_PlaceAtEntity("Amulet", "BirthCutscenePos", 0, true, true);
+			Entity_SetActive("Bracelet_Birth", true);
+			Entity_SetActive("Amulet_Bracelet", false); //Disable the accessory
+			Entity_PlaceAtEntity("Bracelet_Birth", "BirthCutscenePos", 0, true, true);
+			Entity_PlayAnimation("Amulet", "amulet_pre_birth_scene", 0, false);
+			Entity_PlayAnimation("Bracelet_Birth", "bracelet_pre_birth_scene", 0, false);
+		}
+		else if (Sequence_DoStepAndPause(0.0f))
+		{			
+			if (GhoulProgression_GetProgression()>=12)
+				Voice_Play("Dialogue_TasiTiedDown_Ghoulish", -1, "");
+			else
+				Voice_Play("Dialogue_TasiTiedDown", -1, "");
+		}
+		else if (Sequence_DoStepAndWait(1.0f))
+		{
+			PlayerBody_ResetCutscenePitchYawLimits();
+			
+			BirthState_Start("BirthCutscenePos", "Doctor_Birth", "j_Head", "OnBirth_Push_StruggleWon", "OnBirth_Push_StruggleLost", "OnBirth_Fade_StruggleWon");
+			BirthState_PlayAnimation("player_birth_pre_focus_idle", 0.3f);
+		}
+		else if (Sequence_DoStepAndWait(3.0f))
+		{
+			Voice_Play("Dialogue_TasiFirstScream");
+			Tasi_Contractions(4);
+		}
+		else if (Sequence_DoStepAndWait(6.0f))
+		{
+			Voice_Play("Dialogue_TasiBirthIntro", -1, "", 1);
+		}
+		else if (Sequence_DoStepAndPause())
+		{
+			// First contraction
+			BirthStageAdvance(true);
+		}
+		else if (Sequence_DoStepAndPause())
+		{
+			BirthStageAdvance(mbPushStruggleWon);
+		}
+		else if (Sequence_DoStepAndPause())
+		{
+			mbBirth_FinalPush = true;
+			BirthStageAdvance(true);
+		}
+		else if (Sequence_DoStepAndWait(0.f))
+		{
+			cLux_AddDebugMessage("[Birth] BABY BORN!");
+			Sound_CreateAtEntity("Sound_BabyCry_Newborn","04_02_sandstorm/baby/baby_cry","DoctorAudioSource",1,false,1,-1,60);
+		}
+		else if (Sequence_DoStepAndWait(3.0f))
+		{
+			Effect_Fade_Out(2.9f);
+		}
+		else if (Sequence_DoStepAndWait(0.1f))
+		{
+			
+			// Reset
+			cLux_GetPlayer().GetCharacterBody().SetActive(true);
+			Player_ChangeStateToNormal();
+			Player_SetMoveSpeedMul(mfBirth_fPrevMoveSpeed);
+			Player_SetLeanDisabled(false);
+						
+			Player_SetAllowCheckBaby(false);
+			
+			Effect_FearTentacles_Stop();
+			Tasi_SetFatigueActive(true);
+			FearHandler_SetActive(true);
+			Pregnancy_SetStage(ePregStage_Born);
+			Pregnancy_SetBabyTalkStage(eBabyTalkStage_Born);
+			
+			
+		}
+		else
+		{
+			OnBirthComplete();
+		}
+		
+		Sequence_End();
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnVoiceOver_BirthSequence(const tString &in asScene, const tString &in asSubject)
+	{
+		SequenceStates_Resume("Seq_Birth");
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnCutsceneOver_BirthSequence(const tString &in asAnim)
+	{
+		SequenceStates_Resume("Seq_Birth");
+	}
+	
+	//-------------------------------------------------------
+	
+	void BirthStageAdvance(const bool abStruggleWon=false)
+	{
+		mlBirth_Stage+=1;
+		cLux_AddDebugMessage("Birth Stage: "+ mlBirth_Stage);
+		
+		//mfBirth_PushStruggleDuration = abStruggleWon ? 6.f : 8.f;
+		mfBirth_PushStruggleDuration += 0.5f;
+		
+		Seq_BirthPhase();
+		mbPushStruggleWon=false;
+	}
+	
+	//-------------------------------------------------------
+	
+	///////////////////////
+	// CONTRACTION SEQUENCE
+	int BIRTH_SOUND_THRESHOLD = 1;	// How many times must you have failed to start sounding ghoulish? (Note this winds back with each success.)
+	cSequenceStatesData seqBirthPhase;
+	bool mbPushStruggleWon = false;
+	int mlRadialBlur=-1;
+	int mlDofID = -1;
+	int mlShakeID = -1;
+	int mlImageTrailID=-1;
+	int mlBirthPushHintID=-1;
+	float mfBirthProgressionWait = 0;
+	
+	void Seq_BirthPhase(const tString &in asTimer = "")
+	{
+		Sequence_Begin("Seq_BirthPhase", seqBirthPhase);
+		
+		////////////////
+		// Fade out
+		if (Sequence_DoStepAndWait(0.25))
+		{
+			if (mlBirth_Stage > 1)
+			{
+				Voice_Stop("Comments");
+				Voice_Play("Dialogue_TasiBirthDoctorFocusStart");
+			}
+			msNextDoctorAnim = "doctor_birth_getting_tasi_to_focus";
+			msNextTasiAnim = "player_birth_focus_idle";
+			Agent_PlayCutsceneAtEntity("Doctor_Birth", "doctor_birth_getting_tasi_to_focus_start_"+mlBirth_Stage, "BirthCutscenePos", 0.2, false, "OnAnim_DoctorTransition");
+			BirthState_PlayAnimation("player_birth_focus_start_"+mlBirth_Stage, 0.3f, "OnAnim_TasiTransition");
+		}
+		else if (Sequence_DoStepAndPause(0))
+		{
+			float fDuration = mfBirth_FadeStruggleDuration;
+			BirthState_StartFadeOut(fDuration);
+		}
+		else if (Sequence_DoStepAndPause(cMath_RandRectf(0.5f, 0.75f)))
+		{
+			cLux_AddDebugMessage("[Birth] Focus struggle ended.");
+			Voice_Play("Dialogue_TasiBirthDoctorEncourage", -1, "OnVoiceOver_FadeStruggleWon", 1);
+			
+			msNextDoctorAnim = "doctor_birth_pre_push_idle";
+			msNextTasiAnim = "player_birth_pre_push_idle";
+			Agent_PlayCutsceneAtEntity("Doctor_Birth", "doctor_birth_getting_tasi_to_focus_end", "BirthCutscenePos", 0.2, false, "OnAnim_DoctorTransition");
+			BirthState_PlayAnimation("player_birth_focus_end", 0.3f, "OnAnim_TasiTransition");
+		}
+		else if (Sequence_DoStepAndWait(1.f))
+		{
+			Effect_BabyKick_Start(0.5f, false, false);
+		}
+		else if (Sequence_DoStepAndWait(1.f))
+		{
+			// Last push doctor's comments
+			if (mbBirth_FinalPush)
+			{
+				Voice_Play("Dialogue_DoctorBirthEndNormal_1");
+			}
+			// Normal push doctor's comments
+			else
+			{
+				Voice_Stop("Comments");
+				Voice_Play("Dialogue_TasiBirthDoctorNowPush");
+			}
+			msNextDoctorAnim = "doctor_birth_helping_tasi_to_push";
+			msNextTasiAnim = "player_birth_push_idle";
+			Agent_PlayCutsceneAtEntity("Doctor_Birth", "doctor_birth_helping_tasi_to_push_start", "BirthCutscenePos", 0.2, false, "OnAnim_DoctorTransition");
+			BirthState_PlayAnimation("player_birth_push_start", 0.3f, "OnAnim_TasiTransition");
+			
+			Sound_CreateAtEntity("Sound_ContractionStinger", "04_01_town/contraction_pain/contraction_pain_stingers", "player");
+			Sound_CreateAtEntity("Sound_ContractionStingerLoop", "04_02_sandstorm/contractions/birth_push_loop", "player");
+		}
+		////////////////
+		// Push
+		else if (Sequence_DoStepAndPause())
+		{
+			BirthState_StartPush(mfBirth_PushStruggleDuration);
+			mfBirthProgressionWait = mbBirth_FinalPush ? 3.0f : cMath_RandRectf(4.0f, 5.0f);
+		}
+		else if (Sequence_DoStepAndWait(mfBirthProgressionWait))
+		{
+			msNextDoctorAnim = "doctor_birth_pre_focus_idle";
+			msNextTasiAnim = "player_birth_pre_focus_idle";
+			Agent_PlayCutsceneAtEntity("Doctor_Birth", "doctor_birth_helping_tasi_to_push_end_"+cMath_Min(mlBirth_Stage, 2), "BirthCutscenePos", 0.2, false, "OnAnim_DoctorTransition");
+			BirthState_PlayAnimation("player_birth_push_end", 0.3f, "OnAnim_TasiTransition");
+			
+			if (Sound_Exists("Sound_ContractionStingerLoop"))
+				Sound_Stop("Sound_ContractionStingerLoop", 5.0f);
+		}
+		else if (Sequence_DoStepAndContinue())
+		{
+			SequenceStates_Resume("Seq_Birth");
+		}
+		
+		Sequence_End();
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnBirth_Fade_StruggleWon()
+	{
+		OnTimer_Fade_WaitForDialog("");
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_Fade_WaitForDialog(const tString &in asTimer)
+	{
+		if (Voice_SceneIsActive("Comments"))
+		{
+			Map_AddTimer("OnTimer_Fade_WaitForDialog", 0.5, "OnTimer_Fade_WaitForDialog");
+			return;
+		}
+		SequenceStates_Resume("Seq_BirthPhase");
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnVoiceOver_FadeStruggleWon(const tString &in asScene, const tString &in asSubject)
+	{
+		SequenceStates_Resume("Seq_BirthPhase");
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnBirth_Push_StruggleWon()
+	{
+		cLux_AddDebugMessage("[Birth] Push struggle won.");
+		if (mbBirth_FinalPush)
+			Voice_PlayDelayed("Dialogue_DoctorBirthEndNormal_2", 0.5f);
+		else
+			Voice_Play("Dialogue_TasiBirthDoctorEncourage");
+		
+		mlBirthStruggleFailCount = cMath_Max(mlBirthStruggleFailCount - 1, 0);
+		
+		mbPushStruggleWon = true;
+		SequenceStates_Resume("Seq_BirthPhase");
+		
+		BirthState_SetGhoulMode(mlBirthStruggleFailCount >= 2);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnBirth_Push_StruggleLost()
+	{
+		cLux_AddDebugMessage("[Birth] Push struggle lost.");
+		Voice_Play("Dialogue_TasiBirthDoctorLosing");
+		mlBirthStruggleFailCount++;
+		
+		mbPushStruggleWon = false;
+		SequenceStates_Resume("Seq_BirthPhase");
+		
+		BirthState_SetGhoulMode(mlBirthStruggleFailCount >= 2);
+	}
+	
+	// Temp solution since transition animations aren't working for agents
+	tString msNextDoctorAnim = "";
+	void OnAnim_DoctorTransition(const tString &in asAgent, const tString &in asAnim)
+	{
+		cLux_AddDebugMessage("OnAnim_DoctorTransition");
+		Agent_PlayCutsceneAtEntity("Doctor_Birth", msNextDoctorAnim, "BirthCutscenePos", 0.2, true);
+	}
+	
+	tString msNextTasiAnim = "";
+	void OnAnim_TasiTransition(const tString &in asAnimName)
+	{
+		cLux_AddDebugMessage("OnAnim_TasiTransition");
+		if (msNextTasiAnim != "")
+			BirthState_PlayAnimation(msNextTasiAnim, 0.1f);
+			
+		msNextTasiAnim = "";
+	}
+	
+	//-------------------------------------------------------
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	// AFTER BIRTH
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	//-------------------------------------------------------
+	
+	int mlPostBirthBlur = -1;
+	cSequenceStatesData seqAfterBirth;
+	void Seq_AfterBirth(const tString &in asTimer="")
+	{
+		Sequence_Begin("Seq_AfterBirth", seqAfterBirth);
+		if (Sequence_DoStepAndWait(1))
+		{
+			if (Sound_Exists("Sound_BabyCry_Newborn")== false)
+				Sound_CreateAtEntity("Sound_BabyCry_Newborn","04_02_sandstorm/baby/baby_cry","DoctorAudioSource",1,false,1,-1,60);
+			
+			Entity_SetAnimationMessageEventCallback("Doctor_Birth", "OnAnimMessage_Doctor", false);
+			
+			Effect_Fade_Out(0.0f);
+			Player_Teleport("Start_Begin");
+			Entity_SetActive("Birth_Baby_1", true);
+			Entity_SetCollideCharacter("Birth_Baby_1", false);
+			Entity_PlaceAtEntity("Birth_Baby_1", "BirthCutscenePos", 0, true, true);
+		}
+		else if (Sequence_DoStepAndWait(0.5f))
+		{
+			Effect_Fade_In(3.0f);
+			mlPostBirthBlur = Effect_Blur_Start(1, 0);
+			PlayerBody_PlayCutsceneAtEntity("player_post_birth_scene_1", "BirthCutscenePos", false, 0);
+			PlayerBody_SetCutsceneMaxPitch(0);
+			PlayerBody_SetCutsceneMaxYaw(0);
+			PlayerBody_SetCutsceneAutoEnd(false);
+			Agent_PlayCutsceneAtEntity("Doctor_Birth", "doctor_post_birth_scene_1", "BirthCutscenePos", 0, true);
+			Entity_PlayAnimation("Birth_Baby_1", "newborn_post_birth_scene_1", 0);
+			
+			Entity_PlaceAtEntity("Stretcher", "BirthCutscenePos", 0, true);
+			Entity_PlayAnimation("Stretcher", "stretcher_post_birth_scene_1", 0, false);
+			
+			Sound_CreateAtEntity("Sound_BornDoc_1", "new_sounds/post_birth/doctor/doctor_born_1", "Doctor_Birth");
+			for (int i = 2; i <= 12; i++)
+				Map_AddTimer("new_sounds/post_birth/doctor/doctor_born_"+i, 5.0f*(i-1), "OnTimer_PlayBornDocSound");
+				
+			Sound_CreateAtEntity("Sound_BornTasi_1", "new_sounds/post_birth/player/player_born_1", "Player");
+			for (int i = 2; i <= 12; i++)
+				Map_AddTimer("new_sounds/post_birth/player/player_born_"+i, 5.0f*(i-1), "OnTimer_PlayBornTasiSound");
+			
+			Music_Play("baby_born_theme_01.ogg", 0.15f, false, eMusicPrio_MinorEvent);
+			
+		}
+		else if (Sequence_DoStepAndPause(0.5f))
+		{
+			Voice_Play("Scene_Betrayal", -1, "OnBetrayalPart1Dialogue_Finished");		
+		}
+		else if (Sequence_DoStepAndWait(2.0f))
+		{
+			Effect_Blur_FadeOut(mlPostBirthBlur, 1.75);
+		}
+		else if (Sequence_DoStepAndPause(3.5f))
+		{
+			// Backup in case some hickup makes dialog complete before pausing
+			if (Voice_SubjectIsPlaying("Scene_Betrayal")==false)
+				SequenceStates_Resume("Seq_AfterBirth");
+				
+			mlPostBirthBlur = Effect_Blur_Start(1, 2);
+		}
+		else if (Sequence_DoStepAndWait(2.5f))
+		{
+			Effect_Fade_Out(0.75f);
+			Sound_Fade("Sound_BabyCry_Newborn", 0.5, 1.5);
+		}
+		else if (Sequence_DoStepAndWait(0.05))
+		{
+			// Change body in a separate step with a tiny delay as there's a slight freeze when it happens
+			PlayerBody_SetModel(Pregnancy_GetStageBodyModel());
+			PlayerBody_AttachProp("Amulet_Bracelet", "AmuletSocket", false, false);
+			PlayerBody_AttachProp("SalimsRing_Accessory", "RingSocket", false, false);
+			Entity_SetEffectsActive(PlayerBody_GetEntityName(), false, false);
+			PlayerBody_PlayCutsceneAtEntity("player_post_birth_scene_2", "BirthCutscenePos", false, 0, "OnCutsceneOver_TasiBreakFree", 0, 0);
+			PlayerBody_SetCutsceneMaxPitch(15);
+			PlayerBody_SetCutsceneMaxYaw(15);
+			
+			Entity_SetAnimationMessageEventCallback(PlayerBody_GetEntityName(), "OnAnimMessage_PlayerBody", false);
+			FootPlacement_SetActive(PlayerBody_GetEntityName(), false);
+		}
+		else if (Sequence_DoStepAndWait(2))
+		{
+			Entity_SetActive("Birth_Baby_1", false);
+			Entity_SetActive("Birth_Baby_2", true);
+			Entity_SetCollideCharacter("Birth_Baby_2", false);
+			Entity_PlaceAtEntity("Birth_Baby_2", "BirthCutscenePos", 0, true, true);
+			Entity_PlaceAtEntity("Amulet", "BirthCutscenePos", 0, true, true);
+			Entity_SetActive("Bracelet_Birth", true);
+			Entity_SetActive("Amulet_Bracelet", false); //Disable the accessory
+			Entity_PlaceAtEntity("Bracelet_Birth", "BirthCutscenePos", 0, true, true);
+			
+			Entity_SetAnimationSpeed(PlayerBody_GetEntityName(), "player_post_birth_scene_2", 1);
+			
+			Agent_PlayCutsceneAtEntity("Doctor_Birth", "doctor_post_birth_scene_2", "BirthCutscenePos", 0, false, "OnAnim_DoctorEscapes");
+			Entity_PlayAnimation("Birth_Baby_2", "baby_post_birth_scene_2", 0);
+			Entity_PlayAnimation("Stretcher", "stretcher_post_birth_scene_2", 0, false);
+			Entity_RemoveEntityAttachment("Amulet");
+			Entity_PlayAnimation("Amulet", "amulet_post_birth_scene_2", 0, false);
+			Entity_PlayAnimation("Bracelet_Birth", "bracelet_birth_sequence_after_birth", 0, false);
+			
+			Map_AddTimer("Timer_DocMusic", 9.0f, "OnTimer_PlayDocMusic");
+			
+			Voice_PlayDelayed("Scene_Betrayal_2", 1, -1, "OnBetrayalPart1Dialogue_Finished");
+			Light_FadeBrightnessTo("PointLight_8",0,1);
+			Effect_Fade_In(2.0f);
+		}
+		else if (Sequence_DoStepAndWait(1.5))
+		{
+			Effect_Blur_FadeOut(mlPostBirthBlur, 2);
+		}
+		else if (Sequence_DoStepAndWait(0.5))
+		{
+			FearArea_SetGivesFear("Fear_Rage",true);
+		}
+		else if (Sequence_DoStepAndPause(0.9f))
+		{
+		}
+		else if (Sequence_DoStepAndWait(0.9f))
+		{
+			FearHandler_FadeLevelTo(0.5f,2);
+		}
+		else if (Sequence_DoStepAndPause(0.5f))
+		{
+		}
+		else if (Sequence_DoStepAndPause(0.5f))
+		{
+			bool bHighProgression = GhoulProgression_GetProgression()>=GHOUL_PROGRESSION_SANDSTORM_HIGH;
+			
+			if (bHighProgression) 
+				FearHandler_FadeLevelTo(0.9f,3);
+			else
+				FearHandler_FadeLevelTo(0.75f,3);
+			
+			tString sVoice = (bHighProgression) ? "Scene_BetrayalMid_Ghoulish" : "Scene_BetrayalMid";
+			Voice_Play(sVoice, -1, "OnBetrayalPart1Dialogue_Finished");	
+		}
+		else if (Sequence_DoStepAndWait(0.3f))
+		{
+			Seq_TasiRage("");
+		}
+		Sequence_End();
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_PlayBornDocSound(const tString &in asTimer)
+	{
+		Sound_CreateAtEntity("Sound_BornDoc", asTimer, "Doctor_Birth");
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_PlayBornTasiSound(const tString &in asTimer)
+	{
+		Sound_CreateAtEntity("Sound_BornTasi", asTimer, "Player");
+	}
+	
+	//----------------------------------------------------
+	
+	void OnBetrayalPart1Dialogue_ReachForAmulet(const tString&in asScene, const tString&in asSubject, int alLineIndex, bool abStartofLine)
+	{
+		if (abStartofLine) return;
+		SequenceStates_Resume("Seq_AfterBirth");
+	}
+	
+	//-------------------------------------------------------
+		
+	void OnBetrayalPart1Dialogue_Finished(const tString&in asScene, const tString&in asSubject)
+	{
+		cLux_AddDebugMessage("OnBetrayalPart1Dialogue_Finished");
+		SequenceStates_Resume("Seq_AfterBirth");
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_PlayDocMusic(const tString &in asTimer)
+	{
+		Music_PlayExt("A2_4_2_DoctorEscape.ogg", true, 0.1f, 1.0f, 6.0f, 1.0f, eMusicPrio_SceneAmb, false);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnAnim_DoctorEscapes(const tString &in asAgent, const tString &in asAnim)
+	{
+		Entity_SetActive("Amulet", false);
+		Entity_SetActive("Birth_Baby_2", false);
+		Pathfinder_MoveToNode(asAgent, "PathNode_15", "", 4);
+		CharMover_SetSpeedState(asAgent,eHumanoidSpeed_Walk_Slow);
+	}
+	
+	
+	void DisableIntroDoctor()
+	{
+		Doctor_Setup(msCurrentDoctor,"Baby_Intro");
+		Voice_SetSource("Doctor","Doctor_Intro",20,35,true);
+		CharMover_SetSpeedState(msCurrentDoctor,eHumanoidSpeed_Walk_Fast);
+		Agent_PlayCutsceneAtEntity(msCurrentDoctor,"doctor_clear_blockage_intro","Cart_Rigid",0.3f,false,"OnEndOfAnim_Push");
+		Entity_SetActive("Doctor_Birth", false);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnCutsceneOver_TasiBreakFree(const tString &in asAnim)
+	{
+		cLux_AddDebugMessage("OnCutsceneOver_TasiBreakFree");
+		Entity_SetActive("Bracelet_Birth", false);
+		Entity_SetActive("Amulet_Bracelet", true); //Enable the accessory
+		
+		FootPlacement_SetActive(PlayerBody_GetEntityName(), true);
+	}
+	
+	//-------------------------------------------------------
+	
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	// DOCTOR
+	////////////////////////////////////////////////////////////////////////////////////////////////////////////
+	
+	tString msCurrentDoctor = "Doctor_Intro";
+	
+	//-------------------------------------------------------
+	
+	bool mbDoctorAdaptSpeed = false;
+	bool mbVariableFogRadius = false;
+	
+	
+	void UpdateFogRadius(float afTimeStep)
+	{
+		if (!mbVariableFogRadius) return;
+		
+		mfTime+=afTimeStep;
+		
+		float fDist = Entity_GetDeltaToEntity("player",msCurrentDoctor).Length();
+		
+		float fFogRadius = fDist+10*cMath_Sin(mfTime/2);
+		float fSecondaryFogRadius = mfSecondaryFogRadiusMin+10*cMath_Sin(mfTime);
+		cLux_GetCurrentMap().GetWorld().SetFogEnd(fFogRadius);
+		cLux_GetCurrentMap().GetWorld().SetSecondaryFogEnd(fSecondaryFogRadius);
+		//Debug_Log(""+cLux_GetCurrentMap().GetWorld().GetFogEnd()+" - "+cLux_GetCurrentMap().GetWorld().GetSecondaryFogEnd());
+	}
+	
+	//-------------------------------------------------------
+	
+	void Doctor_OnAdaptiveSpeedChange(const tString &in asDoctor, int alSpeedState)
+	{		
+		
+		switch (alSpeedState)
+		{
+			case eHumanoidSpeed_Walk_VeryFast:
+				Storm_SetStrength(2);
+				break;
+			case eHumanoidSpeed_Walk_Fast:
+			case eHumanoidSpeed_Walk_VerySlow:
+				Storm_SetStrength(1);
+				// PLAY ANIMATION CHECKING AMULET
+				break;
+			case eHumanoidSpeed_Idle:
+				Storm_SetStrength(1);
+				break;
+		}
+				
+		if (asDoctor == "Doctor_Sandstorm_1")	CharMover_SetSpeedState("Doctor_Sandstorm_2",alSpeedState);
+	}
+	
+	//-------------------------------------------------------
+	
+	////////////////////////////////////
+	// SANDSTORM EFFECTS
+	////////////////////////////////////
+	
+	bool mbStormActive = true;
+	int mlSandstormStrength = 0;
+	
+	//-------------------------------------------------------
+	
+	int Storm_SetStrength(int alStrength = 1, float afFadeTime = 1.0f)
+	{
+		int lStrength = alStrength;
+		
+		if (!mbStormActive) lStrength = -1;
+		
+		if (lStrength == 0)
+		{
+			//Entity_SetEffectsActiveExt("storm_radius_small",false,true,afFadeTime,afFadeTime);
+			//Entity_SetEffectsActiveExt("storm_radius_medium",false,true,afFadeTime,afFadeTime);
+			//Entity_SetEffectsActiveExt("storm_radius_large",false,true,afFadeTime,afFadeTime);
+			Prop_SetActiveAndFade("sandstorm_wall_layer1", false, afFadeTime);
+			Prop_SetActiveAndFade("sandstorm_wall_layer2", false, afFadeTime);
+			Prop_SetActiveAndFade("sandstorm_wall_layer3", false, afFadeTime);
+			Entity_SetEffectsActiveExt("sandstorm_player",false,true,afFadeTime,afFadeTime);
+			
+		}
+		else if (lStrength == 1)
+		{
+			//Entity_SetEffectsActiveExt("storm_radius_small",false,true,afFadeTime,afFadeTime);
+			//Entity_SetEffectsActiveExt("storm_radius_medium",false,true,afFadeTime,afFadeTime);
+			//Entity_SetEffectsActiveExt("storm_radius_large",true,true,afFadeTime,afFadeTime);
+			Prop_SetActiveAndFade("sandstorm_wall_layer1", true, afFadeTime);
+			Prop_SetActiveAndFade("sandstorm_wall_layer2", false, afFadeTime);
+			Prop_SetActiveAndFade("sandstorm_wall_layer3", false, afFadeTime);
+			Entity_SetEffectsActiveExt("sandstorm_player",true,true,afFadeTime,afFadeTime);
+		}
+		else if (lStrength == 2)
+		{
+			//Entity_SetEffectsActiveExt("storm_radius_small",false,true,afFadeTime,afFadeTime);
+			//Entity_SetEffectsActiveExt("storm_radius_medium",true,true,afFadeTime,afFadeTime);
+			//Entity_SetEffectsActiveExt("storm_radius_large",false,true,afFadeTime,afFadeTime);
+			Prop_SetActiveAndFade("sandstorm_wall_layer1", true, afFadeTime);
+			Prop_SetActiveAndFade("sandstorm_wall_layer2", true, afFadeTime);
+			Prop_SetActiveAndFade("sandstorm_wall_layer3", false, afFadeTime);
+			Entity_SetEffectsActiveExt("sandstorm_player",true,true,afFadeTime,afFadeTime);
+		}
+		else if (lStrength == 3)
+		{
+			
+			//Entity_SetEffectsActiveExt("storm_radius_small",true,true,afFadeTime,afFadeTime);
+			//Entity_SetEffectsActiveExt("storm_radius_medium",false,true,afFadeTime,afFadeTime);
+			//Entity_SetEffectsActiveExt("storm_radius_large",false,true,afFadeTime,afFadeTime);
+			Prop_SetActiveAndFade("sandstorm_wall_layer1", true, afFadeTime);
+			Prop_SetActiveAndFade("sandstorm_wall_layer2", true, afFadeTime);
+			Prop_SetActiveAndFade("sandstorm_wall_layer3", true, afFadeTime);
+			Entity_SetEffectsActiveExt("sandstorm_player",true,true,afFadeTime,afFadeTime);
+		}
+		Debug_Log("SANDSTORM STRENGTH: "+lStrength);
+		return lStrength;
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnCollide_Player_Voice(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		tString sVoice = Entity_GetVarString(asParent,"");
+		Voice_Play(sVoice);
+		return false;
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnCollide_Player_Swipe(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		//ParticleSystem_CreateAtEntity("PS_StormDirtSwipe", "storm_dirt_swipe_vortex.ps", "Camera", true);
+		Sandstorm_Swipe(1);
+		Sound_CreateAtEntity("Sound_WindGust", "04_02_sandstorm/wind/sandstorm_wind_gust", "player");
+		return false;
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnCollide_Player_StopStorm(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		if (mbPlayerThroughRift) return false;
+		
+		if (alState == 1)
+		{
+			cLux_AddDebugMessage("NO STORM");
+			Storm_SetStrength(0,0.1f);
+			mbStormActive = false;
+		}
+		else
+		{
+			cLux_AddDebugMessage("STORM");
+			Storm_SetStrength(2,1);
+			mbStormActive = true;
+		}
+		return true;
+	}
+	
+	//-------------------------------------------------------
+		
+	void OnLookAt_RiftArea(const tString &in asEntity, int alState)
+	{
+		mbFatigue = false;
+		Player_FadeMoveSpeedMulTo(1,0.2f);
+		Player_FadeRunSpeedMulTo(.8f,0.3f);
+	}
+	
+	//-------------------------------------------------------
+	
+		
+	void UpdatePlayerTripping(float afTimeStep)
+	{
+		if (!mbFatigue) return;
+		if (mbPlayerThroughRift) return;
+
+		if (Player_GetSpeed() > 0 && mbCanTrip && Player_GetRunning() == false)
+		{
+			
+			mbIsTripping = true;
+			mbCanTrip = false;
+			mlTripDir = 1*cMath_Sign(cMath_RandRectf(-1,1));
+			mfTripAmount = cMath_RandRectf(.15f,.25f);
+			Map_AddTimer("Timer_Trip",cMath_RandRectf(0.2f,0.4f),"OnTimer_StopTripping");
+			Map_AddTimer("Timer_ResetTripping",cMath_RandRectf(1,3),"OnTimer_ResetTripping");	
+		}
+		
+		if (mbIsTripping)
+		{
+			iCharacterBody@ pBody = cLux_GetPlayer().GetCharacterBody();	
+			pBody.Move(eCharDir_Right, mfTripAmount*mlTripDir);
+			pBody.Move(eCharDir_Forward, mfTripAmount);
+		}
+		
+	}	
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_StopTripping(const tString &in asTimer)
+	{
+		mbIsTripping = false;
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_ResetTripping(const tString &in asTimer)
+	{
+		mbCanTrip = true;
+	}
+		
+	//-------------------------------------------------------
+	
+	bool OnAnim_DoctorEscape(const tString &in asEntity, int alDirection)
+	{
+		OnCollide_Player_DoctorEscape("","",1);
+		return true;
+	}
+	
+	bool OnEndOfCam_Speed(const tString &in asEntity, int alDirection)
+	{
+		FearHandler_FadeLevelTo(0.8f,1);
+		Map_AddTimer("Timer_LowerFear",5,"OnTimer_LowerFear");
+		Player_FadeMoveSpeedMulTo(mfBaseWalkSpeed,4);
+		Player_FadeRunSpeedMulTo(0.3f,10);
+		mbFatigue = true;
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_LowerFear(const tString &in asTimer)
+	{
+		FearHandler_FadeLevelTo(0.4f,10);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnEndOfAnim_GetBackUp(const tString &in asAnim)
+	{
+		Player_FadeMoveSpeedMulTo(mfBaseWalkSpeed,4);
+		Player_FadeRunSpeedMulTo(0.3f,10);
+		//mbFatigue = true;
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnEndOfAnim_ChaseDoctor(const tString &in asAnim)
+	{
+		Player_FadeMoveSpeedMulTo(1,1);
+		Player_FadeRunSpeedMulTo(0.8f,1);
+		FearHandler_FadeLevelTo(0.2f,10);
+		Map_AddTimer("Timer_FadeGhoulPowers",12,"OnTimer_FadeGhoulPowers");
+		//mbFatigue = true;
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_FadeGhoulPowers(const tString &in asTimer)
+	{
+		FearHandler_FadeLevelTo(0.3f,3);
+		Player_FadeMoveSpeedMulTo(mfBaseWalkSpeed,4);
+		Player_FadeRunSpeedMulTo(0.5f,3);
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnCollide_Player_Wall(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		FearHandler_FadeLevelTo(0.3f,4);
+		PlayerBody_AddInteractiveAnimationCheckpoint(4.852f);
+		PlayerBody_AddInteractiveAnimationCheckpoint(7.5f);
+		//PlayerBody_AddInteractiveAnimationCheckpoint(10.7f);
+		//Entity_SetAnimationMessageEventCallback(PlayerBody_GetEntityName(),"OnPlayerAnimMessage_DoctorLeave",true);
+		PlayerBody_PlayInteractiveAnimationAtEntity("player_saltmine_chase_fall_2","PosArea_CrawlCutscene_2",0.3f,"");
+			
+		//CameraAnimation_Begin("CameraAnimation_Wall","",true);
+		return false;
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnEndOfAnim_GetBackUpAfterFall(const tString &in asAnim) 
+	{
+		Debug_Log("ANIM END");
+		//Player_Teleport("Start_Lost");
+		//PlayerBody_PlayCutsceneAnimation("wake_up_from_death_2",false,0,"OnEndOfAnim_GotBackUpAfterFall");
+		Player_FadeMoveSpeedMulTo(mfBaseWalkSpeed,4);
+		Player_FadeRunSpeedMulTo(0.3f,10);
+		mbFatigue = true;
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnEndOfAnim_GotBackUpAfterFall(const tString &in asAnim) 
+	{
+		mbFatigue = true;
+	}
+	
+	void Tasi_ProtectFromStorm(float afTime = 2.f, int alNextTimer = -1)
+	{
+		Debug_Log("PROTECT");
+		PlayerBody_PlayAnimation("player_rarm_protect_from_storm_start",ePlayerBodyAnimationLayer_RightArm,false,false,false);
+		Map_AddTimer("Timer_ArmLoop",1.666f,"OnTimer_ArmLoop");
+		Map_SetTimerUserVarFloat("Timer_ArmLoop",afTime);
+		Map_SetTimerUserVarInt("Timer_ArmLoop",alNextTimer);
+	}
+	
+	//------------------------------------------------------- 
+	
+	void Tasi_EndProtectFromStorm()
+	{
+		Map_RemoveTimer("Timer_ArmLoop");
+		if (Map_TimerExists("Timer_ArmEnd"))
+		{
+			Map_RemoveTimer("Timer_ArmEnd");
+			Map_AddTimer("Timer_ArmEnd",0,"OnTimer_ArmEnd");
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_ArmLoop(const tString &in asTimer)
+	{
+		float fTime = Map_GetTimerUserVarFloat(asTimer);
+		int lNextTimer = Map_GetTimerUserVarInt(asTimer);
+		PlayerBody_PlayAnimation("player_rarm_protect_from_storm_loop",ePlayerBodyAnimationLayer_RightArm,true,false,false);
+		Map_AddTimer("Timer_ArmEnd",fTime,"OnTimer_ArmEnd");
+		Map_SetTimerUserVarInt("Timer_ArmEnd",lNextTimer);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_ArmEnd(const tString &in asTimer)
+	{
+		int lNextTimer = Map_GetTimerUserVarInt(asTimer);
+		PlayerBody_PlayAnimation("player_rarm_protect_from_storm_end",ePlayerBodyAnimationLayer_RightArm,false,false,true);
+		float fTime = (lNextTimer == -1) ? cMath_RandRectf(25,35) : lNextTimer;
+		//Map_AddTimer("Timer_ArmStartDelay",fTime,"OnTimer_ArmStartDelay");
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_ArmStartDelay(const tString &in asTimer)
+	{
+		Tasi_ProtectFromStorm(cMath_RandRectf(3,7));
+	}
+
+	//-------------------------------------------------------
+	
+	bool OnCollide_Player_Mines(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		if (alState == -1)
+		{
+			//ParticleSystem_CreateAtEntity("PS_StormDirt", "storm_dirt_med.ps", "Camera", true);
+			Map_AddTimer("Timer_DustSwipe",12,"OnTimer_DustSwipe");
+		}
+		else
+		{
+			if (ParticleSystem_Exists("PS_StormDirt"))
+				ParticleSystem_Destroy("PS_StormDirt");
+		}
+			
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_DustSwipe(const tString &in asTimer)
+	{
+		if (mbTeleportationActive == false)
+		{ 
+			Sandstorm_Swipe(cMath_RandRectl(0,1));
+		}
+		
+		float fNewTime = cMath_RandRectf(15,25);
+		Map_RestartCurrentTimer(fNewTime);
+	}
+
+	//-------------------------------------------------------
+	
+	void Tasi_SetFatigueActive(bool abFatigue)
+		{
+			if (abFatigue)
+			{
+				m_idBlur = Effect_DoF_Start(0.5f,10,1,1);
+				Map_AddTimer("Timer_BlurManager",cMath_RandRectf(2,6),"OnTimer_BlurManager");
+			}
+			else
+			{
+				Effect_DoF_FadeOut(m_idBlur,2);
+				Map_RemoveTimer("Timer_BlurManager");
+			}
+		}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_BlurManager(const tString &in asTimer)
+	{
+		if (!mbFatigue) Map_RestartCurrentTimer(1);
+		
+		//Debug_Log("BLUR");
+		if (mlBlurStatus == -1)
+		{
+			float fFadeTime = cMath_RandRectf(1,3);
+			Effect_DoF_FadeFocus(m_idBlur,0,0.5f,fFadeTime);
+			if (!mbPlayerThroughRift) Player_FadeMoveSpeedMulTo(mfBaseWalkSpeed-0.05f,fFadeTime);
+			mlBlurStatus = 0;
+			
+			Map_RestartCurrentTimer(cMath_RandRectf(2,4));
+		}
+		else if (mlBlurStatus == 1)
+		{
+			float fFadeTime = cMath_RandRectf(1,3);
+			Effect_DoF_FadeFocus(m_idBlur,0.5,10,fFadeTime);
+			if (!mbPlayerThroughRift) Player_FadeMoveSpeedMulTo(mfBaseWalkSpeed-0.1f,fFadeTime);
+			mlBlurStatus = 0;
+			
+			Map_RestartCurrentTimer(cMath_RandRectf(1,3));
+		}
+		else
+		{
+			Effect_DoF_FadeFocus(m_idBlur,0.5,50,3);
+			if (!mbPlayerThroughRift) Player_FadeMoveSpeedMulTo(mfBaseWalkSpeed,5);
+			mlBlurStatus = 1*cMath_Sign(cMath_RandRectf(-1,1));
+			
+			Map_RestartCurrentTimer(cMath_RandRectf(2,6));
+		}
+		
+	}
+ 
+	//-------------------------------------------------------
+ 
+	//} END MAIN FUNCTIONS
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 1 *PLAYER GIVES BIRTH AND THE DOCTOR TAKES THE CHILD AWAY*
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+ 
+		/////////////////////////////////////////
+		// General
+		//{//////////////////////////////////////
+		 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are used by many events in Scene 2 here.*/
+
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are used in more than one event in Scene 2 here.*/
+		
+		//-------------------------------------------------------
+		
+		//} END General	
+		
+		/////////////////////////////////////////
+		// Event A - Player needs to focus to deliver the baby
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 1, Event A here.*/
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 1, Event A here.*/
+
+		//-------------------------------------------------------
+
+		//} END Event A - Player needs to focus to deliver the baby
+	 
+		/////////////////////////////////////////
+		// Event B - Player struggles as the ghoul inside takes over and brings them to the Patient
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene X, Event X here.*/
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene X, Event X here.*/
+		
+		void Doctor_Setup(const tString &in asDoctor, const tString &in asBaby)
+		{			
+			iLuxEntity@ pDoctor = Map_GetEntity(asDoctor);
+			iLuxEntity@ pBaby = Map_GetEntity(asBaby);
+
+			pBaby.AttachToSocket(pDoctor,"j_R_HandSocket",true,true);
+			//pBaby.SetMeshScaleMul(0.3f);
+			Entity_SetActive(asDoctor,true);
+			Entity_SetActive(asBaby,true);
+			//Entity_PlayAnimation(sBaby,"f_gnaw_on_fairchild_loop");
+		}
+
+		//-------------------------------------------------------
+		
+		void Doctor_SetupSounds(const tString &in asDoctor, const tString &in asBaby)
+		{
+			Sound_Stop("Sound_BabyCry_*", 3.0f);
+			Sound_Stop("Sound_BabySweet_*", 5.0f);
+			float fRadius = (asDoctor == "Doctor_Intro") ? 45 : 60;
+			Sound_CreateAtEntity("Sound_BabyCry_"+asBaby,"04_02_sandstorm/baby_sandstorm/baby_cry_loop",asDoctor,1,false,1,-1,fRadius);
+			Sound_CreateAtEntity("Sound_BabySweet_"+asBaby,"04_02_sandstorm/baby_sandstorm/cry_sweet",asDoctor,1,false,1,-1,fRadius);
+		}
+
+		//-------------------------------------------------------
+		
+		
+
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mTasiRage;
+		
+        void Seq_TasiRage(const tString &in asTimer)
+        {
+	        Sequence_Begin("Seq_TasiRage", mTasiRage);
+			if (Sequence_DoStepAndWaitUntil(3))
+			{		
+				cScript_SetGlobalVarBool("Sandstorm_BabyTaken",true);			
+				Voice_Play("Scene_BetrayalPart2",-1,"OnEndOfVoice_ResumeRage");
+			}
+			else if (Sequence_DoStepAndWaitUntil(4.5))
+			{
+				FearHandler_SetForcedAddFearRate(1, 2, false);
+				cLux_AddDebugMessage("RAGE");
+				FearHandler_FadeLevelTo(0.95f,1,true);
+				Entity_SetAnimationPaused("Doctor_Birth", "doctor_birth_take_amulet_and_run", false);
+				Entity_SetAnimationPaused(PlayerBody_GetEntityName(), "player_birth_break_free", false);
+				Sound_CreateAtEntity("Sound_Escape", "04_03_undercity/doctor_death/birth_escape", "player");
+				Music_Stop(2.0f, eMusicPrio_SceneAmb);
+				Music_Play("A2_4_2_DoctorChaseStart.ogg", 0.3f, false, eMusicPrio_MinorEvent);
+				Map_AddTimer("Timer_ChaseMusic", 5.0f, "OnTimer_PlayChaseMusic");
+			}
+			else if (Sequence_DoStepAndWaitUntil(7.0))
+			{
+			    Light_FadeTo("cutscenelight_birth_*", cColor(0,0,0,0), 0, 4.5f);
+				FearHandler_SetForcedAddFearRate(1, 2, false);
+				
+				Tasi_SetFatigueActive(false);
+			}
+			else if (Sequence_DoStepAndWaitUntil(9.0))
+			{
+			}
+			else
+			{
+				FearHandler_FadeLevelTo(0.7f,4,true);
+				FootPlacement_SetActive(PlayerBody_GetEntityName(), true);
+			}
+	        Sequence_End();
+        }
+		
+		bool OnCamAnim_FirstFearBump(const tString &in asEntity, int alDirection)
+		{
+			FearHandler_FadeLevelTo(0.6f,3,true);
+			return true;
+		}
+		
+		bool OnCamAnim_SecondFearBump(const tString &in asEntity, int alDirection)
+		{
+			FearHandler_FadeLevelTo(0.9f,0.6f,true);
+			return true;
+		}
+		
+		void OnEndOfVoice_ResumeRage(const tString &in asScene, const tString &in asSubject)
+		{
+			SequenceStates_Resume("Seq_TasiRage");
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnAnim_ShakeArmRight(const tString &in asEntity, int alDirection)
+		{
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnAnim_FreeArmRight(const tString &in asEntity, int alDirection)
+		{
+			FearHandler_FadeLevelTo(1.f,0,true);
+			Voice_Play("Scene_GhoulTakesOver",0);
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnAnim_Fade(const tString &in asEntity, int alDirection)
+		{
+			Effect_Fade_Out(0.2f);
+			Map_AddTimer("Timer_FadeIn",1.f,"OnTimer_FadeIn");
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_FadeIn(const tString &in asTimer)
+		{
+			Effect_Fade_In(0.2f);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnAnim_ArmLeftPull(const tString &in asEntity, int alDirection)
+		{
+			FearHandler_FadeLevelTo(0.85f,0,true);
+			Voice_PlayDelayed("Scene_GhoulTakesOver",1,2);
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnAnim_DeleteBody(const tString &in asEntity, int alDirection)
+		{
+			FearHandler_FadeLevelTo(0.95f,0,true);
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnEndOfCam_Permafail(const tString &in asEntity, int alDirection)
+		{
+			CameraAnimation_Begin("CameraAnimation","",true);
+			FearHandler_FadeLevelTo(0.6f,3,true);
+			FearHandler_SetForcedAddFearRate(eFearForcedRateType_Script,1,10);
+			Voice_Play("Scene_GhoulTakesOver");
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnAnim_Fade2(const tString &in asEntity, int alDirection)
+		{
+			Effect_Fade_Out(0.2f);
+			Map_AddTimer("Timer_FadeIn",1,"OnTimer_FadeIn2");
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_FadeIn2(const tString &in asTimer)
+		{
+			Tasi_SetFatigueActive(false);
+			Effect_Fade_In(0.2f);
+		}
+		
+		//-------------------------------------------------------
+
+		bool OnAnim_Struggle(const tString &in asEntity, int alDirection)
+		{
+			Debug_Log("STRUGGLE");
+			//Struggle_Patient();
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void Struggle_Patient()
+		{
+			tString sStandTar = "Patient_Anim";
+			tString sLight = "Light_Permafail_Barracks";
+			
+			tString sLoop = "gnaw_on_fairchild_loop";
+			tString sIntro = "gnaw_on_fairchild_intro";
+			tString sOutro = "gnaw_on_fairchild_outro";
+			tString sStruggle = "gnaw_on_fairchild_resist";
+			tString sWinCallback = "OnPermaStruggleWinEnd";
+			tString sFailCallback = "OnPermaStruggleFailEnd";
+			
+			//Entity_SetActive("Patient",false);
+			Entity_SetActive(sStandTar,true);
+			Player_Teleport("Start_Struggle");
+			
+			Struggle_SetAnimationEntity(sStandTar, "f_"+sLoop, "f_"+sIntro, "f_"+sOutro, "f_"+sStruggle, true);
+			Struggle_StartAnimation(sStandTar, "struggle_"+sLoop, "struggle_"+sStruggle, "struggle_"+sIntro, "struggle_"+sOutro, true, sLight, sWinCallback, sFailCallback, "", 4.f);
+			Voice_Play("Scene_GhoulTakesOver",3);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnPermaStruggleWinEnd()
+		{			
+			Debug_Log("WIN");
+			Player_SetCrouching(false);
+			Player_StartLookAt("Trigger_LookAtBaby",5,5,5);
+			Sound_PlayGui("03_06_ghouls_nest/stingers/permafail_event", 1.f);
+			FearHandler_FadeLevelTo(0.2f,2,true);
+			Map_AddTimer("Timer_StruggleLeave",5,"OnTimer_StruggleLeave");
+			Voice_StopAll();
+			Voice_Play("Scene_TasiWinsStruggle");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnPermaStruggleFailEnd()
+		{		
+			Debug_Log("LOSE");		
+			Sound_PlayGui("03_06_ghouls_nest/stingers/permafail_event", 1.f);
+			FearHandler_FadeLevelTo(0.5f,2,true);
+			Map_AddTimer("Timer_StruggleLeave",4.5f,"OnTimer_StruggleLeave");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_StruggleLeave(const tString &in asTimer)
+		{
+			Tasi_SetFatigueActive(true);
+			Player_SetRunSpeedMul(.6f);
+			Player_FadeRunSpeedMulTo(0.1f,3);
+			Player_FadeMoveSpeedMulTo(0.5f,5);
+		}
+
+		//} END Event B - Player struggles as the ghoul inside takes over and brings them to the Patient
+		
+	//} END SCENE 1
+	
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 2 *PLAYER FOLLOWS THE DOCTOR OUT OF THE MINES*
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+
+		/////////////////////////////////////////
+		// General
+		//{//////////////////////////////////////
+		 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are used by many events in Scene 2 here.*/
+
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are used in more than one event in Scene 2 here.*/
+		
+		//-------------------------------------------------------
+		
+		//} END General	
+		
+		/////////////////////////////////////////
+		// Event A - Player stumbles along the corridor
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene X, Event X here.*/
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene X, Event X here.*/
+		
+		bool OnCollide_Player_ScreamAtDoctor(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Voice_Play("Tasi_ScreamAtDoctor", -1, "OnVoiceEnd_ScreamAtDoctor");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_FallAndCrawl(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			
+			mbFatigue = false;
+			Player_SetMoveSpeedMul(0.3f);
+			Player_SetRunSpeedMul(0.1f);
+			
+			tString sAnim = Entity_GetVarString(asParent,"");
+			//PlayerBody_SetInteractiveAnimationRange(0.6f,0.61f);
+			//PlayerBody_PlayInteractiveAnimation("fall_and_get_up_slow",0.2f,"OnEndOfAnim_GetBackUp",false,false,1,false,0,0,true);
+			Effect_ImageTrail_Start(2,0.3f,5,3);
+			FearHandler_FadeLevelTo(0.4f,2);
+			//float fSpeed = Entity_GetVarFloat(asParent,"");
+			//PlayerBody_PlayCutsceneAnimation("fall_and_get_up_slow",false,.8f,"",0.5f,0);
+			PlayerBody_AddInteractiveAnimationCheckpoint(4.852f);
+			PlayerBody_AddInteractiveAnimationCheckpoint(7.5f);
+			//PlayerBody_AddInteractiveAnimationCheckpoint(10.7f);
+			Entity_SetAnimationMessageEventCallback(PlayerBody_GetEntityName(),"OnPlayerAnimMessage_DoctorLeave",true);
+			PlayerBody_PlayInteractiveAnimationAtEntity("player_saltmine_chase_fall_1","PosArea_CrawlCutscene",0.3f,"OnEndOfAnim_ContinueChase");
+			//CameraAnimation_Begin("CameraAnimation_Ground","",true);
+			return false;
+		}
+		
+		void OnVoiceEnd_ScreamAtDoctor(const tString &in asScene, const tString &in asLine)
+		{
+			Map_AddTimer("Timer_DoCrawlSounds", 0.0f,"Timer_DoCrawlSounds");
+		}
+		
+		// Hackety-hack! Last-minute sound added and last minute loop implementation as we
+		// can't update the soundbanks right now.
+		void Timer_DoCrawlSounds(const tString &in asTimerName="")
+		{
+			cSoundEntity@ pSound = cLux_GetCurrentMap().GetWorld().GetSoundEntity("PlayerCrawlEmote");
+			if (pSound==null||pSound.IsStopped())
+			{
+				Sound_CreateAtEntity("PlayerCrawlEmote", "player/emotes/ghoul_transition_med", "player");
+			}
+			Map_AddTimer("Timer_DoCrawlSounds", 0.5f,"Timer_DoCrawlSounds");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnEndOfAnim_ContinueChase(const tString &in asAnimName, float afT)
+		{
+			Sound_Stop("PlayerCrawlEmote", 1.0f);
+			Map_RemoveTimer("Timer_DoCrawlSounds");
+			FearArea_SetGivesFear("Fear_Rage",false);
+			mbFatigue = true;
+			Player_FadeMoveSpeedMulTo(0.6f,5);
+			Player_FadeRunSpeedMulTo(0.8f,1);
+			FearHandler_FadeLevelTo(0.8f,3);
+			Map_AddTimer("Timer_FadeGhoulPowers",12,"OnTimer_FadeGhoulPowers");
+		}
+		
+		void OnPlayerAnimMessage_DoctorLeave(const tString &in asEntityName, const tString &in asAnimName, int alMessageEventID)
+		{
+			if (alMessageEventID == 0)  
+			{
+				Debug_Log("EVENT");
+				Map_RemoveTimer("Timer_DoctorPushCart");
+				cLux_AddDebugMessage("DOC ANIM: "+"doctor_clear_blockage_final"+" - CART ANIM: "+"cart_pushed_final");
+				Agent_PlayCutsceneAtEntity(msCurrentDoctor,"doctor_clear_blockage_final","Cart_Rigid",0,false,"OnEndOfAnim_DoctorLeaveMines");
+				//Entity_PlayAnimation(msCurrentDoctor,"doctor_clear_blockage_rest",0.1f,true,true);
+				Entity_PlayAnimation("Cart_Rigid","cart_pushed_final",0.3f,false);
+			}
+		}
+
+		//-------------------------------------------------------
+		
+		bool OnEndOfAnim_Crawl(const tString &in asEntity, int alDirection)
+		{
+			Player_ChangeStateToNormal();
+			PlayerBody_AddInteractiveAnimationCheckpoint(3.5f);
+			PlayerBody_AddInteractiveAnimationCheckpoint(6.7f);
+			PlayerBody_AddInteractiveAnimationCheckpoint(9.2f);
+			PlayerBody_AddInteractiveAnimationCheckpoint(11.8f);
+			Entity_SetAnimationMessageEventCallback(PlayerBody_GetEntityName(), "OnAnimEvent_Crawl", true);
+			PlayerBody_PlayInteractiveAnimationAtEntity("player_wake_up_crawl_mines", "PosArea_Crawl", 1.f, "OnEndOfAnim_GetUp", false, true, false, 1.f, false);
+			
+			return true;
+		}
+		
+		void OnAnimEvent_Crawl(const tString &in asEntityName, const tString &in asAnimName, int alMessageEventID)
+		{
+			if (alMessageEventID == 0)
+			{
+				Debug_Log("EVENT");
+				Map_RemoveTimer("Timer_DoctorPushCart");
+				cLux_AddDebugMessage("DOC ANIM: "+"doctor_clear_blockage_final"+" - CART ANIM: "+"cart_pushed_final");
+				Agent_PlayCutsceneAtEntity(msCurrentDoctor,"doctor_clear_blockage_final","Cart_Rigid",0,false,"OnEndOfAnim_DoctorLeaveMines");
+				//Entity_PlayAnimation(msCurrentDoctor,"doctor_clear_blockage_rest",0.1f,true,true);
+				Entity_PlayAnimation("Cart_Rigid","cart_pushed_final",0.3f,false);
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnEndOfAnim_GetUp(const tString &in asAnimName, float afTime)
+		{
+			Map_AddTimer("Timer_EndOfCrawl",.1f,"OnTimer_EndOfCrawl");
+			return;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_EndOfCrawl(const tString &in asTimer)
+		{
+			Debug_Log("END");
+			CameraAnimation_Begin("CameraAnimation_GetUp","",true);
+			OnCollide_Player_DoctorEscape("","",1);
+			mbFatigue = true;
+			Player_FadeMoveSpeedMulTo(0.6f,5);
+			Player_FadeRunSpeedMulTo(.8f,1);
+			FearHandler_FadeLevelTo(0.8f,3);
+			Map_AddTimer("Timer_FadeGhoulPowers",12,"OnTimer_FadeGhoulPowers");
+		}
+	
+	//-------------------------------------------------------
+
+		//} END Event A - Player stumbles along the corridor
+		
+		/////////////////////////////////////////
+		// Event B - Player almost reaches the Doctor, but loses their energy again
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene X, Event X here.*/
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene X, Event X here.*/
+		
+		void OnEndOfAnim_Push(const tString &in asAgent, const tString &in asAnim)
+		{
+			//Map_AddTimer("Timer_Doctor_BangOnDoor",0,"OnTimer_Doctor_BangOnDoor");
+			cLux_AddDebugMessage("DOC ANIM: "+"doctor_clear_blockage_rest"+" - CART ANIM: "+"cart_idle");
+			Agent_PlayCutsceneAtEntity(msCurrentDoctor,"doctor_clear_blockage_rest","Cart_Rigid",0,true);
+			//Entity_PlayAnimation(msCurrentDoctor,"doctor_clear_blockage_rest",0.1f,true,true);
+			Entity_PlayAnimation("Cart_Rigid","cart_idle",0.3f,false);
+			Map_AddTimer("Timer_DoctorPushCart",cMath_RandRectf(1,2),"OnTimer_DoctorPushCart");
+		}
+		
+		void OnTimer_DoctorPushCart(const tString &in asTimer)
+		{
+			float fRand = cMath_RandRectf(0,1);
+			int lAnim;
+			
+			if (fRand > 0.6f) lAnim = 1;
+			else if (fRand > 0.3f) lAnim = 2;
+			else lAnim = 3;
+			
+			cLux_AddDebugMessage("DOC ANIM: "+"doctor_clear_blockage_push_"+lAnim+" - CART ANIM: "+"cart_pushed_"+lAnim);
+			Agent_PlayCutsceneAtEntity(msCurrentDoctor,"doctor_clear_blockage_push_"+lAnim,"Cart_Rigid",0,false,"OnEndOfAnim_Push");
+			//Entity_PlayAnimation(msCurrentDoctor,"doctor_clear_blockage_push_"+lAnim,0.1,false,true,"OnEndOfAnim_Push");
+			Entity_PlayAnimation("Cart_Rigid","cart_pushed_"+lAnim,0.3f,false);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_Doctor_BangOnDoor(const tString &in asTimer)
+		{
+			float fRand = cMath_RandRectf(0,1);
+			if (fRand > .7f) Voice_Play("Doctor_Barricade");
+			//CharMover_PlayAnimation(msCurrentDoctor, "attack_close_1", 0.0f, false);
+			//Entity_PlayAnimation(msCurrentDoctor, "attack_close_1", 0.0f, false);
+			ParticleSystem_CreateAtEntity("PS_DoorBash_tmp", "dust_impact_simple_oneshot.ps", "archaeology_cart_1", false);
+			Sound_CreateAtEntity("Sound_GhoulDoorHit", "03_05_vitae_station/ghoul_events/ghoul_door_smash", "archaeology_cart_1");
+			Map_RestartCurrentTimer(4);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_Wind(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			//Entity_SetEffectsActive("sandstorm_player",true,true);
+			//Entity_SetActive("storm_radius_small",true);
+			//Entity_SetActive("storm_radius_medium",true);
+			//Entity_SetActive("storm_radius_large",true);
+			mlSandstormStrength = Storm_SetStrength(1,1);
+			Tasi_SetFatigueActive(false);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_DoctorEscape(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			
+			
+			Map_RemoveTimer("Timer_Doctor_BangOnDoor");
+			//Entity_SetActive("BlockingItem*",false);
+			//Entity_AddImpulse("archaeology_cart_1",Map_GetEntity("archaeology_cart_1").GetMeshEntity().GetLocalMatrix().GetForward()+cVector3f_Right*4,true,true);
+			
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnEndOfAnim_DoctorLeaveMines(const tString &in asAgent, const tString &in asAnim)
+		{
+			Pathfinder_Track_Clear(msCurrentDoctor);
+			for (int i = 17; i<=24; i++)
+				Pathfinder_Track_Add(msCurrentDoctor,"PathNode_"+i);
+			Pathfinder_Track_Start(msCurrentDoctor,false,1,"OnEndOfTrack_GoPastBlockage");
+			CharMover_SetSpeedState(msCurrentDoctor,eHumanoidSpeed_Walk_VeryFast);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PlayChaseMusic(const tString &in asTimer)
+		{
+			Music_Stop(5.0f, eMusicPrio_MinorEvent);
+			Music_PlayExt("A2_4_2_DoctorTunnelChase.ogg", true, 0.2f, 1.0f, 5.0f, 1.0f, eMusicPrio_BigEvent, true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnEndOfTrack_GoPastBlockage(const tString &in asEntity)
+		{
+			Map_AddTimer("Timer_DoctorGoPastBlockage",0.1f,"OnTimer_DoctorGoPastBlockage");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_DoctorGoPastBlockage(const tString &in asTimer)
+		{
+			Voice_StopAll();
+			Voice_Play("Tasi_GiveMeMyBaby",-1,"OnEndOfVoice_ChaseBarks");
+			
+			Pathfinder_Track_Clear(msCurrentDoctor);
+			for (int i = 25; i<=68; i++)
+				Pathfinder_Track_Add(msCurrentDoctor,"PathNode_"+i);
+			Pathfinder_Track_Start(msCurrentDoctor,false,1,"OnEndOfTrack_DoctorTeleportOutOfMines");
+			CharMover_SetSpeedState(msCurrentDoctor,eHumanoidSpeed_Run_Slow);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnEndOfVoice_ChaseBarks(const tString &in asScene, const tString &in asSubject)
+		{
+			Map_AddTimer("Timer_ChaseBarks",0,"OnTimer_ChaseBarks");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ChaseBarks(const tString &in asTimer)
+		{
+			tString sVoice = (Entity_GetCollide("player","Trigger_Mines")) ? "Tasi_ChaseBarks" : "Tasi_CallOut";
+			Voice_Play(sVoice);
+			int lRand = cMath_RandRectl(8,16);
+			Map_RestartCurrentTimer(lRand);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnEndOfTrack_DoctorTeleportOutOfMines(const tString &in asEntity)
+		{
+			Sound_Stop("Sound_BabyCry_Baby_Intro",0.3f);
+			Entity_SetActive(msCurrentDoctor,false);
+			Entity_SetActive("Baby_Intro",false);
+			
+			msCurrentDoctor = "Doctor_Sandstorm_1";
+			Agent_TeleportFeetToEntity(msCurrentDoctor,"PosArea_DoctorGlimpse_1");
+		}
+		
+		//-------------------------------------------------------
+		
+		// END Event B - Player almost reaches the Doctor, but loses their energy again
+		
+	//} END Scene 2
+	
+	/////////////////////////////////////////
+	// Event C - Player almost reaches the Doctor, but loses their energy again
+	//{//////////////////////////////////////
+
+	//-------------------------------------------------------
+
+	/*Put any variables that are only used in Scene 2, Event C here.*/
+
+	//-------------------------------------------------------
+
+	/*Put any functions that are only used in Scene 2, Event C here.*/
+	
+	bool OnTrigger_Player_SlideOnSand(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		Player_SetSlidingActive(alState == 1, Entity_GetVarFloat(asParent, ""));
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnCollide_Player_Scarf(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		if (alState != 1) return true;
+		
+		bool bScarf = Entity_GetVarBool(asParent,"");
+		Map_Preset_Fade("Outside", 2);
+		
+		if ((bScarf && !mbScarf) || (!bScarf && mbScarf))
+		{
+			mbScarf = bScarf;
+			Sound_CreateAtEntity("Sound_Scarf","player/foley/action/scarf","player");
+			if (mbScarf) 
+			{
+				Map_AddTimer("Timer_DelayedSwipe",1,"OnTimer_DelayedSwipe");
+				//Tasi_ProtectFromStorm(0.2f,35);
+			}
+			else
+			{
+				//Tasi_EndProtectFromStorm();
+			}
+		}
+		
+		return true;
+	}
+	
+	void OnTimer_DelayedSwipe(const tString &in asTimer)
+	{
+		Sandstorm_Swipe(0);
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnCollide_PlayChaseMusic(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Game_AutoSave();
+			Sound_Stop("Sound_BabyCry_Newborn", 1);
+			Doctor_SetupSounds(msCurrentDoctor, "Baby_Intro");
+			Music_Stop(5.0f, eMusicPrio_BigEvent);
+			Music_PlayExt("A2_4_2_DoctorDesertChase.ogg", true, 0.1f, 1.0f, 5.0f, 1.0f, eMusicPrio_SceneAmb, true);
+			return false;
+		}
+	
+	//-------------------------------------------------------
+	
+	bool OnCollide_Player_DoctorGlimpse(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		msCurrentDoctor = "Doctor_Sandstorm_1";
+		
+		Sketchbook_AddIdea("hunt_doctor");
+		
+		Doctor_Setup("Doctor_Sandstorm_1","Baby_1");
+		Doctor_SetupSounds("Doctor_Sandstorm_1","Baby_1");
+		Doctor_Setup("Doctor_Sandstorm_2","Baby_2");
+		
+		for (int j = 1; j<=2; j++)
+		{
+			
+			Agent_TeleportFeetToEntity("Doctor_Sandstorm_"+j,"PosArea_DoctorGlimpse_"+j);
+			
+			Pathfinder_Track_Clear("Doctor_Sandstorm_"+j);
+			for (int i = 1; i<=52; i++)
+				Pathfinder_Track_Add("Doctor_Sandstorm_"+j,"PathNodeGlimpse"+j+"_"+i);
+			Pathfinder_Track_Start("Doctor_Sandstorm_"+j);
+			CharMover_SetSpeedState("Doctor_Sandstorm_"+j,eHumanoidSpeed_Walk_Fast);
+			
+		}
+		
+		Doctor_SetAdaptiveSpeed(msCurrentDoctor,true);
+		Doctor_SetCallback_AdaptiveSpeedChanged(msCurrentDoctor,"Doctor_OnAdaptiveSpeedChange");
+
+		Player_FadeRunSpeedMulTo(0.1f,10);
+		Player_FadeMoveSpeedMulTo(mfBaseWalkSpeed,10);
+		
+		mbVariableFogRadius = true;
+		
+		return false;
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnCollide_Player_HoldOnRock(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		if (alState == 1 && Entity_PlayerIsInFront(asParent) && Entity_IsInPlayerFOV(asParent))
+		{
+			PlayerBody_PlayCutsceneAnimation("herberts_hq_a_stumble_ls",false,0.2f,"OnEndOfAnim_GetBackUp");
+			//PlayerBody_PlayCutsceneAtEntity("herberts_hq_a_stumble_ls",asParent,false,0.2f,"OnEndOfAnim_GetBackUp");
+			Player_SetMoveSpeedMul(0.5f);
+		}
+		return false;
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnCollide_Player_PlayAnimation(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		tString sAnim = Entity_GetVarString(asParent,"");
+		PlayerBody_PlayCutsceneAnimation(sAnim,false,0.2f,"OnEndOfAnim_GetBackUpAfterFall",1);
+		
+		if (asParent == "Trigger_Fall_2A_1")
+		{
+			Voice_Play("Tasi_Amari");
+			Map_RemoveTimer("Timer_ArmLoop");
+			Map_RemoveTimer("Timer_ArmEnd");
+			//Map_AddTimer("Timer_ArmStartDelay",13,"OnTimer_ArmStartDelay");
+		}
+		else if (asParent == "Trigger_Fall_2A_4")
+		{
+			//Player_GiveDamage(0.1f,0.9f,eDamageType_Fall,"Trigger_Fall_2A_4");
+		}
+		return false;
+	}
+	
+	//-------------------------------------------------------
+	
+	
+	// TO DO: PLUG THOSE IN 
+	
+	void OnTimer_PlayerLost(const tString &in asTimer)
+	{
+		Voice_Play("Tasi_LostBarks");
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnCollide_Doctor_SpeedUp(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		Doctor_SetAdaptiveSpeed(msCurrentDoctor,false);
+		CharMover_SetSpeedState(msCurrentDoctor,eHumanoidSpeed_Run);
+		return false;
+	}
+	
+	//} END Event C
+	
+//} END Scene 2
+
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 4 *PLAYER CHASES THE DOCTOR THROUGH THE RIFT INTO THE DARK WORLD*
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+
+		/////////////////////////////////////////
+		// General
+		//{//////////////////////////////////////
+		 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are used by many events in Scene 2 here.*/
+
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are used in more than one event in Scene 2 here.*/
+		
+		//-------------------------------------------------------
+		
+		//} END General	
+		
+		/////////////////////////////////////////
+		// Event A - Player spots the Doctor, runs towards him and jumps through the Rift
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene X, Event X here.*/
+		
+		bool mbPlayerThroughRift = false;
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene X, Event X here.*/
+		
+		bool OnCollide_Player_ResetFog(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			cLux_AddDebugMessage("OnCollide_Player_ResetFog");
+			if (alState == 1)
+			{
+				mbVariableFogRadius = false;
+				cLux_GetCurrentMap().GetWorld().SetFogEnd(40);
+				cLux_GetCurrentMap().GetWorld().SetSecondaryFogEnd(15);
+			}
+			else
+			{
+				// Never reset this setting. If the player got this close to the rift, keep the fog at this distance.
+			}
+			return true;
+		}
+
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_SetupDoctorRift(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			msCurrentDoctor = "Doctor_Rift";
+			
+			//FearThreatAgent_SetComponentEnabled(msCurrentDoctor,false);
+			Entity_SetActive(msCurrentDoctor,true);
+			Doctor_SetAdaptiveSpeed(msCurrentDoctor,true);
+			Sound_CreateAtEntity("Sound_BabyCry_DoctorRift","04_02_sandstorm/baby/baby_cry","Doctor_Rift");
+			Pathfinder_Track_Clear(msCurrentDoctor);
+			Pathfinder_Track_Add(msCurrentDoctor,"PathNode_DoctorRift_12");
+			Pathfinder_Track_Add(msCurrentDoctor,"PathNode_DoctorRift_18");
+			Pathfinder_Track_Start(msCurrentDoctor,false,1,"OnEndOfTrack_DoctorToTower");
+			CharMover_SetSpeedState(msCurrentDoctor,eHumanoidSpeed_Idle);
+			
+			Doctor_SetCallback_AdaptiveSpeedChanged(msCurrentDoctor,"");
+			Storm_SetStrength(1);
+
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_DoctorGoingThroughRift(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Sandstorm_Swipe(3, 1.25f, 0.25f);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnEndOfTrack_DoctorToTower(const tString &in asEntity)
+		{
+			//Rift_SetForceOpen("Rift_1",true);
+			Doctor_SetAdaptiveSpeed(msCurrentDoctor,false);
+			Map_AddTimer("Timer_DoctorRift",2.1f,"OnTimer_DoctorToTower");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_DoctorToTower(const tString &in asTimer)
+		{
+			Pathfinder_Track_Clear(msCurrentDoctor);
+			for (int i = 1; i <= 48; i++)
+				Pathfinder_Track_Add(msCurrentDoctor,"PathNode_DoctorTower_"+i);
+			Pathfinder_Track_Start(msCurrentDoctor,false,1,"OnEndOfTrack_DoctorEscape");
+			CharMover_SetSpeedState(msCurrentDoctor,eHumanoidSpeed_Run_Slow);
+			
+			Player_FadeMoveSpeedMulTo(1,10);
+			Player_FadeMoveSpeedMulTo(.5f,20);
+			mbFatigue = true;
+		
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnLookAt_Rift(const tString &in asEntity, int alState)
+		{
+			Voice_Play("Tasi_BabyFound");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnRiftStage_Rift_1(const tString &in asRift, int alStage, bool abOpening, float afOpenAmount)
+		{
+			if (alStage == 3 && abOpening == false)
+			{
+				Prop_SetActiveAndFade("sandstorm_rift_rock", true, 1.f);
+
+				Entity_SetActive("Trigger_SoundPortal_1_*",false);
+				Sound_CreateAtEntity("Sound_PortalClose", "level_entity_shared/portal/portal_open", "Trigger_SoundPortal_1_1");
+				Sound_CreateAtEntity("Sound_PortalClose", "level_entity_shared/portal/portal_open", "Trigger_SoundPortal_1_2");
+				Sound_Stop("SoundPortalLoop_1_1", 1.0f);
+				Sound_Stop("SoundPortalLoop_1_2", 1.0f);
+			}
+			else if (alStage == 4 && abOpening)
+			{
+				Prop_SetActiveAndFade("sandstorm_rift_rock", false, 1.f);
+
+				Entity_SetActive("Trigger_SoundPortal_1_*",true);
+				Sound_CreateAtEntity("Sound_PortalOpen", "level_entity_shared/portal/portal_open", "Trigger_SoundPortal_1_1");
+				Sound_CreateAtEntity("SoundPortalLoop_1_1", "level_entity_shared/portal/portal_open_loop", "Trigger_SoundPortal_1_1");
+
+				Sound_CreateAtEntity("Sound_PortalOpen", "level_entity_shared/portal/portal_open", "Trigger_SoundPortal_1_2");
+				Sound_CreateAtEntity("SoundPortalLoop_1_2", "level_entity_shared/portal/portal_open_loop", "Trigger_SoundPortal_1_2");
+			}
+		}
+		
+		//-------------------------------------------------------
+
+		bool OnCollide_Player_Rift(const tString &in asParent, const tString &in asChild, int alState)
+		{
+		    //iTexture@ bSkybox = cResources_CreateTextureCubeMap("skybox_midday_fog.dds",true);
+		    //cLux_GetCurrentMap().GetWorld().SetFogSkyboxTexture(bSkybox);
+			mbPlayerThroughRift = true;
+			Map_RemoveTimer("Timer_UpdateDoctorSpeed");
+			Map_RemoveTimer("Timer_DustSwipe");
+			Map_RemoveTimer("Timer_DressingSwipes");
+			Map_RemoveTimer("OnTimer_TimerTeleport");
+			Entity_SetActive("realworld_*", false);
+			Entity_SetActive("darkworld_*", true);
+			FogArea_SetVisible("darkworld_fog_*", true);
+			ParticleSystem_SetVisible("darkworld_effect_*", true);
+
+			Map_SetSkyBoxTexture("skybox_dwf.dds");
+			Map_SetSkyboxRotation(cVector3f(-0.15, 300.4f, 0));
+
+			Map_Preset_Fade("Darkworld", 0.5f);
+			Entity_SetEffectsActive("sandstorm_player", false, false);
+			mlSandstormStrength = Storm_SetStrength(0,0.1f);
+			Map_SetSecondaryFogActive(false);
+			CharMover_SetSpeedState(msCurrentDoctor,eHumanoidSpeed_Run_Slow);
+			Visibility_SetTerrainActive(false);
+			//Player_SetMoveSpeedMul(0.4f);
+			//Player_SetRunSpeedMul(0.1f);
+			mbScarf = false;
+			mbVariableFogRadius = false;
+			cLux_GetCurrentMap().GetWorld().SetFogEnd(40);
+			cLux_GetCurrentMap().GetWorld().SetSecondaryFogEnd(15);
+			Tasi_EndProtectFromStorm();
+            Seq_CloseRift("");
+			
+			Music_Stop(5.0f, eMusicPrio_SceneAmb);
+			Music_PlayExt("A2_4_2_DoctorDarkWorldChase.ogg", true, 0.2f, 1.0f, 5.0f, 1.0f, eMusicPrio_BgAmb, false);
+			Entity_SetActive("Soundscape_DW",true);
+			Tasi_SetFatigueActive(false);
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_RiftSound(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Sound_CreateAtEntity("Sound_PassthroughPlayer", "level_dreams/anim/final_portal_passthrough", "player");
+			Sound_CreateAtEntity("Sound_PassthroughPortal", "level_dreams/anim/portal_passthrough_end", "Trigger_RiftSound");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mCloseRift;
+		
+        void Seq_CloseRift(const tString &in asTimer)
+        {
+	        Sequence_Begin("Seq_CloseRift", mCloseRift);
+	            if (Sequence_DoStepAndWait(4))
+		        {
+			        
+		        }
+		        else if (Sequence_DoStepAndWait(1))
+		        {
+			        Entity_SetActive("rift_dunes_opening", false);
+			        //Entity_SetActive("rift_rock_*", true);
+			        Entity_SetActive("rift_replacement_rock_*", true);
+		        }
+	        Sequence_End();
+        }
+		
+		//} END Event A - Player spots the Doctor, runs towards him and jumps through the Rift
+		
+		/////////////////////////////////////////
+		// Event B - Player follows the Doctor along the long bridge leading to the tower
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene X, Event X here.*/
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene X, Event X here.*/
+		
+		bool OnCollide_Player_FallAndChaseDoctor(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			tString sAnim = Entity_GetVarString(asParent,"");
+			//PlayerBody_PlayCutsceneAnimation(sAnim,false,0.2f,"OnEndOfAnim_ChaseDoctor",1);
+			PlayerBody_PlayCutsceneAtEntity(sAnim,"PosArea_LandOnBridge",false,0.2f,"OnEndOfAnim_ChaseDoctor");
+			//Player_GiveDamage(0.01f,0.9f,eDamageType_Fall,"Trigger_Fall_2A_4");
+			Sound_CreateAtEntity("Sound_FallDamage","player/foley/damage/player_hit","player");
+			FearHandler_FadeLevelTo(0.6f,0.3f,true);
+			return false;
+		}
+		
+			
+		bool OnCollide_Player_RiftClose(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Rift_SetForceClose("Rift_1",true);
+			return false;
+		}
+		
+		bool OnCollide_Player_Microflash(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Sketchbook_Microflash("Microflash_2");
+			//Voice_Play("Microflash_3");
+			return false;
+		}
+		
+		int mlVisualBlurID = -1;
+		
+		bool OnCollide_Doctor_Blur(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Map_AddTimer("Timer_VisualBlur",0,"OnTimer_VisualBlur");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_VisualBlur(const tString &in asTimer)
+		{
+			mlVisualBlurID = Effect_Blur_Start(2,0.5f);
+			Map_AddTimer("Timer_StopVisualBlur",1,"OnTimer_StopVisualBlur");
+		}
+		
+		bool OnCollide_Doctor_BlurSlow(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			mlVisualBlurID = Effect_Blur_Start(2,0.5f);
+			Map_AddTimer("Timer_StopVisualBlur",1,"OnTimer_StopVisualBlurSlow");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_StopVisualBlur(const tString &in asTimer)
+		{
+			Effect_Blur_FadeOut(mlVisualBlurID,1);
+		}
+		
+		void OnTimer_StopVisualBlurSlow(const tString &in asTimer)
+		{
+			Sound_CreateAtEntity("DoorClosed","level_entity_shared/level_doors/stone","Trigger_10");
+			Effect_Blur_FadeOut(mlVisualBlurID,2.3f);
+		}
+		
+		void OnEndOfTrack_DoctorEscape(const tString &in asEntity)
+		{
+			Sound_Stop("Sound_BabyCry_DoctorRift",0);
+			Entity_SetActive("Doctor_*",false);
+			Entity_SetActive("Baby_*",false);
+			
+			//Sound_Fade("Sound_BabyCry*",0.2,1);
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event B - Player follows the Doctor along the long bridge leading to the tower
+		
+	//} END Scene 4
+
+	cVector3f mvBaseDir;
+ 
+}

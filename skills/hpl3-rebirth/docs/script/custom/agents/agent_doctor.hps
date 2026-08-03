@@ -1,0 +1,471 @@
+//----------------------------------------------------------------------
+
+////////////////////////////////
+// DOCTOR                     //
+////////////////////////////////
+
+#include "agents/Agent_Humanoid.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_player.hps"
+#include "custom/player/PlayerTypes_Custom.hps"
+#include "base/Base_Types.hps"
+#include "custom/agents/agent_types_custom.hps"
+
+//----------------------------------------------------------------------
+
+enum eDoctorState
+{
+	eDoctorState_Patrol,
+	eDoctorState_Idle,
+	eDoctorState_Wait,
+}
+
+//----------------------------------------------------------------------
+
+enum eDoctorProximity
+{
+	eDoctorProximity_Touching,
+	eDoctorProximity_Close,
+	eDoctorProximity_Midrange,
+	eDoctorProximity_Far,
+}
+
+//----------------------------------------------------------------------
+
+class cScrAgentDoctor : cScrAgentHumanoid
+{
+	//===========================================================
+
+	//////////////////////////////////////////
+	//=======================================
+	// MAIN FUNCTIONS
+	//=======================================
+	//{///////////////////////////////////////
+	//===========================================================
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	//{///////////////////////////////////////
+		
+	//------------------------------------------------------------
+		
+	void Init()
+	{
+		msHeadTracker_TargetEntity = "";
+		mBaseObj.SetUpdatePlayerDetection(true);
+	}
+		
+	//} END INIT
+	
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// LOADING
+	//{////////////////////////////////////////
+		
+	//------------------------------------------------------------
+		
+	void SetupCharBody()
+	{
+		cScrAgentHumanoid::SetupCharBody();
+		iCharacterBody@ pCharBody = mBaseObj.GetCharBody();
+		
+		pCharBody.SetMass(80);
+		pCharBody.SetMaxPositiveMoveSpeed(eCharDir_Forward,1.0f);
+		pCharBody.SetMoveAcc(eCharDir_Forward,4);
+		pCharBody.SetMoveDeacc(eCharDir_Forward,8);
+		pCharBody.SetMaxPushMass(20);
+		pCharBody.SetMaxPushForce(300);
+		pCharBody.SetAccurateClimbing(true);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		cScrAgentHumanoid::SetupAfterLoad(apWorld, apVars, apInstanceVars);
+		
+		//////////////////////
+		// General Setup
+		mBaseObj.SetAlignEntityWithGroundRay(true);
+		mBaseObj.SetFOV(cMath_ToRad(170.0f));
+		mBaseObj.SetSightRange(90.0f);
+		mBaseObj.SetSightRangeMul(1);
+		mBaseObj.SetRelativeEyeHeight(0.8f);	
+		
+		////////////
+		// Pathfinder Setup
+		mpPathfinder.SetMaxHeight(0.8f);
+		
+		SetupComponents(apWorld, apVars, apInstanceVars);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupComponents(cWorld @apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		////////////
+		// State Machine
+		@mpStateMachine = cLux_CreateEntityComponent_StateMachine(mBaseObj);
+		
+		mpStateMachine.AddState("Patrol", eDoctorState_Patrol);
+		mpStateMachine.AddState("Idle", eDoctorState_Idle);
+		mpStateMachine.AddState("Wait", eDoctorState_Wait);
+		
+		
+		///////////////////////////////
+		//Proximity Sensor
+		@mpProximitySensor = cLux_CreateEntityComponent_ProximitySensor(mBaseObj);
+		mpProximitySensor.AddState(eDoctorProximity_Touching, 1, 1.1, true, false);
+		mpProximitySensor.AddState(eDoctorProximity_Close, 2.4, 2.6, true, false);
+		
+		////////////
+		// Mover Setup
+		mpMover.SetupWallAvoidance(0.9f, 5.0f, 4);
+		mpMover.SetWallAvoidanceActive(true);
+		mpMover.SetupDynamicObjectAvoidance(1.7f, 10, 3);
+		mpMover.SetMoveSpeedAnimMul(1);
+		
+		mpMover.SetVerticalMoveSpeedExtraAnimMul(0.5f);
+		
+		mpMover.SetMaxForwardSpeed(1);
+		mpMover.SetMaxBackwardSpeed(1);
+		
+		mpMover.SetRunToWalkSpeed(2.5);
+		mpMover.SetWalkToRunSpeed(3.0);
+		
+		/////////////////////////////////
+		// Speed States
+		
+		mpMover.AddSpeedState(eHumanoidSpeed_Walk);
+		mpMover.SetSpeedState_Forward(1.0);
+		
+		mpMover.AddSpeedState(eHumanoidSpeed_Walk_VerySlow);
+		mpMover.SetSpeedState_Forward(0.4);
+
+		mpMover.AddSpeedState(eHumanoidSpeed_Walk_Slow);
+		mpMover.SetSpeedState_Forward(0.75);
+		
+		mpMover.AddSpeedState(eHumanoidSpeed_Walk_Fast);
+		mpMover.SetSpeedState_Forward(1.6f);
+		
+		mpMover.AddSpeedState(eHumanoidSpeed_Walk_VeryFast);
+		mpMover.SetSpeedState_Forward(2.1f);
+
+		mpMover.AddSpeedState(eHumanoidSpeed_Run);
+		mpMover.SetSpeedState_Forward(5.2);
+		mpMover.SetSpeedState_TurnMaxSpeed(6);
+		mpMover.SetSpeedState_TurnSpeedMul(12);
+		mpMover.SetSpeedState_TurnBreakMul(2);
+		
+		mpMover.AddSpeedState(eHumanoidSpeed_Run_Slow);
+		mpMover.SetSpeedState_Forward(3.8f);
+		
+		mpMover.AddSpeedState(eHumanoidSpeed_Run_Fast);
+		mpMover.SetSpeedState_ForwardAcc(10);
+		mpMover.SetSpeedState_ForwardDeacc(5);
+		mpMover.SetSpeedState_Forward(10);
+		mpMover.SetSpeedState_TurnMaxSpeed(15);
+		mpMover.SetSpeedState_TurnSpeedMul(15);
+		mpMover.SetSpeedState_TurnBreakMul(2);
+
+		mpMover.AddSpeedState(eHumanoidSpeed_Idle);
+		mpMover.SetSpeedState_Forward(0.0);
+		
+		/////////////////////
+		// Head tracker
+		@mpHeadTracker = cLux_CreateEntityComponent_HeadTracker(mBaseObj);
+		mpHeadTracker.LoadFromVariables(apVars);
+		
+		msHeadTracker_TargetEntity = apInstanceVars.GetVarString("HeadTracker_TargetEntity", "");
+		if (msHeadTracker_TargetEntity == "")
+			msHeadTracker_TargetEntity = "Player";
+		
+		mpHeadTracker.SetActive(apInstanceVars.GetVarBool("HeadTracker_Active", true));
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnAfterWorldLoad()
+	{
+		cScrAgentHumanoid::OnAfterWorldLoad();
+		
+		if (msHeadTracker_TargetEntity != "")
+		{
+			iLuxEntity@ pEntity = mBaseObj.GetMap().GetEntityByName(msHeadTracker_TargetEntity);
+			if (pEntity !is null)
+				mpHeadTracker.SetTrackEntity(pEntity);
+			else
+				Error("Could not find headtracker target entity '"+msHeadTracker_TargetEntity+"' for entity '"+mBaseObj.GetName()+"'");
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	//} END Loading
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	//{///////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnUpdate(float afTimeStep)
+	{
+		cScrAgentHumanoid::OnUpdate(afTimeStep);
+		if(mBaseObj.IsActive()==false) return;
+		
+		//cLux_AddDebugMessage("Move Speed: "+mpMover.GetMoveSpeed());
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetProperties()
+	{
+		cScrAgentHumanoid::ResetProperties();
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnSetActive(bool abX)
+	{
+		cScrAgentHumanoid::OnSetActive(abX);
+	}
+	
+	//------------------------------------------------------------
+	
+	//} END GENERAL
+	
+	//}END MAIN FUNCTIONS
+
+	//===========================================================
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPERS
+	//{//////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	//------------------------------------------------------------
+	
+	//} END HELPERS
+	
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// GLOBAL FUNCS
+	//{//////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool mbAdaptiveSpeed = false;
+	bool mbOutOfSightAdaptSpeed = true;
+	float mfOutOfSightSpeedMul = .5f;
+	
+	tString msAdaptiveSpeedChangedCallback = "";
+	
+	void _Global_SetAdaptiveSpeed()
+	{
+		mbAdaptiveSpeed = cScript_GetGlobalArgBool(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetAdaptiveSpeed()
+	{
+		cScript_SetGlobalReturnBool(mbAdaptiveSpeed);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetOutOfSightAdaptSpeed(bool abAdaptSpeed, float afMul)
+	{
+		mbOutOfSightAdaptSpeed = cScript_GetGlobalArgBool(1);
+		mfOutOfSightSpeedMul = cScript_GetGlobalArgFloat(2);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetCallback_AdaptiveSpeedChanged()
+	{
+		msAdaptiveSpeedChangedCallback = cScript_GetGlobalArgString(1);
+	}
+	
+	//} END GLOBAL
+	
+	//===========================================================
+	
+	/////////////////////////////////////////
+	//=======================================
+	// STATES
+	//=======================================
+	//{//////////////////////////////////////
+	
+	//===========================================================
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////////
+	// STATE: DEFAULT
+	//{////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void State_Default_Enter() {}	
+	void State_Default_Leave() {}
+	
+	void State_Default_Update(float afTimeStep) {}
+	bool State_Default_Message(int alMessageId) { return false; }	
+	void State_Default_TimerUp(uint64 alId) {}
+	
+	//}END STATE: DEFAULT
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////////
+	// STATE: IDLE
+	//{////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void State_Idle_Enter() {}	
+	void State_Idle_Leave() {}
+	void State_Idle_Update(float afTimeStep) {}
+	bool State_Idle_Message(int alMessageId) { return false; }	
+	void State_Idle_TimerUp(uint64 alId) {}
+	
+	//------------------------------------------------------------
+	//}END STATE: IDLE
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////////
+	// STATE: WAIT
+	//{////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void State_Wait_Enter() {}	
+	void State_Wait_Leave() {}
+	void State_Wait_Update(float afTimeStep) {}
+	bool State_Wait_Message(int alMessageId) { return false; }	
+	void State_Wait_TimerUp(uint64 alId) {}
+	
+	//------------------------------------------------------------
+	//}END STATE: WAIT
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////////
+	// STATE: PATROL
+	//{////////////////////////////////
+	
+	int mlAdaptiveSpeedTar = -1;
+	
+	//------------------------------------------------------------
+	
+	void State_Patrol_Enter() 
+	{
+		cLux_AddAIDebugMessage("(" + mBaseObj.GetName() + ") ------ ENTER STATE: Patrol ------");
+		mpStateMachine.AddTimer("AdaptiveSpeed_Detection", 1.f);
+	}	
+	void State_Patrol_Leave() {}
+	void State_Patrol_Update(float afTimeStep) 
+	{
+		////////////////////////
+		// Slow down if the player isn't looking at us
+		if (mbOutOfSightAdaptSpeed)
+		{
+			float fFwdSpeed = mBaseObj.CheckIsOnScreen(true) ? mpMover.GetSpeedState() * mpMover.GetSpeedMul() : mpMover.GetSpeedState() * mfOutOfSightSpeedMul * mpMover.GetSpeedMul();
+			mBaseObj.GetCharBody().SetMaxPositiveMoveSpeed(eCharDir_Forward, fFwdSpeed);
+		}
+		//cLux_AddDebugMessage("Speed: "+mBaseObj.GetCharBody().GetMaxPositiveMoveSpeed(eCharDir_Forward));
+	}
+	bool State_Patrol_Message(int alMessageId) { return false; }	
+	void State_Patrol_TimerUp(uint64 alId) 
+	{
+		if (alId == H64("AdaptiveSpeed_Detection"))
+		{
+			if (mbAdaptiveSpeed)
+			{
+				float fDist = cMath_Vector3Dist(mBaseObj.GetCharBody().GetFeetPosition(), mBaseObj.GetPlayerFeetPos());
+				
+				eHumanoidSpeed lSpeed;
+				int lCurrentSpeed = mpMover.GetSpeedState();
+
+				if (fDist < 20)			lSpeed = eHumanoidSpeed_Run_Slow;
+				else if (fDist < 30)	lSpeed = eHumanoidSpeed_Walk_VeryFast;
+				else if (fDist < 60)	lSpeed = eHumanoidSpeed_Walk_VerySlow;
+				else					lSpeed = eHumanoidSpeed_Idle;
+				
+				if (lSpeed != lCurrentSpeed)	
+				{
+					//mlAdaptiveSpeedTar = lSpeed;
+					//mpStateMachine.AddTimer("AdaptiveSpeed_DelayedSet", 1.f);	
+					mpMover.SetSpeedState(lSpeed);
+					Doctor_AdaptiveSpeedChangedCallback();
+				}
+			}
+			cLux_AddAIDebugMessage("(" + mBaseObj.GetName() + ") ------ SPEED STATE: "+mpMover.GetSpeedState()+"------");
+			mpStateMachine.AddTimer("AdaptiveSpeed_Detection", 1.f);
+		}
+		if (alId == H64("AdaptiveSpeed_DelayedSet"))
+		{
+			mpMover.SetSpeedState(mlAdaptiveSpeedTar);
+			Doctor_AdaptiveSpeedChangedCallback();
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void Doctor_AdaptiveSpeedChangedCallback()
+	{
+		if (msAdaptiveSpeedChangedCallback == "") return;
+		
+		tString sMethodName = "void " + msAdaptiveSpeedChangedCallback + "(const tString &in asDoctor, int alSpeedState)";
+		cLuxMap@ pMap = mBaseObj.GetMap();
+		if (pMap.ScriptMethodExists(sMethodName) && pMap.ScriptPrepare(sMethodName))
+		{
+			tString sName = mBaseObj.GetName();
+            pMap.SetArgString(0,sName);
+			pMap.SetArgInt(1, mpMover.GetSpeedState());
+			pMap.ScriptExecute();
+		}
+	}
+	
+	//------------------------------------------------------------
+	//}END STATE: PATROL
+	
+	//------------------------------------------------------------
+		
+	//===========================================================
+	//}END STATES
+	
+	//------------------------------------------------------------
+	/////////////////////////////////////////
+	// PROPERTIES
+	//{//////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	tString msHeadTracker_TargetEntity;
+	
+	cLuxStateMachine@ mpStateMachine;
+	cLuxBarkMachine@ mpBarkMachine;
+	cLuxHeadTracker@ mpHeadTracker;
+	cLuxProximitySensor@ mpProximitySensor;
+	
+	//------------------------------------------------------------
+	
+	//} END PROPERTIES
+	
+	//------------------------------------------------------------
+	
+	
+}

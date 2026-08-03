@@ -1,0 +1,439 @@
+#include "custom/props/Prop_Rigid.hps"
+#include "helpers/helper_modules.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+#include "helpers/helper_game.hps"
+
+#include "custom/helpers/helper_particle_settings.hps"
+
+//------------------------------------------------------------
+
+const float gfGasGrenade_TimeUntilGasRelease = 4.f;
+const float gfGasGrenade_TimeUntilSpread = 5.f;
+const float gfGasGrenade_SpreadDist = 3.5f;
+
+const int glGasGrenade_SpreadDirNum = 6;
+
+const cVector3f gvGasGrenade_AreaSize = cVector3f(3.f, 3.f, 3.f);
+
+const tString gsGasGrenade_GasStartSound = "weapons/throwables/smoke_canister/smoke_blast";
+const tString gsGasGrenade_GasLoopSound = "weapons/throwables/smoke_canister/smoke_loop";
+const tString gsGasGrenade_GasEndSound = "weapons/throwables/smoke_canister/smoke_end";
+
+const tString gsGasGrenade_Particles = "gas_grenade_smoke";
+const tString gsGasGrenade_ParticlesSpread = "gas_grenade_smoke_spread";
+
+//------------------------------------------------------------
+
+enum eGasCanisterState
+{
+	eGasCanisterState_PreRelease,
+	eGasCanisterState_Release,
+	eGasCanisterState_Empty
+}
+
+//------------------------------------------------------------
+
+class cGasArea
+{
+	tID mID;
+	cVector3f mvMin;
+	cVector3f mvMax;
+	bool mbTrap;
+}
+
+//------------------------------------------------------------
+
+class cScrPropGasGrenade : cScrPropRigid
+{
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// INIT
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+
+	void Init()
+	{
+		cScrPropRigid::Init();
+		mvGasParticles.resize(0);
+		mvGasAreas.resize(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld@ apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		cScrPropRigid::SetupAfterLoad(apWorld, apVars, apInstanceVars);
+		mBaseObj.SetAutoSleep(false);
+
+		ParticleSetting_PreloadParticles(gsGasGrenade_Particles + ".ps");
+		ParticleSetting_PreloadParticles(gsGasGrenade_ParticlesSpread + ".ps");
+	}	
+	
+	//------------------------------------------------------------
+
+	void OnMapEnter()
+	{
+		///////////////
+		// Setup damage
+		for (int i = 0; i<mvGasAreas.size(); i++)
+		{
+			EnvironmentalDamage_AddGasArea(mvGasAreas[i].mID, mvGasAreas[i].mvMin, mvGasAreas[i].mvMax, mvGasAreas[i].mbTrap);
+		}
+
+		if (mBaseObj.IsActive())
+		{
+			mfEmptyCount += MapTransfer_GetTimeElapsed(mlTimeStamp);
+			const float fTimeUntilEmpty = GameDifficulty_GetSettingValueByID_Float(eGameDifficultySetting_GasDuration);
+			if (mfEmptyCount >= fTimeUntilEmpty)
+			{
+				//////////////
+				// Setup state
+				mState = eGasCanisterState_Empty;
+				mBaseObj.SetAutoSleep(true);
+				
+				//////////////
+				// Stop effects
+				StopEffects(true);
+			}
+		}
+	}
+
+	//------------------------------------------------------------
+
+	void OnMapLeave()
+	{
+		mlTimeStamp = MapTransfer_GetTimeStamp();
+		m_idSoundLoop = tID_Invalid;
+	}
+	
+	///////////////////////////////
+	// GENERAL
+	///////////////////////////////
+		
+	//------------------------------------------------------------
+	
+	void OnVariableUpdate(float afDeltaTime)
+	{
+		//////////////
+		// Setup vars
+		cLuxMap@ pMap = mBaseObj.GetMap();
+		if (pMap is null) return;
+				
+		////////////////////
+		// Pre release
+		if (mState == eGasCanisterState_PreRelease)
+		{
+			//////////////
+			// Release?
+			mfReleaseCount -= afDeltaTime;
+			if (mfReleaseCount > 0)
+				return;
+				
+			//////////////
+			// Setup state
+			mState = eGasCanisterState_Release;
+					
+			//////////////
+			// Sound		
+			mBaseObj.PlaySound("Sound_GasStart", gsGasGrenade_GasStartSound, true, true);
+			
+			cSoundEntity@ pLoop = mBaseObj.PlaySound("Sound_GasLoop", gsGasGrenade_GasLoopSound, true, false);
+			if (pLoop !is null)
+				m_idSoundLoop = pLoop.GetID();
+							
+			//////////////
+			// Particles
+			tString sParticles = gsGasGrenade_Particles + msParticleSuffix + ".ps";
+			//cParticleSystem@ pPS = mBaseObj.CreateParticleSystem("PS_Gas", sParticles, true, true);
+			cParticleSystem@ pPS = ParticleSetting_CreateParticleSystemFromSetting(cast<iLuxEntity@>(mBaseObj), "PS_Gas", sParticles, true, true);
+
+
+			if (pPS !is null)
+			{
+				//////////////
+				// Store particles
+				tID idPS = pPS.GetID();
+				mvGasParticles.push_back(idPS);
+				
+				AddDamageArea(idPS, pPS.GetWorldPosition() + cVector3f(0.f, 0.75f, 0.f));
+			}
+		}
+		
+		////////////////////
+		// Release
+		else if (mState == eGasCanisterState_Release)
+		{
+			//////////////
+			// Empty?
+			mfEmptyCount += afDeltaTime;
+			const float fTimeUntilEmpty = GameDifficulty_GetSettingValueByID_Float(eGameDifficultySetting_GasDuration);
+			if (mfEmptyCount >= fTimeUntilEmpty)
+			{
+				//////////////
+				// Setup state
+				mState = eGasCanisterState_Empty;
+				mBaseObj.SetAutoSleep(true);
+				
+				//////////////
+				// Stop effects				
+				StopEffects();
+				
+				//////////////
+				// Play stop sound			
+				mBaseObj.PlaySound("Sound_GasStop", gsGasGrenade_GasEndSound, true, true);
+				return;
+			}
+			
+			//////////////
+			// Update sound
+			cSoundEntity@ pLoop = cLux_ID_SoundEntity(m_idSoundLoop);
+			if (pLoop is null)
+			{
+				@pLoop = mBaseObj.PlaySound("Sound_GasLoop", gsGasGrenade_GasLoopSound, true, false);
+				if (pLoop !is null)
+					m_idSoundLoop = pLoop.GetID();
+			}
+			else
+			{
+				pLoop.SetWorldPosition(mBaseObj.GetPosition());
+			}
+			
+			//////////////
+			// Spread gas?
+			mfSpreadCount += afDeltaTime;		
+			if (mfSpreadCount >= gfGasGrenade_TimeUntilSpread &&
+				mlSpreadDirId < glGasGrenade_SpreadDirNum)
+			{
+				///////////////
+				// Get dir
+				cMatrixf mtxRot = cMath_MatrixRotateY((cMath_PiMul2 / glGasGrenade_SpreadDirNum) * mlSpreadDirId);
+				cVector3f vSpreadDir = cMath_MatrixMul(mtxRot, cVector3f_Forward);
+				
+				///////////////
+				// Do raycast
+				float fDist;
+				cVector3f vNrm;
+				cVector3f vStart = mBaseObj.GetPosition() + cVector3f_Up * 0.75f;				
+				
+				iPhysicsBody@ pBody = cLux_GetClosestBody(vStart, vSpreadDir, gfGasGrenade_SpreadDist, fDist, vNrm);
+				if (pBody is null) fDist = gfGasGrenade_SpreadDist;
+				
+				///////////////
+				// Can spread in dir?
+				if (fDist > gvGasGrenade_AreaSize.x*0.5)
+				{
+					tString sParticles = gsGasGrenade_ParticlesSpread + msParticleSuffix + ".ps";
+					//cParticleSystem@ pPS = mBaseObj.CreateParticleSystem("PS_GasSpread", sParticles, true, false);				
+					cParticleSystem@ pPS = ParticleSetting_CreateParticleSystemFromSetting(cast<iLuxEntity@>(mBaseObj), "PS_GasSpread", sParticles, true, false);
+
+					if (pPS !is null)
+					{
+						///////////////
+						// Position it
+						cVector3f vParticlePos = vStart + cMath_Vector3Normalize(vSpreadDir) * fDist * 0.75f;
+						
+						//////////////
+						// Store particles
+						tID idPS = pPS.GetID();
+						mvGasParticles.push_back(idPS);
+						
+						//////////////
+						// Setup damage
+						cVector3f vShiftedPos = AddDamageArea(idPS, vParticlePos + cVector3f(0.f, 0.75f, 0.f));
+						pPS.SetWorldPosition(vShiftedPos-cVector3f_Up*gvGasGrenade_AreaSize.y*0.5f);
+					}
+				}
+				
+				///////////////
+				// Prepare next spread
+				++mlSpreadDirId;
+				mfSpreadCount = gfGasGrenade_TimeUntilSpread - cMath_RandRectf(0.5f, 1.5f);
+			}
+		}
+		
+		///////////////
+		// Empty!
+		else if (mState == eGasCanisterState_Empty)
+		{
+			
+		}
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnSetActive(bool abX) 
+	{
+		if (abX == false)
+		{
+			StopEffects();
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPERS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------	
+	
+	cVector3f AddDamageArea(tID a_idPS, const cVector3f &in avBoundsPos, bool abResizeToFit = true)
+	{
+		cVector3f vPos = avBoundsPos;
+		cVector3f vSize = gvGasGrenade_AreaSize;
+		
+		if (abResizeToFit)
+		{
+			///////////////
+			// Do raycasts to check if damage area needs to be smaller
+			float fDistPos;
+			float fDistNeg;
+			cVector3f vNrm;
+			cVector3f vStart = vPos;
+			
+			cLux_GetClosestBody(vStart, cVector3f_Forward, gvGasGrenade_AreaSize.z, fDistPos, vNrm);
+			cLux_GetClosestBody(vStart, cVector3f_Back, gvGasGrenade_AreaSize.z, fDistNeg, vNrm);
+			if (fDistPos < gvGasGrenade_AreaSize.z*0.5 || fDistNeg < gvGasGrenade_AreaSize.z*0.5)
+			{
+				////////////////////
+				// Area fits between the walls, just push it away from the intersecting one
+				if (fDistPos+fDistNeg > gvGasGrenade_AreaSize.z)
+				{
+					if (fDistPos < gvGasGrenade_AreaSize.z*0.5) vPos.z -= gvGasGrenade_AreaSize.z*0.5-fDistPos;
+					if (fDistNeg < gvGasGrenade_AreaSize.z*0.5) vPos.z += gvGasGrenade_AreaSize.z*0.5-fDistNeg;
+				}
+				
+				////////////////////
+				// Resize area to fit between the walls
+				else
+				{
+					vPos.z = ((vPos.z+fDistPos)+(vPos.z-fDistNeg))*0.5f;
+					vSize.z = fDistPos+fDistNeg;
+				}
+			}
+			
+			cLux_GetClosestBody(vStart, cVector3f_Right, gvGasGrenade_AreaSize.x, fDistPos, vNrm);
+			cLux_GetClosestBody(vStart, cVector3f_Left, gvGasGrenade_AreaSize.x, fDistNeg, vNrm);
+			if (fDistPos < gvGasGrenade_AreaSize.x*0.5 || fDistNeg < gvGasGrenade_AreaSize.x*0.5)
+			{
+				////////////////////
+				// Area fits between the walls, just push it away from the intersecting one
+				if (fDistPos+fDistNeg > gvGasGrenade_AreaSize.x)
+				{
+					if (fDistPos < gvGasGrenade_AreaSize.x*0.5) vPos.x -= gvGasGrenade_AreaSize.x*0.5-fDistPos;
+					if (fDistNeg < gvGasGrenade_AreaSize.x*0.5) vPos.x += gvGasGrenade_AreaSize.x*0.5-fDistNeg;
+				}
+				
+				////////////////////
+				// Resize area to fit between the walls
+				else
+				{
+					vPos.x = ((vPos.x+fDistPos)+(vPos.x-fDistNeg))*0.5f;
+					vSize.x = fDistPos+fDistNeg;
+				}
+			}
+		}
+		
+		cVector3f vMin = vPos - vSize / 2;
+		cVector3f vMax = vPos + vSize / 2;
+		
+		tID idGasArea = EnvironmentalDamage_AddGasArea(a_idPS, vMin, vMax, mBaseObj.GetVarBool("IsTrap"));
+		
+		cGasArea area;
+		area.mID = a_idPS;
+		area.mvMin = vMin;
+		area.mvMax = vMax;
+		area.mbTrap = false;
+
+		if (mBaseObj.GetVarBool("IsTrap"))
+		{
+			iLuxEntity@ pGas = cLux_ID_Entity(idGasArea);
+			if (pGas !is null)
+			{
+				pGas.SetVarBool("IsTrap", true);
+				pGas.SetVarString("TriggerCause", mBaseObj.GetVarString("TriggerCause"));
+				area.mbTrap = true;
+			}
+		}
+
+		
+		mvGasAreas.push_back(area);
+		
+		return (vMin+vMax)*0.5f;
+	}
+	
+	//------------------------------------------------------------
+	
+	void StopEffects(bool abInstantly = false)
+	{
+		cSoundEntity@ pLoop = cLux_ID_SoundEntity(m_idSoundLoop);
+		 if (pLoop !is null)
+			 pLoop.Stop(true);
+
+		for (int i = 0; i < mvGasParticles.size(); ++i)
+		{
+			cParticleSystem@ pPS = cLux_ID_ParticleSystem(mvGasParticles[i]);
+			if (pPS is null) continue;
+			
+			if(abInstantly)
+				pPS.KillInstantly();
+			else
+				pPS.Kill();
+			EnvironmentalDamage_RemoveArea(pPS.GetID());
+		}
+		
+		mvGasParticles.resize(0);
+		mvGasAreas.resize(0);
+	}
+	
+
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// GLOBAL
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetCustomFuseTime()
+	{
+		mfReleaseCount = cScript_GetGlobalArgFloat(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetParticleSuffix()
+	{
+		msParticleSuffix = cScript_GetGlobalArgString(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// PROPERTIES
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	int mlSpreadDirId = 0;	
+	float mfSpreadCount = 0.f;	
+	float mfReleaseCount = gfGasGrenade_TimeUntilGasRelease;
+	float mfEmptyCount = 0.f;
+	tString msParticleSuffix = "";	
+	tID m_idSoundLoop = tID_Invalid;
+	array<tID> mvGasParticles;
+	array<cGasArea> mvGasAreas;
+
+	eGasCanisterState mState = eGasCanisterState_PreRelease;
+	int mlTimeStamp = 0;
+
+	//------------------------------------------------------------
+}

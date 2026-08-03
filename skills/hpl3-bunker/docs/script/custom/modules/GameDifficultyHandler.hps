@@ -1,0 +1,713 @@
+#include "base/Base_Types.hps"
+#include "interfaces/UserModule_Interface.hps"
+#include "custom/modules/ModuleInterfaces_Custom.hps"
+#include "helpers/helper_game.hps"
+#include "custom/helpers/helper_menu.hps"
+
+//------------------------------------------------------------
+
+class cDifficultySettingValue
+{
+	cDifficultySettingValue(){}
+	cDifficultySettingValue(int aId, const tString&in asName, bool abValue)
+	{
+		mType = eDifficultySettingType_Bool;
+		mControlType = eDifficultySettingControlType_Checkbox;
+		mId = aId;
+		msName = asName;
+		mbValue = abValue;
+	}
+	cDifficultySettingValue(int aId, const tString&in asName, int alValue, int aControlType)
+	{
+		mType = eDifficultySettingType_Int;
+		mControlType = aControlType;
+		mId = aId;
+		msName = asName;
+		mlValue = alValue;
+	}
+	cDifficultySettingValue(int aId, const tString&in asName, float afValue, int aControlType)
+	{
+		mType = eDifficultySettingType_Float;
+		mControlType = aControlType;
+		mId = aId;
+		msName = asName;
+		mfValue = afValue;
+	}
+	
+	int mId;
+	tString msName;
+	int mType;
+	int mControlType;
+	bool mbValue;
+	int mlValue;
+	float mfValue;
+}
+
+//------------------------------------------------------------
+
+class cDifficultySettingEntry
+{
+	/////////////////////////////////////////
+	// Common
+	cDifficultySettingEntry(){}
+	int mId;
+	tString msName;
+	int mType;
+	int mControlType;
+	int mlReliesOn_SettingID;
+	array<int> mvReliesOn_DisablingValueIDs;
+	bool mbActive;
+	
+	array<cDifficultySettingValue> mvValueLevels;
+	int mlSelectedValueID;
+	int mlVeryEasyValueID;
+	int mlEasyValueID;
+	int mlNormalValueID;
+	int mlHardValueID;
+	int mlVeryHardValueID;
+	
+	void SetSelectedSettingValueByID(int aId)
+	{
+		mlSelectedValueID = aId;
+		//cLux_AddDebugMessage("New Value = " + aId);
+	}
+	
+	cDifficultySettingValue@ GetSelectedSettingValue()
+	{
+		return GetSettingValueByID(mlSelectedValueID);
+	}
+	
+	cDifficultySettingValue@ GetSettingValueByID(int aId)
+	{
+		for (int i=0; i<mvValueLevels.size(); i++)
+		{
+			cDifficultySettingValue@ pSettingValue = mvValueLevels[i];
+			if (pSettingValue.mId != aId) continue;
+			return pSettingValue;
+		}
+		
+		Warning("[DifficultyHandler] cDifficultySettingEntry.GetSettingValueByID: ID " + aId + " doesn't exist in the " + msName + "setting list of potential values!");
+		return null;
+	}
+}
+
+//------------------------------------------------------------
+
+class cScrGameDifficultyHandler : iScrUserModule, iScrUserModule_Interface, iScrGameDifficulty_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		if (mvSettings.size()==0)
+		{
+			cLux_AddDebugMessage("[DifficultyHandler] Init(): LoadConfigData called!");
+			LoadConfigData();
+		}
+	}
+		
+	//------------------------------------------------------------
+	
+	void LoadUserConfig(){}
+	void SaveUserConfig() {}
+	
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// MAP LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap@ apMap)
+	{
+		
+	}
+
+	//------------------------------------------------------------
+
+	void OnMapLeave(cLuxMap@ apMap)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void PreloadData(cLuxMap @apMap) {}
+	void CreateWorldEntities(cLuxMap @apMap) {}
+	void DestroyWorldEntities(cLuxMap @apMap) {}
+	void OnEnterContainer(const tString&in asOldContainer) {}
+	void OnLeaveContainer(const tString&in asNewContainer) {}
+	
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////	
+	
+	//------------------------------------------------------------
+	
+	void VariableUpdate(float afDeltaTime)
+	{
+		
+	}
+		
+	void Update(float afTimeStep) {}
+	void PostUpdate(float afTimeStep) {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnAction(int alAction, bool abPressed){}
+	void OnAnalogInput(int alAnalogId, const cVector3f &in avAmount) {}	
+	void OnExitPressed() {}
+	
+	//------------------------------------------------------------
+	
+	void AppGotInputFocus() {}
+	void AppLostInputFocus() {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPERS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void LoadConfigData()
+	{
+		///////////////////
+		// Get config file
+		iXmlDocument@ configFile = cResources_LoadXmlDocument("difficulty_settings.cfg");
+		if (configFile is null)
+		{
+			Error("[DifficultyHandler] LoadConfigData: Couldn't load the config file!");
+			return;
+		}
+		
+		const tString sLoadingError = "[DifficultyHandler] LoadConfigData: There was an error loading 'difficulty_settings.cfg'";
+		
+		cXmlElement@ pSettingsList = configFile.GetFirstElement("Entries");
+		if (pSettingsList is null)
+		{
+			Error(sLoadingError + "  [Step 1]");
+			return;
+		}
+		
+		cXmlNodeListIterator@ pEntryIt = pSettingsList.GetChildIterator();
+		if (pEntryIt is null)
+		{
+			Error(sLoadingError + "  [Step 2]");
+			return;
+		}
+		
+		////////////////////////////////////
+		// Get settings
+		mvSettings.resize(0);
+		while(pEntryIt.HasNext())
+		{
+			cXmlElement@ pEntryElem = pEntryIt.Next().ToElement();
+			
+			cDifficultySettingEntry settingEntry;
+			
+			////////////////////
+			// Get common data
+			settingEntry.mId = pEntryElem.GetAttributeInt("ID", -1);
+			settingEntry.msName = pEntryElem.GetAttributeString("Name", "");
+			settingEntry.mlReliesOn_SettingID = pEntryElem.GetAttributeInt("ReliesOn_SettingID", -1);
+			const tString sReliesOn_DisablingValueIDs = pEntryElem.GetAttributeString("ReliesOn_DisablingValueID", "");
+			cString_GetIntVec(sReliesOn_DisablingValueIDs, settingEntry.mvReliesOn_DisablingValueIDs, " ,;:,");
+			
+			settingEntry.mbActive = pEntryElem.GetAttributeBool("Implemented", false);
+			const tString sEntryType = pEntryElem.GetAttributeString("Type", "");
+			const tString sEntryControlType = pEntryElem.GetAttributeString("ControlType", "");
+			if (settingEntry.mId < 0)
+			{
+				Error("[DifficultyHandler] LoadConfigData: Setting Entry " + settingEntry.msName + " doesn't have a proper ID set.");
+				return;
+			}
+			
+			/////////////////////////////////
+			// Check if the ID already exists
+			for (int i=0; i<mvSettings.size(); ++i)
+			{
+				cDifficultySettingEntry@ pEntry = mvSettings[i];
+				if (settingEntry.mId == pEntry.mId)
+				{
+					Error("[DifficultyHandler] LoadConfigData: Setting Entry " + settingEntry.msName + " 's ID is " + settingEntry.mId + " and is not unique! Aborting!");
+					break;
+				}
+			}
+			
+			/////////////
+			// Define setting type
+			if (sEntryType == "Int")		settingEntry.mType = eDifficultySettingType_Int;
+			else if (sEntryType == "Float")	settingEntry.mType = eDifficultySettingType_Float;
+			else							settingEntry.mType = eDifficultySettingType_Bool;
+			
+			/////////////
+			// Define control type
+			if (sEntryControlType == "Switch")	settingEntry.mControlType = eDifficultySettingControlType_Switch;
+			else if (sEntryControlType == "Slider")	settingEntry.mControlType = eDifficultySettingControlType_Slider;
+			else									settingEntry.mControlType = eDifficultySettingControlType_Checkbox;
+			
+			////////////////////////////////////
+			// Get value data for non bool settings
+			array<cDifficultySettingValue> vValueLevels;
+			
+			//////////////////////////////
+			// Get bool value levels
+			if (settingEntry.mType == eDifficultySettingType_Bool)
+			{
+				cDifficultySettingValue valueFalse(0, "CustomSettings_False", false);
+				cDifficultySettingValue valueTrue(1, "CustomSettings_True", true);
+				vValueLevels.push_back(valueFalse);
+				vValueLevels.push_back(valueTrue);
+			}
+			//////////////////////////////
+			// Get int/float value levels
+			else
+			{
+				cXmlElement@ pValuesList = pEntryElem.GetFirstElement("Values");
+				cXmlNodeListIterator@ pValueListIt = pValuesList.GetChildIterator();
+				while(pValueListIt.HasNext())
+				{
+					cXmlElement@ pValueElem = pValueListIt.Next().ToElement();
+					cDifficultySettingValue settingValue;
+					
+					settingValue.mId = pValueElem.GetAttributeInt("ID", -1);
+					settingValue.msName = pValueElem.GetAttributeString("Name", "");
+					settingValue.mType = settingEntry.mType;
+					settingValue.mControlType = settingEntry.mControlType;
+					
+					if (settingValue.mType == eDifficultySettingType_Int)
+						settingValue.mlValue = pValueElem.GetAttributeInt("Value", -1);
+					else if (settingValue.mType == eDifficultySettingType_Float)
+						settingValue.mfValue = pValueElem.GetAttributeFloat("Value", -1.f);
+					vValueLevels.push_back(settingValue);
+				}
+			}
+			
+			settingEntry.mvValueLevels = vValueLevels;
+			
+			//////////////////
+			// Get Preset Data
+			cXmlElement@ pPresets = pEntryElem.GetFirstElement("PresetValueIDs");
+			settingEntry.mlVeryEasyValueID = pPresets.GetAttributeInt("VeryEasy", -1);
+			settingEntry.mlEasyValueID = pPresets.GetAttributeInt("Easy", -1);
+			settingEntry.mlNormalValueID = pPresets.GetAttributeInt("Normal", -1);
+			settingEntry.mlHardValueID = pPresets.GetAttributeInt("Hard", -1);
+			settingEntry.mlVeryHardValueID = pPresets.GetAttributeInt("VeryHard", -1);
+			
+			mvSettings.push_back(settingEntry);
+		}
+		
+		SwitchSettingsToCurrentDifficulty();
+	}
+	
+	//------------------------------------------------------------
+	
+	cDifficultySettingEntry@ GetSettingByID(int aId)
+	{
+		for (int i=0; i<mvSettings.size(); i++)
+		{
+			cDifficultySettingEntry@ pSetting = mvSettings[i];
+			if (pSetting is null) continue;
+			if (pSetting.mId == aId) return pSetting;
+		}
+		return null;
+	}
+	
+	//------------------------------------------------------------
+	
+	cDifficultySettingEntry@ GetSettingByName(const tString&in asName)
+	{
+		for (int i=0; i<mvSettings.size(); i++)
+		{
+			cDifficultySettingEntry@ pSetting = mvSettings[i];
+			if (pSetting is null) continue;
+			if (pSetting.msName == asName)
+				return pSetting;
+		}
+		return null;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INTERFACE
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetInitialPlaythroughConditions(bool abX)
+	{
+		mbInitialPlaythroughConditions = abX;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetInitialPlaythroughConditions()
+	{
+		return mbInitialPlaythroughConditions;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetNewGamePlusActive()
+	{
+		return mbInitialPlaythroughConditions == false && MainMenu_GetGameCompletedOnce();
+	}
+	
+	//------------------------------------------------------------
+	
+	///////////////////
+	// Getters
+	
+	int GetSettingsCount()
+	{
+		return mvSettings.size();
+	}
+	
+	//------------------------------------------------------------
+	
+	void GetSettingsDisplayData(array<int>&out avIds, array<tString>&out avNames, array<int>&out avControlTypes, array<array<tString>>&out avValueNames, array<int>&out avReliesOn_SettingID, array<array<int>>&out avReliesOn_DisablingValueIDs, array<bool>&out avActive)
+	{
+		for (int i=0; i<mvSettings.size(); i++)
+		{
+			cDifficultySettingEntry@ pSetting = mvSettings[i];
+			if (pSetting is null) continue;
+			
+			avIds.push_back(pSetting.mId);
+			avNames.push_back(pSetting.msName);
+			avControlTypes.push_back(pSetting.mControlType);
+			avReliesOn_SettingID.push_back(pSetting.mlReliesOn_SettingID);
+			avReliesOn_DisablingValueIDs.push_back(pSetting.mvReliesOn_DisablingValueIDs);
+			avActive.push_back(pSetting.mbActive);
+			
+			array<tString> vValueLevelNames;
+			for (int j=0; j<pSetting.mvValueLevels.size(); j++)
+			{
+				cDifficultySettingValue@ pLevel = pSetting.mvValueLevels[j];
+				if (pLevel is null) continue;
+				
+				vValueLevelNames.push_back(pLevel.msName);
+			}
+			avValueNames.push_back(vValueLevelNames);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	array<tString> GetSettingsNames()
+	{
+		array<tString> vNames;
+		for (int i=0; i<mvSettings.size(); i++)
+		{
+			cDifficultySettingEntry@ pSetting = mvSettings[i];
+			if (pSetting is null) continue;
+			vNames.push_back(pSetting.msName);
+		}
+		return vNames;
+	}
+	
+	//------------------------------------------------------------
+	
+	array<int> GetValuesSettingByPreset(int aMode)
+	{
+		array<int> toReturn;
+		
+		for (int i=0; i<mvSettings.size(); i++)
+		{
+			cDifficultySettingEntry@ pSetting = mvSettings[i];
+			if (pSetting is null) continue;
+			
+			switch(aMode)
+			{
+				case eGameMode_VeryEasy:
+					toReturn.push_back(pSetting.mlVeryEasyValueID);
+					break;
+				case eGameMode_Easy:
+					toReturn.push_back(pSetting.mlEasyValueID);
+					break;
+				case eGameMode_Hard:
+					toReturn.push_back(pSetting.mlHardValueID);
+					break;
+				case eGameMode_UltraHard:
+					toReturn.push_back(pSetting.mlVeryHardValueID);
+					break;
+				default:
+					toReturn.push_back(pSetting.mlNormalValueID);
+					break;
+			}
+		}
+		
+		return toReturn;
+	}
+	
+	//------------------------------------------------------------
+	
+	int GetSettingSelectedValueIdByID(int alId)
+	{
+		cDifficultySettingEntry@ pSetting = GetSettingByID(alId);
+		if (pSetting is null) return 0;
+		//cLux_AddDebugMessage("TEST " + pSetting.msName + " : " + pSetting.mlSelectedValueID);
+		
+		return pSetting.mlSelectedValueID;
+	}
+	
+	//------------------------------------------------------------
+	
+	tString GetSettingValueNameByID(int alId)
+	{
+		cDifficultySettingEntry@ pSetting = GetSettingByID(alId);
+		if (pSetting is null) return "";
+		cDifficultySettingValue@ pValue = pSetting.GetSelectedSettingValue();
+		if (pValue is null) return "";
+		return pValue.msName;
+	}
+	
+	//------------------------------------------------------------
+	
+	float GetSettingValueByID_Float(int alId)
+	{
+		cDifficultySettingEntry@ pSetting = GetSettingByID(alId);
+		if (pSetting is null) return 0.f;
+		cDifficultySettingValue@ pValue = pSetting.GetSelectedSettingValue();
+		if (pValue is null) return 0.f;
+		return pValue.mfValue;
+	}
+	
+	//------------------------------------------------------------
+	
+	int GetSettingValueByID_Int(int alId)
+	{
+		cDifficultySettingEntry@ pSetting = GetSettingByID(alId);
+		if (pSetting is null) return 0;
+		cDifficultySettingValue@ pValue = pSetting.GetSelectedSettingValue();
+		if (pValue is null) return 0;
+		return pValue.mlValue;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetSettingValueByID_Bool(int alId)
+	{
+		cDifficultySettingEntry@ pSetting = GetSettingByID(alId);
+		if (pSetting is null) return false;
+		cDifficultySettingValue@ pValue = pSetting.GetSelectedSettingValue();
+		if (pValue is null) return false;
+		return pValue.mbValue;
+	}
+	
+	//------------------------------------------------------------
+	
+	array<int> GetSettingsSelectedValueIDs()
+	{
+		//cLux_AddDebugMessage("[DifficultyHandler] GetSettingsSelectedValueIDs: <<<<<<<<<<<<<<<<<<<< Saving difficulty settings values for new game!");
+		
+		array<int> vToReturn;
+		for (int i=0; i<mvSettings.size(); ++i)
+		{
+			cDifficultySettingEntry@ pSetting = mvSettings[i];
+			if (pSetting is null) continue;
+			vToReturn.push_back(pSetting.mlSelectedValueID);
+		}
+		
+		return vToReturn;
+	}
+	
+	//------------------------------------------------------------
+	
+	array<int> GetSettingsIDs()
+	{
+		array<int> vToReturn;
+		for (int i=0; i<mvSettings.size(); ++i)
+		{
+			cDifficultySettingEntry@ pSetting = mvSettings[i];
+			if (pSetting is null) continue;
+			vToReturn.push_back(pSetting.mId);
+		}
+		
+		return vToReturn;
+	}
+	
+	//------------------------------------------------------------
+	
+	array<int> GetAllDifficultyPresetsSupportingSettingByID(int aId)
+	{
+		array<int> toReturn;
+		cDifficultySettingEntry@ pSetting = GetSettingByID(aId);
+		if (pSetting is null) return toReturn;
+		
+		if (pSetting.mlSelectedValueID == pSetting.mlVeryEasyValueID)
+			toReturn.push_back(eGameMode_VeryEasy);
+		if (pSetting.mlSelectedValueID == pSetting.mlEasyValueID)
+			toReturn.push_back(eGameMode_Easy);
+		if (pSetting.mlSelectedValueID == pSetting.mlNormalValueID)
+			toReturn.push_back(eGameMode_Normal);
+		if (pSetting.mlSelectedValueID == pSetting.mlHardValueID)
+			toReturn.push_back(eGameMode_Hard);
+		if (pSetting.mlSelectedValueID == pSetting.mlVeryHardValueID)
+			toReturn.push_back(eGameMode_UltraHard);
+			
+		return toReturn;
+	}
+	
+	//------------------------------------------------------------
+	
+	//////////////////
+	// Setters
+	
+	void SetSettingValueIdByID(int alId, int alValueID)
+	{
+		cDifficultySettingEntry@ pSetting = GetSettingByID(alId);
+		if (pSetting is null) return;
+		pSetting.SetSelectedSettingValueByID(alValueID);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SwitchSettingsToCurrentDifficulty()
+	{
+		SwitchSettingsPresetTo(Game_GetDifficultyMode());
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetSettingsSelectedValueIDs(array<int> avValueIDs, bool abReloadConfig)
+	{
+		if (abReloadConfig)
+		{
+			cLux_AddDebugMessage("[DifficultyHandler] SetSettingsSelectedValueIDs: LoadConfigData called for new game!");
+			LoadConfigData();
+		}
+		
+		//cLux_AddDebugMessage("[DifficultyHandler] SetSettingsSelectedValueIDs: >>>>>>>>>>>>>>>>>>>> Recovering difficulty settings values for new game!");
+		
+		for (int i=0; i<mvSettings.size(); ++i)
+		{
+			cDifficultySettingEntry@ pSetting = mvSettings[i];
+			if (pSetting is null) continue;
+			pSetting.mlSelectedValueID = avValueIDs[i];
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void SwitchSettingsPresetTo(int alMode)
+	{
+		if (alMode == eGameMode_Custom) return;
+		
+		for (int i=0; i<mvSettings.size(); i++)
+		{
+			cDifficultySettingEntry@ pSetting = mvSettings[i];
+			if (pSetting is null) return;
+			
+			bool bSkipAction = false;
+			
+			switch(alMode)
+			{
+				case eGameMode_VeryEasy:
+					pSetting.mlSelectedValueID = pSetting.mlVeryEasyValueID;
+					break;
+				case eGameMode_Easy:
+					pSetting.mlSelectedValueID = pSetting.mlEasyValueID;
+					break;
+				case eGameMode_Normal:
+					pSetting.mlSelectedValueID = pSetting.mlNormalValueID;
+					break;
+				case eGameMode_Hard:
+					pSetting.mlSelectedValueID = pSetting.mlHardValueID;
+					break;
+				case eGameMode_UltraHard:
+					pSetting.mlSelectedValueID = pSetting.mlVeryHardValueID;
+					break;
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// GUI
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+
+	void OnGui(float afTimeStep){}
+	
+	//------------------------------------------------------------
+	
+	void OnDraw(float afFrameTime) {}
+	void OnPostRender(float afFrameTime) {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	float DrawDebugOutput(cGuiSet@ apSet, iFontData@ apFont,float afY)
+	{
+		if (mbShowModuleOutput==false) return afY;
+		
+		afY = cLux_DrawDebugText("------------ Game Difficulty Handler ------------", afY);
+		
+		/*array<int> vIds;
+		array<tString> vNames;
+		array<int> vTypes;
+		array<int> vControlTypes;
+		array<array<tString>> vValueNames;
+		
+		array<bool> vImplemented;
+		GetSettingsDisplayData(vIds, vNames, vTypes, vControlTypes, vValueNames, vImplemented);
+		
+		for (int i=0; i<vIds.size(); i++)
+		{
+			int type = vTypes[i];
+			tString sName = vNames[i];
+			tString sValue;
+			int lControlType = vControlTypes[i];
+				
+			//afY = cLux_DrawDebugText("Setting: " + sName +  ". Selected Value: " + sValue, afY);
+			afY = cLux_DrawDebugText("Setting: " + sName +  ". Type: " + lControlType, afY);
+		}*/
+		
+		return afY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// VARIABLES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool mbShowModuleOutput = true;
+	bool mbInitialPlaythroughConditions = false;
+	array<cDifficultySettingEntry> mvSettings;
+	
+	//------------------------------------------------------------
+}

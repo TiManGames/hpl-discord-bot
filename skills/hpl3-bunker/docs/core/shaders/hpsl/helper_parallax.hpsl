@@ -1,0 +1,154 @@
+//-----------------------------------------
+///////////////////////////////
+// Relief mapping helpers
+
+void RayLinearIntersection(cTexture2D aHeightMap, in int alChannel, in float afSteps, inout cVector3f avPosition, inout cVector3f avEyeVec)
+{
+	avEyeVec /= afSteps; 	//Split up the eye vector into the number of steps 
+	float fDepth = avPosition.z;
+	float fPrevDepth = fDepth;
+
+	for(int i=0; i<afSteps-1; i++) 
+	{ 
+		fDepth = sample(aHeightMap, avPosition.xy)[alChannel]; 
+		if(avPosition.z >= fDepth)
+		{ 
+			break; 
+		}
+		avPosition += avEyeVec; 
+		fPrevDepth = fDepth;
+	} 	
+	/*
+	float ly = avPosition.z - avEyeVec.z;
+	float fErrorCorrection = 1.0 - (fPrevDepth-ly)/(avPosition.z-ly-fDepth+fPrevDepth);
+
+	avPosition -= avEyeVec * fErrorCorrection;
+	*/
+}
+
+void RayBinaryIntersection(cTexture2D aHeightMap, in int alChannel, in float afSteps, inout cVector3f avPosition, inout cVector3f avEyeVec)
+{ 
+	for(int i=0; i<afSteps; i++) 
+	{ 
+		float fDepth = sample(aHeightMap, avPosition.xy)[alChannel];
+		if(avPosition.z < fDepth) 
+			avPosition += avEyeVec; 
+		
+		avEyeVec *= 0.5; 
+		avPosition -= avEyeVec; 
+	} 
+}
+
+void RayIntervalIntersect(cTexture2D aHeightMap, in int alChannel, in float afSteps, inout cVector3f avPosition, inout cVector3f avEyeVec)
+{
+	float fPrevT = 0.0, fPrevH = 0.0;
+	float fT = 0.0, fH = 0.0;
+	
+	cVector2f vDx = dFdx(avPosition.xy) * 1.25;
+	cVector2f vDy = dFdy(avPosition.xy) * 1.25;
+	
+	////////////
+	// Linear search
+	float fStepSize = 1.0 / afSteps;
+	for(int i = 0; i < afSteps-1; ++i)
+	{
+		cVector3f vPos = avPosition + avEyeVec * fT;
+		
+		fPrevH = fH;
+		fH = sampleGrad(aHeightMap, vPos.xy, vDx, vDy)[alChannel];
+		float fDist = fH - vPos.z;
+		if(fDist <= 1e-5f) break;
+		fPrevT = fT;
+
+		fT += (fStepSize + fDist) * 0.5f;
+	}
+
+	if(fT > 0.0)
+	{
+		////////////
+		// Interval search
+		float fLowerLimit = fPrevT - 1.0;
+		float fUpperLimit = fT + 1.0;
+		float fUpperT = fT;
+
+		for(int i = 0; i < 3; ++i)
+		{
+			float fInterval = fPrevT - fUpperT;
+			float fDeltaL = fPrevH - fH;
+
+			float fCurT = (fPrevH * fInterval - fDeltaL * fPrevT) / (fInterval - fDeltaL);
+			if(fCurT < fLowerLimit || fCurT > fUpperLimit) break;
+			fT = fCurT;
+
+			cVector3f vPos = avPosition + avEyeVec * fT;
+			float fDepth = sampleGrad(aHeightMap, vPos.xy, vDx, vDy)[alChannel];
+		
+			if (vPos.z < fDepth)
+			{
+				fPrevH = fDepth;
+				fPrevT = fT;
+			}
+			else
+			{
+				fH = fDepth;
+				fUpperT = fT;
+			}
+		}
+
+		avPosition = avPosition + avEyeVec * fT;
+	}
+}
+
+//-----------------------------------------
+cVector3f GetParallaxUV_Relief(cTexture2D aHeightMap, in int alChannel, in cVector2f aUV, in cVector3f avTangentEyePos, in cVector2f avHeightMapScaleAndBias)
+{
+	cVector3f vEyeVec = normalize(avTangentEyePos);
+
+	if(isnan(vEyeVec.z) || isinf(vEyeVec.z)) return cVector3f(aUV, 0.0);
+	
+	//Determine number of steps based on angle between normal and eye
+	float fSteps = clamp(((1.0 - vEyeVec.z * vEyeVec.z) * 12.0), 0.0, 12.0) + 2.0; // 10
+	float fBinarySteps = fSteps;								 // 8
+
+	//Get give eyevec the length so it reaches bottom.
+	float fInvZ = 1.0 / vEyeVec.z;
+	vEyeVec *= fInvZ;	
+	
+	//Apply scale and bias
+	vEyeVec.xy *= avHeightMapScaleAndBias.x;
+	//cVector2f vBiasPosOffset = vEyeVec.xy * avHeightMapScaleAndBias.y; <- not working! because the ray casting buggers out when u are really close!
+	
+	//Get the postion to start the search from. 0 since we start at the top.
+	cVector3f vHeightMapPos = cVector3f(aUV, 0.0); 
+	
+	RayIntervalIntersect(aHeightMap, alChannel, fSteps,vHeightMapPos,  vEyeVec);
+	
+	//Do a binary search between start and first intersection to pinpoint the postion.		
+	//RayLinearIntersection(aHeightMap, alChannel, fSteps, vHeightMapPos,  vEyeVec);
+	//RayBinaryIntersection(aHeightMap, alChannel, fBinarySteps,vHeightMapPos,  vEyeVec);
+	vHeightMapPos.z *= fInvZ * avHeightMapScaleAndBias.x;
+
+	return vHeightMapPos;	
+}
+
+cVector2f GetParallaxUV_Simple(cTexture2D aHeightMap, in int alChannel, in cVector2f aUV, in cVector3f avTangentEyePos, in cVector2f avHeightMapScaleAndBias)
+{
+	cVector3f vEyeVec = normalize(avTangentEyePos);
+	float fHeight = sample(aHeightMap, aUV)[alChannel];	
+			
+	float fDisplacement = fHeight * avHeightMapScaleAndBias.x;// + avHeightMapScaleAndBias.y; <- skip bias, since relief does not support it!
+	
+	return vEyeVec.xy * fDisplacement + aUV;
+}
+
+cVector2f GetParallaxUV(cTexture2D aHeightMap, in int alChannel, in cVector2f aUV, in cVector3f avTangentEyePos, in cVector2f avHeightMapScaleAndBias)
+{
+	return GetParallaxUV_Relief(aHeightMap,alChannel, aUV, avTangentEyePos, avHeightMapScaleAndBias).xy;
+}
+
+cVector3f GetParallaxUV_Z(cTexture2D aHeightMap, in int alChannel, in cVector2f aUV, in cVector3f avTangentEyePos, in cVector2f avHeightMapScaleAndBias)
+{
+	return GetParallaxUV_Relief(aHeightMap,alChannel, aUV, avTangentEyePos, avHeightMapScaleAndBias);
+}
+
+//-----------------------------------------

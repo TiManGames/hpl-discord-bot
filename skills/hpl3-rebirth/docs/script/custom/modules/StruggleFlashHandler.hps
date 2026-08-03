@@ -1,0 +1,489 @@
+#include "interfaces/UserModule_Interface.hps"
+#include "custom/modules/ModuleInterfaces_Custom.hps"
+#include "base/Player_Types.hps"
+#include "base/InputHandler_Types.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_map.hps"
+
+#include "helpers/helper_imgui.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_effects_custom.hps"
+#include "helpers/helper_audio.hps"
+#include "helpers/helper_modules_custom.hps"
+
+//----------------------------------------------------------------------------------------
+
+/////////////////////////////////////////
+// Settings
+/////////////////////////////////////////
+
+//----------------------------------------------------------------------------------------
+
+enum eFlashImageState
+{
+	eFlashImageState_Start,
+	eFlashImageState_Flashing,
+	eFlashImageState_FadeOut,
+	eFlashImageState_End,
+	
+	eFlashImageState_LastEnum
+};
+
+//----------------------------------------------------------------------------------------
+
+class cStruggleFlash
+{
+	float mfDuration;
+	float mfFadeInTime;
+	float mfDelay;
+	int mlFlashImgState;
+	float mfFadeOutTime;
+	tString msImage;
+	bool mbIntense;
+	
+	cStruggleFlash(float afFadeInTime, float afDelay, bool abIntense)
+	{
+		mfDuration = abIntense ? cMath_RandRectf(0.05f, 0.1f) : 0;
+		mfFadeInTime = afFadeInTime;
+		mfDelay = afDelay;
+		mfFadeOutTime = abIntense ? 0.025f : 0.5f;
+		mlFlashImgState = eFlashImageState_Start;
+		msImage = "";
+		mbIntense = abIntense;
+	}
+	
+	cStruggleFlash()
+	{
+		mfDuration = cMath_RandRectf(0.15f, 0.2f);
+		mfFadeInTime = 0.f;
+		mfDelay = 0.f;
+		mfFadeOutTime = 0.f;
+		mlFlashImgState = eFlashImageState_Start;
+		msImage = "";
+	}
+	
+	void DoStruggleFlash()
+	{
+		cImGuiGfx gfxImg(msImage, eImGuiGfx_Texture);
+		const float fMaxImgAlpha = mbIntense ? 0.75f : 0.3f;
+		const float fTotalDuration = mfFadeInTime + mfDuration + mfFadeOutTime;
+		const cVector3f vImgPos(0.5,0.5,1);
+		cVector2f vImgSize = cVector2f(1536, 768);
+		float fEffectMul = mbIntense ? 1.0f : 0.1f;
+		float fVolume = mbIntense ? 1.0f : 0.25f;
+		float fSizeMul_Start = mbIntense ? 1.0f : 1.125f;
+		float fSizeMul_End = mbIntense ? 1.5f : 1.5f;
+		
+		switch(mlFlashImgState)
+		{
+			case eFlashImageState_Start:
+				Effect_DollyZoom_Start(0.1f*fEffectMul, 0, fTotalDuration / 2.f, fTotalDuration / 2.f);
+				Sound_PlayGui("player/UI/fear_system/microflash", fVolume, eSoundEntryType_Gui);
+				
+				ImGui_SetStateFloat("ImgAlpha", 0.f);
+				ImGui_FadeStateFloat("ImgAlpha", fMaxImgAlpha, mfFadeInTime);
+				ImGui_SetStateFloat("ImgSize", fSizeMul_Start);
+				ImGui_FadeStateFloat("ImgSize", fSizeMul_End, fTotalDuration * 2);
+				
+				ImGui_AddTimer("FlashDurationTimer", mfFadeInTime + mfDuration);
+				
+				Effect_Shake_Start(0.1*fEffectMul, fTotalDuration, 0, 0.1);
+				Effect_FOV_Shake_Start(0.2*fEffectMul, fTotalDuration, 0, 0.1);
+				
+				mlFlashImgState = eFlashImageState_Flashing;
+				break;
+				
+			case eFlashImageState_Flashing:
+				ImGui_SetAlignment(eImGuiAlign_CenterCenter);
+				gfxImg.mColor = cColor(1,1,1, ImGui_GetStateFloat("ImgAlpha", fMaxImgAlpha));
+				
+				ImGui_DoImage(gfxImg, ImGui_NrmPos(vImgPos), vImgSize*ImGui_GetStateFloat("ImgSize", 1.f) );
+				
+				if (ImGui_TimerExists("FlashDurationTimer")) return;
+				
+				ImGui_SetStateFloat("ImgAlpha", fMaxImgAlpha);
+				ImGui_FadeStateFloat("ImgAlpha", 0.f, mfFadeOutTime);
+				mlFlashImgState = eFlashImageState_FadeOut;
+				break;
+				
+			case eFlashImageState_FadeOut:
+				ImGui_SetAlignment(eImGuiAlign_CenterCenter);
+				gfxImg.mColor = cColor(1,1,1, ImGui_GetStateFloat("ImgAlpha", fMaxImgAlpha));
+				ImGui_DoImage(gfxImg, ImGui_NrmPos(vImgPos),  vImgSize*ImGui_GetStateFloat("ImgSize", 1.f) );
+				
+				if (ImGui_IsFading("ImgAlpha")) return;
+				
+				mlFlashImgState = eFlashImageState_End;
+				break;
+		}
+	}
+}
+
+//----------------------------------------------------------------------------------------
+
+class cScrStruggleFlashHandler : iScrUserModule, iScrUserModule_Interface, iScrStruggleFlashHandler_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		mbActive = true;
+	
+		mlGameProgression = 0;
+		mlImageId = 0;
+		mvStruggleImg.resize(0);
+		mvFlashes.resize(0);
+		
+		PreloadFlashGroupTextures(0);
+		LoadFlashTextures(0, false);
+	}
+		
+	//------------------------------------------------------------
+	
+	void LoadUserConfig()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void SaveUserConfig()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INTERFACE
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetActive(const bool abActive)
+	{
+		mbActive = abActive;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetIsActive()
+	{
+		return mbActive;
+	}
+	
+	//------------------------------------------------------------
+	
+	void DoFlash(float afFadeInTime, float afDelay, bool abIntense)
+	{
+		if (!mbActive)
+			return;
+		mvFlashes.push_back(cStruggleFlash(afFadeInTime, afDelay, abIntense));
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetFlashActive()
+	{
+		return mvFlashes.size() > 0;
+	}
+	
+	//------------------------------------------------------------
+	
+	void Clear()
+	{
+		mvFlashes.resize(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetProgression(const int alProgression)
+	{
+		mlGameProgression = cMath_Max(0, alProgression);
+		LoadFlashTextures(mlGameProgression, false);
+	}
+	
+	//------------------------------------------------------------
+	
+	int GetProgression()
+	{
+		return mlGameProgression;
+	}
+	
+	//------------------------------------------------------------
+	
+	void LoadFlashTextures(const int alProgression, const bool abPreload)
+	{
+		////////////////////////////////////////////////////
+		// Load the textures defined in struggle_flashes.cfg
+		iXmlDocument@ mpStruggleFlashesDoc;
+		@mpStruggleFlashesDoc = cResources_LoadXmlDocument("struggle_flashes.cfg");
+		if (mpStruggleFlashesDoc==null)
+		{
+			Error("[StruggleFlashHandler] Couldn't load struggle_flashes.cfg!");
+			return;
+		}
+		
+		cXmlElement@ mpGroups;
+		@mpGroups = mpStruggleFlashesDoc.GetFirstElement("Groups");
+		
+		cXmlNodeListIterator@ pGroupIt = mpGroups.GetChildIterator();
+		if (pGroupIt==null)
+		{
+			Error("[StruggleFlashHandler] struggle_flashes.cfg's isn't setup right.");
+			return;
+		}
+		
+		mlImageId = 0;
+		
+		while(pGroupIt.HasNext())
+		{
+			cXmlElement@ pGroupElement = pGroupIt.Next().ToElement();
+			int lGameProgression = pGroupElement.GetAttributeInt("GameProgression",-1);
+			if (lGameProgression==-1)
+			{
+				Error("[StruggleFlashHandler] The group's GameProgression hasn't been defined properly.");
+				return;
+			}
+			
+			if (lGameProgression != alProgression) continue;
+
+			cXmlNodeListIterator @pFlashIt = pGroupElement.GetFirstElement("Flashes").GetChildIterator();
+			if (pFlashIt==null)
+			{
+				Error("[StruggleFlashHandler] struggle_flashes.cfg's isn't setup right.");
+				return;
+			}
+			
+			//////////////////////
+			// Define the texture list
+			if (abPreload==false) mvStruggleImg.resize(0);
+			
+			while(pFlashIt.HasNext())
+			{
+				cXmlElement @pFlashElement = pFlashIt.Next().ToElement();
+				tString sFlashTexture = pFlashElement.GetAttributeString("TextureFile","");
+				if (sFlashTexture=="")
+				{
+					Error("[StruggleFlashHandler] The flash's TextureFile hasn't been defined properly.");
+					return;
+				}
+				
+				if (abPreload==false)
+					mvStruggleImg.push_back(sFlashTexture);
+				else
+					ImGui_PreloadImage(sFlashTexture, eImGuiGfx_Texture);
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void PreloadFlashGroupTextures(const int alProgression)
+	{
+		LoadFlashTextures(alProgression, true);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// MAP LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+		
+	}
+
+	//------------------------------------------------------------
+
+	void OnMapLeave(cLuxMap @apMap)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void PreloadData(cLuxMap @apMap)
+	{
+		Sound_PreloadEvent("player/UI/fear_system/microflash");
+	}
+	
+	//------------------------------------------------------------
+
+	void CreateWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void DestroyWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnEnterContainer(const tString&in asOldContainer)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnLeaveContainer(const tString&in asNewContainer)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void VariableUpdate(float afDeltaTime)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void PostUpdate(float afTimeStep)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnAction(int alAction, bool abPressed)
+	{
+
+	}
+	
+	//------------------------------------------------------------
+
+	void OnAnalogInput(int alAnalogId, const cVector3f &in avAmount)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnExitPressed()
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void AppGotInputFocus()
+	{
+	
+	}
+	void AppLostInputFocus()
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GUI
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnGui(float afTimeStep)
+	{
+		if (mbActive == false || mvStruggleImg.size() <= 0)
+			return;
+		
+		for (int i = 0; i < mvFlashes.size(); ++i)
+		{
+			cStruggleFlash@ pFlash = mvFlashes[i];
+			if (pFlash==null) continue;
+			
+			if (pFlash.mfDelay > 0.f)
+			{
+				pFlash.mfDelay -= afTimeStep;
+				continue;
+			}
+			
+			////////////////
+			// Do flash
+			if (pFlash.mlFlashImgState == eFlashImageState_Start)
+			{
+				const tString sImage = mvStruggleImg[mlImageId];
+				pFlash.msImage = sImage;
+				mlImageId = ++mlImageId % mvStruggleImg.size();
+			}
+			
+			pFlash.DoStruggleFlash();
+			
+			////////////////
+			// Flash done
+			if (pFlash.mlFlashImgState == eFlashImageState_End)
+			{
+				mvFlashes.removeAt(i);
+				--i;
+			}
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnDraw(float afFrameTime)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnPostRender(float afFrameTime)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool mbActive;
+	
+	int mlGameProgression;
+	int mlImageId;
+	array<tString> mvStruggleImg;
+	array<cStruggleFlash> mvFlashes;
+	
+	//------------------------------------------------------------
+	
+}

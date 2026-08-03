@@ -1,0 +1,320 @@
+#include "interfaces/UserModule_Interface.hps"
+#include "custom/modules/ModuleInterfaces_Custom.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_player.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+#include "custom/helpers/helper_items.hps"
+
+//----------------------------------------------------------------------------------------
+
+const tString gsDeath_DefaultDeathAnimation = "die_fall";
+
+//----------------------------------------------------------------------------------------
+
+class cScrDeathHandler : iScrUserModule, iScrUserModule_Interface, iScrDeathHandler_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+	}
+		
+	//------------------------------------------------------------
+	
+	void LoadUserConfig() {}
+	void SaveUserConfig() {}
+	
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// MAP LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap@ apMap)
+	{
+		msDeathSource = "";
+	}
+
+	//------------------------------------------------------------
+
+	void OnMapLeave(cLuxMap@ apMap)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void PreloadData(cLuxMap@ apMap) {}
+	void CreateWorldEntities(cLuxMap@ apMap) {}
+	void DestroyWorldEntities(cLuxMap@ apMap) {}
+	void OnEnterContainer(const tString&in asOldContainer) {}
+	void OnLeaveContainer(const tString&in asNewContainer) {}
+	
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+		msDeathSource = "";
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////	
+	
+	//------------------------------------------------------------
+	
+	void VariableUpdate(float afDeltaTime) {}	
+	void Update(float afTimeStep) {}
+	void PostUpdate(float afTimeStep) {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnAction(int alAction, bool abPressed) {}
+	void OnAnalogInput(int alAnalogId, const cVector3f &in avAmount) {}	
+	void OnExitPressed() {}
+	
+	//------------------------------------------------------------
+	
+	void AppGotInputFocus() {}
+	void AppLostInputFocus() {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPERS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INTERFACE
+	/////////////////////////////////////////
+			
+	//-----------------------------------------------------------
+	
+	void StartDeath(const tString &in asSource)
+	{
+		if (mBaseObj.Timer_Exists(1))
+		{
+			Error("Death: already active");
+			return;
+		}
+		
+		////////////////
+		// Setup death
+		msDeathSource = asSource;
+		cLux_AddDebugMessage("[DeathHandler] Source: " + msDeathSource);
+		
+		Voice_StopAll();
+		
+		Item_PutAway(eItemHandlerHand_Left);
+		Item_PutAway(eItemHandlerHand_Right);
+		
+		cLux_GetPlayer().ChangeState(ePlayerState_Dead);
+		
+		Player_SetMoveSpeedMul(0.f, ePlayerMoveSpeedMulType_Death);
+		Player_SetLookSpeedMul(0.f);
+		Player_SetStandDisabled(false);
+		Player_SetCrouching(false, true, true);				
+		
+		iCharacterBody@ pBody = cLux_GetPlayer().GetCharacterBody();
+		pBody.SetActive(false);
+		
+		////////////////
+		// Play death animation
+		float fDist = 0.f;
+		cVector3f vNrm = 0.f;
+		cLux_GetClosestBody(pBody.GetFeetPosition() + cVector3f(0.f, 0.2f, 0.f), cVector3f_Down, 2.f, fDist, vNrm);
+		
+		bool bFalling = fDist > 10.f;
+		
+		// Make sure the animation is played at ground level
+		if (bFalling == false)
+			pBody.SetFeetPosition(pBody.GetFeetPosition() + cVector3f(0.f, -fDist + 0.205f, 0.f), true);
+		
+		////////////////
+		// Death animation		
+		float fGameOverDelay = 0.4f;
+		
+		if (msDeathAnimation == "" || bFalling || asSource=="Drowning")
+		{
+			if (bFalling)
+				pBody.SetActive(true);
+		}
+		else
+		{
+			PlayerBody_PlayCutsceneAnimation(msDeathAnimation, false, 0.3f, "", 0.6f);			
+			
+			cAnimationState@ pAnim = PlayerBody_GetAnimationState(msDeathAnimation);
+			if (pAnim !is null)
+			{
+				float fAnimLength = pAnim.GetLength();
+				fGameOverDelay += fAnimLength;
+				
+				mBaseObj.Timer_Add(0, fAnimLength - 0.2f, "OnTimer_PauseDeathAnimation");
+			}
+		}
+		
+		////////////////
+		// EFfects
+		Effect_ImageTrail_Start(2.f, 0.3f, fGameOverDelay, 0.3f);
+		mlDofId = Effect_DoF_Start(0.1f, 0.2f, 1.f, 1.5f);
+		
+		////////////////
+		// Setup game over
+		mBaseObj.Timer_Add(1, fGameOverDelay, "OnTimer_StartFadeout");
+		
+		GameStats_IncreaseEntryAmount(eHeroStats_NumberOfDeaths);
+		GameStats_Save();
+	}
+	
+	//-----------------------------------------------------------	
+	
+	void OnTimer_PauseDeathAnimation(uint64 alId)
+	{
+		cAnimationState@ pAnim = PlayerBody_GetAnimationState(msDeathAnimation);
+		pAnim.FadeSpeed(0.f, 0.2f);
+	}
+	
+	//-----------------------------------------------------------
+	
+	void OnTimer_StartGameOver(uint64 alId)
+	{
+		////////////
+		// Custom behaviour map callback
+		if (mbCustomDeathBehaviour)
+		{
+			cLuxMap@ pMap = cLux_GetCurrentMap();
+			if (pMap !is null)
+			{
+				tString sCallback = "void OnCustomDeath(const tString &in asSource)";
+				if (pMap.ScriptMethodExists(sCallback) && pMap.ScriptPrepare(sCallback))
+				{
+					pMap.SetArgString(0, msDeathSource);
+					pMap.ScriptExecute();
+				}
+			}
+		}
+		
+		////////////
+		// Start game over
+		else
+		{
+			GameOver_Start(msDeathSource);
+		}
+		
+		mbCustomDeathBehaviour = false;
+	}
+		
+	//-----------------------------------------------------------
+	
+	void OnTimer_StartFadeout(uint64 alId)
+	{
+		float fFade = 1.f;
+		Effect_Fade_Out(fFade);
+		
+		if (mlDofId != -1)
+			Effect_DoF_FadeOut(mlDofId, fFade);
+		
+		mlDofId = -1;
+		
+		mBaseObj.Timer_Add(2, fFade, "OnTimer_StartGameOver");
+	}
+	
+	//-----------------------------------------------------------
+	
+	void SetDeathAnimation(const tString &in asAnim)
+	{
+		msDeathAnimation = asAnim;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetCustomDeathBehaviour(bool abX)
+	{
+		mbCustomDeathBehaviour = abX;
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetDeathEffects()
+	{
+		cLux_GetPlayer().ChangeState(ePlayerState_Normal);
+		cLux_GetPlayer().GetCharacterBody().SetActive(true);
+		
+		Player_SetHealth(1.f);
+		Player_SetMoveSpeedMul(1.f, ePlayerMoveSpeedMulType_Death);
+		Player_SetLookSpeedMul(1.f);
+		
+		PlayerBody_StopAnimation(msDeathAnimation, 0.f);
+		
+		Effect_Fade_In(1.f);
+		
+		if (mlDofId != -1)
+			Effect_DoF_FadeOut(mlDofId, 1.f);
+		
+		mlDofId = -1;
+
+		//////////
+		// Reset death anim
+		msDeathAnimation = gsDeath_DefaultDeathAnimation;
+	}
+	
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// GUI
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+
+	void OnGui(float afTimeStep) {}	
+	void OnDraw(float afFrameTime) {}
+	void OnPostRender(float afFrameTime) {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	float DrawDebugOutput(cGuiSet@ apSet, iFontData@ apFont, float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// VARIABLES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	int mlDofId = -1;
+	bool mbCustomDeathBehaviour = false;
+	tString msDeathSource = "";
+	tString msDeathAnimation = gsDeath_DefaultDeathAnimation;
+	
+	//------------------------------------------------------------
+}

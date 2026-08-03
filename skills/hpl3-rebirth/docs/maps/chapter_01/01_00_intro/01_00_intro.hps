@@ -1,0 +1,1115 @@
+#include "interfaces/Map_Interface.hps"
+#include "base/Inputhandler_Types.hps"
+
+#include "helpers/helper_map.hps"
+#include "helpers/helper_props.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_audio.hps"
+#include "helpers/helper_imgui.hps"
+#include "helpers/helper_sequences.hps"
+#include "helpers/helper_game.hps"
+#include "helpers/helper_areas.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_ai.hps"
+#include "helpers/helper_player.hps"
+#include "custom/helpers/helper_player_custom.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+
+//--------------------------------------------------
+ 
+/*Place any global values here. These must be const variables as they will not be saved*/
+/*This is also the place for enums and classes, but these should be avoided whenever possible*/
+ 
+//--------------------------------------------------
+
+// Issue introduced by Tasi body changes means everything is slightly
+// out of position - this is the fix. 
+cVector3f ANIM_FIX_OFFSET = cVector3f(0.0, -0.015f, 0);
+		
+enum eSkyBoxStage
+{
+	eSkyBoxStage_Paused,
+	eSkyBoxStage_Flying,
+	eSkyBoxStage_Blackout,
+	eSkyBoxStage_Crashing
+}
+
+class cScrMap : iScrMap
+{
+	//--------------------------------------------
+	cVector3f m_skyBoxRotation;
+	cVector3f m_skyBoxRotationVel;
+	cVector3f m_skyBoxBaseRotation;
+	float m_towerOffsetRotationY;
+	float m_fFlyingTime = 0.0f;
+	int m_nConstShake=-1;
+	eSkyBoxStage m_skyBoxStage = eSkyBoxStage_Paused;
+	cVector3f m_towerPos;
+	bool mbPassengersCrashAnim = false;
+
+	//--------------------------------------------
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN CALLBACKS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+ 
+	////////////////////////////
+	// Set up map environment
+	void Setup()
+	{
+		// Put display name entry in english.lang / Levels
+		GetBase().SetDisplayNameEntry("01-00-intro");
+		
+		Pregnancy_SetStage(ePregStage_Unknown);
+		Pregnancy_SetBarksActive(false);
+		Pregnancy_SetBabyTalkStage(eBabyTalkStage_Unknown);
+		Pregnancy_SetBabyKicksEnabled(false);
+		GhoulProgression_SetBarkStage(eGhoulBarkStage_Ill);
+		Player_SetAllowCheckBaby(false);
+		FearHandler_SetWhisperStage(eFearWhisperStage_StartToSalim);
+		
+		StruggleFlashHandler_SetActive(false);
+		
+		Player_SetNightVisionEnabled(false);
+		
+		// Set up color grading etc.
+		//Effect_ToneMapping_FadeWorldGrading("grading_default", 0.0f);
+	}
+	
+	//-------------------------------------------------------
+		
+	void PreloadData()
+	{
+		/////////////////
+		// Preload gui
+		ImGui_PreloadImage("grading_intro_glimpse_desert.dds");
+		ImGui_PreloadImage("grading_intro_glimpse_sandstorm.dds");
+		ImGui_PreloadImage("grading_intro_glimpse_dw.dds");
+		ImGui_PreloadImage("grading_intro_glimpse_fire.dds");
+
+		///////////////
+		// Preload particles
+		//ParticleSystem_Preload("some_particle.ps");
+
+		//////////////
+		// Preload screen effects
+		//Material_Preload("some_material.mat");
+		
+		//////////////
+		// Preload sounds
+		Sound_PreloadGroup("01_01_intro", true);
+	}
+	
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run first time starting map
+	void OnStart()
+	{
+		//Set GhoulProgresison limit
+		GhoulProgression_SetLimit(0);
+		
+		Entity_AttachToSocket("SketchbookScreen", "Sketchbook", "BookSocket", true, true);
+		Entity_AttachToSocket("SketchbookCover", "Sketchbook", "BookSocket", true, true);
+		
+		// Any general setup of script / entities
+		
+		m_skyBoxRotation = cVector3f_Zero;
+		m_skyBoxRotationVel = cVector3f_Zero;
+		m_skyBoxBaseRotation = cVector3f_Zero;
+		m_skyBoxStage = eSkyBoxStage_Paused;
+		m_fFlyingTime = 0.0f;
+		
+		iLuxEntity@ pTower = cLux_GetCurrentMap().GetEntityByName("Tower_1");
+		m_towerPos = pTower.GetPosition();
+	
+		Map_SetSkyboxRotation(m_skyBoxRotation);
+		
+		Entity_AttachToEntity("Tower_*", "Tower_1",  "",  true, false, true);
+		Entity_AttachToEntity("SandStorm_*", "SandStorm_Backdrop", "", true, false, true);
+		
+		Light_SetVisible("StormLight_*",false);
+		Entity_SetActive("Tower_*",false);
+		Entity_PlayAnimation("Passenger_04", "idle_nobaby", 0.1f, true);
+		Entity_SetAnimationRelativeTimePosition("Passenger_04","idle_nobaby", 3.0f);
+		
+		cScript_SetGlobalVarBool("HideAmuletBracelet", true);
+						
+		Effect_Fade_Out(0.0f);
+		
+		mbPassengersCrashAnim = false;
+		
+		/////////////////////////
+		// Debug
+		if(cLux_ScriptDebugOn())
+		{
+		}
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when entering map
+	void OnEnter()
+	{	
+		cLux_ClearAllMapSaveData();
+		Game_AutoSave();
+		
+		// Tasi in the intro shouldn't have the amulet.
+		Item_RemoveFromInventory(ItemType_GetFirstInInventory("CurseMedallion"));
+
+		PlayerBody_SetModel("player_intro.ent");
+		PlayerBody_SetActive(true);
+		cLux_GetPlayer().GetCharacterBody().SetTestCollision(false);
+		PlayerBody_PlayCutsceneAtEntity("player_intro_sequence", "AnimOrigin", false, 0.0f);
+		PlayerBody_StopAnimation("player_intro_sequence",0.0f);
+		
+		Player_SetNightVisionEnabled(false);
+		Entity_StopAnimation("Salim");
+		Entity_StopAnimation("monkey");
+		Entity_StopAnimation("Sketchbook");
+		
+		Decal_SetDynamicVisible("decal_wing_01", false);
+		Decal_SetDynamicVisible("decal_wing_02", false);
+		Entity_SetActive("Wing_Wrecked", false);
+		Entity_SetActive("plane_passenger_light_red_*",false);
+		ParticleSystem_SetActive("PS_Engine_smoke*",false);
+		ParticleSystem_SetActive("PS_Engine_trail*",false);
+		ParticleSystem_SetActive("PS_Engine_failure*", false);
+		ParticleSystem_SetActive("PS_Sandstorm_Particles_*", true);
+		ParticleSystem_SetVisible("PS_Sandstorm_Particles_*", false);
+		ParticleSystem_SetActive("PS_Engine",false);
+		Entity_SetEffectsActive("Wing_Wrecked",false,true);
+		Light_SetVisible("Fire_light_*", false);
+		
+		// TEMP
+		//Light_SetVisible("Fire_light_dinamic_caustics",true);
+		//Light_SetVisible("window_caustics",false);
+		
+		Seq_Book();
+		
+        Heat_SetActive(false);
+		
+		Map_Preload("01_01_plane_wreckage.hpm");
+		Sound_FadeGlobalVolume(1.f, 0.0f, eSoundEntryType_All);
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when leaving map
+	void OnLeave()
+	{
+		Effect_ToneMapping_FadeWorldGrading("grading_default", 0.0f);
+		Effect_ToneMapping_RemoveGradingTexture("grading_intro_glimpse_desert.dds");
+		Effect_ToneMapping_RemoveGradingTexture("grading_intro_glimpse_sandstorm.dds");
+		Effect_ToneMapping_RemoveGradingTexture("grading_intro_glimpse_dw.dds");
+		
+		if (m_nConstShake!=-1)
+		{
+			Effect_Shake_FadeOut(m_nConstShake,0.0f);
+			m_nConstShake=-1;
+		}	
+		
+		if(cLux_GetPlayer().GetCharacterBody() !is null)	
+			cLux_GetPlayer().GetCharacterBody().SetTestCollision(true);
+		Item_AddToInventory("CurseMedallion");
+		cLux_EnableSaving();
+		
+		cScript_SetGlobalVarBool("HideAmuletBracelet", false);
+	}
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// The player has died.
+	void OnPlayerKilled(int alRecentDeaths, const tString&in asSource)
+	{
+	}
+	
+	//-------------------------------------------------------
+	
+	////////////////////////////////////
+	// Called when player HP reaches 0
+	bool OnDeath(const tString &in asSource)
+	{
+		// return false for default behaviour
+		return false;
+	}
+	
+	//-------------------------------------------------------
+	
+	////////////////////////////////////
+	// Called when player should respawn (after death)
+	bool OnRespawn(const tString &in asSource)
+	{		
+		// return false for default behaviour (fadeout and death area)
+		return false;
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// To get when player makes input (mostly used for debug)
+	void OnAction(int alAction, bool abPressed) 
+	{
+		if(abPressed==false) return;
+		
+		if(alAction == eAction_Test1)
+		{
+			iLuxEntity@ pPassenger4 = cLux_GetCurrentMap().GetEntityByName("Passenger_04");
+			cVector3f position = pPassenger4.GetPosition();
+			cMatrixf matrix = cMath_MatrixRotateXYZ(cVector3f(0,cMath_ToRad(125),0));
+			matrix.SetTranslation(position);
+			pPassenger4.SetMatrix(matrix);
+		}
+		else if (alAction == eAction_Test2)
+		{
+			Sequence_Stop();
+			Voice_StopAll();
+			Seq_Intro();
+		}
+		else if (alAction == eAction_Test3)
+		{
+			ParticleSystem_SetActive("PS_Engine_smoke*",true);
+			ParticleSystem_SetActive("PS_Engine_failure*", true);
+		}
+		else if (alAction == eAction_Test4)
+		{
+			
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void Update(float afTimeStep)
+	{
+		cLux_DisableSaving(1.0f);
+		
+		UpdateCameraMove(afTimeStep);	
+	}
+	
+	//-------------------------------------------------------
+	
+	float mfBladesSpeed=-0.5f;
+	float mfBladesJitter=0.05f;
+	cVector2f mvPlaneSandWindowZMove = cVector2f(-2.594, -2.67);
+	float mfPlaneSandWindowDuration=10.0f;
+	float mfPlaneSandWindowTime = 0.0f;
+	
+	void PostUpdate(float afTimeStep)
+	{
+		if (mfSketchAlpha!=mfSketchAlphaTarget)
+		{
+			if (mfSketchFadeSpeed==0.0f)
+				mfSketchAlpha = mfSketchAlphaTarget;
+			else
+				mfSketchAlpha = cMath_IncreaseTo(mfSketchAlpha, afTimeStep/mfSketchFadeSpeed, mfSketchAlphaTarget);
+		}
+
+		if (m_skyBoxStage == eSkyBoxStage_Paused)
+			return;
+		
+		m_fFlyingTime+=afTimeStep;
+		
+		if (m_skyBoxStage==eSkyBoxStage_Flying)
+		{
+			m_skyBoxRotationVel.x=(cMath_Sin(m_fFlyingTime))/20.0f;
+			m_skyBoxRotationVel.y=0.1f;
+			m_skyBoxRotation+=m_skyBoxRotationVel*afTimeStep;
+			m_skyBoxBaseRotation.y+=cMath_ToRad(1.0f)*afTimeStep;
+		}
+		else if (m_skyBoxStage==eSkyBoxStage_Blackout)
+		{
+			m_skyBoxRotationVel.x=(cMath_Sin(m_fFlyingTime*2.0f))/5.0f;	// Rougher ride
+			m_skyBoxRotationVel.y=0.15f;
+			m_skyBoxRotation+=m_skyBoxRotationVel*afTimeStep;
+			m_skyBoxBaseRotation.y+=cMath_ToRad(1.0f)*afTimeStep;
+		}
+		else if (m_skyBoxStage==eSkyBoxStage_Crashing)
+		{
+			m_skyBoxBaseRotation.x=cMath_InterpolateLinear(m_skyBoxBaseRotation.x, cMath_ToRad(7.0f), afTimeStep);
+			m_skyBoxBaseRotation.y=cMath_InterpolateLinear(m_skyBoxBaseRotation.y, cMath_ToRad(90.0f), afTimeStep);
+			m_skyBoxBaseRotation.z=cMath_InterpolateLinear(m_skyBoxBaseRotation.z, cMath_ToRad(0.0f), afTimeStep);
+			
+			m_skyBoxRotationVel.x=(cMath_Sin(m_fFlyingTime*3.0f))/10.0f;
+			m_skyBoxRotationVel.y=(cMath_Sin(m_fFlyingTime*2.5f))/10.0f+0.2f;
+			m_skyBoxRotation+=m_skyBoxRotationVel*afTimeStep;
+		}
+
+		Map_SetSkyboxRotation(m_skyBoxRotation+m_skyBoxBaseRotation);
+		
+		// Update the tower to match the Skybox rotation.
+		iLuxEntity@ pTower = cLux_GetCurrentMap().GetEntityByName("Tower_1");
+		cVector3f towerRot = m_skyBoxRotation+m_skyBoxBaseRotation;
+		towerRot.y-=m_towerOffsetRotationY;
+		cMatrixf rotMatrix = cMath_MatrixRotateXYZ(towerRot);
+		cMatrixf towerMatrix = cMath_MatrixMul(rotMatrix,cMath_MatrixTranslate(m_towerPos));
+		pTower.SetMatrix(towerMatrix);
+		
+		iLuxEntity@ pSandstorm = cLux_GetCurrentMap().GetEntityByName("Sandstorm_Backdrop");
+		pSandstorm.SetMatrix(towerMatrix);
+		
+		iLuxEntity@ pDesert = cLux_GetCurrentMap().GetEntityByName("Desert_Backdrop");
+		pDesert.SetMatrix(towerMatrix);
+		
+		iLuxEntity@ pBlades = cLux_GetCurrentMap().GetEntityByName("plane_blades_on_1");
+		float rotation=m_fFlyingTime*mfBladesSpeed+cMath_RandRectf(-mfBladesJitter,mfBladesJitter);
+		cVector3f position = pBlades.GetPosition();
+		cMatrixf matrix = cMath_MatrixRotateXYZ(cVector3f(0,0,rotation));
+		matrix.SetTranslation(position);
+		pBlades.SetMatrix(matrix);
+		@pBlades = cLux_GetCurrentMap().GetEntityByName("plane_blades_off_1");
+		pBlades.SetMatrix(matrix);		
+		
+		// Fake some passenger animation by just moving a bunch of rigids.
+		float fCrashMul = 1.0f;
+		if (mbPassengersCrashAnim)
+			fCrashMul = 2.0f;
+		iLuxEntity@ pPassenger3 = cLux_GetCurrentMap().GetEntityByName("Passenger_03");
+		float charRotateX = cMath_Sin(m_fFlyingTime*fCrashMul)*0.04f*fCrashMul;
+		float charRotateZ = cMath_Sin(m_fFlyingTime*0.5f+3.75f)*0.025f;
+		position = pPassenger3.GetPosition();
+		matrix = cMath_MatrixRotateXYZ(cVector3f(charRotateX,cMath_ToRad(180),charRotateZ));
+		matrix.SetTranslation(position);
+		pPassenger3.SetMatrix(matrix);
+		
+		iLuxEntity@ pPassenger2 = cLux_GetCurrentMap().GetEntityByName("Passenger_02");
+		charRotateX = cMath_Sin(m_fFlyingTime*0.7f*fCrashMul+0.5f)*0.03f*fCrashMul;
+		charRotateZ = cMath_Sin(m_fFlyingTime*0.4f-3.15f)*0.005f;
+		position = pPassenger2.GetPosition();
+		matrix = cMath_MatrixRotateXYZ(cVector3f(charRotateX,cMath_ToRad(180),charRotateZ));
+		matrix.SetTranslation(position);
+		pPassenger2.SetMatrix(matrix);
+		
+		iLuxEntity@ pMasson = cLux_GetCurrentMap().GetEntityByName("Masson");
+		charRotateX = cMath_Sin(m_fFlyingTime*fCrashMul*1.1f)*0.03f*fCrashMul;
+		charRotateZ = cMath_Sin(m_fFlyingTime*0.8f-3.15f)*0.025f;
+		position = pMasson.GetPosition();
+		matrix = cMath_MatrixRotateXYZ(cVector3f(charRotateX,cMath_ToRad(180),charRotateZ));
+		matrix.SetTranslation(position);
+		pMasson.SetMatrix(matrix);
+		
+		iLuxEntity@ pSandWindow = cLux_GetCurrentMap().GetEntityByName("plane_sand_window");
+		if (pSandWindow.IsActive())
+		{
+			mfPlaneSandWindowTime+=afTimeStep;
+			float fProgress = cMath_Clamp(mfPlaneSandWindowTime/mfPlaneSandWindowDuration,0.0f,1.0f);
+			position = pSandWindow.GetPosition();
+			position.z = cMath_Easing(eEasing_SineOut, fProgress, mvPlaneSandWindowZMove.x, mvPlaneSandWindowZMove.y);
+			pSandWindow.SetPosition(position);
+		}
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// This only used for pure debug purposes when info needs to printed.
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afY)
+	{
+		//afY = cLux_DrawDebugText("My Debug value:"+..., afY);
+		return afY;
+	}
+ 
+	//-------------------------------------------------------
+ 
+	//} END MAIN CALLBACKS
+ 
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN FUNCTIONS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+ 
+	/*Put any variables that are used in more than one scene here.*/
+ 
+	//-------------------------------------------------------
+ 
+	/*Put any functions that are used in more than one scene here.*/
+ 
+	//-------------------------------------------------------
+ 
+	//} END MAIN FUNCTIONS
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// Main Sequence
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+ 
+	cSequenceStatesData mSeqBook;
+	tString msCrewPage;
+	float mfSketchAlpha=0.0f;
+	float mfSketchAlphaTarget=0.0f;
+	float mfSketchFadeSpeed = 3.0f;
+	float mfSideBarDisplay = 0.0f;
+	bool mbShowSideBar = true;
+	
+	void ShowCrewPage(const tString& in asPage)
+	{
+		msCrewPage = asPage;
+	}
+	
+	void DoCrewPageFadeIn(const tString& in asPage, float afFadeTime = 3.0f)
+	{
+		msCrewPage = asPage;
+		mfSketchAlphaTarget = 1.0f;
+		mfSketchFadeSpeed = afFadeTime;
+	}
+	
+	void DoCrewPageFadeOut(float afFadeTime = 3.0f)
+	{
+		mfSketchAlphaTarget = 0.0f;
+		mfSketchFadeSpeed = afFadeTime;
+	}
+	
+	void OnGui(float afTimeStep)
+	{
+		if (mfSideBarDisplay>0.0f)
+		{
+			if (!mbShowSideBar)
+			{
+				mfSideBarDisplay-=(afTimeStep/5.0f);
+				if (mfSideBarDisplay<0.0f)
+				{
+					mfSideBarDisplay=0.0f;
+				}
+			}
+			cVector2f screenSize = ImGui_GetSize();
+			float fMaxWidth = screenSize.y*2.0f;
+			float fBarSize = (screenSize.x-fMaxWidth)*mfSideBarDisplay;
+			if (fBarSize>0.0f)
+			{
+				cImGuiGfx blackImage("simple_black.dds", eImGuiGfx_Texture);
+				ImGui_DrawGfx(blackImage, ImGui_NrmPos(0, 0, 0.0f)-cVector3f(fBarSize*0.5f,0,0), 
+						cVector2f(fBarSize,screenSize.y));
+				ImGui_DrawGfx(blackImage, ImGui_NrmPos(1.0f, 0, 0.0f)-cVector3f(fBarSize*0.5f,0,0), 
+						cVector2f(fBarSize,screenSize.y));
+			}
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void Seq_Book(const tString &in asX = "")
+	{
+		Sequence_Begin("Seq_Book", mSeqBook);
+		
+		if (Sequence_DoStepAndWait(6.5f))
+		{
+			// Just pause for loading
+			Effect_Fade_Out(0.0f);
+			mfSideBarDisplay = 1.0f;
+			mbShowSideBar = true;
+			
+			PlayerBody_PlayCutsceneAtEntity("player_intro_sequence", "AnimOrigin", false, 0.0f, "", 0.0f);
+			PlayerBody_SetCutsceneMaxYaw(0.0f);
+			PlayerBody_SetCutsceneMaxPitch(0.0f);
+			Player_SetActive(false);
+			Entity_PlayAnimation("Salim", "salim_intro_sequence",0.0f,false);
+			Entity_PlayAnimation("monkey", "monkey_intro_sequence",0.0f,false);
+			Entity_PlayAnimation("Sketchbook", "sketchbook_intro_sequence",0.0f,false);
+
+			Entity_SetAnimationPaused("Salim", "salim_intro_sequence", true);
+			Entity_SetAnimationPaused("monkey", "monkey_intro_sequence", true);
+			Entity_SetAnimationPaused("Sketchbook", "sketchbook_intro_sequence", true);
+			
+			Light_SetVisible("TasiLight_SketchCover",true);
+			Light_SetVisible("TasiLight_1",false);
+			
+			mfSketchAlpha = 1.0f;
+			ShowCrewPage("CrewPage1");
+			PlayerBody_SetVisible(false);
+			Voice_PlayDelayed("Intro", 5.5f);
+
+		}
+		else if (Sequence_DoStepAndWait(1.0f))
+		{
+			Music_Play("A2_SketchBookIntro.ogg", 0.15f, false, eMusicPrio_BigEvent);
+		}
+		else if (Sequence_DoStepAndWait(11.0f))
+		{
+			Effect_Fade_In(4.0f);
+			SetCameraOffset(0.0f,0.02f,0.035f, 0.0f);
+			DoCameraMove(0.0f, 0.0f, -0.02f, 11.0f, -3.0f, eEasing_SineIn,2.0f);
+		}
+		else if (Sequence_DoStepAndWait(3.0f))
+		{
+			Effect_Fade_Out(2.0f);
+		}
+		else if (Sequence_DoStepAndWait(9.0f))
+		{
+			// Sterling, Fairchild, Hank, Rachel
+			Light_SetVisible("TasiLight_SketchCover",false);
+			Light_SetVisible("TasiLight_1",true);
+			DoCrewPageFadeIn("CrewPage1",0.5f);
+			Entity_SetActive("SketchbookCover", false);
+			Effect_Fade_In(4.0f);
+			SetCameraOffset(-0.03f,0.02f,0.05f,0.0f);
+			DoCameraMove(0.02f, -0.01f, 0.04f, 12.0f, 5.0f, eEasing_Linear);
+		}
+		else if (Sequence_DoStepAndWait(4.0f))
+		{
+			Effect_Fade_Out(3.0f);
+		}
+		else if (Sequence_DoStepAndWait(9.0f))
+		{
+			// Doctor, Leon, Malick
+			DoCrewPageFadeIn("CrewPage2",0.0f);
+			Effect_Fade_In(4.0f);
+			SetCameraOffset(-0.02f, 0.03f, 0.07f, 6.0f);
+			DoCameraMove(-0.01f, -0.02f, 0.06f, 12.0f,  -3.0f,eEasing_Linear);
+		}
+		else if (Sequence_DoStepAndWait(4.0f))
+		{
+			Effect_Fade_Out(3.0f);
+		}
+		else if (Sequence_DoStepAndWait(8.5f))
+		{
+			// Webber, Eva, Lukas
+			DoCrewPageFadeIn("CrewPage3",0.0f);
+			Effect_Fade_In(4.0f);
+			SetCameraOffset(0.01f, 0.03f, 0.07f, -3.0f);
+			DoCameraMove(0.015f, 0.01f, 0.06f, 11.5f,  4.0f,eEasing_Linear);
+		}
+		else if (Sequence_DoStepAndWait(4.0f))
+		{
+			Effect_Fade_Out(3.0f);
+		}
+		else if (Sequence_DoStepAndWait(8.f))
+		{
+			// Masson, Yasmin
+			DoCrewPageFadeIn("CrewPage4",0.0f);
+			Effect_Fade_In(4.0f);
+			SetCameraOffset(0.015f, -0.01f, 0.05f, 3.0f);
+			DoCameraMove(0.00f, 0.00f, 0.04f, 11.0f,  0.0f,eEasing_Linear);
+		}
+		else if (Sequence_DoStepAndWait(4.0f))
+		{
+			Effect_Fade_Out(3.0f);
+		}
+		else if (Sequence_DoStepAndWait(10.f))
+		{
+			// Salim, Tasi
+			DoCrewPageFadeIn("CrewPage5",0.0f);
+			Effect_Fade_In(4.0f);
+			SetCameraOffset(0.00f, 0.00f, 0.05f, 4.0f);
+			DoCameraMove(-0.02f, 0.0125f, 0.06f, 13.0f,  0.0f,eEasing_Linear);
+		}
+		else if (Sequence_DoStepAndWait(4.0f))
+		{
+			Effect_Fade_Out(3.0f);
+		}
+		else if (Sequence_DoStepAndWait(5.0f))
+		{
+			// Tower and Girl
+			PlayerBody_SetVisible(true);
+			
+			Map_GetEntity(PlayerBody_GetEntityName()).GetMeshEntity().GetSubMeshEntityName("m_Tasi_Clean_Head").SetVisible(false);
+			
+			DoCrewPageFadeIn("CrewPage6",0.0f);
+			Effect_Fade_In(4.0f);
+			SetCameraOffset(-0.04f, 0.01f, 0.07f, -1.0f);
+			DoCameraMove(0.0f, -0.005f, 0.02, 12.0f, 0.0f,eEasing_SineInOut);
+		}
+		else if (Sequence_DoStepAndContinue())
+		{
+			Seq_Intro();
+		}
+		
+		Sequence_End();
+	}
+	
+	//-------------------------------------------------------
+	
+	cSequenceStatesData mSeqIntro;
+	
+	void Seq_Intro(const tString &in asX = "")
+	{
+		Sequence_Begin("Seq_Intro", mSeqIntro);
+		
+		// ===== The Sketch
+		// ----- Full screen shot of the sketch.
+		if (Sequence_DoStepAndWaitUntil(3.0f))
+		{
+			// Just pause for loading
+			//Effect_Fade_Out(0.0f);
+		}
+		else if (Sequence_DoStepAndWaitUntil(3.5f))
+		{
+			m_skyBoxStage = eSkyBoxStage_Flying;
+			
+			float fFadeRealityInTime = 8.0f;
+			Music_Stop(fFadeRealityInTime, eMusicPrio_BigEvent);
+			Light_FadeBrightnessTo("TasiLight_1", 7.5f, fFadeRealityInTime);
+			Effect_ToneMapping_FadeWorldGrading("grading_intro_glimpse_desert", fFadeRealityInTime);
+			mbShowSideBar = false;
+			
+			Sound_CreateAtEntity("Sound_IntroStart", "01_01_intro/intro/intro_start", "player", fFadeRealityInTime);
+			Sound_CreateAtEntity("Sound_LightsFlicker", "01_01_intro/intro/lights_01", "sound_lights",fFadeRealityInTime);
+			Sound_CreateAtEntity("Sound_GlassRattle_1", "01_01_intro/intro/glass_rattle", "sound_glass", fFadeRealityInTime);
+			Sound_CreateAtEntity("Sound_Snoring", "01_01_intro/intro/sweet_snores", "sound_snore", fFadeRealityInTime);
+			Sound_CreateAtEntity("Sound_Typing", "01_01_intro/intro/sweet_type", "sound_typewriter", fFadeRealityInTime);
+		}
+		else if (Sequence_DoStepAndWaitUntil(14.583328f))
+		{	
+			Effect_Fade_In(0.5f);
+									
+			PlayerBody_SetVisible(true);
+			PlayerBody_SetCustomAnimCameraAdd(cVector3f_Zero);
+			Entity_SetAnimationMessageEventCallback(PlayerBody_GetEntityName(),"OnPlayerAnimMessage",true);
+			PlayerBody_PlayCutsceneAtEntity("player_intro_sequence", "AnimOrigin", false, 0.0f, "", 1.0f);
+			
+			Entity_SetAnimationPaused("Salim", "salim_intro_sequence", false);
+			Entity_SetAnimationPaused("monkey", "monkey_intro_sequence", false);
+			Entity_SetAnimationPaused("Sketchbook", "sketchbook_intro_sequence", false);
+		}
+		// ----- Tasi's hand is bumped, plane shakes
+		else if (Sequence_DoStepAndWaitUntil(15.099944f))
+		{	
+			Effect_Shake_Start(0.001f,0.3f,0.0f,0.2f);
+			Effect_Rumble_Start(0.1f,0.1f,0.0f,0.5f);
+			Effect_Shake_Start(0.0005f,1.0f,0.3f,1.0f);
+			m_nConstShake = Effect_Shake_Start(0.0005f,1000.0f,0.3f,0.5f);
+			DoCameraMove(0.0f, 0.0f, 0.0, 5.0f, 0.0f, eEasing_SineInOut,0.0f,cVector3f_Zero);
+		}
+		// ===== Salim
+		// ------ Salim: "What was that?"
+		else if (Sequence_DoStepAndWaitUntil(20.449863f))
+		{
+			Voice_Play("Dialogue_WhatWasThat"); 
+		}
+		// ------ Tasi: "Don't worry"
+		// ------ Salim: "Pretending it's not there won't make it go away."
+		else if (Sequence_DoStepAndWaitUntil(21.446515f))
+		{
+			Voice_Play("Dialogue_DontWorry");
+			Entity_PlayAnimation("Passenger_04", "idle", 0.5f, true);
+		}
+		else if (Sequence_DoStepAndWaitUntil(25.699783f))
+		{
+			PlayerBody_SetHeadModelShadowCasting(true);
+		}
+		// ----- (Plane shake)
+		else if (Sequence_DoStepAndWaitUntil(25.999779f))
+		{
+			Effect_Shake_Start(0.005f,0.3f,0.0f,0.2f);
+			Effect_Rumble_Start(0.1f,0.1f,0.0f,0.5f);
+		}
+		// ----- Salim: "Aaah!"
+		else if (Sequence_DoStepAndWaitUntil(28.80f))
+		{
+			Voice_Play("Dialogue_DontWorry_Agh");
+		}
+		// ----- Tasi: "Just turbulence. We’ll be through soon."
+		// ----- Salim: "Yes, yes, I-"
+		else if (Sequence_DoStepAndWaitUntil(64.5f))
+		{
+			Voice_Play("Dialogue_JustTurbulence");
+		}
+		else if (Sequence_DoStepAndWaitUntil(67.9f))
+		{
+			Sound_CreateAtEntity("Sound_TasiEmotes","game_voice/voice/01_01_intro_crash_TASI","player", 0.0f,false, 1.0f);
+		}
+		// ===== Blackout
+		// * Fairchild: "Alex!"
+		// * Doctor: "Herr im Himmel..."
+		else if (Sequence_DoStepAndWaitUntil(71.0f))
+		{
+			m_skyBoxStage = eSkyBoxStage_Blackout;
+			Effect_Shake_FadeOut(m_nConstShake,0.1f);
+			Effect_Rumble_Start(1.0f,0.1f,0.0f,0.5f);
+			m_nConstShake = Effect_Shake_Start(0.003f,100.0f,0.0f,0.2f);
+			Light_SetVisible("ExtLight_*", false);
+			Light_SetVisible("TasiLight_*", false);
+			Light_SetVisible("StormLight_*", true);
+			Light_SetupFlicker("CabinLight_*", cColor(0,0,0,0),10,0.1f,0.2f,"","",0.01f,0.1f,"","",false,0.0f,0.0f,0.0f,0.0f);
+			Light_SetFlickerActive("CabinLight_*", true);
+			
+			Sound_CreateAtEntity("Sound_CrashStart", "01_01_intro/crash_event/crash_start", "player");
+			Sound_CreateAtEntity("Sound_LightsOff", "01_01_intro/crash_event/lights_02", "sound_lights");
+			Sound_CreateAtEntity("Sound_GlassRattle_2", "01_01_intro/crash_event/glass_sweet", "sound_glass");
+			Sound_CreateAtEntity("Sound_Alarms", "01_01_intro/crash_event/cockpit_sweet", "sound_cockpit");
+			
+			Sound_PlayGui("01_01_intro/crash_event/crash_01", 1.0);
+			Sound_PlayGui("01_01_intro/crash_event/stingers", 1.0);
+
+			Voice_PlayDelayed("Dialogue_Exclamations",1.0f,-1,"",5);
+			
+			Sound_CreateAtEntity("Walla_Mitchell", "game_voice/voice/01_01_intro_crash_MITCHELL2", "Voice_Mitchell");
+			Sound_CreateAtEntity("Walla_Yasmin", "game_voice/voice/01_01_intro_crash_YASMIN", "Voice_Yasmin");
+			
+			Entity_SetActive("Desert_Backdrop", false);
+			Entity_SetActive("SandStorm_*", true);
+			
+			// Cabin lights go out.
+			Light_SetVisible("CabinLight_*",false);
+			Entity_SetEffectsActive("Plane_interior_ceiling_*",false, true);
+			Entity_SetActive("plane_passenger_light_red_*",true);
+			Billboard_SetVisible("Billboard_tasi_light",false);
+			
+			mbPassengersCrashAnim = true;
+			Entity_SetAnimationSpeed("Passenger_04", "idle_nobaby",3.0f);
+			
+			// Hack hack. We're using the doc's normal idle anim to pretend we've animated him for this scene
+			// but he looks too wooden so during the crash we're making him look out the window
+			iLuxEntity@ pPassenger4 = cLux_GetCurrentMap().GetEntityByName("Passenger_04");
+			cVector3f position = pPassenger4.GetPosition();
+			cMatrixf matrix = cMath_MatrixRotateXYZ(cVector3f(0,cMath_ToRad(125),0));
+			matrix.SetTranslation(position);
+			pPassenger4.SetMatrix(matrix);
+		}
+		else if (Sequence_DoStepAndWaitUntil(71.567482f))
+		{
+			Sound_CreateAtEntity("Sound_SalimEmotes","game_voice/voice/01_01_intro_crash_SALIM","Voice_Salim", 0.0f, false, 0.6f);
+		}
+		// * Masson: "Shit, shit, can’t see a thing! Yasmin, get up here!"
+	    // * Masson: "Hello, hello, this is Cassandra, out of Algiers, can anyone read me?"
+		else if (Sequence_DoStepAndWaitUntil(72.584366f))
+		{
+			// Cabin lights go out.
+			//Light_SetVisible("CabinLight_*",false);
+			Voice_Play("Dialogue_MassonCall",-1,"",10);	//TODO: Remove priority
+			//Entity_SetEffectsActive("Plane_interior_ceiling_*",false, true);
+			//Entity_SetActive("plane_passenger_light_red_*",true);
+		}
+		// First city glimpse
+		else if (Sequence_DoStepAndWaitUntil(76.085114f))
+		{
+			m_towerOffsetRotationY = m_skyBoxBaseRotation.y;
+			DarkworldTransition(true);
+			Effect_ToneMapping_FadeWorldGrading("grading_intro_glimpse_dw", 0.5f);
+			Entity_SetActive("Tower_*",true);
+			Entity_SetActive("SandStorm_*", false);
+			Map_SetSkyBoxTexture("skybox_dwf.dds");
+			Light_SetVisible("Light_Desert_window*", false);
+			Entity_SetActive("Wing_Darkworld",true);
+			Entity_SetActive("Wing_Normal",false);
+			
+			Entity_SetActive("plane_interior_panel_light_02*",true);
+			
+			
+			Light_FadeBrightnessTo("Light_Desert_window_4", 5.0f, 0.1f);
+			Light_FadeBrightnessTo("Window_caustics", 2.0f, 0.1f);
+		}
+		// Transition back
+		else if (Sequence_DoStepAndWaitUntil(79.102425f))
+		{
+			DarkworldTransition(false);
+
+			Effect_ToneMapping_FadeWorldGrading("grading_intro_glimpse_sandstorm", 0.5f);
+			
+			Entity_SetActive("Tower_*",false);
+			Map_SetSkyBoxTexture("environment_sandstorm.dds");
+			
+			Entity_SetActive("SandStorm_*", true);
+			ParticleSystem_SetVisible("PS_Sandstorm_Particles_*", true);
+			Light_SetVisible("Light_Desert_window*", true);
+			Entity_SetActive("plane_wall_normal_*",false);
+			Entity_SetActive("plane_wall_dust_*",true);
+			Entity_SetActive("Wing_Darkworld",false);
+			Entity_SetActive("Wing_Normal",true);
+			
+			Entity_SetActive("plane_sand_window",true);
+		
+			Light_FadeBrightnessTo("Light_Desert_window_4", 20.0f, 0.1f);
+			Light_FadeBrightnessTo("Window_caustics", 40.0f, 0.1f);
+		}
+		else if (Sequence_DoStepAndWaitUntil(80.0f))
+		{
+			ParticleSystem_SetActive("PS_Engine_smoke*",true);
+			ParticleSystem_SetActive("PS_Engine_failure*", true);
+		}
+		// BANG!
+		else if (Sequence_DoStepAndWaitUntil(81.119522f))
+		{
+			Effect_Shake_FadeOut(m_nConstShake,0.1f);
+			m_nConstShake = Effect_Shake_Start(0.01f,100.0f,0.0f,0.2f);
+			Effect_Rumble_Start(1.0f,0.3f,0.0f,1.0f);
+			ParticleSystem_SetActive("PS_Engine_failure*", true);
+			Entity_SetActive("plane_interior_panel_light_04*",true);
+			Entity_SetActive("plane_blades_off_1",true);
+			Entity_SetActive("plane_blades_on_1",false);
+			
+			Entity_PlayAnimation("Passenger_01", "idle", 0.1f, true);
+			Effect_Rumble_Start(1.0f,0.1f,0.0f,0.5f);
+			
+			mfBladesSpeed=10.f;
+			mfBladesJitter=0.05f;
+		}
+		// * Masson: "Mayday, mayday, this is Cassandra! Do! You! Read!"
+		else if (Sequence_DoStepAndWaitUntil(82.136406f))
+		{
+			Voice_Play("Dialogue_MassonPanic",-1,"",25);	//TODO: Remove priority
+		}
+		// CITY GLIMPSE
+		else if (Sequence_DoStepAndWaitUntil(88.137688f))
+		{
+			DarkworldTransition(true);
+			// Fix for anim seeing sky :(
+			PlayerBody_SetCustomAnimCameraAdd(cVector3f(0.0f,0.0f,-0.05f));
+			Effect_ToneMapping_FadeWorldGrading("grading_intro_glimpse_dw", 0.5f);
+			ParticleSystem_SetVisible("PS_Sandstorm_Particles_*", false);
+			Map_SetSkyBoxTexture("skybox_dwf.dds");
+			Entity_SetActive("Tower_*",true);
+			Entity_SetActive("SandStorm_*", false);
+			Entity_SetActive("plane_wall_normal_*",true);
+			Entity_SetActive("plane_wall_dust_*",false);
+			Entity_SetActive("Wing_Darkworld",true);
+			Entity_SetActive("Wing_Normal",false);
+			
+			Light_SetVisible("Light_Desert_window*", false);
+			ParticleSystem_SetActive("PS_Engine_failure*", true);
+			
+			Light_FadeBrightnessTo("Light_Desert_window_4", 5.0f, 0.1f);
+			Light_FadeBrightnessTo("Window_caustics", 2.0f, 0.1f);
+		}
+		else if (Sequence_DoStepAndWaitUntil(88.50f))
+		{
+			
+		}
+		// EXPLOSION from engine
+		else if (Sequence_DoStepAndWaitUntil(89.654678f))
+		{
+			Effect_Shake_Start(0.03f,0.2f,0.0f,0.2f);
+			Effect_Rumble_Start(1.0f,1.0f,0.0f,1.0f);
+			m_skyBoxStage = eSkyBoxStage_Crashing;
+			ParticleSystem_SetActive("PS_Engine",true);
+			
+			mfBladesSpeed=0.00f;
+			mfBladesJitter=0.00f;
+			Entity_SetActive("plane_blades_off_1",false);
+			
+			Entity_SetActive("Wing_Darkworld", false);
+			Entity_SetActive("Wing_Wrecked", true);
+			Decal_SetDynamicVisible("decal_wing_01", true);
+			Decal_SetDynamicVisible("decal_wing_02", true);
+			ParticleSystem_SetActive("PS_Engine_trail*",true);
+			Entity_SetActive("plane_interior_panel_light_03*",true);
+			Entity_SetEffectsActive("Wing_Wrecked",true,true);
+			Entity_SetActive("Tower_1_dwf_vista_clouds_*", false);
+			Light_SetVisible("Fire_light_*",true);
+			Light_SetVisible("window_caustics",false);
+			Effect_ToneMapping_FadeWorldGrading("grading_intro_glimpse_fire", 3.0f);
+			Sound_CreateAtEntity("Sound_EngineExplode", "01_01_intro/crash_event/explosion", "sound_engine");
+			
+		}	
+		// * Masson: "Engine down! Shit!"
+		else if (Sequence_DoStepAndWaitUntil(92.671989f))
+		{
+			Voice_Play("Dialogue_MassonEngine",-1,"",25);	//TODO: Remove priority
+		}
+		// LURCH AND CHAOS
+		else if (Sequence_DoStepAndWaitUntil(93.688873f))
+		{
+			Effect_Shake_Start(0.03f,0.2f,0.0f,0.2f);
+			Effect_Shake_FadeOut(m_nConstShake,0.1f);
+			m_nConstShake = Effect_Shake_Start(0.03f,100.0f,0.0f,0.2f);
+		}
+		// * Masson: "No, no… Come on, baby, come on, stay with me, stay with me, baby-"
+ 		else if (Sequence_DoStepAndWaitUntil(95.705971f))
+		{
+			PlayerBody_SetCustomAnimCameraAdd(cVector3f(0.0f,0.0f,0.0f));
+			DarkworldTransition(false);
+			//Effect_ToneMapping_FadeWorldGrading("grading_intro_glimpse_sandstorm", 0.5f);
+			Light_SetVisible("Light_Desert_window*", true);
+			Entity_SetActive("Tower_*",false);
+			Entity_SetActive("SandStorm_*", true);
+			Map_SetSkyBoxTexture("environment_sandstorm.dds");
+			
+			//cLux_GetCurrentMap().GetWorld().SetSkyBoxColor(cColor(1.0f,1.0f,1.0f));
+			//cLux_GetCurrentMap().GetWorld().SetSkyBoxBrightness(1.0f);
+			
+			Voice_PlayDelayed("Dialogue_MassonBaby",4.0f);	//TODO: Remove priority
+			
+			Light_FadeBrightnessTo("Light_Desert_window_4", 20.0f, 0.1f);
+			Light_FadeBrightnessTo("Window_caustics", 40.0f, 0.1f);
+		}
+		// * Salim
+		else if (Sequence_DoStepAndWaitUntil(100.240273f))
+		{
+			//Voice_Play("Dialogue_SalimLast",-1,"",30);	//TODO: Remove priority
+		}
+		else if (Sequence_DoStepAndWaitUntil(101.75f))
+		{
+			Sound_Stop("Sound_TasiEmotes", 6.f);
+			Sound_Stop("Sound_SalimEmotes", 6.f);
+			Sound_Stop("Walla_Mitchell",6.f);
+			Sound_Stop("Walla_Yasmin", 6.f);
+		}
+		// CRASH
+		else if (Sequence_DoStepAndWaitUntil(107.75f))
+		{
+			Effect_Fade_Out(0.1f);
+		}
+		else if(Sequence_DoStepAndWait(6.0f))
+		{
+			Sound_FadeGlobalVolume(0.f, 5.0f, eSoundEntryType_All);
+			Effect_Shake_FadeOut(m_nConstShake,0.5f);
+			m_nConstShake=-1;
+		}
+		else if (Sequence_DoStepAndContinue())
+		{
+			// Clean up
+			Player_SetActive(true);
+			
+			Effect_ToneMapping_FadeWorldGrading("grading_default", 0.0f);
+			
+			if (!cLux_ScriptDebugOn())
+				Map_ChangeMap("01_01_plane_wreckage.hpm", "Start_Begin", "", "", false);
+		}
+		
+		Sequence_End();
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnPlayerAnimMessage(const tString &in asEntityName, const tString &in asAnimName, int alMessageEventID)
+	{
+		if (alMessageEventID == 10)  // Switch out the doctor's animation while the player is looking, to make him look alive
+		{
+			Entity_PlayAnimation("Passenger_04", "idle_nobaby",1.0f,true);
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void DarkworldTransition(bool abIn)
+	{
+		if (abIn)
+		{
+			Sound_CreateAtEntity("Sound_Transition", "level_entity_shared/portal/portal_open", "player");
+			Effect_Flash_Start(0.1f,0.1f,0.3f);
+		}
+		else 
+		{
+			Sound_CreateAtEntity("Sound_Transition", "level_entity_shared/portal/portal_close", "player");
+			Effect_Flash_Start(0.1f,0.1f,0.3f);
+		}
+		
+		//Effect_ChromaticAberration_StartAnim(1.5f, 0.08f, 0.2f, cVector2f_Zero);
+		Effect_Shake_Start(0.01f, 0.5f, 0.2f, 0.2f);
+		Effect_Rumble_Start(0.75f,0.1f,0.0f,0.5f);
+	}
+
+	/////////////////////////////////////////
+	// Sketchbook Content
+	////////////////////////////////////////
+	 
+	//-------------------------------------------------------
+ 
+	void DrawGuiSketchbook(const tString&in asEntityName, float afTimeStep)
+	{
+		ImGui_SetAlignment(eImGuiAlign_CenterCenter);
+		ImGui_GroupBegin(ImGui_NrmPosGroup(0.0,0.0,0.5), ImGui_NrmSizeGroup(1));
+		Sketchbook_RenderCrewSketchPageGUI(msCrewPage,mfSketchAlpha,0.75f, false);
+		ImGui_GroupEnd();
+	}
+	
+	//-------------------------------------------------------
+
+	void DrawGuiSketchbookCover(const tString&in asEntityName, float afTimeStep)
+	{
+		ImGui_SetAlignment(eImGuiAlign_CenterCenter);
+		ImGui_GroupBegin(ImGui_NrmPosGroup(0.0,0.0,0.5), ImGui_NrmSizeGroup(1));
+		Sketchbook_RenderBookCoverLabel();
+		ImGui_GroupEnd();
+	}
+		
+	//-------------------------------------------------------
+	
+	cVector3f mvMoveStartCamPos = cVector3f_Zero;
+	float mfMoveStartCamRotZ = 0.0f;
+	cVector3f mvMoveDestCamPos = cVector3f_Zero;
+	float mfMoveDestCamRotZ = 0.0f;
+	cVector3f mvMoveCurrentCamPos = cVector3f_Zero;
+	float mfMoveCurrentCamRotZ = 0.0f;
+	float mfMoveTime = 0.0f;
+	float mfMoveCurrentTime = 0.0f;
+	eEasing mMoveEasingType = eEasing_Linear;
+	float mfStartHoldTime=0.0f;
+  
+	//-------------------------------------------------------
+  
+	void ClearCameraMove()
+	{
+		mvMoveCurrentCamPos = cVector3f_Zero;
+		mfMoveCurrentCamRotZ = 0.0f;
+	}
+	
+	//-------------------------------------------------------
+  
+	void SetCameraOffset(float afPosX, float afPosY, float afPosZ, float afRotZ=0.0f, cVector3f fix = ANIM_FIX_OFFSET)
+	{
+		mvMoveCurrentCamPos = cVector3f(afPosX, afPosY, afPosZ)+fix;
+		mfMoveCurrentCamRotZ = cMath_ToRad(afRotZ);
+		mfMoveTime = 0.0f;
+		mfMoveCurrentTime = 0.0f;
+		mfStartHoldTime = 0.0f;
+		PlayerBody_SetCustomAnimCameraAdd(mvMoveCurrentCamPos);
+		PlayerBody_SetCustomAnimCameraRot(cVector3f(0.0f,0.0f,mfMoveCurrentCamRotZ));
+	}
+	
+	//-------------------------------------------------------
+	
+	void DoCameraMove(float afDestX, float afDestY, float afDestZ, float afTime, float afRotZ=0.0f, eEasing aEasingType=eEasing_Linear, float afStartHoldTime = 0.0f, cVector3f fix = ANIM_FIX_OFFSET)
+	{
+		mfStartHoldTime = afStartHoldTime;
+		mvMoveStartCamPos = mvMoveCurrentCamPos;
+		mfMoveStartCamRotZ = mfMoveCurrentCamRotZ;
+		mvMoveCurrentCamPos = mvMoveStartCamPos;
+		mvMoveDestCamPos = cVector3f(afDestX, afDestY, afDestZ)+fix;
+		mfMoveDestCamRotZ = cMath_ToRad(afRotZ);
+		mfMoveCurrentTime = afTime;
+		mfMoveTime = afTime;
+		mMoveEasingType = aEasingType;
+	}
+	
+	//-------------------------------------------------------
+	
+	void UpdateCameraMove(float afTimeStep)
+	{
+		if (mfMoveCurrentTime<0.0f)
+			return;
+			
+		if (mfStartHoldTime>0.0f)
+		{
+			mfStartHoldTime-=afTimeStep;
+			if (mfStartHoldTime<=0.0f)
+			{
+				mfStartHoldTime=0.0f;
+				afTimeStep+=mfStartHoldTime;
+			}
+			else
+				return;
+		}
+		
+		mfMoveCurrentTime-=afTimeStep;
+		float fProgress = 1.0f;
+		if (mfMoveCurrentTime>0.0f)
+		{
+			fProgress = (mfMoveTime-mfMoveCurrentTime)/mfMoveTime;
+		}
+		
+		mvMoveCurrentCamPos = cVector3f(
+			cMath_Easing(mMoveEasingType, fProgress, mvMoveStartCamPos.x, mvMoveDestCamPos.x),
+			cMath_Easing(mMoveEasingType, fProgress, mvMoveStartCamPos.y, mvMoveDestCamPos.y),
+			cMath_Easing(mMoveEasingType, fProgress, mvMoveStartCamPos.z, mvMoveDestCamPos.z)
+			);
+		mfMoveCurrentCamRotZ = cMath_Easing(mMoveEasingType, fProgress, mfMoveStartCamRotZ, mfMoveDestCamRotZ);
+	
+		PlayerBody_SetCustomAnimCameraAdd(mvMoveCurrentCamPos);
+		PlayerBody_SetCustomAnimCameraRot(cVector3f(0.0f,0.0f,mfMoveCurrentCamRotZ));
+
+		//cLux_AddDebugMessage("L:"+mvMoveCurrentCamPos+" P:"+fProgress);
+	}
+	
+	//-------------------------------------------------------
+
+}

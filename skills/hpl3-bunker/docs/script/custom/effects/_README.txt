@@ -1,0 +1,1 @@
+Custom effects go here. Remember to add them to the Effects.cfg file. Make sure their IDs match up to enums in the Effects_Custom.hps file.

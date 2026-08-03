@@ -1,0 +1,1089 @@
+#include "interfaces/Prop_Interface.hps"
+#include "player/Player_Types.hps"
+
+class cSlideDoorPart
+{
+	iPhysicsBody @mpBody;
+	cVector3f mvClosedPos;
+	cVector3f mvOpenPos;
+}
+
+
+class cScrPropSlideDoor : iScrProp, iScrProp_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		mfOpenAmount = 0;
+		mfMaxOpenAmount = 10000.f;
+		mfOpenAmountGoal =0;
+		mbDoorMoving = false;
+		mfCurrentSpeed = 0;
+		m_idLoopSoundId = tID_Invalid;
+		mfAutoCloseTimeCount =0;
+		mbInteractConnectionMovementActive = false;
+		m_idInteractConnectedProp = tID_Invalid;
+		
+		mBaseObj.SetIsClosedDoor(true);
+		mBaseObj.SetIgnoreDynamicAvoidance(true);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void AddDoorPart(const tString&in asBody, cVector2f &in avMoveDir, float afMoveAmount, bool abMoveUseMeters)
+	{
+		cSlideDoorPart doorPart;
+		
+		///////////////////////////
+		// Get Body
+		int lBodyIdx = mBaseObj.GetBodyIndexFromName(asBody);
+		if(lBodyIdx<0) 
+		{
+			Error("Could not find body '"+asBody+"' for slide door '"+mBaseObj.GetName()+"'\n");
+			return;
+		}
+		iPhysicsBody @pBody = mBaseObj.GetBody(lBodyIdx);
+		@doorPart.mpBody = pBody;
+		
+		///////////////////////////
+		// Set up move amount
+		doorPart.mvClosedPos = pBody.GetLocalPosition();
+		
+		cBoundingVolume@ pBounds = pBody.GetBoundingVolume();
+		cMatrixf mtxTransform = pBounds.GetTransform();
+		pBounds.SetTransform(cMatrixf_Identity);
+		
+		cVector3f vDir(avMoveDir.x, avMoveDir.y, 0);
+		
+		if (abMoveUseMeters == false)
+		{
+			vDir = vDir*pBounds.GetSize();
+			vDir = cMath_MatrixMul3x3(mBaseObj.GetOnLoadTransform(), vDir); //Transform into world postion!
+		}
+				
+		doorPart.mvOpenPos = doorPart.mvClosedPos + vDir * afMoveAmount;
+		
+		pBounds.SetTransform(mtxTransform);
+		
+		///////////////////////////
+		//Add to array
+		mvDoorParts.insertLast(doorPart);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetDoorOpenAmount(cSlideDoorPart &aDoorPart, float afAmount)
+	{
+		cVector3f vPos = GetClosedPos(aDoorPart)*(1-afAmount) + GetOpenPos(aDoorPart)*afAmount;
+		
+		aDoorPart.mpBody.SetPosition(vPos);
+	}
+	
+		
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		/////////////////////////////////
+		// Door Part properties
+		tString sDoorBodies  = apVars.GetVarString("DoorParts_Body", ""); 
+		tString sDoorMoveDirs  = apVars.GetVarString("DoorParts_MoveDir", ""); 
+		tString sDoorMoveAmounts  = apVars.GetVarString("DoorParts_MoveAmount", ""); 
+		bool bMoveUseMeters = apVars.GetVarBool("DoorParts_MoveUseMeters", false);
+		
+		array<tString> vBodies;
+		array<float> vMoveDirs;
+		array<float> vMoveAmounts;
+		
+		cString_GetStringVec(sDoorBodies, vBodies, "; ,");
+		cString_GetFloatVec(sDoorMoveDirs, vMoveDirs, "; ,");
+		cString_GetFloatVec(sDoorMoveAmounts, vMoveAmounts, "; ,");
+		
+		m_mtxAttachment = cMatrixf_Identity;
+		mbAttachmentUpdated = false;
+
+		for(int i=0; i<vBodies.length(); ++i)
+		{
+			cVector2f vDir;
+			vDir = (i*2+1 < vMoveDirs.length()) ? cVector2f(vMoveDirs[i*2], vMoveDirs[i*2+1]) : cVector2f(0,0);
+			float fAmount = (vMoveAmounts.length()>=i+1) ? vMoveAmounts[i] : 0;
+		
+			AddDoorPart(vBodies[i], vDir, fAmount, bMoveUseMeters);
+		}
+		
+		/////////////////////////////////
+		// Properties	
+		mBaseObj.SetInteractionDisabled(!apVars.GetVarBool("OpenableByInteraction", true));	
+		mfOpenSpeed = apVars.GetVarFloat("OpenSpeed", 1);
+		mfCloseSpeed = apVars.GetVarFloat("CloseSpeed", 1);
+		mfOpenAcc = apVars.GetVarFloat("OpenAcc", 1); 
+		mfCloseAcc = apVars.GetVarFloat("CloseAcc", 6);
+		mfOpenSlowDownDist = apVars.GetVarFloat("OpenSlowDownDist", 0.1f);
+		mfCloseSlowDownDist = apVars.GetVarFloat("CloseSlowDownDist", 0.1f);
+		mbCheckCollision = apVars.GetVarBool("CheckCollision", true);
+		mfPushImpulse = apVars.GetVarFloat("PushImpulse", 0.08f);
+		mfPushMaxMass = apVars.GetVarFloat("PushMaxMass", 40);
+		
+		msOpenSound_Start = apVars.GetVarString("OpenSound_Start","");
+		msOpenSound_End = apVars.GetVarString("OpenSound_End","");
+		msCloseSound_Start = apVars.GetVarString("CloseSound_Start","");
+		msCloseSound_End = apVars.GetVarString("CloseSound_End","");
+		msOpenSound_Loop = apVars.GetVarString("OpenSound_Loop","");
+		msCloseSound_Loop = apVars.GetVarString("CloseSound_Loop","");
+		
+		mbUseAnimations = apVars.GetVarBool("UseAnimations", false);
+		msAnimation_Opening = apVars.GetVarString("Animation_Opening", "");
+		msAnimation_Closing = apVars.GetVarString("Animation_Closing", "");
+		msAnimation_Open = apVars.GetVarString("Animation_Open", "");
+		msAnimation_Closed = apVars.GetVarString("Animation_Closed", "");
+		mbAnimation_ReplaceMovement = apVars.GetVarBool("Animation_ReplaceMovement", false);
+		msAnimation_CollisionOpenBody = apVars.GetVarString("Animation_CollisionOpenBody", "");
+		msAnimation_CollisionClosedBody = apVars.GetVarString("Animation_CollisionClosedBody", "");
+		mfAnimation_CollisionOpenTime = apVars.GetVarFloat("Animation_CollisionOpenTime", 0);
+		mfAnimation_CollisionClosedTime = apVars.GetVarFloat("Animation_CollisionClosedTime", 0);
+		
+		mBaseObj.SetIsDoor(apVars.GetVarBool("AgentDoor", true));
+		
+		/////////////////////////////////
+		// Get Bodies
+		{
+			if(msAnimation_CollisionOpenBody != "")
+			{
+				@mpBodyOpen = mBaseObj.GetBodyFromName(msAnimation_CollisionOpenBody);
+				if(mpBodyOpen is null)
+				{
+					Error("Physics body '"+msAnimation_CollisionOpenBody+"' was not found in entity '"+mBaseObj.GetName()+"' to be used as CollisionOpenBody. MainBody used instead.");
+					@mpBodyOpen = mBaseObj.GetMainBody();
+				}
+			}
+			else
+				@mpBodyOpen = null;
+			
+			if(msAnimation_CollisionClosedBody != "")
+			{
+				@mpBodyClosed = mBaseObj.GetBodyFromName(msAnimation_CollisionClosedBody);
+				if(mpBodyClosed is null)
+				{
+					Error("Physics body '"+msAnimation_CollisionClosedBody+"' was not found in entity '"+mBaseObj.GetName()+"' to be used as CollisionClosedBody.");
+					@mpBodyClosed = mBaseObj.GetMainBody();
+				}
+			}
+			else if (mbUseAnimations)
+				@mpBodyClosed = mBaseObj.GetMainBody();
+			
+		}
+		
+		/////////////////////////////////
+		// Agent collide body
+		tString sAgentCollideBody = apVars.GetVarString("AgentColliderBody", "");
+		if(sAgentCollideBody != "")
+		{
+			@mpAgentColliderBody = mBaseObj.GetBodyFromName(sAgentCollideBody);
+			if(mpAgentColliderBody is null)
+			{
+				Error("Could not find AgentColliderBody '"+sAgentCollideBody+"' for slide door '"+mBaseObj.GetName()+"'");
+			}
+			else
+			{
+				//Only collides to characters that are not the player!
+				mpAgentColliderBody.SetCollide(false);
+				mpAgentColliderBody.SetCollideFlags(mBaseObj.GetMap().GetCollideFlag("-player"));
+			}
+		}
+		
+		/////////////////////////////////
+		// Calculate the BV for entire (closed door)
+		mvDoorAABB_Min = cVector3f(100000.0f);
+		mvDoorAABB_Max = cVector3f(-100000.0f);
+		
+		for(int i=0; i<mBaseObj.GetBodyNum(); ++i)
+		{
+			iPhysicsBody@ pBody = mBaseObj.GetBody(i);
+			
+			mvDoorAABB_Min = cMath_ExpandAABBMin(mvDoorAABB_Min, pBody.GetBoundingVolume().GetMin());
+			mvDoorAABB_Max = cMath_ExpandAABBMax(mvDoorAABB_Max, pBody.GetBoundingVolume().GetMax());
+		}
+		
+		////////////////////////////////////
+		// Instance variables
+		mbOpenableByAgent = apInstanceVars.GetVarBool("OpenableByAgent", true);
+		
+		mbInteractToOpen = apInstanceVars.GetVarBool("InteractToOpen", false);
+		
+		mfAutoCloseTime = apInstanceVars.GetVarFloat("AutoCloseTime", 0);
+		
+		/////////////////////////////////////////
+		// Set open amount
+		mfOpenAmount = apInstanceVars.GetVarFloat("OpenAmount", 0);
+		if (mfOpenAmount >= 1.0f) mfOpenAmountGoal = 1.0f;
+		
+		if (mbUseAnimations || mbAnimation_ReplaceMovement || mfOpenAmount > 0)
+			SetOpenAmountInstantly(mfOpenAmount);
+			
+		OnSetActive(mBaseObj.IsActive());
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetOpenAmountInstantly(float afX)
+	{
+		mfOpenAmount = afX;
+		
+		SetIsClosed(mfOpenAmount<0.95f);
+		
+		///////////////
+		// Animations
+		if(mbUseAnimations)
+		{
+			mBaseObj.StopAllAnimations(0.0f);
+			
+			if(mfOpenAmount > 0)
+			{
+				if (msAnimation_Open!="")
+				{
+					mBaseObj.PlayAnimation(msAnimation_Open, 0.0f, true);
+				}
+				else
+				{
+					mlCurrentAnimation = mBaseObj.PlayAnimation(msAnimation_Opening);
+					mBaseObj.GetMeshEntity().GetAnimationState(mlCurrentAnimation).SetRelativeTimePosition(1);
+				}
+			}
+			else
+			{
+				if (msAnimation_Closed!="")
+				{
+					mBaseObj.PlayAnimation(msAnimation_Closed, 0.0f, true);
+				}
+				else
+				{
+					mlCurrentAnimation = mBaseObj.PlayAnimation(msAnimation_Closing);
+					mBaseObj.GetMeshEntity().GetAnimationState(mlCurrentAnimation).SetRelativeTimePosition(1);
+				}
+			}
+		}
+		
+		/////////////////////////////
+		// Move bodies correctly
+		if(mbAnimation_ReplaceMovement==false)
+		{
+			for(int i=0; i<mvDoorParts.length(); ++i)
+			{
+				SetDoorOpenAmount(mvDoorParts[i], mfOpenAmount);
+			}
+		}
+		
+		////////////////////////////////////
+		// Set up body collision correctly
+		else
+		{
+			if(mpBodyClosed !is null) mpBodyClosed.SetActive(mfOpenAmount <= 0);
+			if(mpBodyOpen !is null) mpBodyOpen.SetActive(mfOpenAmount > 0);
+			
+			mbAnimationMovementBodyOpen = mfOpenAmount > 0;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnUpdate(float afTimeStep)
+	{
+		if(mbAgentIsOpeningDoor)
+		{
+			mfAgentIsOpeningFailsafeCount-=afTimeStep;
+			if(mfAgentIsOpeningFailsafeCount<0)
+				mbAgentIsOpeningDoor=false;
+		}
+		
+		if(mbAgentIsOpeningRevertStateChange)
+		{
+			mBaseObj.ChangeConnectionState(1);
+			mbAgentIsOpeningRevertStateChange=false;
+		}
+		
+		UpdateSounds();
+		UpdateAutoClose(afTimeStep);
+		UpdateDoors(afTimeStep);
+		UpdateInteractConnection();
+	}
+		
+	//------------------------------------------------------------
+	
+	/*void OnPostUpdate(float afTimeStep)
+	{
+	
+	}*/
+	
+	//------------------------------------------------------------
+	
+	void ResetProperties()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void BeforeEntityDestruction()
+	{
+	}
+		
+	//------------------------------------------------------------
+	
+	void OnStartMove()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnAttachmentUpdate(const cMatrixf&in a_mtxTransformAdd)
+	{
+		m_mtxAttachment = cMath_MatrixMul(a_mtxTransformAdd, m_mtxAttachment);
+		mbAttachmentUpdated = true;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnSetActive(bool abX)
+	{
+		//if (mBaseObj.GetName() == "Portcullis_HG_Trap2_14")
+		//	cLux_AddDebugMessage("OPEN AMOUNT: "+mfOpenAmount+" - SETACTIVE: "+abX);
+		if(mpBodyClosed !is null) mpBodyClosed.SetActive(mfOpenAmount <= 0 && abX);
+		if(mpBodyOpen !is null) mpBodyOpen.SetActive(mfOpenAmount > 0 && abX);
+		if(mpAgentColliderBody !is null) mpAgentColliderBody.SetActive(mbIsClosed && abX);
+	}
+	
+	//------------------------------------------------------------
+	
+	void GiveDamage(iPhysicsBody@ apBodyHit, const cVector3f&in avOrigin, const cVector3f&in avHitPos, cLuxDamageProperties@ apDamageProps)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnHealthChange()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnConnectionStateChange(iLuxEntity@ apEntity,int alState)
+	{
+		if(alState ==0) return;
+		
+		if(mbAgentIsOpeningDoor)
+		{
+			mbAgentIsOpeningRevertStateChange=true;
+			return;
+		}
+
+		MoveDoorTo(alState ==1 ? 1 : 0, false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnInteractConnectionStateChange(cLuxProp@ apProp, float afT)
+	{
+		if (mBaseObj.IsInteractedWith())
+			return;
+		
+		mbInteractConnectionMovementActive = true;
+		
+		MoveDoorTo(afT, true);
+		
+		// Reset auto close!
+		if (mfAutoCloseTime > 0.f && mfOpenAmountGoal > 0.f)
+			mfAutoCloseTimeCount = 0.01f;
+			
+		m_idInteractConnectedProp = apProp.GetID();
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnUpdateAutoSleep()
+	{
+		return mfAutoCloseTimeCount <= 0.f && mbDoorMoving == false && mbDoorSoundsPlaying == false; 
+	}
+	
+	//------------------------------------------------------------
+	
+	//NOTE: This is only useable if SetScriptCollisionCallbackActive is true
+	void OnPhysicsCollision(iPhysicsBody @apBody, iPhysicsBody @apCollideBody, cPhysicsContactData&in apContactData)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	
+	/////////////////////////////////////////
+	// INTERACT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	bool CanInteract(int alType, iPhysicsBody@ apBody)
+	{
+		return mbInteractToOpen;
+	}
+	
+	//------------------------------------------------------------
+		
+	bool OnInteract(int alType, iPhysicsBody@ apBody, const cVector3f &in avFocusPos, const tString&in asData)
+	{
+		if(mbInteractToOpen==false) return false;
+				
+		//////////////////////
+		// Move door
+		if(mfOpenAmountGoal<=0) MoveDoorTo(1);
+		else					MoveDoorTo(0);
+		
+		///////////////////////////////
+		// Update interact connection
+		mbInteractConnectionMovementActive = false;	
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	int GetInteractIconId(int alType, iPhysicsBody@ apBody)
+	{
+		return eCrossHairState_PushButton;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// SPECIFIC ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetIsClosed(bool abX)
+	{
+		if(mbIsClosed == abX) return;
+		
+		mbIsClosed = abX;
+		
+		mBaseObj.SetIsClosedDoor(abX);
+		
+		if(mpAgentColliderBody !is null)
+			mpAgentColliderBody.SetActive(mbIsClosed);
+	}
+	
+	//------------------------------------------------------------
+
+	void _Global_SetOpenAmount()
+	{
+		bool abInstant = cScript_GetGlobalArgBool(1);
+		float fGoal = cScript_GetGlobalArgFloat(0);
+		
+		if (cMath_Abs(fGoal - mfOpenAmount) > 0.00001f)
+		{
+			mBaseObj.SetAutoSleep(false);
+			mBaseObj.WakeUp();
+		}
+		
+		if (abInstant)
+		{
+			SetOpenAmountInstantly(fGoal);
+		}
+		else
+		{
+			MoveDoorTo(fGoal);
+		}
+	}
+	
+	//------------------------------------------------------------
+
+	void _Global_GetOpenAmount()
+	{
+		cScript_SetGlobalReturnFloat(mfOpenAmount);
+	}
+	
+	//------------------------------------------------------------
+
+	void _Global_SetMaxOpenAmount()
+	{
+		mfMaxOpenAmount = cScript_GetGlobalArgFloat(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void MoveDoorTo(float afX, bool abChangeConnectionState=true)
+	{
+		if(cMath_Abs(afX-mfOpenAmount) < 0.00001f) return;
+		if (afX > mfMaxOpenAmount) return;
+	
+		////////////////////////////////////
+		// Connection
+		if(abChangeConnectionState)
+			mBaseObj.ChangeConnectionState(afX>0 ? 1 : -1);
+		
+		///////////////////////////////////
+		// Wake up
+		mBaseObj.SetAutoSleep(false);
+		mBaseObj.WakeUp();
+				
+		///////////////////////////////////
+		// Animations
+		if(mbUseAnimations)
+		{
+			if(afX>0)
+			{
+				mlCurrentAnimation = mBaseObj.PlayAnimation(msAnimation_Opening);
+			}
+			else
+			{
+				mlCurrentAnimation = mBaseObj.PlayAnimation(msAnimation_Closing);
+			}
+		}
+				
+		/////////////////////////////////////
+		// Set properties
+		mbDoorMoving = true;
+		mfAutoCloseTimeCount = 0;
+		mfOpenAmountGoal = afX;
+		
+		SetIsClosed(mfOpenAmountGoal<0.95f);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	void _Global_AgentNear()
+	{
+		if(mbOpenableByAgent==false || mfOpenAmountGoal>0.9f || mfOpenAmount>0.9f)
+		{
+			cScript_SetGlobalReturnBool(false);
+			return;
+		} 
+		
+		mbAgentIsOpeningDoor=true;
+		mfAgentIsOpeningFailsafeCount = 10;
+		MoveDoorTo(1);
+		
+		cScript_SetGlobalReturnBool(true);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_OpenDirectly()
+	{
+		SetOpenAmountInstantly(1.0f);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetOpenableByAgent()
+	{
+		mbOpenableByAgent = cScript_GetGlobalArgBool(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// SPECIFIC UPDATE
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void UpdateAutoClose(float afTimeStep)
+	{
+		/////////////////////////////
+		// Check if already closing or not supposed to close at all
+		if(mfOpenAmountGoal<=0 || mfAutoCloseTime<=0) return;
+
+		/////////////////////////////
+		// Check if time to close.
+		if(mfAutoCloseTimeCount < mfAutoCloseTime)
+		{
+			mfAutoCloseTimeCount += afTimeStep;
+			if(mfAutoCloseTimeCount < mfAutoCloseTime) return;
+		}
+		
+		/////////////////////////////
+		// Check if any character inside door, else close.
+		iPhysicsWorld @pPhysicsWorld = mBaseObj.GetMap().GetPhysicsWorld();
+		
+		bool bCharacterInside = false;
+		array<iPhysicsBody@> vCollideBodies;
+		pPhysicsWorld.GetBodiesInAABB(mvDoorAABB_Min, mvDoorAABB_Max, true, false, vCollideBodies);
+			
+		for(int i=0; i<vCollideBodies.length(); ++i)
+		{
+			iPhysicsBody @pBody = vCollideBodies[i];
+			if(pBody.IsCharacter() && pBody.IsActive())
+			{
+				bCharacterInside = true;
+				break;
+			}
+		}
+		
+		/////////////////////////////
+		// Check if connected prop is interacted with
+		bool bConnectedPropInteractedWith = false;
+		if (m_idInteractConnectedProp != tID_Invalid)
+		{
+			cLuxProp@ pConnectedProp = cLux_ID_Prop(m_idInteractConnectedProp);
+			if (pConnectedProp !is null)
+				bConnectedPropInteractedWith = pConnectedProp.IsInteractedWith();
+		}
+
+		/////////////////////////////
+		// If no character inside and player isn't interacting with connected prop, close
+		if(bCharacterInside==false && bConnectedPropInteractedWith == false)
+		{
+			MoveDoorTo(0);
+		}
+		// Else, reset the time count.
+		else
+		{
+			mfAutoCloseTimeCount = 0.01f;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateDoors(float afTimeStep)
+	{
+		if(mbDoorMoving==false) return;
+		
+		///////////////////////////////////
+		// Animation Update
+		if(mlCurrentAnimation >= 0 && mBaseObj.GetAnimationIsPlaying()==false)
+		{
+			if(mfOpenAmountGoal>0 && msAnimation_Open != "")
+				mBaseObj.PlayAnimation(msAnimation_Open, 0.0f, true);
+			else if(mfOpenAmountGoal<=0 && msAnimation_Closed != "")
+				mBaseObj.PlayAnimation(msAnimation_Closed, 0.0f, true);
+				
+			mlCurrentAnimation = -1;
+		}
+		
+		///////////////////////////////////
+		// Animation Movement
+		if(mbAnimation_ReplaceMovement)
+		{
+			mfOpenAmount = mfOpenAmountGoal;
+			
+			/////////////////////////////
+			// Check if we should switch bodies
+			if(mlCurrentAnimation >=0 && mbAnimationMovementBodyOpen != (mfOpenAmount>0)) 
+			{
+				float fAnimTimeCheck = mfOpenAmount>0 ? mfAnimation_CollisionOpenTime : mfAnimation_CollisionClosedTime;
+				
+				if(mBaseObj.GetMeshEntity().GetAnimationState(mlCurrentAnimation).GetTimePosition() > fAnimTimeCheck)
+				{
+					mbAnimationMovementBodyOpen = (mfOpenAmount>0);
+					
+					if(mpBodyClosed !is null) mpBodyClosed.SetActive(mfOpenAmount <= 0);
+					if(mpBodyOpen !is null) mpBodyOpen.SetActive(mfOpenAmount > 0);
+				}
+			}
+			
+			/////////////////////////////
+			// Check door opening/closing is over
+			if(mlCurrentAnimation <0)
+			{
+				mBaseObj.SetAutoSleep(true);
+				mbDoorMoving = false;
+			}
+		}
+		/////////////////////////////////
+		// Physics Movement
+		else
+		{
+			///////////////////////////////////
+			// Update the speed
+			float fDir = mfOpenAmountGoal - mfOpenAmount;
+			float fAcc =  (fDir > 0) ? mfOpenAcc : mfCloseAcc;
+			float fSlowDownDist =  (fDir > 0) ? mfOpenSlowDownDist : mfCloseSlowDownDist;
+			
+			float fTargetSpeed = (fDir > 0) ? mfOpenSpeed : -mfCloseSpeed;
+			
+			//If close to goal, slow down speed.
+			if(cMath_Abs(fDir) < fSlowDownDist)
+			{
+				fTargetSpeed = (cMath_Abs(fDir) / fSlowDownDist) * fTargetSpeed;
+				
+				//Not too small!
+				if(fDir>0 && fTargetSpeed<0.01) fTargetSpeed = 0.01f;
+				if(fDir<0 && fTargetSpeed>-0.01) fTargetSpeed = -0.01f;
+			}
+			
+				
+			float fAccDir = (fTargetSpeed - mfCurrentSpeed)>0 ? 1 : -1;
+			
+			mfCurrentSpeed += fAcc * fAccDir * afTimeStep;
+			if(fAccDir>0 && mfCurrentSpeed>fTargetSpeed) mfCurrentSpeed = fTargetSpeed;
+			if(fAccDir<0 && mfCurrentSpeed<fTargetSpeed) mfCurrentSpeed = fTargetSpeed;
+			
+			///////////////////////////////////
+			// Update the open amount
+			if (mbInteractConnectionMovementActive)
+				mfOpenAmount += (mfOpenAmountGoal - mfOpenAmount) / afTimeStep;
+			else
+				mfOpenAmount += afTimeStep * mfCurrentSpeed;				
+			
+			if (mfOpenAmount < 0)
+			{
+				mfOpenAmount = 0;
+				if (mfCurrentSpeed < 0 && mfOpenAmountGoal > 0) 
+					mfCurrentSpeed = 0;
+			}
+			
+			if(fDir > 0 &&	mfOpenAmount>=mfOpenAmountGoal)
+			{
+				mbAgentIsOpeningDoor = false;
+				mfOpenAmount = mfOpenAmountGoal;
+				mfCurrentSpeed = 0;
+				mbDoorMoving = false;
+				mBaseObj.SetAutoSleep(true);
+			}
+			if(fDir < 0 &&	mfOpenAmount<=mfOpenAmountGoal)
+			{
+				mbAgentIsOpeningDoor = false;
+				mfOpenAmount = mfOpenAmountGoal;
+				mfCurrentSpeed = 0;
+				mbDoorMoving = false;
+				mBaseObj.SetAutoSleep(true);
+			}
+			
+			///////////////////////////////////
+			// Check collision and push out of the way
+			for(int i=0; i<mvDoorParts.length(); ++i)
+			{
+				float fNewAmount;
+				if(PushAndCheckDoorCollision(mvDoorParts[i], mfOpenAmount, afTimeStep, fNewAmount))
+				{
+					//Make sure the new amount equals the least opened door part!
+					if(fDir>0 && fNewAmount<mfOpenAmount) mfOpenAmount = fNewAmount;
+					if(fDir<0 && fNewAmount>mfOpenAmount) mfOpenAmount = fNewAmount;
+				}
+			}
+				
+			///////////////////////////////////
+			// Update door parts
+			for(int i=0; i<mvDoorParts.length(); ++i)
+			{
+				MoveDoorOpenAmountTo(mvDoorParts[i], mfOpenAmount, afTimeStep);
+			}
+		}
+	}
+	
+	bool PushAndCheckDoorCollision(cSlideDoorPart &aDoorPart,float afAmount, float afTimeStep, float &out afNewAmount)
+	{
+		iPhysicsWorld @pPhysicsWorld = mBaseObj.GetMap().GetPhysicsWorld();
+		cVector3f vGoalPos = GetClosedPos(aDoorPart)*(1-afAmount) + GetOpenPos(aDoorPart)*afAmount;
+		
+		/////////////////////////////////////////////
+		//Get all bodies nearby and give them a push
+		if(mfPushImpulse>0)
+		{
+			cVector3f vGoalAdd = vGoalPos - aDoorPart.mpBody.GetLocalPosition();
+			
+			cBoundingVolume @pBV = aDoorPart.mpBody.GetBoundingVolume();
+			
+			cVector3f vPushBodyVec = cMath_MatrixMul3x3(mBaseObj.GetOnLoadTransform(), cVector3f(0,0,1)) * mfPushImpulse;
+			cVector3f vDoorCenter = cMath_MatrixMul(aDoorPart.mpBody.GetLocalMatrix(), aDoorPart.mpBody.GetMassCenter());
+			
+			array<iPhysicsBody@> vCollideBodies;
+			pPhysicsWorld.GetBodiesInAABB(pBV.GetMin()+vGoalAdd-cVector3f(0.075f), pBV.GetMax()+vGoalAdd+cVector3f(0.075f), true, false, vCollideBodies);
+			
+			for(int i=0; i<vCollideBodies.length(); ++i)
+			{
+				iPhysicsBody @pBody = vCollideBodies[i];
+				
+				//Skip any non-dynamic or non-active bodies (+ anything too massive)
+				if(pBody.IsActive()==false || pBody.GetMass()==0 || pBody.GetCollide()==false || pBody.GetMass() > mfPushMaxMass) continue;
+				
+				//Direction from body center to center of this door.
+				cVector3f vCenterToBody = cMath_MatrixMul(pBody.GetLocalMatrix(), pBody.GetMassCenter()) - vDoorCenter; //Make sure center of mass is used.
+				
+				//Check what directin to push in
+				float fPushDir = (cMath_Vector3Dot(vPushBodyVec, vCenterToBody) > 0) ? 1.0f : -1.0f;
+				
+				//Add the impulse
+				pBody.AddImpulse(vPushBodyVec * fPushDir);
+			}
+		}		
+		if(mbCheckCollision==false) return false;
+
+		/////////////////////////////////////////////
+		//Check collision and get push back
+		cVector3f vPushVec(0);
+		
+		cMatrixf translatedMatrix = aDoorPart.mpBody.GetWorldMatrix();
+		translatedMatrix.SetTranslation(vGoalPos);
+		bool bCollide = pPhysicsWorld.CheckShapeWorldCollision(vPushVec,aDoorPart.mpBody.GetShape(), translatedMatrix, null, true, false);
+		if(bCollide==false || vPushVec == cVector3f(0)) return false;
+				
+		//See the what the new (push backed) goal position would be:
+		vGoalPos += vPushVec;
+		
+		//Calculate the open amount this new open means: 
+		afNewAmount = 1.0f - cMath_Vector3Dist(vGoalPos, GetOpenPos(aDoorPart)) / cMath_Vector3Dist(GetClosedPos(aDoorPart), GetOpenPos(aDoorPart));
+			
+		return true;
+	}
+	
+	void MoveDoorOpenAmountTo(cSlideDoorPart &aDoorPart, float afAmount, float afTimeStep)
+	{
+		cVector3f vGoalPos = GetClosedPos(aDoorPart)*(1-afAmount) + GetOpenPos(aDoorPart)*afAmount;
+		cVector3f vDelta = vGoalPos - aDoorPart.mpBody.GetLocalPosition();
+		
+		aDoorPart.mpBody.StaticLinearMove(vDelta / afTimeStep);
+	}
+
+	cVector3f GetOpenPos(cSlideDoorPart& aDoorPart)
+	{
+		if(mbAttachmentUpdated)
+		{
+			return cMath_MatrixMul(m_mtxAttachment, aDoorPart.mvOpenPos);
+		}
+		else
+		{
+			return aDoorPart.mvOpenPos;
+		}
+	}
+
+	cVector3f GetClosedPos(cSlideDoorPart& aDoorPart)
+	{
+		if(mbAttachmentUpdated)
+		{
+			return cMath_MatrixMul(m_mtxAttachment, aDoorPart.mvClosedPos);
+		}
+		else
+		{
+			return aDoorPart.mvClosedPos;		
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateInteractConnection()
+	{
+		//////////////////////
+		// Update leader
+		if (mbInteractConnectionMovementActive == false)
+			mBaseObj.UpdateInteractConnectionLeader();
+		
+		mbInteractConnectionMovementActive = false;
+		
+		//////////////////////
+		// Broadcast state
+		mBaseObj.ChangeInteractConnectionState(mfOpenAmount);
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateSounds()
+	{
+		//////////////////
+		// Setup vars
+		float fDir = mfOpenAmountGoal - mfOpenAmount;
+		bool bChangedDir = fDir > 0.f && mfPrevOpenDir < 0.f || fDir < 0.f && mfPrevOpenDir > 0.f;
+		
+		//////////////////
+		// Start sound
+		bool bPlayStartSound = false;
+		
+		if (mBaseObj.GetInteractConnectionNum() > 0)
+			bPlayStartSound = cMath_Abs(fDir) > 0.0001f && (mfOpenAmount > 0.005f && mfOpenAmount < 0.995f);
+		else
+			bPlayStartSound = mbDoorSoundsPlaying && mbDoorMoving;
+		
+		if (mbDoorSoundsPlaying == false && mbDoorMoving)
+		{
+			mbDoorSoundsPlaying = true;			
+			PlayStartSound(fDir);
+		}
+		
+		//////////////////
+		// Loop
+		if (mbDoorSoundsPlaying)
+		{
+			if(m_idLoopSoundId != tID_Invalid && bChangedDir)
+			{
+				cSoundEntity @pSound = cLux_ID_SoundEntity(m_idLoopSoundId);
+				if(pSound !is null) pSound.FadeOut(5.f);
+				
+				PlayStartSound(fDir);
+				
+				m_idLoopSoundId = tID_Invalid;
+			}
+			
+			if(m_idLoopSoundId == tID_Invalid)
+			{
+				tString sLoopSound = (fDir>0) ? msOpenSound_Loop : msCloseSound_Loop;
+				cSoundEntity@ pSound = mBaseObj.PlaySound("SlideDoorLoop", sLoopSound, true, false);
+				if(pSound !is null)
+				{
+					pSound.FadeIn(5.f);
+					m_idLoopSoundId = pSound.GetID();
+				}
+			}
+		}
+		
+		//////////////////
+		// End sound
+		bool bPlayEndSound = false;
+		
+		if (mBaseObj.GetInteractConnectionNum() > 0)
+			bPlayEndSound = m_idLoopSoundId != tID_Invalid || cMath_Abs(fDir) > 0.00001f;
+		else
+			bPlayEndSound = mbDoorSoundsPlaying && mbDoorMoving == false;
+							 
+		if (mbDoorSoundsPlaying && mbDoorMoving == false && bPlayEndSound)
+		{
+			mbDoorSoundsPlaying = false;
+			
+			PlayStopSound(mfPrevOpenDir);
+			
+			cSoundEntity@ pSound = cLux_ID_SoundEntity(m_idLoopSoundId);
+			if(pSound !is null) pSound.FadeOut(5.f);
+			
+			m_idLoopSoundId = tID_Invalid;
+		}
+		
+		mfPrevOpenDir = fDir;
+	}
+	
+	//------------------------------------------------------------
+	
+	void PlayStartSound(float afDir)
+	{
+		tString sStartSound = (afDir>0) ? msOpenSound_Start : msCloseSound_Start;
+		mBaseObj.PlaySound("SlideDoorStart", sStartSound, true, false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void PlayStopSound(float afDir)
+	{
+		tString sEndSound = afDir>0 ? msOpenSound_End : msCloseSound_End;
+		mBaseObj.PlaySound("SlideDoorEnd", sEndSound, true, false);
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	[nosave] array<cSlideDoorPart> mvDoorParts;
+	[nosave] float mfOpenSpeed;
+	[nosave] float mfCloseSpeed;
+	[nosave] float mfOpenAcc;
+	[nosave] float mfCloseAcc;
+	[nosave] float mfOpenSlowDownDist;
+	[nosave] float mfCloseSlowDownDist;
+	[nosave] bool mbCheckCollision;
+	[nosave] float mfPushImpulse;
+	[nosave] float mfPushMaxMass;
+	[nosave] tString msOpenSound_Start;
+	[nosave] tString msOpenSound_End;
+	[nosave] tString msOpenSound_Loop;
+	[nosave] tString msCloseSound_Start;
+	[nosave] tString msCloseSound_End;
+	[nosave] tString msCloseSound_Loop;
+	[nosave] cVector3f mvDoorAABB_Min;
+	[nosave] cVector3f mvDoorAABB_Max;
+	
+	[nosave] bool mbUseAnimations;
+	[nosave] tString msAnimation_Opening;
+	[nosave] tString msAnimation_Closing;
+	[nosave] tString msAnimation_Open;
+	[nosave] tString msAnimation_Closed;
+	[nosave] bool mbAnimation_ReplaceMovement;
+	[nosave] tString msAnimation_CollisionOpenBody;
+	[nosave] tString msAnimation_CollisionClosedBody;
+	[nosave] float mfAnimation_CollisionOpenTime;
+	[nosave] float mfAnimation_CollisionClosedTime;
+	
+	[nosave] iPhysicsBody@ mpBodyOpen;
+	[nosave] iPhysicsBody@ mpBodyClosed;
+	[nosave] iPhysicsBody@ mpAgentColliderBody = null;
+	
+	//------------------------------------------------------------
+	
+	cMatrixf m_mtxAttachment;
+	bool mbAttachmentUpdated;
+
+	bool mbInteractToOpen;
+	
+	bool mbAgentIsOpeningDoor=false;
+	float mfAgentIsOpeningFailsafeCount=0;
+	bool mbAgentIsOpeningRevertStateChange=false;
+	
+	float mfAutoCloseTime;
+	float mfAutoCloseTimeCount;
+	
+	bool mbIsClosed=true;
+	
+	float mfOpenAmount;
+	float mfMaxOpenAmount;
+	float mfOpenAmountGoal;
+	float mfCurrentSpeed;
+	bool mbDoorMoving;
+	tID m_idLoopSoundId;
+	tID m_idInteractConnectedProp;
+	
+	float mfPrevOpenDir = 0.f;
+	bool mbDoorSoundsPlaying = false;
+	
+	int mlCurrentAnimation=-1;
+	
+	bool mbAnimationMovementBodyOpen;
+	
+	bool mbOpenableByAgent;
+	
+	bool mbInteractConnectionMovementActive;
+		
+	//------------------------------------------------------------		
+}	

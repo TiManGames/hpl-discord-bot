@@ -1,0 +1,1417 @@
+#include "interfaces/UserModule_Interface.hps"
+#include "modules/ModuleInterfaces.hps"
+#include "helpers/helper_imgui.hps"
+#include "helpers/helper_game.hps"
+#include "helpers/helper_menu.hps"
+#include "custom/modules/ModuleInterfaces_Custom.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+
+#include "helpers/helper_effects.hps"
+
+//---------------------------------------------------
+
+const float gfMaxTextWidth = 750;
+const tString gsFont_Hint = "work_56.fnt";
+const float gfHintFontSize = 22;
+const cColor gHintHeaderColor(1,0,0,1);
+const cColor gHintHeaderColorPulse(0.85,0,0,1);
+
+const cColor gHintFooterColor(1,0,0,1);
+const cColor gHintFooterColorPulse(0.85,0,0,1);
+
+const cVector3f gvHintShadowOffset(1.f, 1.f, -1.f);
+const float gfHintShadowAlphaMul = 0.5f;
+const float gfHintDrawPosZ = 6.f;
+
+//---------------------------------------------------
+
+class cHint
+{
+	cHint()
+	{
+		Clear();
+	}
+	
+	cHint(const tString &in asHeaderCat, const tString &in asHeaderEntry, 
+			const tString &in asTextCat, const tString &in asTextEntry, 
+			bool abIsInputHint,
+			const cColor &in aColor, float afTimeMul=1.5f, bool abAddAsGiven=true, bool abPausing = false)
+	{
+		msHeaderCat = asHeaderCat;
+		msHeaderEntry = asHeaderEntry;
+		msTextCat = asTextCat;
+		msTextEntry = asTextEntry;
+		mbInputHint = abIsInputHint;
+		mColor = aColor;
+		mfTimeToDisplay = afTimeMul;
+		mbAddAsGiven = abAddAsGiven;
+		
+		mlID = 0;
+		
+		tString sTextCatInName = msTextCat;
+				
+		if(mbInputHint)
+		{
+			bool bIsConsole = Platform_IsConsole(); // Only PS4 for now
+			mbTriggeredByGamepad = bIsConsole || cLux_GetInputHandler().GetGamepadWasLastDeviceUsed();
+			
+			tString sGamepadCat = msTextCat+"Gamepad";
+			if(mbTriggeredByGamepad)
+			{
+				sTextCatInName = sGamepadCat;
+				
+				if(cLux_HasTranslation(sGamepadCat, msTextEntry) || cLux_HasTranslation(sGamepadCat, msTextEntry+"_1"))
+					msTextCat = sGamepadCat;
+			}
+		}
+		else
+			mbTriggeredByGamepad = false;
+			
+		msName = BuildHintName(msTextCat, msTextEntry);
+		mbPausing = abPausing;
+	}
+	
+	void Clear()
+	{
+		msName = "";
+		mlID = -1;
+		msHeaderCat = "";
+		msHeaderEntry = "";
+		msTextCat = "";
+		msTextEntry = "";
+		mbInputHint = false;
+		mbTriggeredByGamepad = false;
+		mColor = cColor(1,1);
+		mfTimeToDisplay = 1.0f;
+		mbAddAsGiven = true;
+		mbPausing = false;
+	}
+	
+	bool IsEmpty()
+	{
+		return mlID==-1;
+	}
+		
+	tString msName;
+	int mlID;
+		
+	tString msHeaderCat;
+	tString msHeaderEntry;
+	tString msTextCat;
+	tString msTextEntry;
+	
+	bool mbInputHint;
+	bool mbTriggeredByGamepad;
+	
+	cColor mColor;
+	float mfTimeToDisplay;
+	bool mbAddAsGiven;
+	bool mbPausing;
+};
+
+//---------------------------------------------------
+
+class cHintRemoveData
+{
+	cHintRemoveData()
+	{
+		msName = "";
+		mfTime = 0.f;
+		mbRemoveFromGiven = false;
+		mbRemoveFromPauseOnce = false;
+		mlReleaseId = -1;
+	}
+	
+	cHintRemoveData(const tString &in asName, float afTime, bool abRemoveFromGiven, int alReleaseId, bool abRemoveFromPauseOnce=false)
+	{
+		msName = asName;
+		mfTime = afTime;
+		mbRemoveFromGiven = abRemoveFromGiven;
+		mlReleaseId = alReleaseId;
+		mbRemoveFromPauseOnce = abRemoveFromPauseOnce;
+	}
+	
+	tString msName;
+	float mfTime;
+	bool mbRemoveFromGiven;
+	bool mbRemoveFromPauseOnce;
+	int mlReleaseId;
+};
+
+//---------------------------------------------------
+
+///////////////////////////////////////
+// Helper hint global funcs
+tString BuildHintName(const tString &in asTextCat, const tString &in asTextEntry)
+{
+	return asTextCat + "." + asTextEntry;
+}
+
+//---------------------------------------------------
+
+class cScrHintHandler : iScrUserModule, iScrUserModule_Interface, iScrHintHandler_Interface
+{
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		mbHintsEnabled = cLux_GetUserConfig().GetBool("Gameplay", "ShowHints", true);
+		mbPausingHintsEnabled = cLux_GetUserConfig().GetBool("Gameplay", "GamePausingHints", true);
+		
+		mbFirstUpdateAfterLoading = true;
+		
+		///////////////////////////////
+		// Load Graphics
+		/*mFormatParamsHeader.mLabelText.mFont = cImGuiFont(FontHandler_GetFont(eFontType_Hints, 56), cVector2f(gfHintFontSize));
+		mFormatParamsHeader.mLabelText.mFontAlign = eFontAlign_Center;
+
+		mFormatParamsFooter.mLabelText.mFont = cImGuiFont(FontHandler_GetFont(eFontType_Hints, 56), cVector2f(gfHintFontSize));
+		mFormatParamsFooter.mLabelText.mFontAlign = eFontAlign_Center;
+
+		mFormatParamsHint.mLabelText.mFont = cImGuiFont(FontHandler_GetFont(eFontType_Hints, 56), cVector2f(gfHintFontSize));
+//		mFormatParamsHint.mfOutputLineWidth = gfMaxTextWidth;
+		mFormatParamsHint.mfOutputLineWidth = cLux_GetHudVirtualSize().x;
+		mFormatParamsHint.mfIconGamepadHeight = gfHintFontSize*1.5f;
+		mFormatParamsHint.mfIconMouseHeight = gfHintFontSize*1.25f;
+		mFormatParamsHint.mfIconKeyHeight = gfHintFontSize*1.5f;
+		mFormatParamsHint.mLabelText.mFontAlign = eFontAlign_Center;*/
+
+		
+		mlNumParsedHintIcons = 0;
+		
+		mfTextAlpha = 0.0f;
+		mfDisplayTime = 0.0f;
+		mfPrevDisplayTime = 0.f;
+		mfFadeCurrentTime = 0.0f;
+		mfFadeTotalTime = 0.0f;
+		mfFooterAlpha = 0.f;
+		mfFooterAlphaGoal = 0.f;
+		mbPaused = false;
+		
+		mvHintsToRemove.resize(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void LoadUserConfig()
+	{
+		bool bPrevHintsEnabled = mbHintsEnabled;
+		mbHintsEnabled = cLux_GetUserConfig().GetBool("Gameplay", "ShowHints", true);
+		mbPausingHintsEnabled = cLux_GetUserConfig().GetBool("Gameplay", "GamePausingHints", true);
+		
+		// When disabling hints, clear all hint related stuff
+		if((mbHintsEnabled==false&&mbHintsForced==false) && mbHintsEnabled!=bPrevHintsEnabled)
+		{
+			if(mCurrentHint.IsEmpty()==false)
+			{
+				mCurrentHint.Clear();
+				mvNextHintCandidates.resize(0);
+				mvHintsToRemove.resize(0);
+				
+				mvCurrentHintLines.resize(0);
+				mvCurrentHintIcons.resize(0);
+				
+				Reset();
+				ResetTimers();
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void SaveUserConfig() {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// MAP LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+		Reset();
+		ResetTimers();
+		mbHintsForced = false;
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnMapLeave(cLuxMap @apMap)
+	{
+		Reset();
+		ResetTimers();
+		mbHintsForced = false;
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetTimers()
+	{
+		mfDisplayTime = 0.0f;
+		mfPrevDisplayTime = 0.f;
+		mfFadeCurrentTime = 0.0f;
+		mfFadeTotalTime = 0.0f;
+	}
+	
+	//------------------------------------------------------------
+	
+	void PreloadData(cLuxMap @apMap) {}
+	void CreateWorldEntities(cLuxMap @apMap) {}
+	void DestroyWorldEntities(cLuxMap @apMap) {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnEnterContainer(const tString&in asOldContainer) {}
+	void OnLeaveContainer(const tString&in asNewContainer) {}
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep)
+	{
+		if((mbHintsForced == false && mbHintsEnabled==false) || mbCanShowHints==false || cLux_GetFootageModeActive()) return;
+
+		if(mbPauseGameNextTime)
+		{
+			mbPauseGameNextTime = false;
+			cLux_SetGamePaused(true, false, true, false, eSoundEntryType_World);
+		}
+
+		////////////////
+		// Update line width
+		mFormatParamsHint.mfOutputLineWidth = cLux_GetHudVirtualSize().x;
+		
+		////////////////////
+		// Any hints to remove/release?
+		for (int i = 0; i < mvHintsToRemove.size(); ++i)
+		{
+			mvHintsToRemove[i].mfTime -= afTimeStep;
+			if (mvHintsToRemove[i].mfTime <= 0.f)
+			{
+				if (mvHintsToRemove[i].mbRemoveFromGiven)
+					m_setHintsGiven.Erase(mvHintsToRemove[i].msName);				
+				
+				int lReleaseId = mvHintsToRemove[i].mlReleaseId;
+				if (lReleaseId != -1 && lReleaseId < mvNextHintCandidates.size())
+					mvNextHintCandidates.removeAt(lReleaseId);
+				
+				mvHintsToRemove.removeAt(i);
+				--i;
+			}
+		}
+						
+		////////////////////
+		// Update fade
+		bool bTextWasDisplayed = mbTextDisplayed;
+		mbTextDisplayed = (mfDisplayTime > 0.f || mfPrevDisplayTime > 0.f) ? true : false;
+
+		if(mfFooterAlpha == 1.f && mfFooterAlphaGoal == 1.f && mbWaitingForInput)
+		{
+			if(cLux_GetGamePaused() && cLux_GetInputHandler().CheckIfButtonPressed())
+			{
+				mfFooterAlphaGoal = 0.f;
+				mbWaitingForInput = false;
+
+				if(mCurrentHint.mbPausing)
+				{
+					cLux_SetGamePaused(false, false, false, false);
+					Effect_Blur_FadeOut(mlPausableHintBlurFxID, 0.1f);
+					mlPausableHintBlurFxID = -1;
+					PauseMenu_Enabled(true);
+					Sketchbook_SetCanOpen(true);
+				}
+			}
+			mbTextDisplayed = true;
+		}
+
+		// Fade in
+		if(!bTextWasDisplayed && mbTextDisplayed)
+		{
+			StartTextFade(1.0f, 1.0f);
+			
+			if(mCurrentHint.mbPausing)
+			{
+				mfFooterAlphaGoal = 1.f;
+			}
+		}
+		// Fade out
+		else if(bTextWasDisplayed && !mbTextDisplayed && !mbWaitingForInput)
+		{
+			StartTextFade(0.0f, 1.0f/3);
+			
+			if(mCurrentHint.mbPausing)
+				mfFooterAlphaGoal = 0.f;
+		}
+
+		if(mbTextDisplayed && mbPaused == false && mbWaitingForInput == false)
+		{
+			mfPrevDisplayTime = mfDisplayTime;
+			mfDisplayTime = cMath_IncreaseTo(mfDisplayTime, afTimeStep, 0.f);
+		}
+
+		// Update fading
+		if(mbTextFadingStarted)
+		{
+			if(DoneFading()==false)
+			{
+				UpdateFade(afTimeStep);
+			}
+			else
+			{
+				mbTextFadingStarted = false;
+				
+				// If faded out, resume with next hint (if any)
+				if(mfFadeGoal==0.0f)
+				{
+
+					mvCurrentHintLines.resize(0);
+					if(mCurrentHint.IsEmpty()==false)
+					{
+						mCurrentHint.Clear();
+						
+						if(HasNextHint())
+						{
+							cHint hint = GetNextHint();
+							StartMessage(hint);
+						}
+					}
+				}
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void PreUpdate(float afTimeStep){}
+	void PostUpdate(float afTimeStep){}
+	void VariableUpdate(float afDeltaTime ){}
+	
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+		mfTextAlpha = 0.0f;
+		mfFadeStart = 0.0f;
+		mfFadeGoal = 0.0f;
+		mfFadeCurrentTime = 0.0f;
+		mbTextFadingStarted = false;
+		mbPaused = false;
+		mbCanShowHints = true;
+		mbTextDisplayed = false;
+		mbWaitingForInput = false;
+		mfFooterAlpha = 0.f;
+		mfFooterAlphaGoal = 0.f;
+		mCurrentHint.Clear();
+		mvNextHintCandidates.resize(0);
+		mvHintsToRemove.resize(0);
+		
+		mvCurrentHintLines.resize(0);
+		mvCurrentHintIcons.resize(0);
+
+		mbPauseGameNextTime = false;
+		mfFooterAlphaGoal = 0.f;
+		mfFooterAlpha = 0;
+		mbWaitingForInput = false;
+
+		if(mCurrentHint.mbPausing)
+		{
+			cLux_SetGamePaused(false, false, false, false);
+			Effect_Blur_FadeOut(mlPausableHintBlurFxID, 0.1f);
+			mlPausableHintBlurFxID = -1;
+			PauseMenu_Enabled(true);
+			Sketchbook_SetCanOpen(true);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnGui(float afFrameTime)
+	{
+		mfFrameTime += afFrameTime;
+		
+		if((mbHintsForced == false && mbHintsEnabled==false) || mbCanShowHints==false || cLux_GetFootageModeActive()) return;
+		
+		if(mCurrentHint.mbPausing && cLux_GetGamePaused())
+			Update(afFrameTime);
+		
+		mFormatParamsHeader.mLabelText.mFont = cImGuiFont(FontHandler_GetFont(eFontType_Hints, 56), cVector2f(gfHintFontSize));
+		mFormatParamsHeader.mLabelText.mFontAlign = eFontAlign_Center;
+
+		mFormatParamsFooter.mLabelText.mFont = cImGuiFont(FontHandler_GetFont(eFontType_Hints, 56), cVector2f(gfHintFontSize));
+		mFormatParamsFooter.mLabelText.mFontAlign = eFontAlign_Center;
+		
+		mFormatParamsHint.mLabelText.mFont = cImGuiFont(FontHandler_GetFont(eFontType_Hints, 56), cVector2f(gfHintFontSize));
+		mFormatParamsHint.mfOutputLineWidth = cLux_GetHudVirtualSize().x;
+		mFormatParamsHint.mfIconGamepadHeight = gfHintFontSize*1.5f;
+		mFormatParamsHint.mfIconMouseHeight = gfHintFontSize*1.25f;
+		mFormatParamsHint.mfIconKeyHeight = gfHintFontSize*1.5f;
+		mFormatParamsHint.mLabelText.mFontAlign = eFontAlign_Center;
+		
+		// Check if a string reparse is needed (e.g. after loading a saved game)
+		if(mCurrentHint.IsEmpty()==false)
+		{
+			if(mbFirstUpdateAfterLoading || mlNumParsedHintIcons!=mvCurrentHintIcons.length())
+			{
+				ParseAndFormatHint(mCurrentHint);
+				// Also Reset hint time
+				mfPrevDisplayTime = mfDisplayTime = mCurrentHint.mfTimeToDisplay;
+				mbFirstUpdateAfterLoading = false;
+			}
+		}
+		else
+		{
+			return;
+		}
+		
+		bool bCanSkipHintText = mfTextAlpha==0 || mvCurrentHintLines.length()==0;
+		if(bCanSkipHintText) return;
+		
+		////////////////////
+		// Draw hint header
+		cColor headerColor = ImGui_FadeOscillateColor("HintHeader", gHintHeaderColor, gHintHeaderColorPulse, 1.f, eEasing_SineInOut);
+		headerColor.a = mfTextAlpha;
+		ImGui_SetModColorMul(headerColor);
+
+		cVector3f vHeaderPos = ImGui_NrmPos(0.0f, 0.175f, gfHintDrawPosZ);
+		cVector2f vHeaderLineSize(ImGui_NrmSize(1.0f, 0.0f).x, mFormatParamsHeader.mLabelText.mFont.mvSize.y);
+			
+		cLux_GetCurrentImGui().DoLabel(msHeader, mFormatParamsHeader.mLabelText, vHeaderPos, vHeaderLineSize, 1.0f);
+		
+		////////////////////
+		// Header shadow
+		vHeaderPos += gvHintShadowOffset;
+		float fShadowAlpha = mfTextAlpha * gfHintShadowAlphaMul;
+		
+		ImGui_SetModColorMul(cColor(0.f, 0.f, 0.f, fShadowAlpha)); 
+		cLux_GetCurrentImGui().DoLabel(msHeader, mFormatParamsHeader.mLabelText, vHeaderPos, vHeaderLineSize, 1.0f);
+			
+		// If only showing header, skip hint text
+		if (bCanSkipHintText) return;
+		
+		////////////////////
+		// Draw hint
+		float fHeaderHeight = GetHeaderHeight();	
+				
+		cVector3f vHintPos = ImGui_NrmPos(0.5f, 0.0f, gfHintDrawPosZ);
+		vHintPos.x -= mFormatParamsHint.mfOutputLineWidth*0.5f;
+		vHintPos.y = vHeaderPos.y + fHeaderHeight;
+		
+		cVector2f vHintLineSize(mFormatParamsHint.mfOutputLineWidth, mFormatParamsHint.mLabelText.mFont.mvSize.y);		
+		ImGui_SetModColorMul(cColor(mTextColor.r,mTextColor.g, mTextColor.b, mfTextAlpha));
+		DrawHint(cLux_GetGameHudImGui(), afFrameTime, mFormatParamsHint.mLabelText, vHintPos, vHintLineSize.x, mfLineHeight,
+											mvCurrentHintLines, mvCurrentHintIcons, mvCurrentHintIconsPerLine);
+		
+		////////////////////
+		// Draw hint shadow
+		vHintPos += gvHintShadowOffset;
+		
+		ImGui_SetModColorMul(cColor(0, 0, 0, fShadowAlpha));
+		DrawHint(cLux_GetGameHudImGui(), afFrameTime, mFormatParamsHint.mLabelText, vHintPos, vHintLineSize.x, mfLineHeight,
+											mvCurrentHintLines, mvCurrentHintIcons, mvCurrentHintIconsPerLine);
+	
+
+		mfFooterAlpha = cMath_IncreaseTo(mfFooterAlpha, afFrameTime, mfFooterAlphaGoal);
+
+		if(mfFooterAlpha > 0.f)
+		{
+			////////////////////
+			// Draw hint footer
+			cColor footerColor = ImGui_FadeOscillateColor("HintFooter", gHintFooterColor, gHintFooterColorPulse, 1.f, eEasing_SineInOut);
+			footerColor.a = mfFooterAlpha * mfTextAlpha;
+			ImGui_SetModColorMul(footerColor);
+
+			cVector3f vFooterPos = ImGui_NrmPos(0.f, 0.f, gfHintDrawPosZ);
+			vFooterPos.y = vHintPos.y;
+			vFooterPos.y += (vHintLineSize.y * float(mvCurrentHintLines.size() + 1));
+
+			cVector2f vFooterLineSize(ImGui_NrmSize(1.0f, 0.0f).x, mFormatParamsFooter.mLabelText.mFont.mvSize.y);
+
+
+			//cImGuiButtonData mButtonData;
+			//mButtonData.mFont = cImGuiFont(gsFont_Hint, cVector2f(gfHintFontSize));
+			//mButtonData.mFontAlign = eFontAlign_Center;
+			//vFooterLineSize.x = cLux_GetCurrentImGui().GetFontLength(mFormatParamsFooter.mLabelText.mFont,  1.f,  msFooter);
+			//if(cLux_GetCurrentImGui().DoButton("HintHandler_FooterButton", msFooter, mButtonData,  vFooterPos,  vFooterLineSize))
+			//{
+			//}
+
+			cLux_GetCurrentImGui().DoLabel(msFooter, mFormatParamsFooter.mLabelText, vFooterPos, vFooterLineSize, 1.0f);
+			
+			////////////////////
+			// footer shadow
+			vFooterPos += gvHintShadowOffset;
+			
+			ImGui_SetModColorMul(cColor(0.f, 0.f, 0.f, fShadowAlpha)); 
+			cLux_GetCurrentImGui().DoLabel(msFooter, mFormatParamsFooter.mLabelText, vFooterPos, vFooterLineSize, 1.0f);
+		}
+		
+		ImGui_ResetModifiers();
+	}
+	
+	//------------------------------------------------------------
+	
+	void DrawHint(cImGui@ apImGui, float afTimeStep, const cImGuiLabelData&in aLabel, const cVector3f&in avPosition, float afLineWidth, float afLineSpacing, array<tWString>&in apInTextLines,  array<cLuxScreenTextIcon@>&in apIconArray,  array<array<int>>&in apIconsPerLineArray)
+	{
+		cVector3f vStartPos(avPosition);
+		cVector2f vLineSize(afLineWidth, aLabel.mFont.mvSize.y);
+
+		cImGuiLabelData labelData = aLabel;
+		labelData.mFontAlign = eFontAlign_Center;
+
+		array<float> vLineWidths;
+		{
+			tWString sLine = apInTextLines[0];
+			float fLineWidth = apImGui.GetFontLength(labelData.mFont, 1.0f, sLine);
+
+			vLineWidths.push_back(fLineWidth);
+
+			apImGui.DoLabel(sLine, labelData, vStartPos, vLineSize, 1.0f);
+
+			vStartPos.y += afLineSpacing;
+		}
+			
+		//vStartPos.x += afLineWidth/2.0f;
+		//vStartPos.x -= vLineWidths[0]/2.0f;
+		//labelData.mFontAlign = eFontAlign_Left;
+		for(int i=1; i<apInTextLines.size(); ++i)
+		{
+			tWString sLine = apInTextLines[i];
+
+			float fLineWidth = apImGui.GetFontLength(labelData.mFont, 1.0f, sLine);
+			vLineWidths.push_back(fLineWidth);
+
+			apImGui.DoLabel(sLine, labelData, vStartPos, vLineSize, 1.0f);
+
+			vStartPos.y += afLineSpacing;
+		}
+
+		vStartPos.x = avPosition.x;
+		vStartPos.y = avPosition.y + aLabel.mFont.mvSize.y/2;
+
+		//if(aLabel.mFontAlign==eFontAlign_Center)
+			vStartPos.x += afLineWidth/2;
+		//else if(aLabel.mFontAlign==eFontAlign_Right)
+		//	vStartPos.x += afLineWidth;
+		
+		{
+			cVector3f vLineRefPos(vStartPos);
+			float fCurrentLineActualWidth = vLineWidths[0];
+
+			vLineRefPos.x -= fCurrentLineActualWidth/2;
+			
+			array<int>@ pIconsPerLine = apIconsPerLineArray[0];
+
+			if (pIconsPerLine !is null)
+			{
+				for (int j = 0; j < pIconsPerLine.size(); ++j)
+				{
+					int lIconIndex = pIconsPerLine[j];
+					cLuxScreenTextIcon@ pIcon = apIconArray[lIconIndex];
+
+					if (pIcon !is null)
+					{
+						pIcon.Draw(apImGui, afTimeStep, vLineRefPos);
+					}
+				}
+			}
+
+			vStartPos.y += afLineSpacing;
+		}
+
+		vStartPos.x = avPosition.x;
+		
+		for(int i=1; i<vLineWidths.size(); ++i)
+		{
+			vStartPos.x = avPosition.x;
+			vStartPos.x += afLineWidth/2.0f;
+			vStartPos.x -= vLineWidths[i]/2.0f;
+
+			cVector3f vLineRefPos(vStartPos);
+			float fCurrentLineActualWidth = vLineWidths[i];
+			array<int>@ pIconsPerLine = apIconsPerLineArray[i];
+
+			if (pIconsPerLine !is null)
+			{
+				for (int j = 0; j < pIconsPerLine.size(); ++j)
+				{
+					int lIconIndex = pIconsPerLine[j];
+					cLuxScreenTextIcon@ pIcon = apIconArray[lIconIndex];
+
+					if (pIcon !is null)
+					{
+						pIcon.Draw(apImGui, afTimeStep, vLineRefPos);
+					}
+				}
+			}
+
+			vStartPos.y += afLineSpacing;
+		}
+	}
+
+
+	//------------------------------------------------------------
+	
+	void OnDraw(float afFrameTime) {}	
+	void OnPostRender(float afFrameTime) {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnAction(int alAction, bool abPressed) {}
+	void OnAnalogInput(int alAnalogId, const cVector3f &in avAmount) {}
+	void OnExitPressed() {}
+	void AppGotInputFocus() {}
+	void AppLostInputFocus() {}
+	
+	//------------------------------------------------------------
+	
+	void StartTextFade(float afGoal, float afFadeTime)
+	{
+		mbTextFadingStarted = true;
+		
+		mfFadeStart = mfTextAlpha;
+		mfFadeGoal = afGoal;
+		mfFadeTotalTime = afFadeTime;
+		
+		mfFadeCurrentTime = 0.0f;
+	}
+
+	//------------------------------------------------------------
+
+	void StopTextFade()
+	{
+		mfTextAlpha = mfFadeGoal;
+		mfFadeCurrentTime = mfFadeTotalTime;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool DoneFading()
+	{
+		return mfTextAlpha==mfFadeGoal;
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateFade(float afTimeStep)
+	{
+		mfFadeCurrentTime += afTimeStep;
+		if(mfFadeStart<mfFadeGoal)
+		{
+			mfTextAlpha = cMath_InterpolateLinear(mfFadeStart, mfFadeGoal, mfFadeCurrentTime/mfFadeTotalTime);
+			if(mfTextAlpha>mfFadeGoal)
+				mfTextAlpha = mfFadeGoal;
+		}
+		else
+		{
+			mfTextAlpha = mfFadeStart-cMath_InterpolateLinear(mfFadeGoal, mfFadeStart, mfFadeCurrentTime/mfFadeTotalTime);
+			if(mfTextAlpha<mfFadeGoal)
+				mfTextAlpha = mfFadeGoal;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void StopHint(float afDelay)
+	{
+		mfDisplayTime = afDelay;
+		
+		if(false && mbPauseGameNextTime)
+		{
+			//Debug_Assert(false, "");
+			mbPauseGameNextTime = false;
+			mfFooterAlphaGoal = 0.f;
+			
+			mfFooterAlpha = 0;
+			mbWaitingForInput = false;
+			
+			mbTextFadingStarted = true;
+			StopTextFade();
+
+			if(mCurrentHint.mbPausing)
+			{
+				cLux_SetGamePaused(false, false, false, false);
+				Effect_Blur_FadeOut(mlPausableHintBlurFxID, 0.1f);
+				mlPausableHintBlurFxID = -1;
+				PauseMenu_Enabled(true);
+				Sketchbook_SetCanOpen(true);
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetPaused(bool abX)
+	{
+		mbPaused = abX;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetEnabled()
+	{
+		return mbHintsEnabled;
+	}
+	
+	//------------------------------------------------------------
+	
+	void ForceEnabled(bool abX)
+	{
+		mbHintsForced = abX;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetCanShowHints(bool abX)
+	{
+		mbCanShowHints = abX;
+	}
+	
+	//------------------------------------------------------------
+	
+	tString GetCurrentHintEntry()
+	{
+		return mCurrentHint.msTextEntry;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool HintIsGiven(const tString &in asTextCat, const tString &in asTextEntry)
+	{
+		return m_setHintsGiven.Exists(BuildHintName(asTextCat, asTextEntry));
+	}
+	
+	//------------------------------------------------------------
+	
+	bool IsShowing()
+	{
+		return (mfDisplayTime > 0.f || mfPrevDisplayTime > 0.f);
+	}
+	
+	//------------------------------------------------------------
+
+	// IDs greater than 0 are given to candidates to next hint, since they need to be identified somehow
+	// If a hint has ID 0, it started to display right away
+	// An ID of -1 means the hint is empty / wasn't added	
+	int AddHintCandidate(const tString &in asHeaderCat, const tString &in asHeaderEntry, 
+							const tString &in asTextCat, const tString &in asTextEntry, 
+							bool abIsInputHint, const cColor &in aColor, float afTimeMul, bool abAddAsGiven, bool abPausing = false)
+	{
+		if ((mbHintsForced == false && mbHintsEnabled==false) || mbCanShowHints == false || cLux_GetFootageModeActive())
+			return -1;
+		
+		cHint hint(asHeaderCat, asHeaderEntry, asTextCat, asTextEntry, abIsInputHint, aColor, afTimeMul, abAddAsGiven, abPausing);
+
+		bool bHintIsFullyGiven = false;
+		// Check if hints belongs in a sequence
+		if(cLux_HasTranslation(hint.msTextCat, hint.msTextEntry+"_1"))
+		{
+			int lNextHintInSeqIndex = m_setHintsGiven.Count(hint.msName)+1;
+			hint.msTextEntry = hint.msTextEntry + "_" + lNextHintInSeqIndex;
+			bHintIsFullyGiven = cLux_HasTranslation(hint.msTextCat, hint.msTextEntry)==false;
+		}
+		
+		tString sHintName = BuildHintName(hint.msTextCat, hint.msTextEntry);
+		
+		if (m_setHintsGiven.Exists(sHintName))
+			bHintIsFullyGiven = true;
+			
+
+		if (mbPausingHintsEnabled == false || (abPausing && m_setHintsPausedOnce.Exists(sHintName)))
+			hint.mbPausing = false;
+
+		// Don't show if hint is already active
+		if (sHintName == mCurrentHint.msName && bHintIsFullyGiven == false)
+		{
+			mfDisplayTime = mfPrevDisplayTime =  mCurrentHint.mfTimeToDisplay;
+			return -1;
+		}
+		
+		//////////////////////////////////////////////////////
+		// Check so hint is not blocked or already given
+		if(m_setHintsBlocked.Count(sHintName)>0)
+			return -1;
+			
+		if(bHintIsFullyGiven)
+			return -1;
+			
+		int lRet = -1;
+				
+		if(mCurrentHint.IsEmpty())
+		{
+			StartMessage(hint);
+			lRet = hint.mlID;
+		}
+		else
+		{
+			if(GetCandidateHintIndexByName(hint.msName)==-1)
+			{
+				hint.mlID = ++mlHintIDCounter;
+										
+				if(mlHintIDCounter<0) mlHintIDCounter = 0;
+						
+				mvNextHintCandidates.push_back(hint);
+				
+				lRet = hint.mlID;
+			}
+		}
+		
+
+		return lRet;
+	}
+	
+	//------------------------------------------------------------
+	
+	void RemoveHintCandidate(int alID, float afTime)
+	{
+		if (alID <= 0)
+			return;
+			
+		int lIndex = GetCandidateHintIndexByID(alID);
+		if (lIndex == -1)
+			return;
+			
+		if (afTime <= 0.f)
+		{
+			mvNextHintCandidates.removeAt(lIndex);
+			return;
+		}
+		
+		tString sHint = mvNextHintCandidates[lIndex].msName;
+
+		cLux_AddDebugMessage("RemoveHintCandidate " + sHint + ", time: "  +afTime);
+
+		for (int i = 0; i < mvHintsToRemove.size(); ++i)
+		{
+			if (sHint == mvHintsToRemove[i].msName)
+			{
+				mvHintsToRemove[i].mlReleaseId = lIndex;
+				return;
+			}
+		}
+	
+		mvHintsToRemove.push_back(cHintRemoveData(sHint, afTime, false, lIndex));
+	}
+	
+	//------------------------------------------------------------
+	
+	void RemoveAllHintCandidates()
+	{
+		for (int i = 0; i < mvNextHintCandidates.size(); ++i)
+		{
+			bool bExists = false;			
+			tString sHint = mvNextHintCandidates[i].msName;
+			
+			for (int j = 0; j < mvHintsToRemove.size(); ++j)
+			{
+				if (sHint == mvHintsToRemove[j].msName)
+				{
+					bExists = true;
+					mvHintsToRemove[j].mfTime = 0.f;
+				}
+			}
+			
+			if (bExists == false)
+			{
+				mvHintsToRemove.push_back(cHintRemoveData(sHint, 0.f, false, GetCandidateHintIndexByName(sHint), false));
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	int GetCandidateHintIndexByID(int alID)
+	{
+		for(int i=0; i<mvNextHintCandidates.length(); ++i)
+		{
+			cHint @hint = mvNextHintCandidates[i];
+			
+			if(alID==hint.mlID)
+				return i;
+		}
+		
+		return -1;
+	}
+	
+	//------------------------------------------------------------
+	
+	int GetCandidateHintIndexByName(const tString &in asName)
+	{
+		for(int i=0; i<mvNextHintCandidates.length(); ++i)
+		{
+			cHint @hint = mvNextHintCandidates[i];
+			
+			if(asName==hint.msName)
+				return i;
+		}
+		
+		return -1;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool HasNextHint()
+	{
+		return mvNextHintCandidates.length()>0;
+	}
+	
+	//------------------------------------------------------------
+	
+	cHint GetNextHint()
+	{
+		cHint next = mvNextHintCandidates[0];
+		mvNextHintCandidates.pop_front();
+		
+		return next;
+	}
+	
+	//------------------------------------------------------------
+	
+	void AddHintAsGiven(int alID)
+	{
+		if(mCurrentHint.IsEmpty()==false && mCurrentHint.mlID==alID)
+		{
+			AddHintAsGivenHelper(mCurrentHint.msName);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void AddHintAsGiven(const tString &in asTextCat, const tString &in asTextEntry)
+	{
+		AddHintAsGivenHelper(BuildHintName(asTextCat, asTextEntry));
+	}
+	
+	//------------------------------------------------------------
+	
+	void AddHintAsGivenHelper(const tString &in asHintName)
+	{
+		if (m_setHintsGiven.Exists(asHintName) == false)
+			m_setHintsGiven.Add(asHintName);
+	}
+	
+	//------------------------------------------------------------
+	
+	void RemoveHintFromGiven(const tString &in asTextCat, const tString &in asTextEntry, float afTime)
+	{
+		tString sHint = BuildHintName(asTextCat, asTextEntry);
+		
+		if (afTime <= 0.f)
+		{
+			m_setHintsGiven.Erase(sHint);	
+			return;
+		}
+		
+		for (int i = 0; i < mvHintsToRemove.size(); ++i)
+		{
+			if (sHint == mvHintsToRemove[i].msName)
+			{
+				mvHintsToRemove[i].mbRemoveFromGiven = true;
+				return;
+			}
+		}
+		
+		mvHintsToRemove.push_back(cHintRemoveData(sHint, afTime, true, -1));
+	}
+	
+	//------------------------------------------------------------
+
+	void AddHintAsPauseOnce(int alID)
+	{
+		tString sName = "";
+		if(mCurrentHint.IsEmpty()==false && mCurrentHint.mlID==alID)
+		{
+			sName = mCurrentHint.msName;
+		}
+		else
+		{
+			int lIdx = GetCandidateHintIndexByID(alID);
+			if(lIdx != -1)
+			{
+				sName = mvNextHintCandidates[lIdx].msName;
+			}
+		}
+
+		if(sName!="")
+			AddHintAsPauseOnceHelper(sName);
+	}
+	
+	//------------------------------------------------------------
+	
+	void AddHintAsPauseOnce(const tString &in asTextCat, const tString &in asTextEntry)
+	{
+		AddHintAsPauseOnceHelper(BuildHintName(asTextCat, asTextEntry));
+	}
+	
+	//------------------------------------------------------------
+	
+	void AddHintAsPauseOnceHelper(const tString &in asHintName)
+	{
+		if (m_setHintsPausedOnce.Exists(asHintName) == false)
+		{
+			m_setHintsPausedOnce.Add(asHintName);
+			cLux_AddDebugMessage(asHintName + " added to pause once");
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void RemoveHintFromPauseOnce(const tString &in asTextCat, const tString &in asTextEntry, float afTime)
+	{
+		tString sHint = BuildHintName(asTextCat, asTextEntry);
+		cLux_AddDebugMessage(sHint + " removed from pause once");
+
+		if (afTime <= 0.f)
+		{
+			m_setHintsPausedOnce.Erase(sHint);
+			return;
+		}
+
+		for (int i = 0; i < mvHintsToRemove.size(); ++i)
+		{
+			if (sHint == mvHintsToRemove[i].msName)
+			{
+				mvHintsToRemove[i].mbRemoveFromPauseOnce = true;
+				return;
+			}
+		}
+		
+		mvHintsToRemove.push_back(cHintRemoveData(sHint, afTime, false, -1, true));
+	}
+
+	//------------------------------------------------------------
+	
+	void StartMessage(const cHint &in aHint)
+	{
+		//cLux_AddDebugMessage("StartMessage(" + aHint.msName + ")");
+		
+		if(aHint.mbAddAsGiven)
+		{
+			AddHintAsGivenHelper(aHint.msName);
+		}
+		
+		msHeader = cLux_ParseString(cLux_TranslatePlatformSpecific(aHint.msHeaderCat,aHint.msHeaderEntry));
+		msFooter = cLux_ParseString(cLux_TranslatePlatformSpecific("LoadScreen", "Continue"));
+
+		float fHintTime = ParseAndFormatHint(aHint);
+		
+		mCurrentHint = aHint;
+		mCurrentHint.mfTimeToDisplay *= fHintTime;
+		mfDisplayTime = mfPrevDisplayTime = mCurrentHint.mfTimeToDisplay;
+		
+		mTextColor = mCurrentHint.mColor;
+
+		mCurrentHint.mbPausing = !cLux_ScriptDebugOn() && mCurrentHint.mbPausing;
+		if(mCurrentHint.mbPausing)
+		{
+			Sound_PlayGui("special_fx/frontend/hint", 1.0f, eSoundEntryType_Gui);
+			//mBaseObj.Timer_Add("PauseGameTimer", 0.05f, "OnTimer_PauseGame");
+			mlPausableHintBlurFxID = Effect_Blur_Start(0.3f, 0.05f);
+			PauseMenu_Enabled(false);
+			Sketchbook_SetCanOpen(false);
+			mbPauseGameNextTime = true;
+		}
+
+		mbWaitingForInput = mCurrentHint.mbPausing;
+		mfFooterAlpha = 0.f;
+		mfFooterAlphaGoal = mCurrentHint.mbPausing ? 1.f : 0.f;
+	}
+	
+	//------------------------------------------------------------
+
+	void OnTimer_PauseGame(uint64 alTimer)
+	{
+		cLux_SetGamePaused(true, false, true, false, eSoundEntryType_World);
+	}
+
+	//------------------------------------------------------------
+	
+	float ParseAndFormatHint(const cHint &in aHint)
+	{
+		// Clear icon array so the old icons are deleted
+		mvCurrentHintIcons.resize(0);
+		mvCurrentHintIconsPerLine.resize(0);
+		
+		float fStringDuration;
+		float fLineHeight;
+		cLux_ParseStringIntoScreenText(cLux_TranslatePlatformSpecific(aHint.msTextCat,aHint.msTextEntry), cLux_GetGameHudImGui(), mFormatParamsHint, 
+										mvCurrentHintLines, mvCurrentHintIcons, mvCurrentHintIconsPerLine, fLineHeight, fStringDuration, aHint.mbTriggeredByGamepad);
+				
+		mlNumParsedHintIcons = mvCurrentHintIcons.length();
+		
+		return fStringDuration;
+	}
+	
+	//------------------------------------------------------------
+	
+	void Block(const tString &in asTextCat, const tString &in asTextEntry)
+	{
+		m_setHintsBlocked.Add(BuildHintName(asTextCat, asTextEntry));
+	}
+	
+	//------------------------------------------------------------
+	
+	void Unblock(const tString &in asTextCat, const tString &in asTextEntry)
+	{
+		m_setHintsBlocked.Erase(BuildHintName(asTextCat, asTextEntry));
+	}
+	
+	//------------------------------------------------------------
+	
+	void DrawExplicitHint(const tString& in asTextCat, const tString& in asTextEntry, cVector3f avPos, cVector2f avSize, const cLuxScreenTextFormatParameters& in aFormatParams)
+	{
+		cLuxScreenTextFormatParameters params;
+		
+		params.mLabelText = aFormatParams.mLabelText;
+		params.mfIconGamepadHeight = aFormatParams.mfIconGamepadHeight;
+		params.mfIconKeyHeight = aFormatParams.mfIconKeyHeight;
+		params.mfIconMouseHeight = aFormatParams.mfIconMouseHeight;
+		params.mfOutputLineWidth = aFormatParams.mfOutputLineWidth;
+
+		if(params.mfOutputLineWidth == -1.0f)
+			params.mfOutputLineWidth = avSize.x;
+
+		array<tWString> vHintLines;
+		array<cLuxScreenTextIcon@>	vHintIcons;
+		array<array<int>>			vHintIconsPerLine;
+		float fStringDuration;
+		float fLineHeight;
+		tString sCat = asTextCat;
+		
+		bool bIsConsole = Platform_IsConsole() || cLux_GetInputHandler().GetGamepadWasLastDeviceUsed();
+		if (bIsConsole)
+		{
+			if (cLux_HasTranslation(sCat+"Gamepad",asTextEntry))
+				sCat = sCat+"Gamepad";
+		}
+		
+		cLux_ParseStringIntoScreenText(cLux_TranslatePlatformSpecific(sCat,asTextEntry), cLux_GetGameHudImGui(), params, 
+										vHintLines, vHintIcons, vHintIconsPerLine, fLineHeight, fStringDuration, bIsConsole);
+
+		cLux_DrawHint(cLux_GetGameHudImGui(), mfFrameTime, params.mLabelText, avPos, avSize.x, fLineHeight, vHintLines, vHintIcons, vHintIconsPerLine);
+	}
+	
+	//------------------------------------------------------------
+	
+	float GetHeaderHeight()
+	{
+		float fHeaderHeight = cMath_Max(mfLineHeight*0.75f, gfHintFontSize*1.1f);
+		
+		// Increase header height if there's an icon in the middle of the string
+		if (mlNumParsedHintIcons > 0)
+		{
+			array<int> vIconPos;
+			tWString sHintText = cLux_TranslatePlatformSpecific(mCurrentHint.msTextCat, mCurrentHint.msTextEntry);
+
+			int lTotalCharNum = sHintText.length();
+			int lCommandCharNum = 0;	
+			for (int i = 0; i < lTotalCharNum; ++i)
+			{
+				if (sHintText[i] == '$')
+				{
+					vIconPos.push_back(i - lCommandCharNum);
+					
+					for (int j = i; j < lTotalCharNum; ++j)
+					{
+						++lCommandCharNum;
+						if (sHintText[j] == '}')
+							break;
+					}
+				}
+			}
+			
+			lTotalCharNum -= lCommandCharNum;
+			
+			int lMiddlePos = lTotalCharNum / 2;
+			int lMiddleRange = 6;
+			for (int i = 0; i < vIconPos.size(); ++i)
+			{
+				int lIconPos = vIconPos[i];				
+				if (lIconPos >= lMiddlePos - lMiddleRange && lIconPos <= lMiddlePos + lMiddleRange)
+				{
+					fHeaderHeight = mfLineHeight * 1.15f;
+					break;
+				}
+			}			
+		}
+
+		return fHeaderHeight;		
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetHintsEnabled()
+	{
+		mbHintsEnabled = cScript_GetGlobalArgBool(0);
+		if (mbHintsEnabled)
+			mbHintsEnabled = cLux_GetUserConfig().GetBool("Gameplay", "ShowHints", true);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetPausingHintsEnabled()
+	{
+		mbHintsEnabled = cScript_GetGlobalArgBool(0);
+		if (mbHintsEnabled)
+			mbHintsEnabled = cLux_GetUserConfig().GetBool("Gameplay", "GamePausingHints", true);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+//		afStartY = cLux_DrawDebugText("--------- Hints ---------", afStartY);
+//
+//		afStartY = cLux_DrawDebugText("mTextColor: " + mTextColor, afStartY);
+//		afStartY = cLux_DrawDebugText("mfTextAlpha: " + mfTextAlpha, afStartY);
+//		afStartY = cLux_DrawDebugText("mfFadeCurrentTime: " + mfFadeCurrentTime, afStartY);
+//		afStartY = cLux_DrawDebugText("mfFadeTotalTime: " + mfFadeTotalTime, afStartY);
+//		afStartY = cLux_DrawDebugText("mfFadeStart: " + mfFadeStart, afStartY);
+//		afStartY = cLux_DrawDebugText("mfFadeGoal: " + mfFadeGoal, afStartY);
+//		afStartY = cLux_DrawDebugText("mfDisplayTime: " + mfDisplayTime, afStartY);
+//		afStartY = cLux_DrawDebugText("mfPrevDisplayTime: " + mfPrevDisplayTime, afStartY);
+//		afStartY = cLux_DrawDebugText("mfFrameTime: " + mfFrameTime, afStartY);
+//		afStartY = cLux_DrawDebugText("mlHintIDCounter: " + mlHintIDCounter, afStartY);
+//		afStartY = cLux_DrawDebugText("mbTextDisplayed: " + mbTextDisplayed, afStartY);
+//		afStartY = cLux_DrawDebugText("mbTextFadingStarted: " + mbTextFadingStarted, afStartY);
+//		afStartY = cLux_DrawDebugText("mbPaused: " + mbPaused, afStartY);
+//		afStartY = cLux_DrawDebugText("mfFooterAlpha: " + mfFooterAlpha, afStartY);
+//		afStartY = cLux_DrawDebugText("mfFooterAlphaGoal: " + mfFooterAlphaGoal, afStartY);
+//		afStartY = cLux_DrawDebugText("mbWaitingForInput: " + mbWaitingForInput, afStartY);
+//
+//
+//		afStartY = cLux_DrawDebugText("Current hint:", afStartY);
+//		afStartY = cLux_DrawDebugText("Name: " + mCurrentHint.msName, afStartY);
+//		afStartY = cLux_DrawDebugText("ID: " + mCurrentHint.mlID, afStartY);
+//		afStartY = cLux_DrawDebugText("HeaderCat: " + mCurrentHint.msHeaderCat, afStartY);
+//		afStartY = cLux_DrawDebugText("HeaderEntry: " + mCurrentHint.msHeaderEntry, afStartY);
+//		afStartY = cLux_DrawDebugText("TextCat: " + mCurrentHint.msTextCat, afStartY);
+//		afStartY = cLux_DrawDebugText("TextEntry: " + mCurrentHint.msTextEntry, afStartY);
+//		afStartY = cLux_DrawDebugText("InputHint: " + mCurrentHint.mbInputHint, afStartY);
+//		afStartY = cLux_DrawDebugText("TriggeredByGamepad: " + mCurrentHint.mbTriggeredByGamepad, afStartY);
+//		afStartY = cLux_DrawDebugText("olor: " + mCurrentHint.mColor, afStartY);
+//		afStartY = cLux_DrawDebugText("TimeToDisplay: " + mCurrentHint.mfTimeToDisplay, afStartY);
+//		afStartY = cLux_DrawDebugText("AddAsGiven: " + mCurrentHint.mbAddAsGiven, afStartY);
+//		afStartY = cLux_DrawDebugText("Pausing: " + mCurrentHint.mbPausing, afStartY);
+//		
+//		if(mvHintsToRemove.size() > 0)
+//		{
+//			afStartY = cLux_DrawDebugText("---------", afStartY);
+//			afStartY = cLux_DrawDebugText("Hints to remove: ", afStartY);
+//			for(int i=0; i < mvHintsToRemove.size(); ++i)
+//			{
+//				afStartY = cLux_DrawDebugText("\t" + (i+1)+": " + mvHintsToRemove[i].msName, afStartY);
+//			}
+//		}
+//
+//		if(m_setHintsGiven.Size() > 0)
+//		{
+//			afStartY = cLux_DrawDebugText("---------", afStartY);
+//			afStartY = cLux_DrawDebugText("Given: ", afStartY);
+//			
+//			array<tString> vTemp;
+//			m_setHintsGiven.ElementsToArray(vTemp);
+//
+//			for(int i=0; i < vTemp.size(); ++i)
+//			{
+//				afStartY = cLux_DrawDebugText("\t" + (i+1)+": " + vTemp[i], afStartY);
+//			}
+//		}
+
+		return afStartY;
+	}
+
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	[nosave] bool mbHintsEnabled;
+	[nosave] bool mbPausingHintsEnabled;
+
+	bool mbHintsForced = false;
+	bool mbCanShowHints = true;
+	
+	//------------------------------------------------------------
+	
+	cLuxScreenTextFormatParameters mFormatParamsHeader;
+	cLuxScreenTextFormatParameters mFormatParamsHint;
+	cLuxScreenTextFormatParameters mFormatParamsFooter;
+	
+	//------------------------------------------------------------
+	
+	cHint mCurrentHint;
+	array<cHint> mvNextHintCandidates;
+	array<cHintRemoveData> mvHintsToRemove;
+	cScriptStringSet m_setHintsGiven;
+	cScriptStringSet m_setHintsBlocked;
+	cScriptStringSet m_setHintsPausedOnce;
+	
+	//------------------------------------------------------------
+	
+	tWString msHeader;
+	tWString msFooter;
+	array<tWString> mvCurrentHintLines;
+	[volatile] array<cLuxScreenTextIcon@>	mvCurrentHintIcons;
+	[nosave] array<array<int>>			mvCurrentHintIconsPerLine;
+	int mlNumParsedHintIcons;
+	
+	[nosave] bool mbFirstUpdateAfterLoading = true;
+	
+	float mfLineHeight = gfHintFontSize * 1.2;
+		
+	cColor mTextColor;
+	float mfTextAlpha;
+	float mfFadeCurrentTime;
+	float mfFadeTotalTime;
+	float mfFadeStart;
+	float mfFadeGoal;
+	float mfDisplayTime;
+	float mfPrevDisplayTime;
+	float mfFrameTime = 0.0f;
+	int mlHintIDCounter = 0;
+	bool mbTextDisplayed;
+	bool mbTextFadingStarted;
+	bool mbPaused;
+	bool mbPauseGameNextTime = false;
+	
+	float mfFooterAlpha;
+	float mfFooterAlphaGoal;
+	bool mbWaitingForInput;
+
+	int mlPausableHintBlurFxID = -1;
+	
+	//------------------------------------------------------------
+}

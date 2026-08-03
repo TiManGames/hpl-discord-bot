@@ -1,0 +1,356 @@
+#include "interfaces/MoveState_Interface.hps"
+#include "base/InputHandler_Types.hps"
+#include "player/Player_Types.hps"
+
+#include "helpers/helper_player.hps"
+#include "helpers/helper_modules.hps"
+
+/////////////////////////////////////////
+// SETTINGS
+/////////////////////////////////////////
+
+//------------------------------------------------------------
+
+const float gfHeadMoveAcc = 3.0f;
+const float gfHeadMoveSpeed = 1.5f;
+const float gfHeadMoveSlowdownDist = 0.3f;
+	
+const float gfGivePlayerControlDist = 0.1f;
+	
+const float gfMovePitchFactor = 4;
+const float gfMaxMovePitchSpeed = 5;
+
+const float gfCheckMaxPushDist = 0.2;
+
+
+//------------------------------------------------------------
+
+class cScrMoveState_Climb : iScrMoveState, iScrMoveState_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// FUNCTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		Reset();
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// FUNCTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+	
+	}
+
+	//------------------------------------------------------------
+	
+	void OnEnterState(int alPrevStateId)
+	{
+		iCharacterBody@ pCharBody = cLux_GetPlayer().GetCharacterBody();
+		cCamera @pCam = cLux_GetPlayer().GetCamera();
+		bool bCrouching = false;
+		
+		cScript_SetGlobalVarBool("PlayerPhysicalActionAllowed", false);
+		
+		////////////////////////////
+		// Settings
+		mvFeetPosition = cScript_GetGlobalVarVector3f("Climb_FeetPos");
+		cVector3f vDir = cScript_GetGlobalVarVector3f("Climb_Direction");
+		//mvLookDirection = mvFeetPosition - pCam.GetPosition();
+		
+		///////////////////////////////////////////////////////////////
+		// Get the normalized 2D direction from the camera to the feet pos
+		cVector3f vToFeetPosition = mvFeetPosition - pCam.GetPosition();
+		vToFeetPosition.y = 0;
+		vToFeetPosition.Normalize();
+		
+		/////////////////////////////////////////////////////////////////////////
+		// Get the camera's 2D forward and left vectors
+		cVector3f vFwd = pCam.GetForward();
+		vFwd.y = 0;
+		vFwd.Normalize();
+		
+		cVector3f vLeft = pCam.GetRight()*-1;
+		vLeft.y = 0;
+		vLeft.Normalize();
+		
+		////////////////////////////////////////////////////////////
+		// Get the dot between vLeft and vToFeetPosition to see if
+		// vToFeetPosition is to the right or left of the camera.
+		float fXDot = cMath_Vector3Dot(vToFeetPosition, vLeft);
+		
+		/////////////////////////////////////////////
+		// Angle to feet position
+		float fAngleToFeetPos = cMath_Vector3Angle(vToFeetPosition, vFwd) * cMath_Sign(fXDot);
+		
+		/////////////////////
+		// Angle to mvDir
+		float fAngleToClimbDirection = cMath_Vector3Angle(vDir, vFwd) * cMath_Sign(cMath_Vector3Dot(vDir, vLeft));
+		
+		////////////////////////////////
+		// Calculate actual look angle
+		mfLookAngle = pCam.GetYaw() + fAngleToFeetPos;
+		mfLookAngle += (pCam.GetYaw() + fAngleToClimbDirection)*3; // look more towards mvDir than vToFeetPosition
+		mfLookAngle /= 4;
+		
+		
+		////////////////////////////
+		// Check if fits
+		{
+			cVector3f vPushBack;
+			bool bFitting = pCharBody.CheckCharacterFits(mvFeetPosition, true,-1, vPushBack);
+
+			////////////////////////////////////
+			//Check if the character will fit after applying push back vector.
+			if(	bFitting==false && vPushBack.y > 0 && vPushBack.Length() <= gfCheckMaxPushDist)
+			{
+				bFitting = pCharBody.CheckCharacterFits(mvFeetPosition + vPushBack, true,0, vPushBack);
+				if(bFitting) mvFeetPosition += vPushBack;
+			}
+
+			////////////////////////////////////
+			//Check if crouching works
+			if( bFitting==false)
+			{
+				bFitting = pCharBody.CheckCharacterFits(mvFeetPosition, true,1, vPushBack);
+				
+				//Crouch and pushback
+				if(	bFitting==false && vPushBack.y > 0 && vPushBack.Length() <= gfCheckMaxPushDist)
+				{
+					bFitting = pCharBody.CheckCharacterFits(mvFeetPosition + vPushBack, true,1, vPushBack);
+					if(bFitting) mvFeetPosition += vPushBack;
+				}
+				
+				if(bFitting)
+				{
+					Player_SetCrouching(true);
+					bCrouching = true;
+				}
+			}
+			
+			if(bFitting == false)
+			{
+				Description_Add("GameMessages", "CannotClimb",1, false);
+				
+				cLux_PlayGuiSoundData("player_climb_fail", eSoundEntryType_World, 1,true);
+				
+				cLux_GetPlayer().ChangeMoveState(eMoveState_Normal);
+				return;
+			}
+		}
+		
+		////////////////////////////
+		// Force crouch?
+		if(bCrouching==false && cScript_GetGlobalVarBool("Climb_ForceCrouch"))
+		{
+			Player_SetCrouching(true);
+			bCrouching = true;
+		}
+		
+		////////////////////////////
+		// Player and character.
+
+		//Find out how much the new old position differs from the new one and then translate this into
+		// the local space of the character and set that as a head position add.
+		// This so that it will be possible to fade to the new positon.
+		cVector3f vPosDifference = pCharBody.GetFeetPosition() - mvFeetPosition;
+		cVector3f vDiff = cVector3f(0);
+		vDiff.y = vPosDifference.y;
+		vDiff.z = cMath_Vector3Dot(pCharBody.GetForward(),vPosDifference);
+		vDiff.x = cMath_Vector3Dot(pCharBody.GetRight(),vPosDifference);
+		
+		//If crouching, set that directly and change diff to take it into account.
+		if(bCrouching)
+		{
+			cVector3f vCrouchAdd = cLux_GetPlayer().GetCameraPosAddGoal(eCameraAddType_Crouch);
+			cLux_GetPlayer().SetCameraPosAdd(eCameraAddType_Crouch, vCrouchAdd);
+			vDiff -= vCrouchAdd;
+		}
+		
+		
+		cLux_GetPlayer().SetCameraPosAdd(eCameraAddType_Climb, vDiff);
+		
+		////////////////////////////////
+		// Move character and change move state
+		pCharBody.SetFeetPosition(mvFeetPosition, false);
+		
+		//Stop character body
+		pCharBody.SetMoveSpeed(eCharDir_Forward, 0);
+		pCharBody.SetMoveSpeed(eCharDir_Right, 0);
+		pCharBody.SetForceVelocity(cVector3f(0));
+		
+		//Start camera movement
+		cLux_GetPlayer().MoveCameraPosAdd(eCameraAddType_Climb, cVector3f(0), gfHeadMoveAcc, gfHeadMoveSpeed, gfHeadMoveSlowdownDist);
+
+
+		////////////////////////////
+		// Play sound
+		cLux_PlayGuiSoundData("player_climb", eSoundEntryType_World, 1,true);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnLeaveState(int alNextStateId)
+	{
+		cScript_SetGlobalVarBool("PlayerPhysicalActionAllowed", true);
+	}
+	
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+	}
+
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep)
+	{
+		float fClimbLeft = cLux_GetPlayer().GetCameraPosAdd(eCameraAddType_Climb).Length();
+	
+		///////////////////////////////////
+		//See at the top of the climbing, if so end
+		if(fClimbLeft <= gfGivePlayerControlDist)
+		{
+			cLux_GetPlayer().ChangeMoveState(eMoveState_Normal);
+			return;
+		}
+
+		///////////////////////////////////
+		//Move yaw in climb direction
+		{
+			float fYaw = cLux_GetPlayer().GetCamera().GetYaw();
+			float fAdd = cMath_GetAngleDistanceRad(fYaw, mfLookAngle) * gfMovePitchFactor;
+			cLux_GetPlayer().GetCharacterBody().AddYaw(fAdd * afTimeStep);
+		}
+		
+		///////////////////////////////////
+		//Move the pitch to 0
+		{
+			float fPitch = cLux_GetPlayer().GetCamera().GetPitch();
+			float fAdd = -fPitch * gfMovePitchFactor;
+			if(fAdd < -gfMaxMovePitchSpeed) fAdd = -gfMaxMovePitchSpeed; 
+			if(fAdd > gfMaxMovePitchSpeed)  fAdd = gfMaxMovePitchSpeed;
+			cLux_GetPlayer().GetCamera().AddPitch(fAdd * afTimeStep);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnAction(int alAction, bool abPressed)
+	{
+		if(alAction == eAction_Jump) return false;
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnAnalogInput(int alAnalogId, const cVector3f &in avAmount)
+	{
+	
+		//////////////////////////////////////
+		// Allow look, but only a  little bit.
+		if(alAnalogId == eAnalogType_Look)
+		{
+			iCharacterBody@ pCharBody = cLux_GetPlayer().GetCharacterBody();
+			cCamera @pCam = cLux_GetPlayer().GetCamera();
+			float fMul = Player_GetLookSpeedMul();
+			fMul *= 0.5;
+			
+			/////////////////////////////////
+			//Yaw
+			{
+				pCharBody.AddYaw(avAmount.x*-1*fMul);
+				float fYaw = pCharBody.GetYaw();
+				float fMaxYawDistance = cMath_ToRad(45);
+				float fAngleDist = cMath_GetAngleDistanceRad(fYaw, mfLookAngle);
+				if(fAngleDist > fMaxYawDistance)
+				{
+					if(fAngleDist < 0) 	fAngleDist = -fMaxYawDistance;
+					else 				fAngleDist = fMaxYawDistance;
+					pCharBody.SetYaw(mfLookAngle + fAngleDist);
+				}
+			}
+			
+			/////////////////////////////////
+			//Pitch
+			pCam.AddPitch(avAmount.y*-1*fMul);
+					
+			return false;
+		}
+		else if(alAnalogId == eAnalogType_Move || alAnalogId == eAnalogType_GamepadMove)
+		{
+			return false;
+		}
+	
+		return true; //Do nothing
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// CHARACTER CALLBACK
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void CharBody_GravityCollide(iCharacterBody@ apCharBody, iPhysicsBody@ apBody, cCollideData @apCollideData)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void CharBody_HitGround(iCharacterBody@ apCharBody,const cVector3f &in avVel)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPER FUNCTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	float mfLookAngle;
+	cVector3f mvFeetPosition;
+	
+	//------------------------------------------------------------
+		
+}

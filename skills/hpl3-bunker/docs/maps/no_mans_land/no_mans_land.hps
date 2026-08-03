@@ -1,0 +1,1074 @@
+#include "interfaces/Map_Interface.hps"
+#include "base/Inputhandler_Types.hps"
+#include "helpers/helper_map.hps"
+#include "helpers/helper_props.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_audio.hps"
+#include "helpers/helper_imgui.hps"
+#include "helpers/helper_sequences.hps"
+#include "helpers/helper_game.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_ai.hps"
+#include "helpers/helper_agent.hps"
+#include "helpers/helper_player.hps"
+#include "helpers/helper_imgui.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+#include "custom/helpers/helper_gun.hps"
+#include "custom/helpers/helper_props_custom.hps"
+
+//--------------------------------------------------
+ 
+/*Place any global values here. These must be const variables as they will not be saved*/
+/*This is also the place for enums and classes, but these should be avoided whenever possible*/
+
+//--------------------------------------------------
+ 
+class cScrMap : iScrMap
+{
+	//--------------------------------------------
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN CALLBACKS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+ 
+	////////////////////////////
+	// Set up map environment
+	void Setup()
+	{
+		// Put display name entry in english.lang / Levels
+		GetBase().SetDisplayNameEntry("no-mans-land");
+		
+		// Set up color grading etc.
+		Light_SetVisible("Light_Close_*", false);
+		Light_SetVisible("Light_TopOfCrater_*", false);
+	}
+	
+	//-------------------------------------------------------
+		
+	void PreloadData()
+	{
+		//////////
+		// Preload ps
+		ParticleSystem_Preload("rifle_fire.ps");
+
+		//////////////
+		// Preload entities
+		Entity_Preload("grenade_thrown.ent");
+		Entity_Preload("player_bunker_clean.ent");
+		Entity_Preload("player_bunker.ent");
+	}
+	
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run first time starting map
+	void OnStart()
+	{
+		/////////////////////////
+		// Debug
+		if(cLux_ScriptDebugOn())
+		{
+		}
+		
+		/////////////////////////
+		// Make sure bloom is active
+		Effect_Bloom_SetActive(true);
+		
+		/////////////////////////
+		// Items
+		Item_ClearInventory();
+		
+		if (ItemType_GetCountInInventory("Gun") == 0)
+		{
+			Item_AddToInventory("Gun");
+		}
+	}
+	
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when entering map
+	void OnEnter()
+	{
+		////////////////////////
+		// Set rich presence
+		RichPresence_SetCurrent(eRichPresence_NoMansLand);
+
+		///////////////////////
+		// Setup player body
+		if (PlayerBody_IsActive() == false)
+		{
+			PlayerBody_SetActive(true);
+			PlayerBody_SetModel("player_bunker_clean.ent");
+		}		
+		
+		Player_AttachHelmet("PlayerHelmet");
+		
+		///////////////////////////////
+		// Setup low height auto-teleport
+		Player_SetAutoTeleportWhenBelowAltitude(-30.f);
+		
+		///////////////////
+		// Skip hints
+		Hint_SetCanShowHints(false);
+		
+		///////////////////
+		// Intro sequence
+		if (cLux_ScriptDebugOn() == false)
+		{			
+			Seq_SneakTowardCrater("");
+		}
+		else
+		{
+			Music_PlayExt("Bunker_Search_Loop.ogg", true, 0.4f, 1.0f, 8.0f, 1.0f, eMusicPrio_BgAmb, false);
+		}
+		
+		////////////////
+		// Setup friend
+		Entity_PlayAnimation("Friend", "lambert_crater_given_water", 0.f, true);
+		Entity_SetAnimationSpeed("Friend", "lambert_crater_given_water", 0.f);
+		
+		Decal_SetDynamicVisible("lambert_blood_rift", false);
+		
+		iLuxEntity@ pFriendCarried = Map_GetEntity("Friend_Carried", eLuxEntityType_Prop);
+		m_idFriendCarried = pFriendCarried !is null ? pFriendCarried.GetID() : tID_Invalid;
+		
+		////////////////
+		// Setup bombing effect
+		BombingHandler_SetActive(false);
+		
+		///////////////////
+		// Setup save game info hint
+		SaveRoom_SetSaveHintActive(false);
+		
+		///////////////////
+		// Preload hub
+		Map_Preload("officer_hub.hpm");
+		
+		///////////////////
+		// Save
+		Map_AddTimer("Timer_AutoSave", 1.f, "OnTimer_AutoSave");
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when leaving map
+	void OnLeave()
+	{
+		///////////////////
+		// Reset stuff
+		Hint_SetCanShowHints(true);
+		Sketchbook_SetCanOpen(true);
+		
+		Player_SetJumpForceMul(1.f);
+		Player_SetCrouchDisabled(false);
+		Player_SetJumpDisabled(false);
+		Player_SetCanEquipItems(true);
+		Player_SetLeanDisabled(false);
+		Player_SetCheckHealthAllowed(true);
+		Player_SetLookSpeedMul(1.f);
+		Player_SetMoveSpeedMul(1.f);
+		Player_SetRunSpeedMul(1.f);
+		
+		PlayerBody_SetRenderLayers(0, 1);
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// To get when player makes input (mostly used for debug)
+	void OnAction(int alAction, bool abPressed) 
+	{
+		if (abPressed==false) return;
+				
+		/////////////////////
+		// Test keys
+		if (alAction == eAction_Test0)
+		{
+			PlayerBody_StopAnimation("player_fall_while_carrying_lambert", 0);
+		}
+		
+		if (alAction == eAction_Test1)
+		{
+			cLux_SetGodModeActivated(false);
+			cLux_SetScriptDebugOn(false);
+			cLux_ReloadGame();
+			
+			
+		}
+		
+		if (alAction == eAction_Test2)
+		{
+			Entity_SetActive("Trigger_SeeFriend", false);
+			Seq_ClimbUpFromCrater("");
+		}
+		
+		if (alAction == eAction_Test3)
+		{
+			//Death_SetCustomDeathBehaviour(true);
+			//Death_SetDeathAnimation("player_fall_while_carrying_lambert");
+				
+			DoMortar(Player_GetPosition());
+		}
+		
+		if (alAction == eAction_Test4)
+		{
+			Entity_SetActive("Trigger_SeeFriend", false);
+			Seq_ClimbDownToCrater("");
+		}
+		
+		if (alAction == eAction_Test5)
+		{
+			Seq_GiveFriendWater("");
+		}
+		
+		if (alAction == eAction_Test6)
+		{
+			Seq_ClimbUpFromCrater("");
+		}
+		
+		if (alAction == eAction_Test7)
+		{
+			OnAnimEnd_PickUpFriend("");
+		}
+		
+		if (alAction == eAction_Test8)
+		{
+			Music_StopAll(0.);
+			ParticleSystem_SetVisible("flare_plume", false);
+			Seq_FiredAtByGermans("");
+				
+			Item_RemoveFromInventory(ItemType_GetFirstInInventory("Gun"));
+		}		
+		
+		if (alAction == eAction_Test9)
+		{
+		    //Entity_SetActive("no_mans_land_german_flare", true);
+			//Prop_MoveLinearTo("no_mans_land_german_flare","flare_end",4,4,15,true);
+			//Prop_AlignRotation("no_mans_land_german_flare","flare_end",4,4,15,true);
+		}
+		
+		if (alAction == eAction_TestPlus)
+		{
+			Effect_Fade_Out(1.f);
+			Player_FadeDreamLights(1.f, 1.f);
+		}
+		
+		if (alAction == eAction_TestMinus)
+		{
+			//Player_FadeDreamLights(0.f, 2.5f);
+			//Sound_PlayGui("trenches/dream/water", 1.f);
+			Voice_Play("Dialogue_FriendDrinksWater");
+		}
+	}
+	
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// This only used for pure debug purposes when info needs to printed.
+	float DrawDebugOutput(cGuiSet@ apSet, iFontData@ apFont, float afY)
+	{
+		//afY = cLux_DrawDebugText("My Debug value:"+..., afY);
+		return afY;
+	}
+	
+	//-------------------------------------------------------
+ 
+	//} END MAIN CALLBACKS
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN FUNCTIONS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+	
+	//-------------------------------------------------------
+	
+	void OnCustomDeath(const tString &in asSource)
+	{
+		Seq_LoadHub("");
+	}
+	
+	//-------------------------------------------------------
+
+	void OnTimer_AutoSave(const tString&in asTimer)
+	{
+		SaveRoom_SaveGame(false, false);
+	}
+	
+	//-------------------------------------------------------
+	
+	tID m_idFriendCarried = tID_Invalid;
+	bool mbSyncFriendAnimsWithPlayer = false;
+	
+	//-------------------------------------------------------
+
+	void VariableUpdate(float afDeltaTime)
+	{		
+		//////////////////////
+		// Sync friend anims with player's
+		if (mbSyncFriendAnimsWithPlayer)
+		{
+			iLuxEntity@ pFriend = cLux_ID_Entity(m_idFriendCarried);
+			cAnimationState@ pPlayerAnim = PlayerBody_GetAnimationState(PlayerBody_GetBaseAnimationInLayer(ePlayerBodyAnimationLayer_Body));
+			
+			if (pFriend !is null && pPlayerAnim !is null)
+			{
+				tString sAnim = "";
+				tString sPlayerAnim = pPlayerAnim.GetName();
+				float fTime = pPlayerAnim.GetRelativeTimePosition();
+				float fSpeed = pPlayerAnim.GetSpeed();
+					
+				if (cString_GetFirstStringPos(sPlayerAnim, "run") != -1)		sAnim = "lambert_carried_run_fwd";
+				else if (cString_GetFirstStringPos(sPlayerAnim, "walk") != -1) 	sAnim = "lambert_carried_walk_fwd";
+				else if (cString_GetFirstStringPos(sPlayerAnim, "turn") != -1) 	sAnim = "";
+				else 															sAnim = "lambert_carried_idle";
+					
+				cAnimationState@ pAnim = pFriend.GetMeshEntity().GetAnimationStateFromName(sAnim);
+				if (pAnim !is null)
+				{
+					if (pAnim.IsActive() == false)
+						pFriend.PlayAnimation(sAnim, 0.3f, true);
+					
+					pAnim.SetSpeed(fSpeed);
+					pAnim.SetRelativeTimePosition(fTime);
+				}
+			}
+		}
+	}
+	
+	//-------------------------------------------------------
+ 
+	//} END MAIN FUNCTIONS
+	
+	//-------------------------------------------------------
+
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// EVENTS
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+		
+		////////////////////////////////////////////////////////////
+		// Event: Sneak toward Crater
+		//{/////////////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSeqDataSneakTowardCrater;
+		void Seq_SneakTowardCrater(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_SneakTowardCrater", mSeqDataSneakTowardCrater);
+			if (Sequence_DoStepAndWait(2.f))
+			{
+				Effect_Fade_Out(0.f);
+				Sound_FadeGlobalVolume(0.f, 0.f, eSoundEntryType_WorldAll);
+				
+				Player_SetActive(false);
+				Player_SetHealth(1.f);
+				
+				Player_FadeDreamLights(1.f, 0.f);
+			}
+			else if (Sequence_DoStepAndWait(0.5f))
+			{
+				Music_PlayExt("Bunker_Search_Loop.ogg", true, 0.4f, 1.0f, 8.0f, 1.0f, eMusicPrio_BgAmb, false);
+			}
+			else if (Sequence_DoStepAndWait(1.5f))
+			{
+				Player_FadeDreamLights(0.f, 4.f);
+			}
+			else if (Sequence_DoStepAndWait(0.1f))
+			{
+				Player_SetActive(true);
+				Player_SetCrouching(true, true, true);
+				
+				Item_TakeOut(ItemType_GetFirstInInventory("Gun"));
+				
+				PlayerBody_SetUnequipItemsOnCutscene(true, false);
+				PlayerBody_SetArmAnimationPitch(false, true, false);
+				PlayerBody_SetArmAnimationYaw(false, true, false);
+				PlayerBody_PlayCutsceneAtEntity("player_enter_nomansland", "Area_IntroSneak", false, 0.f, "OnAnimEnd_SneakIntro");
+				PlayerBody_SetCutsceneMaxPitch(5.f);
+				PlayerBody_SetCutsceneMaxYaw(5.f);
+			}
+			else if (Sequence_DoStepAndPause(0.f))
+			{				
+				PlayerBody_SetArmAnimationPitch(false, false, false);
+				
+				Effect_Fade_In(1.f);
+				Sound_FadeGlobalVolume(1.f, 1.f, eSoundEntryType_WorldAll);
+			}
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnAnimEnd_SneakIntro(const tString &in asAnim)
+		{
+			PlayerBody_SetArmAnimationPitch(true, true, false);
+			PlayerBody_SetArmAnimationYaw(true, true, false);
+			
+			PlayerHands_PlayAnimation("tool_gun_relaxed_idle", true, false, 0.f, Item_GetHeldEntity(eItemHandlerHand_Right), true, 1.f, -1.f, true, true);
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event: Sneak toward Crater
+		
+		////////////////////////////////////////////////////////////
+		// Event: See FRIEND at bottom of Crater
+		//{/////////////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		float mfLookAtFriendCount = 0.f;
+		
+		//-------------------------------------------------------
+		
+		void OnLookAt_SeeFriend(const tString &in asEntity, int alState)
+		{
+			if (alState == 1)
+			{
+				if (mbClimbDownCraterSeqStarted == false)
+					Map_AddTimer("Timer_StartClimbDownCraterSeq", 0.1f, "OnTimer_StartClimbDownCraterSeq");
+				
+			}
+			else if (alState == -1)
+			{
+				mfLookAtFriendCount = 0.f;
+				Map_RemoveTimer("Timer_StartClimbDownCraterSeq");
+				
+				if (mbClimbDownCraterSeqStarted)
+				{
+					Player_FadeLookSpeedMulTo(0.05f, 0.1f);
+					Player_StartLookAt("Friend", 0.5f, 1.f, 3.f);
+				}
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_StartClimbDownCraterSeq(const tString &in asTimer)
+		{		
+			if (Map_GetEntity("Friend").CheckIsOnScreen(true))
+			{
+				mfLookAtFriendCount += 0.1f;
+				
+				if (mfLookAtFriendCount >= 0.6f)
+				{					
+					Seq_ClimbDownToCrater("");					
+					return;
+				}
+			}
+			else
+			{
+				mfLookAtFriendCount = 0.f;
+			}
+			
+			Map_RestartCurrentTimer(0.1f);
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event: See FRIEND at bottom of Crater
+		
+		////////////////////////////////////////////////////////////
+		// Event: Climb down to Crater
+		//{/////////////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		bool mbClimbDownCraterSeqStarted = false;
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSeqDataClimbDownCrater;
+		void Seq_ClimbDownToCrater(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_ClimbDownToCrater", mSeqDataClimbDownCrater);
+			if (Sequence_DoStepAndWait(3.5f))
+			{
+				mbClimbDownCraterSeqStarted = true;
+				
+				Player_FadeLookSpeedMulTo(0.1f, 0.3f);
+				Player_FadeMoveSpeedMulTo(0.5f, 1.f);
+				Player_FadeRunSpeedMulTo(0.f, 0.5f);
+				Player_FadeFOVMulTo(0.5f, 0.4f);
+				Effect_Shake_Start(0.04f, 8.f, 1.f, 1.f, cVector3f(1.f), 1.5f);
+				
+				Item_PutAway(eItemHandlerHand_Left);
+				Item_PutAway(eItemHandlerHand_Right);
+				
+				Player_ChangeStateToNormal();
+				Player_SetCrouchDisabled(true);
+				Player_SetJumpDisabled(true);
+				Player_SetCanEquipItems(false);
+				Player_SetLeanDisabled(true);
+				Player_SetCheckHealthAllowed(false);
+				Player_SetCanEquipItems(false);			
+				Sketchbook_SetCanOpen(false);
+				
+				Music_Stop(2.f, eMusicPrio_BgAmb);
+				Music_Play("Bunker_Seach_Stinger.ogg", 0.2f, false, eMusicPrio_MinorEvent);
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{
+				Effect_Fade_Out(1.f);				
+				Sound_FadeGlobalVolume(0.f, 3.f, eSoundEntryType_WorldAll);								
+				
+				Player_FadeDreamLights(1.f, 3.f);
+				Player_SetupDreamLightsSound("trenches/dream/water", "Comments", 1.f);
+				
+				Entity_SetActive("Trigger_SeeFriend", false);
+			}
+			else if (Sequence_DoStepAndWait(0.5f))
+			{
+				Sound_PlayGui("trenches/dream/water", 1.0f);
+				Sound_Fade("flare_thrown_1_Sound_1", 0.3f, 1.f);
+				
+				Item_PutAway(eItemHandlerHand_Right);
+				Item_PutAway(eItemHandlerHand_Left);
+				
+				Item_RemoveFromInventory(ItemType_GetFirstInInventory("Gun"));
+				
+				cLux_GetPlayer().SetCameraFOVMul(ePlayerFOVMul_Script, 1.f);
+				Player_SetActive(false);
+				
+				Light_SetVisible("Light_Far_*", false);
+				Light_SetVisible("Light_Close_*", true);
+			}
+			else if (Sequence_DoStepAndWait(6.5f))
+			{
+				Sound_AddClosedCaption("GeneralClosedCaptions", "NoMansLand_HeavyBreathing");
+			}
+			else if (Sequence_DoStepAndWait(0.7f))
+			{
+				Sound_AddClosedCaption("GeneralClosedCaptions", "NoMansLand_BottleOpens");
+			}
+			else if (Sequence_DoStepAndWait(4.6f))
+			{
+				Sound_AddClosedCaption("GeneralClosedCaptions", "NoMansLand_BottleFills");
+			}
+			else if (Sequence_DoStepAndWait(4.f))
+			{
+				Player_StopLookAt(0.1);
+				PlayerBody_PlayCutsceneAtEntity("player_intro_crater_give_water", "Friend", false, 0.f, "", 0.f);
+				PlayerBody_SetCutsceneMaxPitch(5.f);
+				PlayerBody_SetCutsceneMaxYaw(5.f);		
+				
+				Sound_FadeGlobalVolume(1.f, 3.f, eSoundEntryType_WorldAll);	
+			}
+			else if (Sequence_DoStepAndWait(1.7f))
+			{				
+				Sound_CreateAtEntity("Sound_DrinkAnim", "trenches/anim/drink", "player");
+				Voice_SetSource("AugustinLambert", "Friend", 1.f, 40.f, true);
+				Voice_Play("Dialogue_FriendDrinksWater");
+			}
+			else if (Sequence_DoStepAndWait(0.5f))
+			{
+				Player_FadeDreamLights(0.f, 4.f);
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{
+				Seq_GiveFriendWater("");
+			}
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event: Climb down to Crater
+		
+		////////////////////////////////////////////////////////////
+		// Event: Give FRIEND water
+		//{/////////////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		float mfGiveFriendWaterAnimLength = 0.f;
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSeqDataGiveFriendWater;
+		void Seq_GiveFriendWater(const tString &in asTimer)
+		{			
+			cAnimationState@ pAnim = PlayerBody_GetAnimationState("player_intro_crater_give_water");
+			mfGiveFriendWaterAnimLength = pAnim !is null ? pAnim.GetLength() - 1.f : 0.f;
+			
+			Sequence_Begin("Seq_GiveFriendWater", mSeqDataGiveFriendWater);
+			if (Sequence_DoStepAndWait(0.1f))
+			{
+				Player_SetActive(true);
+				Player_SetCrouching(false, true, true);
+				Player_ShowCrossHairIcons(false);
+				
+				if (pAnim !is null && pAnim.IsActive() == false)
+				{
+					PlayerBody_PlayCutsceneAtEntity("player_intro_crater_give_water", "Friend", false, 0.f, "", 0.f);
+					PlayerBody_SetCutsceneMaxPitch(5.f);
+					PlayerBody_SetCutsceneMaxYaw(5.f);
+				}					
+			}
+			else if (Sequence_DoStepAndWait(mfGiveFriendWaterAnimLength - 0.1f))
+			{
+				if (pAnim !is null)
+					pAnim.SetSpeed(1.f);
+				
+				Entity_SetAnimationSpeed("Friend", "lambert_crater_given_water", 1.f);
+				
+				Entity_SetActive("Cantine", true);
+				PlayerBody_AttachProp("Cantine", "L_Hand", true, false);
+				Entity_PlayAnimation("Cantine", "cantine_intro_crater", 0.f, false);
+				
+				Effect_Fade_In(1.f);
+				Sound_FadeGlobalVolume(1.f, 1.f, eSoundEntryType_WorldAll);
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{
+				Effect_Fade_Out(1.f);
+				Sound_FadeGlobalVolume(0.f, 3.f, eSoundEntryType_WorldAll);
+				
+				Player_FadeDreamLights(1.f, 3.f);
+				Player_SetupDreamLightsSound("trenches/dream/drag", "Comments", 1.4f);
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{
+				Player_SetActive(false);				
+				Seq_ClimbUpFromCrater("");
+			}
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event: Give FRIEND water
+		
+		////////////////////////////////////////////////////////////
+		// Event: Climb up from Crater
+		//{/////////////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSeqDataClimbUpFromCrater;
+		void Seq_ClimbUpFromCrater(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_ClimbUpFromCrater", mSeqDataClimbUpFromCrater);
+			if (Sequence_DoStepAndWait(1.f))
+			{
+				Sound_PlayGui("trenches/dream/drag", 1.0f);
+			}
+			else if (Sequence_DoStepAndWait(0.5f))
+			{
+				Entity_SetActive("Cantine", false);
+				Entity_SetActive("Friend", false);			
+				Entity_SetActive("Trigger_StartSeqFiredAtByGermans", true);
+				
+				Light_SetVisible("Light_Far_*", false);
+				Light_SetVisible("Light_Close_*", false);
+				Light_SetVisible("Light_FarClose_*", false);
+				Entity_SetActive("flare_thrown_1", false);
+				ParticleSystem_SetVisible("flare_plume", false);
+				Light_SetVisible("Light_TopOfCrater_*", true);
+				Decal_SetDynamicVisible("lambert_blood_rift", true);
+			}
+			else if (Sequence_DoStepAndWait(9.5f))
+			{
+				Sound_AddClosedCaption("GeneralClosedCaptions", "NoMansLand_Climbing");
+			}
+			else if (Sequence_DoStepAndWait(0.5f))
+			{
+				Player_FadeDreamLights(0.f, 4.f);
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{
+				Sound_CreateAtEntity("Sound_CarryAnim", "trenches/anim/carry", "player");
+				Player_SetActive(true);
+				Player_PlaceAtEntity("Area_CraterTop", true, true);
+				
+				PlayerBody_PlayCutsceneAtEntity("player_intro_pull_up_rope_and_lift_friend", "Friend_Carried", false, 0.f, "OnAnimEnd_PickUpFriend", 0.f);
+				PlayerBody_SetCutsceneMaxPitch(5.f);
+				PlayerBody_SetCutsceneMaxYaw(5.f);
+				
+				Sound_FadeGlobalVolume(1.f, 2.f, eSoundEntryType_WorldAll);
+			}
+			else if (Sequence_DoStepAndWait(9.f))
+			{
+				Effect_Fade_In(1.f);				
+				
+				cAnimationState@ pAnim = PlayerBody_GetAnimationState("player_intro_pull_up_rope_and_lift_friend");
+				if (pAnim !is null)
+					pAnim.SetSpeed(1.f);
+				
+				Entity_SetActive("Friend_Carried", true);
+				Entity_SetActive("Rope", true);				
+				Entity_PlayAnimation("Friend_Carried", "lambert_intro_lifted_and_carried_away", 0.f, false);
+				Entity_PlayAnimation("Rope", "rope_intro_pulled_up", 0.f, false);
+				
+				Voice_SetSource("AugustinLambert", "Friend_Carried", 1.f, 40.f, true);
+				Voice_PlayDelayed("Dialogue_FriendPreCarried", 1.f);
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{				
+				OnTimer_PlayFriendGroan("");
+			}
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnAnimEnd_PickUpFriend(const tString &in asAnim)
+		{
+			Player_FadeLookSpeedMulTo(0.8f, 1.f);
+			Player_FadeMoveSpeedMulTo(0.8f, 1.f);
+			Player_FadeRunSpeedMulTo(0.6f, 1.f);
+			Player_SetCrouchDisabled(true);
+			Player_SetJumpDisabled(true);
+			Player_SetCanEquipItems(false);
+			Player_SetLeanDisabled(true);
+			Player_SetCheckHealthAllowed(false);
+			Player_SetCanEquipItems(false);
+			
+			Sketchbook_SetCanOpen(false);
+			
+			PlayerBody_AttachProp("Friend_Carried", "L_Hand", true, false);			
+			PlayerBody_SetAnimationSet("carry_lambert");
+			
+			Map_AddTimer("Timer_SetUpdatePlayerBodyRenderLayers", 0.1f, "OnTimer_SetUpdatePlayerBodyRenderLayers");
+						
+			Light_FadeTo("Light_TopOfCrater_*",cColor(0,0,0,0), 0, 1);
+
+			mbSyncFriendAnimsWithPlayer = true;			
+			Entity_PlayAnimation("Friend_Carried", "lambert_carried_idle", 0.f, true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_SetUpdatePlayerBodyRenderLayers(const tString &in asTimer)
+		{
+			PlayerBody_SetRenderLayers(0, 0);
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event: Climb up from Crater
+		
+		////////////////////////////////////////////////////////////
+		// Event: Run across no man's land carrying FRIEND
+		//{/////////////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		int mlGermanBulletCount = 0;
+		int mlGermanMortarCount = 0;
+		array<int> mvFireAnimGermanSoldierIds;
+		
+		int mlDofId;
+		int mlImageTrailId;
+		int mlBlurId;
+		
+		float mfFallAnimLength = 3;
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PlayFriendGroan(const tString &in asTimer)
+		{
+			if (asTimer != "")
+			{
+				cLux_AddTodoMessage("Play groan sound");
+			}
+			
+			Map_AddTimer("Timer_PlayFriendGroan", cMath_RandRectf(5.f, 9.f), "OnTimer_PlayFriendGroan");
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_StartSeqFiredAtByGermans(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Seq_FiredAtByGermans("");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSeqDataFiredAtByGermans;
+		void Seq_FiredAtByGermans(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_FiredAtByGermans", mSeqDataFiredAtByGermans);
+			if (Sequence_DoStepAndWait(1.05f))
+			{
+				Map_AddTimer("GermanSoldier_1", 0.f, "OnTimer_ActivateGermanSoldier");
+				Map_AddTimer("GermanSoldier_2", 0.15f, "OnTimer_ActivateGermanSoldier");
+				Map_AddTimer("GermanSoldier_3", 0.25f, "OnTimer_ActivateGermanSoldier");
+				Map_AddTimer("GermanSoldier_4", 0.55f, "OnTimer_ActivateGermanSoldier");
+				Map_AddTimer("GermanSoldier_5", 0.35f, "OnTimer_ActivateGermanSoldier");
+				
+/*				Death_SetCustomDeathBehaviour(true);
+				Death_SetDeathAnimation("player_fall_while_carrying_lambert");*/
+				
+				Voice_StopAll();
+				Map_RemoveTimer("Timer_PlayFriendGroan");
+				Sound_Play("Sound_Spotted", 0.0f);
+				
+				cAnimationState@ pState = PlayerBody_GetAnimationState("player_fall_while_carrying_lambert");
+				if (pState !is null) mfFallAnimLength = pState.GetLength();
+			}
+			
+			else if (Sequence_DoStepAndWait(1.f))				
+			{
+				Voice_SetSource("GermanSoldiers", "Area_BulletStart", 1.f, 100.f, true);
+				Voice_Play("Dialogue_GermanSoldiersNoticePlayer");
+			}
+			
+			else if (Sequence_DoStepAndWait(0.95f))	
+			{
+				Sound_Play("Sound_FlareFire", 0.0f);
+			}
+			
+			else if (Sequence_DoStepAndWait(0.95f))
+			{
+				Entity_SetEffectBaseColor("no_mans_land_german_flare", cColor(0.25f, 1.f));
+				Entity_FadeEffectBaseColor("no_mans_land_german_flare", cColor(1.f, 1.f), 4.f);
+				
+				cLuxProp@ pFlareProp = Map_GetProp("no_mans_land_german_flare");
+				iLight@ pFlareLight = pFlareProp.GetLightFromName("Light_Spot_1");
+				pFlareLight.SetBrightness(5.f);
+				pFlareLight.FadeBrightnessTo(25.f, 4.5f);
+				
+				Voice_PlayDelayed("Dialogue_FriendReactToGermans", 2.5f);
+		        Entity_SetActive("no_mans_land_german_flare", true);
+				Prop_MoveLinearTo("no_mans_land_german_flare","flare_path_1",12,12,16,true);
+			   
+				Prop_AlignRotation("no_mans_land_german_flare","flare_path_1",8,8,8,true);
+			   
+				Sound_Play("Sound_Spotted_Gun", 0.0f);
+				Sound_CreateAtEntity("Sound_FlareLoop", "trenches/NML/flare_loop", "no_mans_land_german_flare", 3.0f, false, 1.0f);
+			}
+			else if (Sequence_DoStepAndWait(4.f))
+			{				
+				OnTimer_ShootAtPlayer("");
+				Sound_Play("Sound_Alert*", 0.0f);
+			}
+			else if (Sequence_DoStepAndWait(3.f))
+			{
+				iCharacterBody@ pCharBody = cLux_GetPlayer().GetCharacterBody();
+				if (pCharBody !is null)
+				{
+					cVector3f vPos = pCharBody.GetPosition() + pCharBody.GetForward() * 15.f + pCharBody.GetRight() * 5.f;
+					DoMortar(vPos);
+				}
+			    Prop_MoveLinearTo("no_mans_land_german_flare","flare_path_2",1,3,1,true);
+			    Prop_AlignRotation("no_mans_land_german_flare","flare_path_1",1,3,1,true);
+				
+				Entity_FadeEffectBaseColor("no_mans_land_german_flare", cColor(0.83f, 1.f), 5.f);
+				cLuxProp@ pFlareProp = Map_GetProp("no_mans_land_german_flare");
+				iLight@ pFlareLight = pFlareProp.GetLightFromName("Light_Spot_1");
+				pFlareLight.FadeBrightnessTo(15.f, 4.5f);
+			}
+			else if (Sequence_DoStepAndWait(0.15))
+			{
+				cVector3f vPos = Player_GetPosition() + Player_GetForward() * 2.f;
+				
+				DoMortar(vPos);
+				DoMortar(Entity_GetPosition("EndAnimPos"));
+				mlBlurId = Effect_Blur_Start(1, 0.15);
+			}
+			else if (Sequence_DoStepAndWait(mfFallAnimLength-0.1))
+			{
+				Sound_PlayGui("trenches/NML/death", 1.0);
+				
+				mlImageTrailId = Effect_ImageTrail_Start(2.f, 0.3f, 2.0f, 0.3f);
+				mlDofId = Effect_DoF_Start(0.1f, 0.2f, 1.f, 1.5f);
+				Effect_Blur_FadeOut(mlBlurId, 0.5);
+				
+				PlayerBody_DetachProp("Friend_Carried");
+				Entity_SetActive("Friend_Carried", true);
+				mbSyncFriendAnimsWithPlayer = false;
+				iLuxEntity@ pLambert = Map_GetEntity("Friend_Carried");
+				pLambert.SetMatrix(Map_GetEntity("EndAnimPos").GetMatrix());
+				Entity_PlayAnimation("Friend_Carried", "lambert_carried_dropped");
+				PlayerBody_PlayCutsceneAtEntity("player_fall_while_carrying_lambert", "EndAnimPos", false, 0.0f, "", 1.f);
+				
+				Voice_StopAll();
+			}
+			else if (Sequence_DoStepAndWait(0.1f))
+			{
+				cAnimationState@ pState = PlayerBody_GetAnimationState("player_fall_while_carrying_lambert");
+				if (pState !is null) pState.SetSpeed(0);
+			}
+			else if (Sequence_DoStepAndWait(1.0f))
+			{
+				Effect_Fade_Out(1);
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{
+				Seq_LoadHub("");
+			}
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ActivateGermanSoldier(const tString &in asTimer)
+		{
+			Entity_SetActive(asTimer, true);
+			Entity_PlayAnimation(asTimer, "prone", 0.f, true);
+			Entity_PlayAnimation(asTimer, "kneel", 0.3f, true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ShootAtPlayer(const tString &in asTimer)
+		{
+			///////////////////////
+			// Setup vars
+			iLuxEntity@ pBulletStart = Map_GetEntity("Area_BulletStart", eLuxEntityType_Area);
+			iLuxEntity@ pFriend = Map_GetEntity("Friend_Carried", eLuxEntityType_Prop);
+			iLuxEntity@ pPlayerEnt = mBaseObj.GetPlayerEntity();
+			
+			if (pBulletStart is null) 	return;
+			if (pFriend is null) 		return;
+			if (pPlayerEnt is null) 	return;
+			
+			///////////////////////
+			// Spawn bullet
+			++mlGermanBulletCount;
+			
+			cVector3f vPlayerFwd = Player_GetForward();
+			cVector3f vOffset = cMath_RandomSphereSurfacePoint(2.5f);
+			
+			vOffset.y = 0.f;
+			vOffset -= vPlayerFwd * cMath_Vector3Dot(vPlayerFwd, vOffset);
+			vOffset += vPlayerFwd * cMath_Max(Player_GetSpeed(), 1.f) * cMath_RandRectf(1.25f, 1.75f);
+			
+			cVector3f vStart = pBulletStart.GetPosition();
+			cVector3f vEnd = Player_GetFeetPosition() + vOffset;
+			cVector3f vDir = vEnd - vStart;
+			
+			int lId = BulletHandler_AddBullet(vStart, vDir, eBulletType_Revolver, tID_Invalid);
+			BulletHandler_AddIgnoredEntity(lId, pPlayerEnt.GetID());
+			BulletHandler_AddIgnoredEntity(lId, pFriend.GetID());
+			
+			///////////////////////
+			// Play anim on germans
+			if (mvFireAnimGermanSoldierIds.size() == 0)
+			{
+				mvFireAnimGermanSoldierIds.resize(5);
+				for (int i = 0; i < mvFireAnimGermanSoldierIds.size(); ++i)
+					mvFireAnimGermanSoldierIds[i] = i + 1;
+			}
+			
+			int lSoldierArrayId = cMath_RandRectl(0, mvFireAnimGermanSoldierIds.size() - 1);
+			int lAnimEntId = mvFireAnimGermanSoldierIds[lSoldierArrayId];
+			mvFireAnimGermanSoldierIds.removeAt(lSoldierArrayId);
+						
+			iLuxEntity@ pGermanSoldier = Map_GetEntity("GermanSoldier_" + lAnimEntId, eLuxEntityType_Prop);
+			cNode3D@ pSocket = pGermanSoldier !is null ? pGermanSoldier.GetMeshEntity().GetSocket("RifleSocket") : null;
+			
+			if (pGermanSoldier !is null && pSocket !is null)
+			{
+				Entity_PlayAnimation(pGermanSoldier.GetName(), "shoot_1", 0.3f, false, true, "OnAnimEnd_GermanShoot");
+				
+				cParticleSystem@ pPS = ParticleSystem_CreateAtEntity("PS_GermanGunfire", "rifle_fire.ps", pGermanSoldier.GetName(), false);			
+				pPS.SetWorldMatrix(pSocket.GetWorldMatrix());
+			}
+			
+			Sound_CreateAtEntity("Sound_Bullet", "trenches/NML/gunfire_near", pGermanSoldier.GetName(), 0.f, false, 1.f, 1.f, 200.f);
+			
+			///////////////////////
+			// Restart timer
+			if (mlGermanBulletCount < 25)
+			{
+				float fTime = cMath_RandRectf(0.2f, 0.6f);
+				if (mlGermanBulletCount == 2)
+					fTime = 1.5f;
+					
+				Map_AddTimer("Timer_ShootAtPlayer", fTime, "OnTimer_ShootAtPlayer");
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnAnimEnd_GermanShoot(const tString &in asEntity, const tString &in asAnim)
+		{
+			Entity_PlayAnimation(asEntity, "kneel", 0.3f, true);
+		}
+		
+		//-------------------------------------------------------
+	
+		void DoMortar(const cVector3f &in avPos)
+		{
+			++mlGermanMortarCount;
+			
+			mBaseObj.CreateEntity("GermanMortar_" + mlGermanMortarCount, "grenade_thrown.ent", cMatrixf_Identity, cVector3f(1.f));
+			cLuxProp@ pProp = cLux_ToProp(mBaseObj.GetLatestEntity());
+			
+			if (pProp !is null)
+			{
+				Grenade_SetDamagePlayer(pProp.GetName(), false);
+				
+				float fDist;
+				cVector3f vNrm;
+				cVector3f vPos = avPos;
+				
+				if (cLux_GetClosestBody(vPos, cVector3f_Down, 100.f, fDist, vNrm) !is null)
+				{
+					vPos.y -= (fDist - 0.1f); 
+				}	
+				pProp.SetActive(true);
+				pProp.SetPosition(vPos);
+				pProp.Break();
+			}
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event: Run across no man's land carrying FRIEND
+		
+		//-------------------------------------------------------
+		
+		////////////////////////////////////////////////////////////
+		// Event: Load Hub
+		//{/////////////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSeqDataLoadHub;
+		void Seq_LoadHub(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_LoadHub", mSeqDataLoadHub);
+			if (Sequence_DoStepAndWait(2.5f))
+			{
+				Death_ResetDeathEffects();
+				Effect_Fade_Out(0.f);
+				
+				Effect_ImageTrail_Clear();
+				Effect_DoF_Reset();
+				
+				Sound_FadeGlobalVolume(0.f, 3.f, eSoundEntryType_WorldAll);
+			}
+			else if (Sequence_DoStepAndWait(0.5f))
+			{
+				PlayerBody_StopAnimation("player_fall_while_carrying_lambert", 0);
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{
+				Map_ChangeMap("officer_hub.hpm", "", "", "", false, true);
+			}
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event: Load Hub
+		
+		//-------------------------------------------------------
+
+	//} END EVENTS
+	
+	//-------------------------------------------------------
+}

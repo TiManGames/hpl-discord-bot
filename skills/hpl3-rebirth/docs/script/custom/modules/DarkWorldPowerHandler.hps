@@ -1,0 +1,738 @@
+//----------------------------------------------------------------------------------------
+
+#include "interfaces/UserModule_Interface.hps"
+#include "custom/modules/ModuleInterfaces_Custom.hps"
+#include "base/Player_Types.hps"
+#include "base/InputHandler_Types.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_map.hps"
+
+//----------------------------------------------------------------------------------------
+
+enum ePowerNodeType
+{
+	ePowerNodeType_Extender,
+	ePowerNodeType_Emitter,
+	ePowerNodeType_Receiver,
+	ePowerNodeType_None,
+}
+
+enum ePowerParticleState
+{
+	ePowerParticleState_FadingIn,
+	ePowerParticleState_Stable,
+	ePowerParticleState_FadingOut,
+}
+
+//------------------------------------------------------------
+	
+class cPowerNode
+{
+	tID m_idNode = tID_Invalid;
+	tID m_idFromNode = tID_Invalid;
+	ePowerNodeType mType = ePowerNodeType_None;
+	tString msMap = "";
+	tString msCallback = "";
+	float mfRadius = -1;
+	bool mbEnabled = true;
+	bool mbVisited = false;
+	bool mbActive = false;
+	array<cPowerParticle> mvNewPS;
+	array<cPowerParticle> mvPS;
+	
+	void Activate()
+	{
+		if (mbActive) return;
+		mbActive = true;
+		cScript_RunGlobalFunc(GetEntity().GetName(), "", "_Global_PowerActivate");
+		ExecuteMapCallback(mbActive, GetEntity().GetName());
+	}
+	
+	void Deactivate()
+	{
+		if (mbActive == false) return;
+		mbActive = false;
+		cScript_RunGlobalFunc(GetEntity().GetName(), "", "_Global_PowerDeactivate");
+		ExecuteMapCallback(mbActive, GetEntity().GetName());
+	}
+	
+	void SetEnabled(bool abX)
+	{
+		mbEnabled = abX;
+	}
+	
+	iLuxEntity@ GetEntity()
+	{
+		return cLux_ID_Entity(m_idNode);
+	}
+	
+	void ExecuteMapCallback(bool abActive, const tString&in asEntity)
+	{
+		if (msCallback == "") return;
+		
+		tString sMethodName = "void " + msCallback + "(bool abActive, const tString&in asEntity)";
+		cLuxMap@ pMap = cLux_GetCurrentMap();
+		if (pMap.ScriptMethodExists(sMethodName) && pMap.ScriptPrepare(sMethodName))
+		{
+			pMap.SetArgBool(0, abActive);
+			tString sEntity = asEntity;
+			pMap.SetArgString(1, sEntity);
+			pMap.ScriptExecute();
+		}
+	}
+	
+	void UpdateParticles(float afDeltaTime)
+	{
+		if (GetEntity() is null) return;
+		
+		// FIrst pass to detect any fading "In particles"
+		bool bInParticlesFading = false;
+		for (int i = 0; i < mvPS.size(); ++i)
+		{
+			cPowerParticle@ pParticle = mvPS[i];
+			
+			// kill ps
+			if (pParticle.mState == ePowerParticleState_FadingOut && pParticle.mfAlpha <= 0)
+			{
+				cLux_ID_ParticleSystem(pParticle.m_idPS).KillInstantly();
+				pParticle.m_idPS = tID_Invalid;
+				for (int i = 0; i < pParticle.mvTrailParticles.length(); i++)
+				{
+					cLux_ID_ParticleSystem(pParticle.mvTrailParticles[i]).KillInstantly();
+				}
+				pParticle.mvTrailParticles.resize(0);
+				mvPS.removeAt(i);
+				--i;
+				continue;
+			}
+			
+			if (pParticle.mbOut == false && pParticle.mState != ePowerParticleState_Stable)
+				bInParticlesFading = true;
+		}
+		
+		// update existing ps
+		for (int i = 0; i < mvPS.size(); ++i)
+		{
+			cPowerParticle@ pParticle = mvPS[i];
+			
+			// position
+			cVector3f vPos = GetEntity().GetPosition();
+			
+			// rotation
+			cVector3f vDir = cLux_ID_Entity(pParticle.m_idToEnt).GetPosition() - vPos;
+			float fDistance = vDir.Length();
+			vDir.Normalize();
+			cVector3f vRight = cMath_Vector3Cross(vDir, cVector3f_Down);
+			vRight.Normalize();
+			cVector3f vUp = cMath_Vector3Cross(vDir, vRight);
+			vUp.Normalize();
+			cMatrixf mtxNew = cMath_MatrixUnitVectors(vRight, vDir * pParticle.mfAlpha, vUp * -1, vPos);
+			
+			cParticleSystem@ pPS = cLux_ID_ParticleSystem(pParticle.m_idPS);
+			pPS.SetWorldMatrix(mtxNew);
+			
+			// normalize the matrix
+			mtxNew = cMath_MatrixUnitVectors(vRight, vDir, vUp * -1, vPos);
+			
+			int lNewIndex = mvNewPS.find(pParticle);
+			if (lNewIndex < 0)
+			{
+				if (pParticle.mState != ePowerParticleState_FadingOut)
+					pParticle.mState = ePowerParticleState_FadingOut;
+				
+				// Delay fading of out particles until in particles are done fading
+				if (pParticle.mbOut == false || bInParticlesFading == false) 
+				{
+					pParticle.mfAlpha -= afDeltaTime*4.0f;
+					if (pParticle.mfAlpha < 0) 
+						pParticle.mfAlpha = 0;
+				}
+			}
+			else
+			{
+				// remove from new list since we have updated it
+				mvNewPS.removeAt(lNewIndex);
+				
+				// Delay fading of out particles until in particles are done fading
+				if (pParticle.mbOut == false || bInParticlesFading == false) 
+				{
+					pParticle.mfAlpha += afDeltaTime*4.0f;
+					if (pParticle.mfAlpha > 1.0f) 
+					{
+						pParticle.mState = ePowerParticleState_Stable;
+						pParticle.mfAlpha = 1.0f;
+					}
+					else
+					{
+						pParticle.mState = ePowerParticleState_FadingIn;
+					}
+				}
+			}
+			
+			// color
+			cColor color = cColor_White;
+			if (pParticle.mbOut) color = cColor(0.7, 1, 0.7) * 1.2;
+			else color = cColor(1, 1, 0.7) * 1.2;
+			color.a = pParticle.mfAlpha;
+			pPS.SetColor(color);
+			
+			// Trail effect
+			if (pParticle.mbOut)
+			{
+				float fLengthPerParticle = 2.0f;
+				int lParticlesNeeded = fDistance/fLengthPerParticle;
+				float fRemainder = fDistance-lParticlesNeeded*fLengthPerParticle;
+				
+				// Create new particles
+				while (pParticle.mvTrailParticles.length() < lParticlesNeeded)
+				{
+					cParticleSystem@ pNewPS = GetEntity().CreateParticleSystem("Trail_"+pParticle.mvTrailParticles.length(), "extender_direction_indicator_trail", true, false);
+					pParticle.mvTrailParticles.push_back(pNewPS.GetID());
+				}
+				
+				// Destroy old particles
+				while (pParticle.mvTrailParticles.length() > lParticlesNeeded)
+				{
+					cLux_ID_ParticleSystem(pParticle.mvTrailParticles[pParticle.mvTrailParticles.length()-1]).KillInstantly();
+					pParticle.mvTrailParticles.removeLast();
+				}
+				
+				// Position each particle system correctly
+				for (int i = 0; i < pParticle.mvTrailParticles.length(); i++)
+				{
+					cParticleSystem@ pTrailPS = cLux_ID_ParticleSystem(pParticle.mvTrailParticles[i]);
+					cMatrixf mtxTrail = mtxNew;
+					cVector3f vTrailPos = vPos+(vDir*fRemainder*0.5f)+(vDir*fLengthPerParticle*i);
+					mtxTrail.SetTranslation(vTrailPos);
+					pTrailPS.SetWorldMatrix(mtxTrail);
+					pTrailPS.SetColor(color);
+				}
+			}
+		}
+		
+		// add new ps
+		//cLux_AddDebugMessage("Node: "+GetEntity().GetName());
+		for (int i = 0; i < mvNewPS.size(); ++i)
+		{
+			cPowerParticle@ pNewParticle = mvNewPS[i];
+			tString sParticle = pNewParticle.mbOut ? "extender_direction_indicator" : "extender_direction_indicator_in";
+			//cLux_AddDebugMessage("sParticle "+sParticle);
+			cParticleSystem@ pPS = GetEntity().CreateParticleSystem("PowerPS", sParticle, true, false);
+			pNewParticle.m_idPS = pPS.GetID();
+			mvPS.push_back(pNewParticle);
+		}
+	}	
+}
+
+//------------------------------------------------------------
+
+class cPowerExtender : cPowerNode
+{
+}
+
+//------------------------------------------------------------
+
+class cPowerEmitter : cPowerNode
+{
+}
+
+//------------------------------------------------------------
+
+class cPowerReceiver : cPowerNode
+{
+}
+
+//------------------------------------------------------------
+
+class cPowerParticle
+{
+	tID m_idToEnt;
+	tID m_idPS;
+	bool mbOut;
+	ePowerParticleState mState = ePowerParticleState_FadingIn;
+	float mfAlpha = 0.0f;
+	array<tID> mvTrailParticles;
+	
+	bool opEquals(cPowerParticle@ pOther)
+	{
+		return m_idToEnt == pOther.m_idToEnt && mbOut==pOther.mbOut;
+	}
+}
+
+//------------------------------------------------------------
+
+class cRadiusRule
+{
+	tID m_idFirstEnt;
+	tID m_idSecondEnt;
+	float mfRadius;
+	
+	bool opEquals(cRadiusRule@ pOther)
+	{
+		if ((m_idFirstEnt == pOther.m_idFirstEnt && m_idSecondEnt == pOther.m_idSecondEnt) ||
+			(m_idSecondEnt == pOther.m_idFirstEnt && m_idFirstEnt == pOther.m_idSecondEnt))
+				return true;
+		return false;
+	}
+}
+
+//----------------------------------------------------------------------------------------
+
+class cPowerMask
+{
+	tID m_idNode;
+	tID m_idArea;
+}
+
+//----------------------------------------------------------------------------------------
+
+class cScrDarkWorldPowerHandler : iScrUserModule, iScrUserModule_Interface, iScrDarkWorldPowerHandler_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		
+	}
+		
+	//------------------------------------------------------------
+	
+	void LoadUserConfig()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void SaveUserConfig()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INTERFACE
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetActive(bool abX)
+	{
+		mbActive = abX;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool IsActive()
+	{
+		return mbActive;
+	}
+	
+	//------------------------------------------------------------
+	
+	void AddExtender(cLuxMap@ pMap, tID a_idEnt, float afRadius, const tString &in asCallback)
+	{
+		cLux_AddDebugMessage("[DWPower] Adding power extender #" + (mvPowerNodes.size() + 1) + ": " + a_idEnt);
+		cPowerExtender newNode;
+		AddPowerNode(pMap, newNode, a_idEnt, ePowerNodeType_Extender, afRadius, asCallback);
+	}
+	
+	//------------------------------------------------------------
+	
+	void AddEmitter(cLuxMap@ pMap, tID a_idEnt, float afRadius, const tString &in asCallback)
+	{
+		cLux_AddDebugMessage("[DWPower] Adding power emitter #" + (mvPowerNodes.size() + 1) + ": " + a_idEnt);
+		cPowerEmitter newNode;
+		AddPowerNode(pMap, newNode, a_idEnt, ePowerNodeType_Emitter, afRadius, asCallback);
+	}
+	
+	//------------------------------------------------------------
+	
+	void AddReceiver(cLuxMap@ pMap, tID a_idEnt, const tString &in asCallback)
+	{
+		cLux_AddDebugMessage("[DWPower] Adding power receiver #" + (mvPowerNodes.size() + 1) + ": " + a_idEnt);
+		cPowerReceiver newNode;
+		AddPowerNode(pMap, newNode, a_idEnt, ePowerNodeType_Receiver, -1, asCallback);
+	}
+	
+	//------------------------------------------------------------
+	
+	void AddPowerNode(cLuxMap@ pMap, cPowerNode@ pNode, tID a_idEnt, ePowerNodeType aType, float afRadius, const tString &in asCallback)
+	{
+		pNode.m_idNode = a_idEnt;
+		pNode.mType = aType;
+		pNode.msMap = pMap.GetName();
+		pNode.mfRadius = afRadius;
+		pNode.msCallback = asCallback;
+		
+		mvPowerNodes.push_back(pNode);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetEntityPairRadius(const tString &in asFirst, const tString &in asSecond, float afRadius)
+	{
+		iLuxEntity@ pFirst = cLux_GetCurrentMap().GetEntityByName(asFirst);
+		if (pFirst is null) return;
+		
+		iLuxEntity@ pSecond = cLux_GetCurrentMap().GetEntityByName(asSecond);
+		if (pSecond is null) return;
+		
+		cRadiusRule newRule;
+		newRule.m_idFirstEnt = pFirst.GetID();
+		newRule.m_idSecondEnt = pSecond.GetID();
+		newRule.mfRadius = afRadius;
+		
+		for (int i = 0; i < mvRadiusRules.size(); ++i)
+		{
+			cRadiusRule@ pRule = mvRadiusRules[i];
+			if (pRule == newRule)
+			{
+				if (afRadius >= 0) pRule.mfRadius = afRadius;
+				else mvRadiusRules.removeAt(i);
+				return;
+			}
+		}
+		
+		if (afRadius >= 0) mvRadiusRules.push_back(newRule);
+	}
+	
+	//------------------------------------------------------------
+	
+	void AddMask(const tString &in asEntity, const tString &in asMaskArea)
+	{
+		iLuxEntity@ pNode = cLux_GetCurrentMap().GetEntityByName(asEntity);
+		if (pNode is null) return;
+		
+		iLuxEntity@ pMask = cLux_GetCurrentMap().GetEntityByName(asMaskArea);
+		if (pMask is null) return;
+		
+		cPowerMask newMask;
+		newMask.m_idNode = pNode.GetID();
+		newMask.m_idArea = pMask.GetID();
+		
+		mvPowerMasks.push_back(newMask);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetEntityEnabled(tID a_idEnt, bool abX)
+	{
+		for (int i = 0; i < mvPowerNodes.length(); i++)
+		{
+			cPowerNode@ pNode = mvPowerNodes[i];
+			if (pNode.m_idNode == a_idEnt)
+			{
+				pNode.SetEnabled(abX);
+				break;
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// MAP LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+		
+	}
+
+	//------------------------------------------------------------
+
+	void OnMapLeave(cLuxMap @apMap)
+	{
+		for (int i =0; i < mvPowerNodes.size(); ++i)
+		{
+			cPowerNode@ pNode = mvPowerNodes[i];
+			if (pNode is null || pNode.msMap == apMap.GetName())
+			{
+				cLux_AddDebugMessage("[DWPower] Remove power node: " + pNode.m_idNode);
+				mvPowerNodes.removeAt(0);
+				--i;
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void PreloadData(cLuxMap @apMap)
+	{
+		ParticleSystem_Preload("extender_direction_indicator");
+		ParticleSystem_Preload("extender_direction_indicator_in");
+		ParticleSystem_Preload("extender_direction_indicator_trail");
+	}
+	
+	//------------------------------------------------------------
+
+	void CreateWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void DestroyWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnEnterContainer(const tString&in asOldContainer)
+	{
+
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnLeaveContainer(const tString&in asNewContainer)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void VariableUpdate(float afDeltaTime)
+	{
+		if (mbActive == false) return;
+		if (mvPowerNodes.size() == 0) return;
+		
+		// do breadth first search
+		array<cPowerNode@> vQueue;
+		
+		for (int i = 0; i < mvPowerNodes.size(); ++i)
+		{
+			// reset nodes
+			cPowerNode@ pNode = mvPowerNodes[i];
+			if (pNode is null) continue;
+			if (pNode.GetEntity() is null) continue;
+			
+			pNode.mbVisited = false;
+			pNode.m_idFromNode = tID_Invalid;
+			pNode.mvNewPS.resize(0);
+			
+			// start with emitters
+			if (pNode.mbEnabled && pNode.GetEntity().IsActive() && pNode.mType == ePowerNodeType_Emitter)
+				vQueue.push_back(pNode);
+		}
+				
+		// evaluate power chain
+		while (vQueue.size() > 0)
+		{
+			// visit the first node in the queue
+			cPowerNode@ pNode = vQueue[0];
+			vQueue.pop_front();
+			pNode.mbVisited = true;
+			
+			// receivers don't transmit power
+			if (pNode.mType == ePowerNodeType_Receiver) continue;
+			
+			
+			// check connections
+			for (int i = 0; i < mvPowerNodes.size(); ++i)
+			{
+				cPowerNode@ pNeighbour = mvPowerNodes[i];
+				
+				if (pNeighbour.GetEntity() is null) continue;
+				if (pNeighbour.m_idNode == pNode.m_idNode) continue;
+				if (pNeighbour.m_idNode == pNode.m_idFromNode) continue;
+				if (pNeighbour.GetEntity().IsActive() == false) continue;
+				if (pNeighbour.mbEnabled == false) continue;
+				if (pNeighbour.mType == ePowerNodeType_Emitter) continue;
+				//if (pNeighbour.mType == ePowerNodeType_Receiver) continue;
+				
+				bool bMasked = false;
+				for (int j = 0; j < mvPowerMasks.length(); j++)
+				{
+					cPowerMask@ pMask = mvPowerMasks[j];
+					if (pMask.m_idNode == pNode.m_idNode)
+					{
+						cLuxArea@ pArea = cLux_ID_Area(pMask.m_idArea);
+						if (pNeighbour.GetEntity().CheckEntityCollision(pArea))
+						{
+							bMasked = true;
+							break;
+						}
+					}
+				}
+				if (bMasked) continue;
+				
+				// check if there's a rule determining the radius, otherwise use specified radius
+				float fDist = cMath_Vector3DistSqr(pNode.GetEntity().GetPosition(), pNeighbour.GetEntity().GetPosition());
+				float fRadius = GetRulesRadius(pNode.m_idNode, pNeighbour.m_idNode);
+				if (fRadius < 0) fRadius = pNode.mfRadius;
+				
+				// if neighbour is inside radius
+				if (fDist <= fRadius * fRadius)
+				{
+					// record out connection
+					cPowerParticle outPS;
+					outPS.m_idToEnt = pNeighbour.m_idNode;
+					outPS.mbOut = true;
+					pNode.mvNewPS.push_back(outPS);
+					//cLux_AddDebugMessage("Out: "+pNode.GetEntity().GetName());
+					
+					// record in connection
+					cPowerParticle inPS;
+					inPS.m_idToEnt = pNode.m_idNode;
+					inPS.mbOut = false;
+					pNeighbour.mvNewPS.push_back(inPS);
+					//cLux_AddDebugMessage("In: "+pNeighbour.GetEntity().GetName());
+					
+					// visit nodes only once
+					if (pNeighbour.mbVisited) continue;
+					
+					// add neighbour to queue
+					pNeighbour.m_idFromNode = pNode.m_idNode;
+					vQueue.push_back(pNeighbour);
+				}
+			}
+		}
+		
+		// activate entities that have power
+		for (int i = 0; i < mvPowerNodes.size(); ++i)
+		{
+			cPowerNode@ pNode = mvPowerNodes[i];
+			if (pNode.GetEntity() is null) continue;
+			
+			if (pNode.GetEntity().IsActive() == false && pNode.mbActive == false) continue;
+			
+			// set visited nodes to active
+			if (pNode.mbActive && pNode.mbVisited == false)
+			{
+				pNode.Deactivate();
+			}
+			else if (pNode.mbActive == false && pNode.mbVisited)
+			{
+				pNode.Activate();
+			}
+			
+//			cLux_AddDebugMessage("A " + pNode.GetEntity().GetName() + " " + pNode.mbActive);
+		}
+		
+		for (int i = 0; i < mvPowerNodes.size(); ++i)
+		{
+			mvPowerNodes[i].UpdateParticles(afDeltaTime);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	float GetRulesRadius(tID a_idFirst, tID a_idSecond)
+	{
+		if (mvRadiusRules.size() == 0) return -1;
+		
+		cRadiusRule rule;
+		rule.m_idFirstEnt = a_idFirst;
+		rule.m_idSecondEnt = a_idSecond;
+		for (int i = 0; i < mvRadiusRules.size(); ++i)
+		{
+			cRadiusRule@ pRule = mvRadiusRules[i];
+			if (pRule == rule) return pRule.mfRadius;
+		}
+		return -1;
+	}
+	
+	//------------------------------------------------------------
+	
+	
+	
+	//------------------------------------------------------------
+	
+	void PostUpdate(float afTimeStep)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnAction(int alAction, bool abPressed)
+	{
+
+	}
+	
+	//------------------------------------------------------------
+
+	void OnAnalogInput(int alAnalogId, const cVector3f &in avAmount)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnExitPressed()
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void AppGotInputFocus()
+	{
+	
+	}
+	void AppLostInputFocus()
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GUI
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+//	void OnGui(float afTimeStep){}
+	void OnDraw(float afFrameTime){}
+	void OnPostRender(float afFrameTime){}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool mbActive = true;
+	array<cPowerNode> mvPowerNodes;
+	array<cRadiusRule> mvRadiusRules;
+	array<cPowerMask> mvPowerMasks;
+	
+	//------------------------------------------------------------
+}

@@ -1,0 +1,447 @@
+#include "effect/Effects.hps"
+
+//------------------------------------------------------------
+
+class FadeVariable
+{
+	
+	//------------------------------------------------------------
+	
+	FadeVariable()
+	{
+		mfFadeSpeed = 0;
+	}
+	
+	//------------------------------------------------------------
+
+	void StartFade(float afCurrent, float afGoal, float afTime)
+	{
+		mfGoal = afGoal;
+		mfFadeSpeed = cMath_Abs(afCurrent - mfGoal) / cMath_Max(0.000001f, afTime);
+	}
+	
+	//------------------------------------------------------------
+
+	float FadeValue(float afCurrent, float afTimeStep)
+	{
+		if(IsComplete()) return 0;
+
+		float fDist = mfGoal - afCurrent;
+
+		if(fDist == 0)
+		{
+			//////////
+			// Goal reached, stop updating
+			mfFadeSpeed = 0;
+			return 0;
+		}
+		else
+		{
+			/////////////
+			// Fade closer to goal
+			float fAdd = cMath_Min(mfFadeSpeed * afTimeStep, cMath_Abs(fDist));
+			return cMath_Sign(fDist) * fAdd;
+		}
+	}
+	
+	//------------------------------------------------------------
+
+	bool IsComplete()
+	{
+		return mfFadeSpeed == 0;
+	}
+	
+	//------------------------------------------------------------
+
+	void Stop()
+	{
+		mfFadeSpeed = 0;
+	}
+	
+	//------------------------------------------------------------
+
+	float mfFadeSpeed;
+	float mfGoal;
+}
+
+//------------------------------------------------------------
+
+class cScrScreenMaterial
+{
+	//------------------------------------------------------------
+	
+	cScrScreenMaterial()
+	{
+		mlID = -1;
+		@mpEffect = null;
+	}
+	
+	//------------------------------------------------------------
+
+	cScrScreenMaterial(cPostEffect_ScreenMaterial@ apEffect, int alID, tString asMaterial, cVector2f avPosition, cVector2f avSize, float afDepthOffset)
+	{
+		@mpEffect = apEffect;
+		mlID = alID;
+		mfAlpha = 0;
+				
+		mfFadeInTime = 0;
+		mfStayTime = 1000000000;
+		mfFadeOutTime = 0;
+
+		mAlphaFade = FadeVariable();
+
+		mvPosition = avPosition;
+		mvSize = avSize;
+		mfDepth = afDepthOffset;
+		msMaterial = asMaterial;
+
+		///////////
+		// Create in effect
+		mpEffect.CreateScreenMaterial(mlID, msMaterial, mvPosition, mvSize, mfAlpha, mfDepth);
+	}
+	
+	//------------------------------------------------------------
+
+	void SetPostEffect(cPostEffect_ScreenMaterial@ apEffect)
+	{
+		///////////
+		// Create in new effect
+		@mpEffect = apEffect;
+		mpEffect.CreateScreenMaterial(mlID, msMaterial, mvPosition, mvSize, mfAlpha, mfDepth);
+	}
+
+	//------------------------------------------------------------
+
+	void Update(float afTimeStep)
+	{
+		///////////////
+		// First fade in, then stay, then fade out
+		if(mfFadeInTime > 0)
+		{
+			mfFadeInTime -= afTimeStep;
+		}
+		else if(mfStayTime > 0)
+		{
+			mfStayTime -= afTimeStep;
+
+			if(mfStayTime <= 0)
+			{
+				//////////////
+				// Start fading out the variables
+				mAlphaFade.StartFade(mfAlpha, 0, mfFadeOutTime);
+			}
+		}
+		else
+		{
+			mfFadeOutTime -= afTimeStep * 0.9;
+		}
+
+		///////////////
+		// Update alpha amount and position
+		mfAlpha += mAlphaFade.FadeValue(mfAlpha, afTimeStep);
+		mpEffect.SetScreenMaterialAlpha(mlID, mfAlpha);
+	}
+		
+	//------------------------------------------------------------
+
+	bool IsComplete()
+	{
+		return mfFadeOutTime < 0;
+	}
+	
+	//------------------------------------------------------------
+
+	int GetID()
+	{
+		return mlID;
+	}
+	
+	//------------------------------------------------------------
+
+	void FadeAlpha(float afValue, float afTime)
+	{
+		mAlphaFade.StartFade(mfAlpha, afValue, afTime);
+		mfFadeInTime = cMath_Max(mfFadeInTime, afTime);
+		mfStayTime = cMath_Max(mfStayTime, 0.0001f);
+	}
+	
+	//------------------------------------------------------------
+
+	void SetAlpha(float afValue)
+	{
+		mfAlpha = afValue;
+		mpEffect.SetScreenMaterialAlpha(mlID, mfAlpha);
+	}
+	
+	//------------------------------------------------------------
+
+	void Destroy()
+	{
+		mpEffect.DestroyScreenMaterial(mlID);
+	}
+	
+	//------------------------------------------------------------
+
+	////////////
+	// Properties
+	cVector2f mvPosition;
+	cVector2f mvSize;
+	float mfDepth;
+	float mfAlpha;
+	tString msMaterial;
+	int mlID;
+	
+	///////////
+	// Fade
+	FadeVariable mAlphaFade;
+
+	float mfFadeInTime;
+	float mfStayTime;
+	float mfFadeOutTime;
+
+	////////////
+	// Post effect
+	[nosave] cPostEffect_ScreenMaterial@ mpEffect;
+}
+
+
+//-----------------------------------------
+
+class cScrEffect_Screen : iScrEffect, iScrEffect_Interface, iScrEffect_Screen
+{
+	
+	//----------------------------------
+	
+	void Init()
+	{
+		mlIDPool = 0;
+	}
+
+	//----------------------------------
+	
+	void OnDestroy()
+	{
+		Reset();
+
+		cLux_GetViewport().GetPostEffectComposite().RemovePostEffect(mpEffect);
+		cGraphics_DestroyPostEffect(mpEffect);
+		@mpEffect = null;
+		mbEffectLoaded = false;
+	}
+	
+	void CreatePostEffect()
+	{
+		if(mbEffectLoaded == false)
+		{
+			//////////////////
+			// Create the post effect if null
+			@mpEffect = cast<cPostEffect_ScreenMaterial@>(cLux_GetViewport().GetPostEffectComposite().GetPostEffectFromType("ScreenMaterial"));
+
+			if(mpEffect is null)
+			{
+				@mpEffect = cGraphics_CreatePostEffect_ScreenMaterial();
+				cLux_GetViewport().GetPostEffectComposite().AddPostEffect(mpEffect, 250);
+			}
+
+			mbEffectLoaded = true;
+
+			for(int i = 0; i < mvScreenMaterials.size(); ++i)
+			{
+				mvScreenMaterials[i].SetPostEffect(mpEffect);
+			}
+		}
+	}
+	//----------------------------------
+
+	void LoadUserConfig()
+	{
+	}
+	
+	//----------------------------------
+	
+	/////////////////////////////////////////
+	// PULBIC METHODS
+	/////////////////////////////////////////
+	
+	//----------------------------------
+	
+	int Start(tString asMaterial, cVector2f avPosition, cVector2f avSize)
+	{
+		CreatePostEffect();
+
+		int lID = mlIDPool++;
+
+		mvScreenMaterials.push_back(cScrScreenMaterial(mpEffect, lID, asMaterial, avPosition, avSize, 0));
+		
+		mBaseObj.SetActive(true);
+
+		return lID;
+	}
+	
+	//------------------------------------------------------------
+
+	int Start(tString asMaterial, cVector2f avPosition, cVector2f avSize, float afTargetAlpha, float afFadeInTime, float afStayTime, float afFadeOutTime, float alDepth=0)
+	{
+		CreatePostEffect();
+		
+		int lID = mlIDPool++;
+
+		mvScreenMaterials.push_back(cScrScreenMaterial(mpEffect, lID, asMaterial, avPosition, avSize, alDepth / 100));
+
+		int lA = mvScreenMaterials.size() - 1;
+
+		mvScreenMaterials[lA].FadeAlpha(afTargetAlpha, afFadeInTime);
+		mvScreenMaterials[lA].mfStayTime = afStayTime + 0.00001f;
+		mvScreenMaterials[lA].mfFadeOutTime = afFadeOutTime;
+		
+		mBaseObj.SetActive(true);
+
+		return lID;
+	}
+	
+	//----------------------------------
+
+	void FadeOut(int alID, float afFadeTime)
+	{
+		for(int i = 0; i < mvScreenMaterials.size(); ++i)
+		{
+			if(mvScreenMaterials[i].GetID() == alID)
+			{
+				mvScreenMaterials[i].FadeAlpha(0, afFadeTime);
+
+				mvScreenMaterials[i].mfStayTime = 0;
+				mvScreenMaterials[i].mfFadeInTime = 0;
+				mvScreenMaterials[i].mfFadeOutTime = afFadeTime;
+
+				return;
+			}
+		}
+	}
+
+	//----------------------------------
+
+	void FadeAlpha(int alID, float afAlpha, float afFadeTime)
+	{
+		for(int i = 0; i < mvScreenMaterials.size(); ++i)
+		{
+			if(mvScreenMaterials[i].GetID() == alID)
+			{
+				mvScreenMaterials[i].FadeAlpha(afAlpha, afFadeTime);
+
+				return;
+			}
+		}
+	}
+	
+	//----------------------------------
+
+	void SetAlpha(int alID, float afAlpha)
+	{
+		for(int i = 0; i < mvScreenMaterials.size(); ++i)
+		{
+			if(mvScreenMaterials[i].GetID() == alID)
+			{
+				mvScreenMaterials[i].SetAlpha(afAlpha);
+				return;
+			}
+		}
+	}
+	
+	//----------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL CALLBACKS
+	/////////////////////////////////////////
+	
+	//----------------------------------
+	
+	void OnStart()
+	{
+	}
+
+	//----------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+		Reset();
+	}
+	
+	//----------------------------------
+	
+	void OnMapLeave(cLuxMap @apMap)
+	{
+		Reset();
+	}
+
+	//----------------------------------
+	
+	void Reset()
+	{
+		for(int i = 0; i < mvScreenMaterials.size(); ++i)
+		{
+			mvScreenMaterials[i].Destroy();
+		}
+
+		mvScreenMaterials.resize(0);
+	
+		if(mpEffect !is null)
+			mpEffect.Clear();
+	}
+
+	//----------------------------------
+	
+	
+	void Update(float afTimeStep)
+	{
+		if(mvScreenMaterials.size()==0)
+		{
+			mBaseObj.SetActive(false);
+		}
+		
+		CreatePostEffect();
+		
+		///////////////
+		// Update and remove completed
+		for(int i = 0; i < mvScreenMaterials.size(); ++i)
+		{
+			mvScreenMaterials[i].Update(afTimeStep);
+		}
+	}
+	
+	//----------------------------------
+	
+	void OnDraw(float afFrameTime)
+	{
+		if(cLux_GetCurrentMap() is null) 
+		{
+			mBaseObj.SetActive(false);
+			Reset();
+			return;
+		}
+		
+		for(int i = 0; i < mvScreenMaterials.size(); ++i)
+		{
+			if(mvScreenMaterials[i].IsComplete())
+			{
+				mvScreenMaterials[i].Destroy();
+				mvScreenMaterials[i--] = mvScreenMaterials[mvScreenMaterials.size() - 1];
+				mvScreenMaterials.pop_back();
+			}
+		}
+	}
+	
+	//----------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//----------------------------------
+	
+	[nosave] cPostEffect_ScreenMaterial@ mpEffect = null;
+	[nosave] bool mbEffectLoaded = false;
+	array<cScrScreenMaterial> mvScreenMaterials;
+	int mlIDPool;
+	
+	//----------------------------------
+}

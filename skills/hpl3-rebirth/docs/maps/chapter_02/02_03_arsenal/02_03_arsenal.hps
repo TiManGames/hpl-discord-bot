@@ -1,0 +1,2864 @@
+#include "interfaces/Map_Interface.hps"
+#include "base/Inputhandler_Types.hps"
+
+#include "custom/player/Player_Custom.hps"
+#include "custom/player/PlayerTypes_Custom.hps"
+
+#include "helpers/helper_map.hps"
+#include "helpers/helper_menu.hps"
+#include "helpers/helper_areas.hps"
+#include "helpers/helper_props.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_audio.hps"
+#include "helpers/helper_imgui.hps"
+#include "helpers/helper_sequences.hps"
+#include "helpers/helper_game.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_ai.hps"
+#include "helpers/helper_player.hps"
+#include "helper_components_custom.hps"
+#include "custom/helpers/helper_player_custom.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+#include "custom/helpers/helper_items.hps"
+#include "custom/helpers/helper_areas_custom.hps"
+#include "custom/helpers/helper_agent.hps"
+#include "custom/helpers/helper_physics.hps"
+#include "player/PlayerState_Struggle.hps"
+
+//--------------------------------------------------
+ 
+/*Place any global values here. These must be const variables as they will not be saved*/
+/*This is also the place for enums and classes, but these should be avoided whenever possible*/
+
+enum eArsenalPermaFail
+{
+	eArsenalPermaFail_Workshops,
+	eArsenalPermaFail_Storage,
+	eArsenalPermaFail_Relic,
+	eArsenalPermaFail_Explosion,
+	eArsenalPermaFail_BalconyFall,
+};
+ 
+//--------------------------------------------------
+ 
+class cScrMap : iScrMap
+{
+	//--------------------------------------------
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN CALLBACKS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+ 
+	////////////////////////////
+	// Set up map environment
+	void Setup()
+	{
+	    // Set up entities
+		Entity_PlayAnimation("ballista_trap","ballista_trap_loaded", 0.0, true);
+	
+		// Put display name entry in english.lang / Levels
+		GetBase().SetDisplayNameEntry("02-03-arsenal");
+		
+		// Set up color grading etc.
+		Effect_Bloom_FadeBrightPass(0.1f, 2);
+		Effect_Bloom_FadeBloomWidth(128, 0.6);
+		Effect_Bloom_FadeBloomFalloff(1.5f, 2);
+		Effect_Bloom_FadeBloomTint(1, 1, 1, 2);
+		
+		Pregnancy_SetStage(ePregStage_Stage1);
+		Pregnancy_SetBarksActive(true);
+		Pregnancy_SetBabyTalkStage(eBabyTalkStage_CavesToCisternStart);
+		Pregnancy_SetBabyKicksEnabled(false);
+		GhoulProgression_SetBarkStage(eGhoulBarkStage_Ill);
+		Player_SetAllowCheckBaby(true);
+		Pregnancy_SetBabyTalkSpecialSubject("BabyTalk_Initial");
+		
+		if (cScript_GetGlobalVarBool("Outpost_AnsweredRadio"))
+		{
+			FearHandler_SetWhisperStage(eFearWhisperStage_RadioToBabyKick);
+		}
+		else
+		{
+			FearHandler_SetWhisperStage(eFearWhisperStage_SalimToRadio);
+		}
+		
+		StruggleFlashHandler_SetActive(true);
+		StruggleFlashHandler_PreloadFlashGroupTextures(0);
+		StruggleFlashHandler_SetProgression(0);
+		
+		Player_SetAutoTeleportWhenBelowAltitude(-25.f);
+		
+	    //mask level light
+		cWorld@ pWorld = mBaseObj.GetWorld();
+		cLightMaskBox@ pMask = pWorld.GetLightMask("lightmask_inside");		
+		pWorld.GetDirectionalLight().SetMask(pMask);
+	}
+	
+	//-------------------------------------------------------
+		
+	void PreloadData()
+	{
+		/////////////////
+		// Preload gui
+		//ImGui_PreloadImage("some_image");
+
+		///////////////
+		// Preload particles
+		ParticleSystem_Preload("grenade_explosion.ps");
+		ParticleSystem_Preload("wooden_brace_damage.ps");
+		ParticleSystem_Preload("wood_collapse.ps");
+		
+		//////////////
+		// Preload screen effects
+		Material_Preload("player_damage_screen.mat");
+	}
+	
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run first time starting map
+	void OnStart()
+	{
+		//FearHandler_SetActive(false);
+		//Set GhoulProgresison limit
+		GhoulProgression_SetLimit(4);
+		
+		// Any general setup of script / entities
+		
+		Player_SetAmbientLight(0,0,0);
+//		Player_SetNightVisionStrength(0.30f);
+		Player_SetMapDeepShadow(0.10f);
+
+		Decal_SetDynamicVisible("Decal_Arrow_*",false);
+		//ParticleSystem_SetActive("PS_Gunpowder",false);
+		//ParticleSystem_SetActive("PS_Charcoal",false);
+		//ParticleSystem_SetActive("PS_Saltpeter",false);
+		
+		Entity_AddForce("brandon_corpse_1",cVector3f(0,0,0.1f),true,true);
+		
+		/////////////////////////
+		// Debug
+		if(cLux_ScriptDebugOn())
+		{
+			if (ItemType_GetCountInInventory("Lantern") < 1)
+			{
+				Item_AddToInventory("Lantern");
+				Item_SetContent(ItemType_GetFirstInInventory("Lantern"), "Oil", 8);
+			}
+			
+			Entity_SetActive("WorkshopDoor_Blockage_*",false);
+			Item_AddToInventory("ModernOilFixed");
+			Item_AddToInventory("Matchbook");
+			Item_AddToInventory("RelicRoomKey");
+			Item_AddToInventory("AlysDoll");
+			Item_AddToInventory("PocketFairchild");
+			
+			//Lamp_SetLit("arab_lamp_oil_hanging_01_1",true,true);
+			
+			SwingDoor_SetClosed("Win3_Shutter",true,false);
+		}
+		
+		
+		mlPermaFailStage = eArsenalPermaFail_Workshops;
+		
+		
+		Entity_SetVarBool("Interact_Bullet","HasCharcoal",false);
+		Entity_SetVarBool("Interact_Bullet","HasSulfur",false);
+		Entity_SetVarBool("Interact_Bullet","HasSaltpeter",false);
+		
+		Map_AddTimer("Timer_GrinderOpenDelay",.4f,"OnTimer_GrinderOpenDelay");
+		
+		Decal_SetDynamicVisible("Corpse_Impaled_*",false);
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when entering map
+	void OnEnter()
+	{	
+		
+		Game_AutoSave();
+		
+		Player_SetNightVisionEnabled(false);
+		// Updated 200403
+		Player_SetNightVisionBrightness(1.3f);
+		//Player_SetNightVisionRadius(5.5f);
+		
+		Music_PlayExt("A2_2_3_Arsenal_Ambience.ogg", true, 0.1f, 1.0f, 2.0f, 1.0f, eMusicPrio_BgAmb, true);
+
+		cLux_GetCurrentMap().GetEntityByName("corridor_stick_1").GetMainBody().SetCollide(false);
+		cLux_GetCurrentMap().GetEntityByName("corridor_stick_2").GetMainBody().SetCollide(false);
+		
+		if (cScript_GetGlobalVarBool("Outpost_Arsenal_CorridorTrapTriggered") == false)
+			Corridor_CreateRope();
+		else
+		{
+			Entity_SetActive("Trigger_Wire",false);
+		}
+		
+		if (cScript_GetGlobalVarBool("Outpost_Arsenal_GrenadeTriggered") == false)	
+			RelicRoom_CreateRope();
+		else	
+			Entity_SetInteractionDisabled("InteractAux_Hand",true);
+		
+		PlayerBody_SetActive(true);
+		FearHandler_SetPermaFailEnabled(true);
+		FearHandler_SetUpdateInterval(0.4f);
+        Heat_SetActive(false);
+		
+		if (cScript_GetGlobalVarBool("Outpost_Arsenal_CaptainExploded") == false)	
+		{
+			Decal_SetDynamicVisible("decal_destroyed_*",false);
+			Decal_SetDynamicVisible("decal_keyguy*",false);
+			Decal_SetDynamicVisible("decal_keyguyinout_*",false);
+		}
+		else
+		{
+			Decal_SetDynamicVisible("decal_cpt_vomit_*",false);
+		}
+		if (cScript_GetGlobalVarBool("Outpost_Arsenal_KeyGuyExploded") == false)	
+		{
+			Decal_SetDynamicVisible("decal_keyguy*",false);
+			Decal_SetDynamicVisible("decal_keyguyinout_*",false);
+		}
+		
+		
+		Entity_AddImpulse("stove_lid",cVector3f(.01f,0,0),true,true);
+		
+		//ParticleSystem_SetColor("charcoal_grinding",cColor(1,1,1,0));
+		
+		if (Entity_IsActive("sulfur_powder")) Entity_SetActive("InteractAux_PickupSulfurPowder",true);
+	}
+	
+	void OnRenderSolid(cRendererCallbackFunctions@ apFunctions)
+	{
+		//cVector3f vImpulse = cVector3f(-1,1,-0.7);
+		//apFunctions.GetLowLevelGfx().DrawLine(Map_GetEntity("grenade_1").GetPosition(),Map_GetEntity("grenade_1").GetPosition() + vImpulse*1,cColor(5,5,20));
+		if (cLux_ScriptDebugOn())
+		{
+			iPhysicsRope@ pRope = cLux_GetCurrentMap().GetPhysicsWorld().GetRope("RelicRope");
+			pRope.RenderDebug(apFunctions.GetLowLevelGfx());
+			
+		}
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when leaving map
+	void OnLeave()
+	{
+		
+	}
+	
+	bool mbCheckBoost = false;
+	
+	void Player_Boost(float afTimeStep)
+	{
+		iCharacterBody @pPlayerBody = cLux_GetPlayer().GetCharacterBody();
+		if (pPlayerBody.IsOnGround()) return;
+		if (pPlayerBody.GetMoveSpeed(eCharDir_Forward) <= 0) return;
+		
+		float fSpeed = pPlayerBody.GetVelocity(afTimeStep).Length();
+		Debug_Log("Player Speed: "+fSpeed);
+		
+		if (fSpeed < 3.8f)
+		{
+			pPlayerBody.AddForce(pPlayerBody.GetForward()*8000);
+			Debug_Log("ADD FORCE");
+		}
+		
+		mbCheckBoost = false;
+	}
+
+	//-------------------------------------------------------
+	
+	void Update(float afTimeStep) 
+	{	
+		if (mbCheckBoost) Player_Boost(afTimeStep);
+				
+		UpdateWindows();
+		UpdateGrenade(afTimeStep);
+		UpdateGrinder(afTimeStep);
+			
+		if (Entity_IsInteractedWith("brandon_corpse_1"))
+		{
+			if ((cLux_GetPlayer().GetCharacterBody().GetYaw() > cLux_GetPlayer().GetCamera().GetYawMaxLimit())) 
+				cLux_GetPlayer().GetCharacterBody().SetYaw(cLux_GetPlayer().GetCamera().GetYawMaxLimit());
+			if ((cLux_GetPlayer().GetCharacterBody().GetYaw() < cLux_GetPlayer().GetCamera().GetYawMinLimit()))
+				cLux_GetPlayer().GetCharacterBody().SetYaw(cLux_GetPlayer().GetCamera().GetYawMinLimit());		
+		}
+		if (mbAttachRopeToHook)
+		{
+			iPhysicsRope@ pRope = cLux_GetCurrentMap().GetPhysicsWorld().GetRope("RelicRope");
+			if (Rope_Exists("RelicRope"))
+				pRope.GetEndParticle().SetPosition(Map_GetEntity("hook").GetMainBody().GetJoint(0).GetPivotPoint(),true);
+		}
+		
+		//if (Entity_GetCollide("player","Trigger_CaptainRadius"))
+		//{
+		//	cLux_AddDebugMessage("GRENADE: "+Entity_IsActive("grenade_2"));// "HEHEJEH"+cMath_RandRectf(0,100));
+		//}
+	}
+	
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// The player has died.
+	void OnPlayerKilled(int alRecentDeaths, const tString&in asSource)
+	{
+		Debug_Log("PLAYER KILLED BY "+asSource);
+	}
+	
+	//-------------------------------------------------------
+	
+	int mlPermaFailStage = eArsenalPermaFail_Explosion;
+	
+	bool OnCollide_Player_SetPermaFail(const tString &in asParent, const tString &in asChild, int alState)
+	{		
+		if (alState != 1) return true;
+		
+		if (asParent == "Trigger_SetPermaFail_Workshops")			mlPermaFailStage = eArsenalPermaFail_Workshops;
+		else if (asParent == "Trigger_SetPermaFail_Storage") 		mlPermaFailStage = eArsenalPermaFail_Storage;
+		else if (asParent == "Trigger_SetPermaFail_Relic") 			mlPermaFailStage = eArsenalPermaFail_Relic;
+	
+		return true;
+	}
+	
+	bool OnPermaFail()
+	{	
+		switch (mlPermaFailStage)
+		{
+			case eArsenalPermaFail_Workshops:		PermaFail_Default("Workshops_*"); 		return true;
+			case eArsenalPermaFail_Storage:			PermaFail_Default("Storage_*"); 		return true;
+			case eArsenalPermaFail_Relic: 			PermaFail_Default("RelicRoom_*");		return true;
+			case eArsenalPermaFail_Explosion: 		PermaFail_Explosion();				 	return true;
+			case eArsenalPermaFail_BalconyFall: 	PermaFail_BalconyFall();			 	return true;
+		}
+
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	void PermaFail_Default(const tString &in asArea)
+	{
+		FearHandler_SetPermaFailRespawnArea("PermaFail_"+asArea);
+	}
+	
+	//-------------------------------------------------------
+	
+	void PermaFail_Explosion()
+	{
+		tString sPermaFailArea = "";
+		
+		if (Entity_GetCollide("player","Trigger_RelicRoom"))
+			sPermaFailArea = Entity_GetClosestTo("player","PermaFail_RelicRoom_*").GetName();
+		else
+			sPermaFailArea = Entity_GetClosestTo("player","PermaFail_Storage_*").GetName();
+		
+		FearHandler_SetPermaFailRespawnArea(sPermaFailArea);
+	}
+	
+	//-------------------------------------------------------
+	
+	void PermaFail_BalconyFall()
+	{
+		tString sPermaFailArea = "";
+		
+		if (mbPlankCollapse2)		sPermaFailArea = "PermaFail_RelicRoom_4";
+		else if (mbPlankCollapse1)	sPermaFailArea = "PermaFail_Balcony";
+		else						sPermaFailArea = "PermaFail_Storage_6";
+		
+		FearHandler_AddPermaFailScene("PosArea_PermaFail_B_Start", "PosArea_PermaFail_B_End", 8.f, 1.5f, true);
+		FearHandler_AddPermaFailScene("PosArea_PermaFail_A_Start", "PosArea_PermaFail_A_End", 5.f, 1.5f, true);
+		FearHandler_AddPermaFailScene("CamAnim_Climb", 5);
+		//FearHandler_AddPermaFailScene("PosArea_PermaFail_C_Start", "PosArea_PermaFail_C_End", 3, 3.f, 1., 0.025f, 0.05f, true);
+		//Map_AddTimer("Timer_ChangeCorpse",22,"OnTimer_ChangeCorpse");
+		FearHandler_SetPermaFailRespawnArea(sPermaFailArea);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_ChangeCorpse(const tString &in asTimer)
+	{
+		Decal_SetDynamicVisible("Corpse_Impaled*",true);
+		Decal_SetDynamicVisible("Corpse_Hanging*",false);
+		Entity_SetActive("Corpse_Hanging*",false);
+		Entity_SetActive("Corpse_Impaled*",true);
+	}
+		
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// To get when player makes input (mostly used for debug)
+	void OnAction(int alAction, bool abPressed) 
+	{
+		if(abPressed==false) return;
+		
+		if(alAction == eAction_Test1)
+		{
+			Item_AddToInventory("Saltpeter_Powder");
+			cScript_SetGlobalVarBool("Outpost_HasUsedTankGun", true);
+		}
+		else if(alAction == eAction_Test2)
+		{
+			Item_AddToInventory("Charcoal_Solid");
+			Entity_SetActive("Interact_AddCharcoal",true);
+		}
+		else if(alAction == eAction_Test3)
+		{
+			Item_AddToInventory("Sulfur_Solid");
+			Entity_SetActive("Interact_AddSulfur", true);
+		}
+		else if(alAction == eAction_Test4)
+		{
+			Item_AddToInventory("Charcoal_Powder");
+		}
+		else if(alAction == eAction_Test5)
+		{
+			Item_AddToInventory("Sulfur_Powder");
+		}
+		else if(alAction == eAction_Test6)
+		{
+			Item_AddToInventory("Bullet_Empty");
+		}
+		else if (alAction == eAction_Test7)
+		{
+			cLux_AddDebugMessage("SULFUR: "+ItemType_GetCountInInventory("Sulfur_Solid")); return;
+			Prop_SetHealth("relicroom_wall_breakable",0);
+			OnBreak_WallExit("relicroom_wall_breakable");
+		}
+		else if (alAction == eAction_Test8)
+		{
+			cColor pColSaltpeter = cColor(0.949f, 0.956f, 0.862f); // #f2f4dc
+			cColor pColSulfur = cColor(0.768f, 0.811f, 0.262f); // #c4cf43
+			cColor pColCharcoal = cColor(0.274f, 0.282f, 0.203f); // #464835
+			
+			ParticleSystem_CreateAtEntity("PS_Sulfur","dust_impact_simple_dark_oneshot.ps","Interact_BulletReady",false);
+			ParticleSystem_SetColor("PS_Sulfur",pColSulfur);
+			//ParticleSystem_SetActive("PS_Saltpeter",true);
+		}
+		else if (alAction == eAction_Test9)
+		{
+			//cLux_AddDebugMessage(Item_GetHeldType(eItemHandlerHand_Left));
+			Entity_SetActive("bottle_laudanum_2",false);
+			Entity_SetActive("Captain_Oil_3",false);
+			
+			//Grenade_Torn();
+		}
+		else if (alAction == eAction_Test0)
+		{
+			FearHandler_SetForcedAddFearRate(1,10,false); return;
+			//Entity_AddImpulse("player",cVector3f(100,100,0),true,false);
+			//Entity_AddForce("player",cVector3f(100,100,0),true,false);
+			Player_SetMoveSpeedMul(0);
+			//cVector3f vPlayerVel = Player_GetVelocity();
+			//Player_AddBodyForce(vPlayerVel,false);
+			//Effect_ImageTrail_Start(3,0,3,0);
+			Map_AddTimer("Timer_ResetPlayerSpeed",3,"OnTimer_ResetPlayerSpeed");
+			//cVector3f vDist = Entity_GetDeltaToEntity("player","door").Normalize();
+			//cVector3f vForce = cVector3f(60000,0,0)/vDist;
+			
+			Player_AddContinuosBodyForceAwayFromEntity("door",1,3000,true,4);
+			
+			//Player_AddBodyForceAwayFromEntity("door",vForce.Length(),false);
+			tString sAnim = (Entity_IsInPlayerFOV("door")) ? "knocked_back_by_explosion" : "knocked_forward_by_explosion";
+			PlayerBody_PlayAnimation(sAnim,ePlayerBodyAnimationLayer_FullBody,false,false,true);
+			//PlayerBody_PlayCutsceneAnimation("knocked_back_by_explosion",false,0.6f);
+			//Player_AddContinuosBodyForce(vForce,10);
+			//
+			//PlayerBody_PlayCutsceneAnimation("knocked_back_by_explosion",false,0.6f);
+			//PlayerBody_PlayCutsceneAtEntity("protects_herself_from_the_explosion_larm","player",false,4);
+			//PlayerBody_PlayAnimation("protects_herself_from_the_explosion_rarm",ePlayerBodyAnimationLayer_FullBody,false,true,true);
+		}
+		else if (alAction == eAction_TestPlus)
+		{
+			Sketchbook_AddAllIdeas(false);
+		}
+		else if (alAction == eAction_TestMinus)
+		{
+			Entity_SetActive("candle_storage_right*", false);
+						Entity_SetActive("blown_candle_right*",true);
+			//Rope_Detach(msRelicRope,"hook");
+			//Rope_Detach(msRelicRope,msGrenade);
+			//Rope_SetTotalLength(msRelicRope,0);
+			//Rope_SetActive(msRelicRope,false,false);
+		}
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// This only used for pure debug purposes when info needs to printed.
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afY)
+	{
+		//afY = cLux_DrawDebugText("My Debug value:"+..., afY);
+		return afY;
+	}
+ 
+	//-------------------------------------------------------
+ 
+	//} END MAIN CALLBACKS
+ 
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN FUNCTIONS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+ 
+	/*Put any variables that are used in more than one scene here.*/
+	
+	bool mbTensionFOV = false;
+	float mfTensionFOV = 0.f;
+	float mfFOV = cLux_GetPlayer().GetCamera().GetFOV();
+ 
+	//-------------------------------------------------------
+ 
+	/*Put any functions that are used in more than one scene here.*/
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_ResetPlayerSpeed(const tString &in asTimer)
+	{
+		Player_SetMoveSpeedMul(1);
+	}
+		
+	//-------------------------------------------------------
+	
+	bool OnCollide_ToggleNightVision(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		if (alState==1) Player_SetNightVisionEnabled(true);
+		else if (alState==-1) Player_SetNightVisionEnabled(false);
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	void UpdateWindows()
+	{
+		if (Entity_IsSleeping("Win1_Shutter_Left") == false || Entity_IsSleeping("Win1_Shutter_Right") == false)
+			Light_SetBrightness("light_win1_*", 1.0f*(SwingDoor_GetOpenAmount("Win1_Shutter_Left")+SwingDoor_GetOpenAmount("Win1_Shutter_Right"))/2);
+			
+		if (Entity_IsSleeping("Win2_Shutter") == false)
+			Light_SetBrightness("light_win2_*", 1.0f*(SwingDoor_GetOpenAmount("Win2_Shutter")));
+			
+		if (Entity_IsSleeping("Win3_Shutter") == false)
+			Light_SetBrightness("light_win3_*", 1.0f*(SwingDoor_GetOpenAmount("Win3_Shutter")));
+			
+		if (Entity_IsSleeping("Win4_Shutter_Left") == false || Entity_IsSleeping("Win4_Shutter_Right") == false)
+			Light_SetBrightness("light_win4_*", 1.0f*(SwingDoor_GetOpenAmount("Win4_Shutter_Left")+SwingDoor_GetOpenAmount("Win4_Shutter_Right"))/2);
+	}
+	
+	//-------------------------------------------------------
+
+	//} END MAIN FUNCTIONS
+
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 1 *PLAYER EXPLORES THE WORKSHOP AND FINDS TOOLS TO MAKE THE TANK SHELL*
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+ 
+		/////////////////////////////////////////
+		// General
+		//{//////////////////////////////////////
+		 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are used by many events in Scene 1 here.*/
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are used in more than one event in Scene 1 here.*/
+	 
+		//-------------------------------------------------------
+		
+		//} END General	
+	 
+		/////////////////////////////////////////
+		// Event A *Player explores the entrance and finds the LEDGER*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are only used in Scene 1, Event A here.*/
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are only used in Scene 1, Event A here.*/
+		
+		bool On_Trigger_Intro(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Voice_Play("Dialogue_Intro");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_OilTutorial(const tString &in asEntity)
+		{
+			bool bOilTutorialized = cScript_GetGlobalVarBool("Outpost_LQ_OilTutorialized");
+			
+			if (bOilTutorialized) return;
+			
+			Hint_ShowHint_Hold("Hints", "HintOil", true);
+			cScript_SetGlobalVarBool("Outpost_LQ_OilTutorialized", true);
+		}
+ 
+		//-------------------------------------------------------
+	 
+		//} END Event A *Player explores the entrance and finds the LEDGER*
+		
+		/////////////////////////////////////////
+		// Event B *Player finds the SHELL PRESS in the workshop*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are only used in Scene 1, Event B here.*/
+		
+		bool mbKnowsAboutIngredients = false;
+		
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are only used in Scene 1, Event B here.*/
+		
+		void OnLookAt_Ingredients(const tString &in asEntity, int alState)
+		{
+			if (mbKnowsAboutIngredients==false)
+			{
+				Sketchbook_AddIdea("find_charcoal");
+				Sketchbook_AddIdea("find_saltpeter");
+				Sketchbook_AddIdea("find_sulfur");
+				
+				if (mbKnowsSaltpeterLocation)
+					Sketchbook_AddIdea("find_saltpeterlocation");
+				
+				// Check if player already checked off some ideas
+				if (Entity_IsActive("pickup_inv_item_1")==false) //charcoal
+					Sketchbook_CompleteIdea("find_charcoal");
+					
+				if (Entity_IsActive("sulphur_solution_1")==false)
+				{
+					Sketchbook_CompleteIdea("find_sulfurlocation");
+					Sketchbook_CompleteIdea("find_sulfur");
+				}
+				
+				// Saltpeter, would be better to do with global variable but wanna avoid adding variables at this point
+				if (ItemType_GetCountInInventory("Saltpeter_Powder") > 0 ||
+					ItemType_GetCountInInventory("SaltpeterSulfur_Powder") > 0 ||
+					ItemType_GetCountInInventory("CharcoalSaltpeter_Powder") > 0 ||
+					ItemType_GetCountInInventory("GunpowderMix") > 0 ||
+					Entity_GetVarBool("Interact_Bullet","HasSaltpeter"))
+				{
+					Sketchbook_CompleteIdea("find_saltpeterlocation");
+					Sketchbook_CompleteIdea("find_saltpeter");
+				}
+			}
+			
+			mbKnowsAboutIngredients = true;
+			
+			bool bShellGoalSet = cScript_GetGlobalVarBool("Outpost_HasUsedTankGun");
+			if (!bShellGoalSet) return;
+			
+			cScript_SetGlobalVarBool("Outpost_LQ_SeenGunpowderRecipe",true);
+			Voice_Play("Dialogue_ReadsGunpowerMix");
+			Entity_SetPlayerLookAtCallback(asEntity,"");
+		}
+ 
+		//-------------------------------------------------------
+	 
+		//} END Event B *Player finds the SHELL PRESS in the workshop*
+		
+		/////////////////////////////////////////
+		// Event C *Player obtains information on where to find the ingredients*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are only used in Scene 1, Event C here.*/
+		
+		tString msCorridorRope = "CorridorRope";
+		bool mbKnowsSaltpeterLocation = false;
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functionsthat are only used in Scene 1, Event C here.*/
+		
+		void OnRead_SaltpeterNote(const tString &in asEntity)
+		{
+			mbKnowsSaltpeterLocation = true;
+			if (mbKnowsAboutIngredients && Sketchbook_GetSketchActive("find_saltpeterlocation_complete")==false)
+				Sketchbook_AddIdea("find_saltpeterlocation");
+		}
+		
+		//------------------------------------------------------- 
+		
+		void Corridor_CreateRope()
+		{
+			cVector3f vStart = Map_GetEntity("corridor_stick_1").GetPosition();
+			cVector3f vEnd = Map_GetEntity("corridor_stick_2").GetPosition();
+			
+			Rope_Create(msCorridorRope,vStart,vEnd,.3f,.1f,100,.5f,true,false);
+			Rope_SetTotalLength(msCorridorRope,2.f);
+			Rope_AttachStart(msCorridorRope,"corridor_stick_1");
+			Rope_AttachEnd(msCorridorRope,"corridor_stick_2");
+			Rope_SetEndParticleMass(msCorridorRope,0);
+			OnTimer_RopeMaterial(msCorridorRope);// Map_AddTimer(msCorridorRope,0.2f,"OnTimer_RopeMaterial");
+			Rope_SetCollideGroup(msCorridorRope,"rope");
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_TriggerCorridorTrap(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState != 1) return true;
+			if (Map_GetEntity(asChild).GetMainBody().GetMass() == 0 && asChild != "Player") return true;
+			
+			if (asChild == "Player")
+				Effect_Rumble_Start(0.1,0.1);
+			
+			cScript_SetGlobalVarBool("Outpost_Arsenal_CorridorTrapTriggered",true);
+			//Rope_SetCollide(msCorridorRope,true,false);
+			//Prop_SetStaticPhysics("corridor_stick_1",false);
+			Rope_Detach(msCorridorRope,"corridor_stick_1");
+			Rope_SetStartParticleMass(msCorridorRope,1);
+			
+			
+			iPhysicsRope@ pRope = cLux_GetCurrentMap().GetPhysicsWorld().GetRope(msCorridorRope);
+			pRope.GetParticle(0).AddForce(cVector3f_Forward*300);	
+			pRope.GetParticle(1).AddForce(cVector3f_Forward*300);	
+			pRope.GetParticle(2).AddForce(cVector3f_Forward*300);	
+			pRope.GetParticle(3).AddForce(cVector3f_Forward*300);	
+				
+			Map_AddTimer("Timer_ActivateTrap",0.6f,"OnTimer_ActivateTrap");
+			Map_AddTimer("Timer_ActivateTrap",0.7f,"OnTimer_ArrowHitWall");
+			Map_AddTimer("Timer_ActivateTrap",0.8f,"OnTimer_RemoveArrowCollide");
+			FearHandler_SetForcedAddFearRate(1,5,true,10,-10,0.5f);
+			Sound_Play("Sound_CrossbowTrigger_*", 1.0f);
+			Sound_Play("Sound_verb_trigger", 1.0f);
+			
+			Entity_SetActive(asParent,false);
+			
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ActivateTrap(const tString &in asTimer)
+		{
+			Entity_AddCollideCallback("player","spear_extractright_1","OnCollide_Player_Hit");
+			Map_AddTimer("Timer_ArrowDidntHit",1,"OnTimer_ArrowDidntHit");
+			Prop_MoveLinearTo("spear_extractright_1","spear_extractright_End",100,50,0,true);
+			Sound_CreateAtEntity("Sound_ArrowFire", "02_03_arsenal/crossbow/arrow_fire", "02_04_ballista_trap_1");
+			Sound_Play("Sound_ArrowWhoosh", 1.0f);
+			Sound_Play("Sound_verb_fire", 1.0f);
+			Entity_PlayAnimation("ballista_trap","ballista_trap_fire", 0.0, false);
+			Map_AddTimer("Timer_Trapfired",0.8f,"OnTimer_Trapfired");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_Trapfired(const tString &in asTimer)
+		{
+		    Entity_PlayAnimation("ballista_trap","ballista_trap_postfire", 0.0, true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ArrowHitWall(const tString &in asTimer)
+		{
+			ParticleSystem_CreateAtEntity("PS_Hit","wooden_brace_damage.ps","PosArea_TrapPfx",false);
+			Decal_SetDynamicVisible("Decal_Arrow_*",true);
+			Sound_CreateAtEntity("Sound_ArrowHit", "02_03_arsenal/crossbow/arrow_wall_hit", "PosArea_TrapPfx");
+			Music_Play("A2_2_3_Crossbow.ogg", 0.7f, false, eMusicPrio_MinorEvent);
+			Sound_Play("Sound_verb_impact", 1.0f);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ArrowDidntHit(const tString &in asTimer)
+		{
+			Voice_Play("Dialogue_TrapFiresAndMisses");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_RemoveArrowCollide(const tString &in asTimer)
+		{
+			Entity_RemoveCollideCallback("player","spear_extractright_1");
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_Hit(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Player_GiveDamage(0.1f, 0.35f, eDamageType_Default, asParent);
+			Player_AddBodyForceAwayFromEntity(asParent, 15000.f, true);
+			Voice_Play("Dialogue_TrapFiresAndHits",1);
+			Map_RemoveTimer("Timer_ArrowDidntHit");
+			return false;
+		}
+	 
+		//} END Event C *Player obtains information on where to find the ingredients*
+		
+		/////////////////////////////////////////
+		// Event D *Player collects the CHARCOAL BRICK*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are only used in Scene 1, Event D here.*/
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functionsthat are only used in Scene 1, Event D here.*/
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_GrinderOpenDelay(const tString &in asTimer)
+		{
+			PhysicsSlideDoor_SetOpenAmount("grinder_door",0.4f);
+		}
+		
+		//------------------------------------------------------- 
+		
+		void OnInteract_Charcoal(const tString &in asEntity)
+		{
+			Voice_PlayDelayed("Dialogue_FoundCharcoal",0.6f);
+			Sound_CreateAtEntity("Sound_CharcoalPickup","02_03_arsenal/temp/coal_pickup",asEntity);
+			
+			if (Sketchbook_GetSketchActive("find_charcoal"))
+				Sketchbook_CompleteIdea("find_charcoal");
+			
+			//if (PhysicsSlideDoor_GetClosed("grinder_door") == false)
+			//	Entity_SetActive("Interact_AddCharcoal",true);
+		}
+
+		//-------------------------------------------------------
+	 
+		//} END Event D *Player collects the CHARCOAL BRICK*
+		
+		/////////////////////////////////////////
+		// Event E *Player collects the SHELL SLUG*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are only used in Scene 1, Event E here.*/
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functionsthat are only used in Scene 1, Event E here.*/
+		
+		void OnInteract_GetShell(const tString &in asEntity)
+		{
+			Entity_SetInteractionDisabled("tank_shell_casing_1",false);
+		}
+ 
+		//-------------------------------------------------------
+	 
+		//} END Event E *Player collects the SHELL SLUG*
+	 
+	//} END SCENE 1
+	
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 2 *PLAYER REACHES THE STORAGE ROOM AND FINDS A WAY INSIDE THE RELIC ROOM*
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+ 
+		/////////////////////////////////////////
+		// General
+		//{//////////////////////////////////////
+		 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are used by many events in Scene 2 here.*/
+		
+		bool mbGrenadePulled = false;
+		bool mbGrenadeActivated = false;
+		int mpDOF = 0;
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are used in more than one event in Scene 2 here.*/
+		
+		bool OnCollide_GateVisibility(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			tString sEnt = Entity_GetVarString(asParent,"");
+			iLuxEntity@ pEnt = cLux_GetCurrentMap().GetEntityByName(sEnt);
+			
+			if (alState == 1)
+			{
+				mpDOF = Effect_DoF_Start(0.4f,30,0.1f,0.5f);
+				pEnt.GetMeshEntity().SetCoverageAmount(0.75f);
+			}
+			if (alState == -1)
+			{
+				Effect_DoF_FadeOut(mpDOF,0.2f);
+				pEnt.GetMeshEntity().SetCoverageAmount(1.f);
+				
+			}
+			return true;
+		}
+	 
+		//-------------------------------------------------------
+		
+		//} END General	
+	 
+		/////////////////////////////////////////
+		// Event A *Player explores the Storage Room and observes the Relic Room*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are only used in Scene 2, Event A here.*/
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functionsthat are only used in Scene 2, Event A here.*/
+		
+		void OnLookAt_Grenade(const tString &in asEntity, int alState)
+		{
+			if (ItemType_GetCountInInventory("RelicRoomKey") != 0) return;
+			
+			Voice_Play("Dialogue_SeeGrenade");
+			//Music_Play("A2_2_3_Grenade_Notice.ogg", 0.25f, false, eMusicPrio_MinorEvent);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnLookAt_Sulfur(const tString &in asEntity, int alState)
+		{
+			if (mbKnowsAboutIngredients == false) return;
+			
+			Sketchbook_AddIdea("find_sulfurlocation");
+			Voice_Play("Dialogue_SeeSulfur");
+			Entity_SetPlayerLookAtCallback(asEntity,"");
+		}
+		 
+		//-------------------------------------------------------
+	 
+		//} END Event A *Player explores the Storage Room and observes the Relic Room*
+		
+		/////////////////////////////////////////
+		// Event B *Player throws up while exploring the Storage Room*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are only used in Scene 2, Event B here.*/
+			 
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are only used in Scene 2, Event B here.*/
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_ActivateWhatHappenedHere(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			//Voice_Play("Dialogue_SeeTortureScene");
+			Entity_SetActive("Trigger_WhatHappenedHere",true);
+		    return false;
+		}
+		
+		//------------------------------------------------------- 
+		
+		bool OnCollide_Player_WhatHappenedHere(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Voice_Play("Dialogue_SeeTortureScene");
+			Music_Play("A2_2_3_Corpse_Discover.ogg", 0.25f, false, eMusicPrio_MinorEvent);
+			Map_AddTimer("Timer_CorpseRoomMusic", 17.0f, "OnTimer_CorpseMusicRoom");
+			return false;
+		}
+		
+		//------------------------------------------------------- 
+		
+		void OnLookAt_WhatHappenedHere(const tString &in asEntity, int alState)
+		{
+			Voice_Play("Dialogue_SeeTortureScene");
+			Music_Play("A2_2_3_Corpse_Discover.ogg", 0.25f, false, eMusicPrio_MinorEvent);
+			Map_AddTimer("Timer_CorpseRoomMusic", 17.0f, "OnTimer_CorpseMusicRoom");
+		}
+		 
+		//-------------------------------------------------------
+		
+		void OnTimer_CorpseMusicRoom(const tString &in asTimer)
+		{
+			Entity_SetActive("Trigger_CorpseMusic", true);
+			Music_Stop(6.0f, eMusicPrio_MinorEvent);
+		}
+		
+		//-------------------------------------------------------
+
+		bool OnTrigger_PlayCorpseMusic(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState == 1)
+			{
+				Music_PlayExt("A2_2_3_Corpse_Ambience.ogg", true, 0.15f, 1.0f, 10.0f, 0.0f, eMusicPrio_SceneAmb, true);
+				return true;
+			}
+			else
+			{
+				Music_Stop(10.0f, eMusicPrio_SceneAmb);
+				return true;
+			}
+		}
+		
+		//-------------------------------------------------------
+	 
+		//} END Event B *Player throws up while exploring the Storage Room*
+		
+		/////////////////////////////////////////
+		// Event C *Player obtains the RELIC ROOM KEY and unlocks the RELIC ROOM DOOR*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are only used in Scene 2, Event C here.*/		
+			 
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are only used in Scene 2, Event C here.*/
+		
+		void OnLookAt_ActivateKeyPickup(const tString &in asEntity, int alState)
+		{
+			Entity_SetActive("InteractAux_Key",true);
+			Entity_SetInteractionDisabled("temp_key",false);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool CanUse_RelicKey(const tString &in asItemType, const tString &in asItemID, const tString &in asPickedEntity)
+		{
+			return (asPickedEntity == "door" || (asPickedEntity == "InteractAux_Hook" && mbDisarmedTrap == false));
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnUse_RelicKey(const tString &in asItemType, const tString &in asItemID, const tString &in asTargetEntity, const tString &in asItemEntity, float afTimeElapsed, float afTimeStep)
+		{
+			if (Entity_GetCollide("player","Trigger_RelicRoom"))
+			{
+				Entity_SetActive("key_attached_inside",true);
+				Prop_AlignRotation("key_attached_inside","key_attached_inside_end",10,8,1,true,"RelicRoom_Unlock");
+			}
+			else
+			{
+				Entity_SetActive("key_attached_outside",true);
+				Prop_AlignRotation("key_attached_outside","key_attached_outside_end",10,8,1,true,"RelicRoom_Unlock");
+			}
+			
+			Sound_CreateAtEntity("Sound_DoorUnlock","level_entity_shared/doors/relic_door/relic_door_unlock","door",0,true);
+			Item_RemoveFromInventory(ItemType_GetFirstInInventory("RelicRoomKey"));
+			Entity_SetActive("Trigger_KeyHole_*", false);
+			
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_RelicDoor(const tString &in asEntity)
+		{			
+			if (mbGrenadeActivated) return;
+			
+			//if (Sound_Exists("Sound_DoorUnlock") == false) Sound_CreateAtEntity("Sound_DoorUnlock","level_entity_shared/doors/relic_door/relic_door_locked","door");	
+
+			if (Map_TimeHasPassed("Timer_SwingRope",0.5f))
+				Map_AddTimer("Timer_SwingRope",0,"OnTimer_SwingRope");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_SwingRope(const tString &in asTimer)
+		{
+			iPhysicsRope@ pRope = cLux_GetCurrentMap().GetPhysicsWorld().GetRope(msRelicRope);
+			pRope.GetParticle(4).AddForce(cVector3f(0,100,50));	
+			//pRope.GetParticle(6).AddForce(cVector3f(0,200,50));		
+			//Map_GetEntity("door").GetBodyFromName("Body_2").AddImpulse(cVector3f_Left);
+			Map_GetEntity("door").GetBodyFromName("Body_2").AddImpulse(cVector3f(0.04f,0,0));
+		}
+		
+		//-------------------------------------------------------
+		
+		void RelicRoom_Unlock(const tString &in asPropName)
+		{
+			SwingDoor_SetLocked("door",false,false);
+			Entity_SetActive("Trigger_OpenDoor",true);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_InsideRelicRoom(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			bool bDisableCabinet = (alState == 1) ? false : true;
+			Entity_SetInteractionDisabled("arab_cabinet_door_right_1",bDisableCabinet);
+
+			return true;
+		}
+ 
+		//-------------------------------------------------------
+	 
+		//} END Event C *Player obtains the RELIC ROOM KEY and unlocks the RELIC ROOM DOOR*
+		
+		/////////////////////////////////////////
+		// Event D *Player disarms the WIRE TRAP from the RELIC ROOM DOOR*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are only used in Scene 2, Event D here.*/
+		
+		bool mbDisarmedTrap = false;
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are only used in Scene 2, Event D here.*/
+		
+		void OnInteractLeave_Player_Grenade(const tString &in asEntity)
+		{
+			Sound_Stop("Sound_RopeCreak",0.3f);
+			Sound_Stop("Sound_GrenadeRattleLoop",0.3f);
+			Player_ResetCameraLimits();		
+			Map_AddTimer("Timer_RemoveFearFromGrenade",2,"OnTimer_RemoveFearFromGrenade");
+			Prop_MoveLinearTo("grenade_1","PosArea_GrenadeStart",1,1.5f,2,true);
+			Player_FadeLookSpeedMulTo(1, 0.5f);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_HookInteractable(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState == 1)
+			{
+				Entity_SetInteractionDisabled("hook",false);
+			}
+			else
+			{
+				if (!mbDisarmedTrap)
+				{
+					Entity_SetInteractionDisabled("hook",true);
+				}
+			}	
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_GrenadeInteractable(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (mbGrenadeActivated) return false;
+			
+			if (alState == 1)
+			{
+				Entity_SetInteractionDisabled("grenade_1",false);
+			}
+			else
+			{
+				if (!mbDisarmedTrap)
+					Entity_SetInteractionDisabled("grenade_1",true);
+			}
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_Player_Hook(const tString &in asEntity)
+		{
+			if (mbGrenadePulled) return;
+			if (mbGrenadeActivated) return;
+			
+			Map_AddTimer("Timer_CheckHookPulled",0.01f,"OnTimer_CheckHookPulled");
+			Map_AddTimer("Timer_CheckHoldingHook",0.0f,"OnTimer_CheckHoldingHook");
+			
+			if (mbDisarmedTrap) return;
+
+			Player_StartLookAt("Trigger_HookLookAt",5,1,1,false);
+			Sound_CreateAtEntity("Sound_RopeCreak","02_03_arsenal/trap/rope_creak",asEntity,0.1f,false,2);
+			Sound_CreateAtEntity("Sound_GrenadeRattleLoop","02_03_arsenal/trap/grenade_rattle_loop",asEntity);
+		}
+		
+		void OnInteractLeave_Player_Hook(const tString &in asEntity)
+		{
+			
+			if (mbDisarmedTrap) return;
+			
+			Sound_Stop("Sound_RopeCreak",0.3f);
+			Sound_Stop("Sound_GrenadeRattleLoop",0.3f);
+			Player_StopLookAt(1);
+			Player_StartLookAt("hook",5,1,1,true);
+			Map_AddTimer("Timer_RemoveHookLookAt",0.5f,"OnTimer_RemoveHookLookAt");
+			Map_AddTimer("Timer_RemoveFearFromGrenade",2,"OnTimer_RemoveFearFromGrenade");
+			//Player_FadeFOVMulTo(mfFOV,2.f);
+			mbTensionFOV = false;
+		}
+		
+		//-------------------------------------------------------
+		
+		float mfYawLimit = 10;
+		float mfPitchLimit = 10;
+				
+		void OnInteract_Player_Grenade(const tString &in asEntity)
+		{		
+			cCamera@ pCam = cLux_GetPlayer().GetCamera();
+			float fYaw = cMath_ToDeg(pCam.GetYaw());
+			float fPitch = cMath_ToDeg(pCam.GetPitch());		
+			Player_SetYawLimits(fYaw-mfYawLimit,fYaw+mfYawLimit);
+			Player_SetPitchLimits(fPitch,fPitch);
+			
+			Map_AddTimer("Timer_StartCheckingGrenade",0.2,"OnTimer_StartCheckingGrenade");
+			Player_SetLookSpeedMul(0.f);
+			
+			Sound_CreateAtEntity("Sound_RopeCreak","02_03_arsenal/trap/rope_creak",asEntity,0.1f,false,2);
+			Sound_CreateAtEntity("Sound_MetalCreak","prototype/doors_hinges/metal/metal_latch/metal_latch_creak",asEntity,0.1f,false,1);
+			Sound_CreateAtEntity("Sound_GrenadeRattle","02_03_arsenal/trap/grenade_rattle",asEntity);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool mbCheckGrenade = false;
+		
+		void OnTimer_StartCheckingGrenade(const tString &in asTimer)
+		{
+			mbCheckGrenade = true;
+		}
+		
+		bool OnCollide_Player_PullRope(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (mbDisarmedTrap) return false;
+
+			Grenade_Torn();
+			return false;
+		}
+		
+		void OnTimer_CheckHookPulled(const tString &in asTimer)
+		{
+			if (mbGrenadePulled) return;
+			
+			//TO DO: This timer keeps on running after the player releases the grab. Needs to be fixed.
+			
+			if (Entity_GetCollide("hook","Trigger_PullRopeBorder_1") || Entity_GetCollide("hook","Trigger_PullRopeBorder_2") || 
+				Entity_GetCollide("hook","Trigger_PullRopeBorder_3") || Entity_GetCollide("hook","Trigger_PullRopeBorder_4") || 
+				Entity_GetCollide("hook","Trigger_PullRopeBorder_5") || Entity_GetCollide("hook","Trigger_PullRopeBorder_6") ||
+				Entity_GetCollide("hook","Trigger_PullRopeBorder_7") || Entity_GetCollide("hook","Trigger_PullRopeBorder_8")) 
+			{
+				//Player_ChangeStateToNormal(); // drop hook
+				//Entity_AddImpulse("hook",cVector3f(0,0.1f,0),true,true);
+				Sound_CreateAtEntity("Sound_RopeBreak","02_03_arsenal/trap/rope_break","hook");
+				mbGrenadePulled = true;
+				
+				Rope_Detach(msRelicRope,"grenade_1");
+				Rope_SetCollide(msRelicRope,true,false);
+				Rope_SetStartParticleMass(msRelicRope,1);
+				Grenade_Activate();
+			}
+			else
+			{
+				//Debug_Log("Check Pull");
+				Map_RestartCurrentTimer();
+				return;
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_CheckHoldingHook(const tString &in asTimer)
+		{
+			cLux_AddDebugMessage("CHEDK");
+			if (Entity_IsInteractedWith("hook"))
+			{
+				//if (!mbTensionFOV)
+				//	Player_FadeFOVMulTo(mfFOV+0.1f,1.f);
+
+				FearHandler_SetForcedAddFearRate(0.5f,1,false,2,10,-10);
+				mbTensionFOV = true;
+				Map_RestartCurrentTimer();
+				
+				if (Map_TimerExists("Timer_RemoveFearFromGrenade"))
+					Map_RemoveTimer("Timer_RemoveFearFromGrenade");
+				
+			}
+			else
+			{
+				Sound_Stop("Sound_RopeCreak",0.3f);
+				Sound_Stop("Sound_GrenadeRattleLoop",0.3f);
+				Player_StopLookAt(1);
+				Player_StartLookAt("hook",5,1,1,true);
+				Map_AddTimer("Timer_RemoveHookLookAt",0.5f,"OnTimer_RemoveHookLookAt");
+				Map_AddTimer("Timer_RemoveFearFromGrenade",2,"OnTimer_RemoveFearFromGrenade");
+				//Player_FadeFOVMulTo(mfFOV,2.f);
+				mbTensionFOV = false;
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		bool mbPullGrenade = false;
+		
+		void UpdateGrenade(float afTimeStep)
+		{
+			
+			iCharacterBody@ pPlayerBody = cLux_GetPlayer().GetCharacterBody();
+			cCamera@ pCamera = cLux_GetPlayer().GetCamera();
+			
+			if (Entity_IsInteractedWith("grenade_1") && mbCheckGrenade)
+			{
+				FearHandler_SetCameraRollActive(false);
+				///////////////////////
+				// Align body
+				if (pPlayerBody.GetYaw() > pCamera.GetYawMaxLimit())
+					pPlayerBody.SetYaw(pCamera.GetYawMaxLimit());
+				if (pPlayerBody.GetYaw() < pCamera.GetYawMinLimit())
+					pPlayerBody.SetYaw(pCamera.GetYawMinLimit());	
+					
+				//if (!mbTensionFOV)
+				//	Player_FadeFOVMulTo(mfFOV-.4f,1.f);
+					
+				//cLux_AddDebugMessage("DIFF MAX: "+(pCamera.GetYawMaxLimit() - pCamera.GetYaw())+" DIFF MIN: "+(pCamera.GetYawMinLimit() - pCamera.GetYaw()));
+					
+				if (!mbPullGrenade)
+				{
+					if (cLux_GetInputHandler().GetGamepadWasLastDeviceUsed())
+						Player_FadeLookSpeedMulTo(0.08f, 0.2f);
+					else
+						Player_FadeLookSpeedMulTo(0.013f, 0.2f);
+					cLux_AddDebugMessage("LOKK SPEED: "+Player_GetLookSpeedMul());
+					
+					if (pCamera.GetYawMaxLimit() - pCamera.GetYaw() > 0.3f)// ||
+						//pCamera.GetYawMinLimit() - pCamera.GetYaw() < -0.3f )
+					{
+						//cLux_AddDebugMessage("DIFF MAX: "+(pCamera.GetYawMaxLimit() - pCamera.GetYaw())+" DIFF MIN: "+(pCamera.GetYawMinLimit() - pCamera.GetYaw()));
+						cLux_AddDebugMessage("PULLING");
+						if (Sound_Exists("Sound_GrenadeRattle"))
+							Sound_Stop("Sound_GrenadeRattle",0);
+						Sound_CreateAtEntity("Sound_Warning","02_03_arsenal/trap/grenade_rattle","grenade_1");
+						
+						//Player_SetLookSpeedMul(1);
+						//Player_ChangeStateToNormal();
+						cLux_AddDebugMessage("TORN!");
+						Grenade_Torn();
+						//Prop_MoveLinearTo("grenade_1","PosArea_GrenadeEnd",0.5f,1,0,false,"OnEndOfMove_TearGrenade");
+						//Prop_AlignRotation("grenade_1","PosArea_GrenadeEnd",0.5f,1,0.5f,true,"");
+						mbPullGrenade = true;
+					}
+					
+				}
+				else
+				{
+					Player_FadeLookSpeedMulTo(0.3f, 0.5f);
+					Prop_MoveLinearTo("grenade_1","PosArea_GrenadeEnd",0.2f,1,0,false,"OnEndOfMove_TearGrenade");
+				}
+
+				if (pCamera.GetYaw() < pCamera.GetYawMaxLimit()-cMath_ToRad(1) &&
+					pCamera.GetYaw() > pCamera.GetYawMinLimit()+cMath_ToRad(1))
+				{
+					//cLux_AddDebugMessage("NOT PULLING");
+					Prop_MoveLinearTo("grenade_1","PosArea_GrenadeStart",1,1.5f,0.5f,true);
+					//Prop_AlignRotation("grenade_1","grenade_0",0.5f,1,0.5f,true,"");
+					mbPullGrenade = false;
+				}
+				
+				
+					
+				FearHandler_SetForcedAddFearRate(0.8f,1,false,2,10,-10);
+				mbTensionFOV = true;
+				Map_RestartCurrentTimer();
+				
+				if (Map_TimerExists("Timer_RemoveFearFromGrenade"))
+					Map_RemoveTimer("Timer_RemoveFearFromGrenade");
+			}
+			else
+			{
+				mbCheckGrenade = false;
+				mbPullGrenade = false;
+				mbTensionFOV = false;
+				FearHandler_SetCameraRollActive(true);
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_RemoveHookLookAt(const tString &in asTimer)
+		{
+			Player_StopLookAt(0.02f);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_RemoveFearFromGrenade(const tString &in asTimer)
+		{
+			FearHandler_SetForcedAddFearRate(-10,4,false);			
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTorn_Release(const tString &in asEntity)
+		{
+			Entity_SetActive("Sticky_Rope",false);
+			Entity_SetActive("InteractAux_Hook",false);
+			Entity_SetPlayerInteractCallback(asEntity,"",true);
+			Entity_RemoveEntityAttachment("hook");
+			Player_StopLookAt(1);
+			Sound_Stop("Sound_RopeCreak",0.5f);
+			Sound_CreateAtEntity("Sound_Unhook","03_04_pillar_room/config_device/config_ring_position_lock",asEntity);
+			mbDisarmedTrap = true;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Grenade_PulledFromHand(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			cLux_AddDebugMessage("PULLED");
+			Grenade_Torn();
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnEndOfMove_TearGrenade(const tString &in asEntity)
+		{
+			Player_ChangeStateToNormal();
+			cLux_AddDebugMessage("TORN!");
+			Grenade_Torn();
+		}
+		
+		//-------------------------------------------------------
+		
+		void Grenade_Torn()
+		{
+			if (mbGrenadeActivated || mbGrenadePulled) return;
+			
+			FearHandler_SetForcedAddFearRate(1,5,false,10,-10);
+			cLux_GetCurrentMap().GetEntityByName("hook").GetMainBody().SetMass(0);
+			Rope_Detach(msRelicRope,"grenade_1");
+			Rope_SetStartParticleMass(msRelicRope,1);
+			Rope_SetEndParticleMass(msRelicRope,1);
+			Rope_SetCollide(msRelicRope,true,false);
+			mbAttachRopeToHook = true;
+			
+			//Player_ResetCameraLimits();
+			//Entity_RemoveEntityAttachment("hook");
+			Entity_SetActive("Sticky_Grenade",false);
+			Entity_SetActive("InteractAux_Hook",false);
+			Player_StopLookAt(1);
+			Grenade_Activate();
+		}
+				
+		//-------------------------------------------------------
+				
+		void OnDetach_TriggerGrenade(const tString &in asStickyArea, const tString &in asBodyName)
+		{
+			Grenade_Torn();
+		}
+ 
+		//-------------------------------------------------------
+	 
+		//} END Event D *Player disarms the WIRE TRAP from the RELIC ROOM DOOR*
+		
+		/////////////////////////////////////////
+		// Event E *Player enters the RELIC ROOM from the RELIC ROOM DOOR*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are only used in Scene 2, Event E here.*/
+		
+		tString msRelicRope = "RelicRope";
+		bool mbAttachRopeToHook = false;
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functionsthat are only used in Scene 2, Event E here.*/
+		
+		void RelicRoom_CreateRope()
+		{
+			cVector3f vStart = Map_GetEntity("grenade_1").GetPosition()+cVector3f(0,0.05,0);
+			iPhysicsBody@ pBody = cLux_GetCurrentMap().GetEntityByName("hook").GetBody(0);
+			iPhysicsJoint@ pJoint = pBody.GetJoint(0);
+
+			cVector3f vEnd = pBody.GetWorldPosition();
+			if(pJoint !is null) vEnd = pJoint.GetPivotPoint();
+			
+			Rope_Create(msRelicRope,vStart,vEnd,0.1f,0.1f,100,0.5f,false,false);
+			Rope_SetTotalLength(msRelicRope,1.1f);
+			Rope_AttachStart(msRelicRope,"grenade_1");
+			Rope_AttachEnd(msRelicRope,"hook");
+			Rope_SetEndParticleMass(msRelicRope,0);
+			OnTimer_RopeMaterial(msRelicRope);//Map_AddTimer(msRelicRope,0.2f,"OnTimer_RopeMaterial");
+			//Rope_SetCollideGroup(msRelicRope,"+hook");
+		}
+
+		//-------------------------------------------------------
+	
+		void OnTimer_RopeMaterial(const tString &in asTimer)
+		{
+			Rope_CreateGfx(asTimer,"entities/arabic_fort/ab_interior_tileable_rope_01.mat",0.005f);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Door_Open(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (mbDisarmedTrap) return false;
+			
+			//cLux_GetCurrentMap().GetEntityByName("hook").GetMainBody().GetJoint(0).Break();
+			cLux_GetCurrentMap().GetEntityByName("hook").GetMainBody().SetMass(0);
+			Rope_Detach(msRelicRope,"grenade_1");
+			Rope_SetStartParticleMass(msRelicRope,1);
+			Rope_SetEndParticleMass(msRelicRope,1);
+			Rope_SetCollide(msRelicRope,true,false);
+			mbAttachRopeToHook = true;
+			
+			Grenade_Activate();
+			return false;
+		}
+ 
+		//-------------------------------------------------------
+	 
+		//} END Event E *Player enters the RELIC ROOM from the RELIC ROOM DOOR
+		
+		/////////////////////////////////////////
+		// Event F *Player enters the RELIC ROOM from the RELIC ROOM WINDOW*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are only used in Scene 2, Event f here.*/
+		
+		bool mbPlankCollapse1 = false;
+		bool mbPlankCollapse2 = false;
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functionsthat are only used in Scene 2, Event F here.*/
+	
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_CanInteractWindow(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState == -1 && SwingDoor_GetOpenAmount("Win3_Shutter") > 0.5f)
+				Entity_SetInteractionDisabled("Win3_Shutter",true);
+				
+			if (alState == 1)
+				Entity_SetInteractionDisabled("Win3_Shutter",false);
+
+			return true;
+		}
+		
+		bool OnCollide_UnlockWindow(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState != -1) return true;
+			SwingDoor_SetBlocked("Win2_Shutter",false,true);
+			return false;
+		}
+		
+		bool OnCollide_Player_PlankCreak(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState != 1) return true;
+			
+			Sound_CreateAtEntity("Sound_PlankCreak","02_04_living_quarters/floor_plank/floor_plank_creak",asChild);
+			Sound_AddClosedCaption("01_02_caves","CC_WoodCreak",0.8f);
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_PlanksFall(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (mbPlankCollapse1) return false;
+			
+			Entity_SetInteractionDisabled("ab_debris_brick01_*",false);
+			FearHandler_SetForcedAddFearRate(.5f,5.f,false,2);
+			PlankFall(1);
+			return false;
+		}
+		
+		bool OnCollide_Player_PlankPressure(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			bool bSound = (Entity_GetVarInt(asParent, "") == 1) ? true : false;
+			if (alState == 1)
+			{
+				
+				if (bSound)
+				{
+					cLux_AddDebugMessage("COLLIDE: "+asParent);
+					Sound_CreateAtEntity("Sound_PlankCreak","02_04_living_quarters/floor_plank/floor_plank_creak",asChild);
+					Sound_AddClosedCaption("01_02_caves","CC_WoodCreak",0.8f);
+				}
+				Prop_AlignRotation(asParent,asParent+"_end",10,5,0,true);
+			}
+			else
+			{
+
+				Prop_AlignRotation(asParent,asParent+"_start",10,5,0,true);
+			}
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+				
+		bool OnCollide_PlankFall2(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (mbPlankCollapse2) return false;
+			if (!mbPlankCollapse1) return false;
+			
+			FearHandler_SetForcedAddFearRate(.8f,5.f,false,2);
+			PlankFall(2);
+			Voice_Play("Dialogue_LandLedge");
+			Entity_SetActive("Trigger_JumpBoost",false);
+			return false;
+		}
+		
+		bool OnCollide_PlayerBoost(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (SwingDoor_GetOpenAmount("") > .2f) return true;
+			mbCheckBoost = (alState == 1) ? true : false;
+			
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void PlankFall(int alStage)
+		{
+			if (alStage == 1)
+			{
+				//ParticleSystem_CreateAtEntity("Pfx_Dust","wood_collapse.ps","plank_fall_5",false);
+				//Sound_CreateAtEntity("Sound_PlankBreak","02_04_living_quarters/floor_plank/floor_plank_splinter","plank_fall_5");
+				//Prop_SetStaticPhysics("plank_fall_5",false);
+				//Entity_AddImpulse("plank_fall_5",cVector3f_One,false,false);
+				mbPlankCollapse1 = true;
+			}
+			else
+			{
+				ParticleSystem_CreateAtEntity("Pfx_Dust","wood_collapse.ps","plank_fall2_21",false);
+				Sound_CreateAtEntity("Sound_PlankBreak","02_04_living_quarters/floor_plank/floor_plank_splinter","plank_fall2_21");
+				Prop_SetStaticPhysics("plank_fall2_*",false);
+				Entity_AddImpulse("plank_fall2_*",cVector3f(0.1f,0.1f,0.1f),false,false);
+				mbPlankCollapse2 = true;
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_BlockWindow(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState == 1)
+				SwingDoor_SetBlocked("window_2_shutter_1",true,false);
+			else
+				SwingDoor_SetBlocked("window_2_shutter_1",false,false);	
+				
+			return true;
+		}
+	 
+		//} END Event F *Player enters the RELIC ROOM from the RELIC ROOM WINDOW*
+		
+		/////////////////////////////////////////
+		// Event G *Player enters the RELIC ROOM from the DAMAGED BAR*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are only used in Scene 2, Event G here.*/
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are only used in Scene 2, Event G here.*/
+		
+		void OnBreak_WallExit(const tString &in asEntity)
+		{
+			Entity_SetInteractionDisabled(asEntity,false);
+			cLux_GetCurrentMap().GetEntityByName(asEntity).GetBodyFromName("breakable").SetMass(10);
+		}
+		
+		//-------------------------------------------------------
+	 
+		//} END Event G *Player enters the RELIC ROOM from the DAMAGED BAR*
+		
+		/////////////////////////////////////////
+		// Event H *Player triggers the GRENADE trap*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are only used in Scene 2, Event H here.*/
+		
+		tString msGrenade = "grenade_2";
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are only used in Scene 2, Event H here.*/
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_ExtendTimer(const tString &in asEntity)
+		{
+			if (Map_TimerExists("Timer_Explosion"))
+			{
+				Map_RemoveTimer("Timer_Explosion");
+				Map_AddTimer("Timer_ExplosionExtend",3.f,"OnTimer_Explosion");
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void Grenade_Activate()
+		{
+			if (mbGrenadeActivated) return;
+			
+			FearArea_SetGivesFear("Fear_1",true);
+			Map_AddTimer("Timer_ResetFearAreas",10,"OnTimer_ResetFearAreas");
+			
+			Entity_SetActive("Trigger_LookAtGrenade",false);
+			Entity_SetActive("Trigger_Shake",false);
+			Entity_SetActive("grenade_1",false);
+			Entity_SetActive("grenade_2",true);
+			Map_GetEntity("grenade_2").GetBodyFromName("handle").SetMass(0.5f);
+			
+			Music_PlayExt("A2_2_3_Grenade_Activate.ogg", false, 0.5f, 1.0f, 3.0f, 0.0f, eMusicPrio_BigEvent, false);
+			Sound_CreateAtEntity("Sound_GrenadePin", "02_03_arsenal/grenade/grenade_pin", "grenade_2");
+			
+			Voice_StopAll();
+			Voice_PlayDelayed("Dialogue_GrenadeFizzing",0.6f);
+			
+			if (mbDisarmedTrap)
+				Entity_AddImpulse("grenade_2",cVector3f(0,-6,2),true,true);
+			else
+			{
+				if (SwingDoor_GetLocked("door"))
+					Entity_AddImpulse("grenade_2",cVector3f(0,-6,2),true,true); //Entity_AddImpulse("grenade_2",cVector3f(-2.1,1,2),true,true);
+				else
+					Entity_AddImpulse("grenade_2",cVector3f(0,-12,2),true,true);
+				
+			}
+			//FearHandler_SetForcedAddFearRate(0.6,3,false);
+			Map_AddTimer("Timer_Explosion",4.3f,"OnTimer_Explosion");
+			
+			cScript_SetGlobalVarBool("Outpost_Arsenal_GrenadeTriggered", true);
+			mbGrenadeActivated = true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ResetFearAreas(const tString &in asTimer)
+		{
+			FearArea_SetGivesFear("Fear_1",false);
+			FearArea_SetGivesFear("Fear_1",false);
+		}
+		
+		//-------------------------------------------------------
+		
+		void Entity_ExplodeSurrounding(const tString &in asEntity, float afDist, float afImpulse)
+		{
+			cLux_ProfileStart("EXPLODE");
+			
+			cVector3f vPos = cLux_GetCurrentMap().GetEntityByName(asEntity).GetPosition();
+			
+			array<iPhysicsBody@> vNearbyBodies;
+			array<iPhysicsBody@> vClosestBodies;
+			array<iLuxEntity@> vNearbyEntities;
+			
+			cVector3f vMin = vPos - cVector3f_One*afDist*0.6f;
+			cVector3f vMax = vPos + cVector3f_One*afDist*0.6f;
+			
+			vMin = vPos - cVector3f_One*afDist/2;
+			vMax = vPos + cVector3f_One*afDist/2;
+			cLux_GetCurrentMap().GetPhysicsWorld().GetBodiesInAABB(vMin,vMax,vClosestBodies);
+			cLux_AddDebugMessage("BODIES: "+vClosestBodies.length());
+			for (int i = 0; i < vClosestBodies.length(); i++)
+			{
+				// PUSH
+				iPhysicsBody@ pBody = vClosestBodies[i];
+				if (pBody is null) continue;
+				iLuxEntity@ pEnt = cLux_GetBodyEntity(pBody);
+				if (pEnt is null) continue;
+				if (pEnt.GetEntityType() != eLuxEntityType_Prop) continue;		
+				if (pEnt.GetClassName() == "cScrPropPickup" ||
+					pEnt.GetClassName() == "cScrPropReadable")
+				{
+					continue;
+				}
+				
+				cVector3f vDir = pBody.GetWorldPosition() - cLux_GetCurrentMap().GetEntityByName(asEntity).GetPosition();
+				float fDist = vDir.Length();
+				vDir.Normalize();
+				float fDistMul = 1 - (fDist/afDist);
+				fDistMul = cMath_Clamp(fDistMul, 0.1f, 1);
+				float fMassMul = 1 - cMath_Clamp(pBody.GetMass(),0,1);
+				fMassMul = cMath_Clamp(fMassMul, 0.5f,1);
+				cVector3f vFinalImpulse = vDir*afImpulse*fDistMul*fMassMul;
+				//cLux_AddDebugMessage("PREIMPULSE: "+pEnt.GetName());
+				pBody.AddImpulse(vFinalImpulse);
+				//cLux_AddDebugMessage("IMPULSED: "+pEnt.GetName());
+				
+				
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_Explosion(const tString &in asTimer)
+		{
+			if (Entity_GetCollide(msGrenade,"Trigger_SulfurDud"))
+			{
+				Grenade_RadiusDud();
+			}
+			else
+			{
+				float fDist = Entity_GetDeltaToEntity(msGrenade,"player").Length();
+				
+				if (fDist < 1.5f)
+				{
+					Grenade_RadiusDud();
+				}
+				else
+				{
+					// EXPLODE
+					
+					Effect_Shake_Start(0.5f, 0.5f, 0.2f, 0.75f, 0.75f, 0);
+					
+					if (fDist < 6)
+					{		
+						bool bLOS1 = cLux_CheckLineOfSight(Map_GetEntity(msGrenade).GetPosition(), cLux_GetPlayer().GetCamera().GetPosition(), false, false, null);
+						bool bLOS2 = cLux_CheckLineOfSight(Map_GetEntity(msGrenade).GetPosition(), cLux_GetPlayer().GetCharacterBody().GetFeetPosition()+cVector3f(0,0.05f,0), false, false, null);
+						
+						Debug_Log("HEAD: "+bLOS1+" FEET "+bLOS2);
+						
+						if (bLOS1 == false && bLOS2 == false) 
+							Grenade_RadiusSafe();
+						else
+							Grenade_RadiusDamage();
+						
+					}
+					else
+						Grenade_RadiusSafe();
+						
+					iPhysicsBody@ pGrenade = Map_GetEntity(msGrenade).GetMainBody();
+					
+					cLuxArea@ pCaptainArea = cLux_ID_Area(Map_GetEntity("Trigger_CaptainRadius").GetID());
+					cLuxArea@ pRightArea = cLux_ID_Area(Map_GetEntity("Trigger_RightSide").GetID());
+					cLuxArea@ pLeftArea = cLux_ID_Area(Map_GetEntity("Trigger_LeftSide").GetID());
+					
+					
+					
+					if (pCaptainArea.CheckBodyCollision(pGrenade,cLux_GetCurrentMap()))
+					{
+						
+						// Give tiny extra push to the door to make it look open in case it bounces closed
+						Map_AddTimer("Timer_OpenDoor",1.5f,"OnTimer_OpenDoor");
+						SwingDoor_PushOpen("door",1,1);
+						SwingDoor_SetLocked("door",false,true);
+						
+						mbAttachRopeToHook = false;
+						Prop_SetStaticPhysics("Captain_Chair",false);
+						Entity_SetInteractionDisabled("Captain_Chair",false);
+						Entity_SetActive("Captain_Flag",false);
+						Entity_SetActive("Captain_Oil_*",false);
+						Entity_SetActive("bottle_laudanum_2",false);
+						Entity_SetActive("brandon_corpse_1",false);
+						Entity_SetActive("arab_pillow_01_1",false);
+						//Entity_SetActive("Captain_Exploded",true);
+						Prop_SetHealth("relicroom_wall_breakable",0);
+						OnBreak_WallExit("relicroom_wall_breakable");
+						Entity_SetActive("intact_*", false);
+						Entity_SetActive("destroyed_*", true);
+						Decal_SetDynamicVisible("decal_destroyed_*",true);
+						Decal_SetDynamicVisible("decal_cpt_vomit_*",false);
+						Entity_SetActive("keyguy_*", true);
+						Decal_SetDynamicVisible("decal_keyguy_*",true);
+						Decal_SetDynamicVisible("decal_keyguyinout_*",true);
+						Entity_SetActive("Readable_LefevresNote_1",false);
+						Entity_SetActive("Readable_LefevresNote_2",true);
+						Entity_SetActive("bottle_laudanum_empty_*",false);
+						Entity_SetActive("pen_fancy_1", false);
+						Entity_SetActive("candle_gate_left", false);
+						Entity_SetActive("candle_gate_right", false);
+						Entity_SetActive("blown_candle_gate_*", true);
+						Rope_SetActive(msRelicRope,false,false);
+						Entity_SetActive("hook",false);
+						//cLux_GetCurrentMap().GetEntityByName("hook").GetMainBody().SetMass(1);
+						//Entity_RemoveEntityAttachment("hook");
+						//Tear_ForceTear("hook");
+						Entity_SetActive("Trigger_HookInteractable",false);
+						//Entity_SetInteractionDisabled("hook", false);
+						
+						cScript_SetGlobalVarBool("Outpost_Arsenal_CaptainExploded",true);
+						cScript_SetGlobalVarBool("Outpost_Arsenal_KeyGuyExploded",true);
+						
+						// TO DO: Swap key corpse
+						//Entity_SetActive("lq_corpse_drag",false);
+						//Entity_SetActive("deadcaptain_2",true);
+						
+						if (Entity_Exists("temp_key"))
+						{
+							if (SwingDoor_GetLocked("door"))
+								Entity_SetActive("temp_key_exploded", true);
+							else
+								Entity_SetActive("temp_key_exploded_grab", true);
+							Entity_SetActive("temp_key", false);
+						}
+						
+					}
+					
+					if (pRightArea.CheckBodyCollision(pGrenade,cLux_GetCurrentMap()))
+					{					
+						Prop_SetHealth("relicroom_wall_breakable",0);
+						OnBreak_WallExit("relicroom_wall_breakable");
+						Entity_SetActive("candle_storage_right*", false);
+						Entity_SetActive("blown_candle_right*",true);
+						
+						if (Entity_GetCollide("french_wine_1","Trigger_RightSide"))
+							Prop_SetHealth("french_wine_1",0);
+					}
+					
+					if (pLeftArea.CheckBodyCollision(pGrenade,cLux_GetCurrentMap()))
+					{
+						Prop_SetStaticPhysics("box",false);
+						Entity_SetActive("candle_storage_left_1", false);
+						Entity_SetActive("blown_candle_left_1",true); 
+						Entity_SetActive("keyguy_*", true);
+						Decal_SetDynamicVisible("decal_keyguy_*",true);
+						
+						cScript_SetGlobalVarBool("Outpost_Arsenal_KeyGuyExploded",true);
+						
+						// TO DO: Swap key corpse
+						//Entity_SetActive("lq_corpse_drag",false);
+						//Entity_SetActive("deadcaptain_2",true);
+						
+						Entity_SetActive("InteractAux_Key",false);
+						Entity_SetActive("lantern_stairs",false);
+						Entity_SetActive("archaeology_lamp_broken_rigid_1", true);
+						
+						Entity_SetActive("beduin_carpet_tent_door_2", false);
+						Entity_SetActive("beduin_carpet_tent_door_1", true);
+						
+						if (Entity_Exists("temp_key"))
+						{
+							if (SwingDoor_GetLocked("door"))
+								Entity_SetActive("temp_key_exploded", true);
+							else
+								Entity_SetActive("temp_key_exploded_grab", true);
+							Entity_SetActive("temp_key", false);
+						}
+						
+					}
+											
+					if (Entity_GetCollide(msGrenade,"Trigger_GrenadeOutside_1") || Entity_GetCollide(msGrenade,"Trigger_GrenadeOutside_2"))
+					{
+						PlankFall(1);
+						PlankFall(2);
+					}
+				}
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void Grenade_RadiusDamage()
+		{
+			// DAMAGE
+			Debug_Log("DAMAGE");
+			ParticleSystem_CreateAtEntity("PS_Explode","grenade_explosion.ps",msGrenade,true);
+			//Effect_Flash_Start(.1f,0.2,.2f);
+			FearHandler_SetForcedAddFearRate(1,10,false);
+			Entity_ExplodeSurrounding(msGrenade,10,10);
+			Seq_PlayerExplode("");
+			Entity_SetActive(msGrenade,false);
+			Sound_CreateAtEntity("Sound_GrenadeDamage", "02_03_arsenal/grenade/grenade_near", "player");
+			//Music_Play("A2_2_3_Grenade_Detonated.ogg", 0.4f, false, eMusicPrio_BigEvent);
+			Entity_SetActive("Trigger_CorpseMusic", false);
+		}
+		
+		//-------------------------------------------------------
+		
+		void Grenade_RadiusSafe()
+		{
+			// SAFE
+			ParticleSystem_CreateAtEntity("PS_Explode","grenade_explosion.ps",msGrenade,true);
+			Entity_SetActive(msGrenade,false);
+			FearHandler_SetForcedAddFearRate(1,10);
+			Entity_ExplodeSurrounding(msGrenade,15,10);
+			Debug_Log("SAFE");
+			if (cLux_GetPlayer().GetCharacterBody().IsOnGround())
+			{
+				Player_ChangeStateToNormal();
+				Player_SetCrouching(false,true,true);
+				PlayerBody_PlayCutsceneAnimation("protects_herself_from_the_explosion",false,0.3f);
+			}
+			//PlayerBody_PlayCutsceneAtEntity("fall_and_get_up_slow","player",false,0.1f,"",1,0,cVector3f(0,-0.6f,0),0,true);
+			Effect_ImageTrail_Start(1.5,0.8f,10,5);
+			Sound_CreateAtEntity("Sound_GrenadeExplode", "02_03_arsenal/grenade/grenade_explode", msGrenade);
+			Sound_CreateAtEntity("Sound_GrenadeExplodeDebris", "02_03_arsenal/grenade/grenade_debris", msGrenade);
+			Music_Play("A2_2_3_Grenade_Detonated.ogg", 0.4f, false, eMusicPrio_BigEvent);
+			Entity_SetActive("Trigger_CorpseMusic", false);
+			
+			Voice_PlayDelayed("Global_Tasi_Bark_Stage1_Hurt_Major",2.0);
+		}
+		
+		//-------------------------------------------------------
+		
+		void Grenade_RadiusDud()
+		{
+			// DUD
+			Debug_Log("DUD");
+			Map_AddTimer("Timer_DudReaction",2.6f,"OnTimer_DudReaction");
+			Sound_Stop("Sound_GrenadeFuse", 0.2f);
+			Sound_CreateAtEntity("Sound_GrenadeDud", "02_03_arsenal/grenade/grenade_dud", "grenade_2");
+			Entity_SetActive("Trigger_CorpseMusic", false);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_DudReaction(const tString &in asTimer)
+		{
+			Voice_Play("Dialogue_Dud");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_OpenDoor(const tString &in asTimer)
+		{
+			if (SwingDoor_GetOpenAmount("door") < 0.1f)
+				SwingDoor_PushOpen("door",.3f,3);
+		}
+		 
+		//-------------------------------------------------------
+	 
+		//} END Event H *Player triggers the GRENADE trap*
+		
+		/////////////////////////////////////////
+		// Event I *DEATH: Player is too close to the GRENADE when it explodes*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are only used in Scene 2, Event I here.*/
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are only used in Scene 2, Event I here.*/
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSequencePlayerExplode;
+		void Seq_PlayerExplode(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_PlayerExplode", mSequencePlayerExplode);
+			if (Sequence_DoStepAndWait(0.2f))
+			{
+				Effect_ImageTrail_Start(2,0,3,0);
+				//PlayerBody_PlayCutsceneAtEntity("thrown_forward_by_ghoul","player",false,0.1f);
+				/*cVector3f vDist = Entity_GetDeltaToEntity("player","").Normalize();
+				cVector3f vForce = cVector3f(20000,20000,0)*vDist;
+				Player_AddBodyForce(vForce,false);
+				PlayerBody_PlayCutsceneAnimation("knocked_back_by_explosion",false,0.6f);*/
+				
+				Player_SetMoveSpeedMul(0);
+				Voice_StopAll();
+				
+				Map_AddTimer("Timer_ResetPlayerSpeed",3,"OnTimer_ResetPlayerSpeed");			
+				Player_AddContinuosBodyForceAwayFromEntity("door",1,2000,true,4);
+				tString sAnim = (Entity_IsInPlayerFOV("door")) ? "knocked_back_by_explosion" : "knocked_forward_by_explosion";
+				PlayerBody_PlayAnimation(sAnim,ePlayerBodyAnimationLayer_FullBody,false,false,true);
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{
+				Player_GiveDamage(0.01,0.5,eDamageType_Default,"Explosion");
+				Voice_Play("Dialogue_LedgeFall",2);
+			}
+			else if (Sequence_DoStepAndWait(4.5f))
+			{
+				Effect_Fade_Out(0.05f);
+			}
+			else if (Sequence_DoStepAndWait(0.2f))
+			{
+				PlayerBody_StopAnimation("thrown_forward_by_ghoul",0);
+				PlayerBody_StopAnimation("knocked_back_by_explosion",0);
+				mlPermaFailStage = eArsenalPermaFail_Explosion;
+				FearHandler_TriggerPermaFail();
+				//Death_Start("Explosion",true);
+			}
+			else if (Sequence_DoStepAndWait(0))
+			{
+				Entity_SetActive("Rock_PostExplosion_*",true);
+			}
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_FallScream(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState != 1) return true;
+			
+			Voice_Play("Dialogue_LedgeFall");
+			return true;
+		}
+		
+		//------------------------------------------------------- 
+		
+		bool OnCollide_Falling(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState != 1) return true;
+			if (FearHandler_GetIsPermaFailing()) return true;
+			
+			if (asChild == "Player")
+			{
+				Voice_StopAll();
+				Debug_Log("FALL");
+				Effect_Fade_Out(0.1f);
+				Map_AddTimer("Timer_FallImpact",1.f,"OnTimer_FallImpact");
+			}
+			else
+			{
+				Map_AddTimer("Timer_DeactivateFallingInstance",5.f,"OnTimer_DeactivateFallingInstance");	
+				Map_SetTimerUserVarString("Timer_DeactivateFallingInstance",asChild);
+			}			
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_FallImpact(const tString &in asTimer)
+		{
+			Debug_Log("TRIGGER PERMAFAIL");
+			mlPermaFailStage = eArsenalPermaFail_BalconyFall;
+			FearHandler_TriggerPermaFail_Fall();
+			//Death_Start("Falling",true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_DeactivateFallingInstance(const tString &in asTimer)
+		{
+			tString sEnt = Map_GetTimerUserVarString(asTimer);
+			if (!Entity_Exists(sEnt)) return;
+
+			Debug_Log(sEnt+" deactivated after falling");
+			Entity_SetActive(sEnt,false);
+		}
+
+		//-------------------------------------------------------
+	 
+		//} END Event I *DEATH: Player is too close to the GRENADE when it explodes*
+		
+		/////////////////////////////////////////
+		// Event J *DEATH: Player falls from the WINDOW LEDGE*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are only used in Scene 2, Event J here.*/
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functionsthat are only used in Scene 2, Event J here.*/
+ 
+		//-------------------------------------------------------
+	 
+		//} END Event J *DEATH: Player falls from the WINDOW LEDGE*
+	 
+	//} END SCENE 2
+	
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 3 *PLAYER FINDS THE SULFUR SOLUTION AND LEAVES THE RELIC ROOM*
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+ 
+		/////////////////////////////////////////
+		// General
+		//{//////////////////////////////////////
+		 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are used by many events in Scene 3 here.*/
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are used in more than one event in Scene 3 here.*/
+	 
+		//-------------------------------------------------------
+		
+		//} END General	
+	 
+		/////////////////////////////////////////
+		// Event A *Player collects the SULFUR SOLUTION among medical supplies*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are only used in Scene 3, Event A here.*/
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functionsthat are only used in Scene 3, Event A here.*/
+		
+		void OnInteract_Player_Sulfur(const tString &in asEntity)
+		{
+			if (Sketchbook_GetSketchActive("find_sulfur"))
+			{
+				Sketchbook_CompleteIdea("find_sulfur");
+				Sketchbook_CompleteIdea("find_sulfurlocation");
+			}
+			Entity_SetActive("Interact_AddSulfur",true);
+			Entity_SetActive("Trigger_Puke",true);
+			
+			Entity_SetActive("Trigger_LookAtMeds",false);
+			Voice_StopAll();
+			Voice_Play("Dialogue_FoundSulfur");
+		}
+		
+		bool OnCollide_Player_ExitRelicRoom(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState != -1) return true;
+			if (ItemType_GetCountInInventory("Sulfur_Solid") == 0) return true;
+			if (mbGrenadeActivated) return true;			
+			
+			Achievement_Unlock(eAchievement_EscapeArtist);
+			return false;
+		}
+ 
+		//-------------------------------------------------------
+	 
+		//} END Event A *Player collects the SULFUR SOLUTION among medical supplies*
+		
+		/////////////////////////////////////////
+		// Event B *Player collects the DRUGS among medical supplies*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are only used in Scene 3, Event B here.*/
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functionsthat are only used in Scene 3, Event B here.*/
+ 
+		//-------------------------------------------------------
+	 
+		//} END Event B *Player collects the DRUGS among medical supplies*
+		
+		/////////////////////////////////////////
+		// Event C *Player learns what happened in the Arsenal (TEXT)*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are only used in Scene 3, Event C here.*/
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functionsthat are only used in Scene 3, Event C here.*/
+ 
+		//-------------------------------------------------------
+	 
+		//} END Event C *Player learns what happened in the Arsenal (TEXT)*
+		
+		/////////////////////////////////////////
+		// Event D *Player gets out of the RELIC ROOM*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are only used in Scene 3, Event D here.*/
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are only used in Scene 3, Event D here.*/
+ 
+		//-------------------------------------------------------
+	 
+		//} END Event D *Player gets out of the RELIC ROOM*
+		
+	//} END SCENE 3
+	
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 4 *PLAYER CRAFTS THE TANK SHELL IN THE WORKSHOP*
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+ 
+		/////////////////////////////////////////
+		// General
+		//{//////////////////////////////////////
+		 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are used by many events in Scene 4 here.*/
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are used in more than one event in Scene 4 here.*/
+	 
+		//-------------------------------------------------------
+		
+		//} END General	
+	 
+		/////////////////////////////////////////
+		// Event A *Player processes the CHARCOAL BRICK into CHARCOAL*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are only used in Scene 4, Event A here.*/
+		
+		int mlGrindAmount = 8;
+		bool mbPutCharcoal = false;
+		bool mbGroundedCharcoal = false;
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are only used in Scene 4, Event A here.*/
+		
+		//-------------------------------------------------------
+		
+		void UpdateGrinder(float afTimeStep)
+		{
+			if (Item_GetHeldType() == "Charcoal_Solid" && PhysicsSlideDoor_GetOpenAmount("grinder_door") > 0.5f)
+				Entity_SetActive("Interact_AddCharcoal",true);
+			else
+				Entity_SetActive("Interact_AddCharcoal",false);
+		}
+		
+		//------------------------------------------------------- 
+		
+		bool CanUse_Charcoal(const tString &in asItemType, const tString &in asItemID, const tString &in asPickedEntity)
+		{				
+			return (asPickedEntity == "Interact_AddCharcoal" && PhysicsSlideDoor_GetOpenAmount("grinder_door") > 0.5f);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnUse_Charcoal(const tString &in asItemType, const tString &in asItemID, const tString &in asTargetEntity, const tString &in asItemEntity, float afTimeElapsed, float afTimeStep)
+		{
+			Sound_CreateAtEntity("Sound_UseCharcoal","02_03_arsenal/level_items/coal_grinder/coal_add",asTargetEntity);
+			
+			Item_Unequip(asItemID);
+			Item_RemoveFromInventory(asItemID);
+			Entity_SetActive("charcoal_pot",true);		
+			Entity_SetInteractionDisabled("charcoal_pot",true);
+			Entity_SetActive(asTargetEntity,false);
+			Wheel_SetMoveMaxSpeed("grinder_wheel",1.8);
+			mbPutCharcoal = true;
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Grinder_Grind(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			
+			if (PhysicsSlideDoor_GetOpenAmount("grinder_door") > 0.1f)
+				{
+					Sound_CreateAtEntity("Sound_UnlockDoor","03_04_pillar_room/config_device/config_ring_position_lock",asParent);
+					PhysicsSlideDoor_AutoMoveToState("grinder_door",-1);
+				}
+
+			if (alState != -1) return true;
+			if (mlGrindAmount < 0) return true;
+			if (Entity_IsActive("charcoal_pot") == false) return true;
+			
+			if (mlGrindAmount > 0)
+			{
+				
+				Sound_CreateAtEntity("Sound_Grind","02_03_arsenal/level_items/coal_grinder/coal_grind","grinder_door");
+			}
+			else
+			{
+				cColor pColCharcoal = cColor(0.109f, 0.113f, 0.086f); // #1c1d16
+				ParticleSystem_CreateAtEntity("PS_Charcoal","dust_impact_simple_dark_oneshot.ps","charcoal_powder",false);
+				ParticleSystem_SetColor("PS_Charcoal",pColCharcoal);
+			
+				Wheel_SetMoveMaxSpeed("grinder_wheel",5);
+				Map_AddTimer("Timer_CharcoalToPowder",0.2f,"OnTimer_CharcoalToPowder");
+				return false;
+			}
+			
+			mlGrindAmount--;
+			
+			return true;
+		}
+		
+		//------------------------------------------------------- 
+		
+		void OnInteract_StartGrinding(const tString &in asEntity)
+		{
+			if (mbPutCharcoal == false || mbGroundedCharcoal) return;
+			
+			Map_AddTimer("Timer_CheckGrinding", 0.1f, "OnTimer_CheckGrinding");
+			//ParticleSystem_CreateAtEntity("PS_CharcoalGrinding","charcoal_ground.ps","PosArea_CharcoalParticles",false);
+			//ParticleSystem_SetColor("charcoal_grinding",cColor(1,1,1,1));
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_CheckGrinding(const tString &in asTimer)
+		{
+			if (mbPutCharcoal == false || mbGroundedCharcoal) return;
+			
+			bool bInteractedWith = Entity_IsInteractedWith("grinder_wheel");
+			float fAngVel = Map_GetEntity("grinder_wheel").GetBody(0).GetAngularVelocity().Length();
+			
+			if (bInteractedWith && fAngVel >= 0.5f && ParticleSystem_Exists("PS_CharcoalGrinding") == false)
+				ParticleSystem_CreateAtEntity("PS_CharcoalGrinding","charcoal_ground.ps","PosArea_CharcoalParticles",false);
+			else
+				ParticleSystem_Destroy("PS_CharcoalGrinding");
+			
+			if (bInteractedWith)
+				Map_RestartCurrentTimer(0.5f);
+		}
+		
+		//------------------------------------------------------- 
+		
+		void OnInteractLeave_StopGrinding(const tString &in asEntity)
+		{
+			//if(ParticleSystem_Exists("PS_CharcoalGrinding"))
+			//	ParticleSystem_Destroy("PS_CharcoalGrinding");
+			//ParticleSystem_SetColor("charcoal_grinding",cColor(1,1,1,0));
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_CharcoalToPowder(const tString &in asTimer)
+		{
+			mbGroundedCharcoal = true;
+			if(ParticleSystem_Exists("PS_CharcoalGrinding"))
+				ParticleSystem_Destroy("PS_CharcoalGrinding");
+			Prop_SetActiveAndFade("charcoal_pot",false,2);
+			Prop_SetActiveAndFade("charcoal_powder",true,2);
+			//ParticleSystem_SetColor("charcoal_grinding",cColor(1,1,1,0));
+			Sound_CreateAtEntity("Sound_GrindComplete","02_03_arsenal/level_items/coal_grinder/coal_grind_end","grinder_door");
+			Sound_CreateAtEntity("Sound_GrindPowder","02_03_arsenal/temp/coal_powder","charcoal_powder");
+			Voice_PlayDelayed("Dialogue_GroundCharcoal",1);
+		}
+ 
+		//-------------------------------------------------------
+	 
+		//} END Event A *Player processes the CHARCOAL BRICK into CHARCOAL*
+		
+		/////////////////////////////////////////
+		// Event B *Player boils the SULFUR SOLUTION and obtains SULFUR*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are only used in Scene 4, Event B here.*/
+		
+		float mfBoilingTime = 22;
+		float mfBoilingVolume = 1;
+		float mfBoilingMoveSpeed = 0.002f;
+		bool mbHasBoiled = false;
+		int mlLidState = 0;
+		bool mbLidOn = false;
+		bool mbLidOff = true;
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are only used in Scene 4, Event B here.*/
+		
+		bool CanUse_Sulfur(const tString &in asItemType, const tString &in asItemID, const tString &in asPickedEntity)
+		{
+			return (asPickedEntity == "Interact_AddSulfur");
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnUse_Sulfur(const tString &in asItemType, const tString &in asItemID, const tString &in asTargetEntity, const tString &in asItemEntity, float afTimeElapsed, float afTimeStep)
+		{
+			Item_Unequip(asItemID);
+			Item_RemoveFromInventory(asItemID);
+			Entity_SetActive("Interact_AddSulfur",false);
+			Prop_SetActiveAndFade("sulfur_liquid",true,0.5f);
+			Prop_MoveLinearTo("sulfur_liquid","AreaPos_SulfurStart",0.1f,0.3f,0,false);
+			
+			if (Lamp_GetLit("pot_fire"))
+			{
+				Map_AddTimer("Timer_StartBoiling",4,"OnTimer_StartBoiling");
+				Sound_CreateAtEntity("Sound_Boiling","02_03_arsenal/temp/sulphur_boil","AreaPos_BoilingSound",6,true,mfBoilingVolume);
+			}
+			
+			cScript_SetGlobalVarBool("Outpost_Arsenal_SulfurInPot",true);
+			
+			Sound_CreateAtEntity("Sound_AddSulphurLiquid", "02_03_arsenal/level_items/boiler/liquid_pour", "sulfur_liquid_boiling");
+			
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_StartBoiling(const tString &in asTimer)
+		{
+			Prop_SetActiveAndFade("sulfur_liquid_boiling",true,30.f);
+			Prop_MoveLinearTo("sulfur_liquid","AreaPos_SulfurBoiled",0.001f,mfBoilingMoveSpeed,0,false);
+			Prop_MoveLinearTo("sulfur_liquid_boiling","AreaPos_SulfurBoiled",0.001f,mfBoilingMoveSpeed,0,false);
+			Map_AddTimer("Timer_SulfurToPowder",mfBoilingTime,"OnTimer_SulfurToPowder");
+		}
+		
+		//-------------------------------------------------------
+		
+		bool mbPotTorchUsed = false;
+		
+		bool OnCollide_Player_RespawnMatch(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState != -1) return true;
+			
+			if (ItemType_GetCountInInventory("Matchbook") == 0 && mbPotTorchUsed == false && Entity_Exists("matchbook_4") == false)
+			{
+				// Add matchbook
+				cMatrixf mtxMatchbook = cLux_GetCurrentMap().GetEntityByName("PosArea_Matchbook").GetMatrix();
+				cLux_GetCurrentMap().CreateEntity("Matchbook_Respawned","matchbook.ent",mtxMatchbook,1);
+				Debug_Log("ADDED EXTRA MATCH");
+			}
+			
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_SulfurToPowderTorch(const tString &in asEntity)
+		{
+			if (Item_GetHeldType(eItemHandlerHand(Match_GetHand())) != "Match") return;
+			
+			mbPotTorchUsed = true;
+			
+			if (mbHasBoiled) return;
+						
+			if (cScript_GetGlobalVarBool("Outpost_Arsenal_SulfurInPot") == false) return;
+			
+			//Item_KillHeldItem(eItemHandlerHand_Left);
+			ItemType_RemoveFromInventory("Sulfur_Solid");
+			Entity_SetActive("Interact_AddSulfur",false);
+			Entity_SetActive("Sticky_Lid*",true);
+			Map_AddTimer("Timer_StartBoiling",4,"OnTimer_StartBoiling");
+			Sound_CreateAtEntity("Sound_Boiling","02_03_arsenal/temp/sulphur_boil","AreaPos_BoilingSound",6,true,mfBoilingVolume);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnAttach_Lid(const tString &in asStickyArea, const tString &in asBodyName)
+		{
+			
+			if (Map_TimerExists("Timer_SulfurToPowder"))
+			{
+				mfBoilingTime = Map_GetTimerTime("Timer_SulfurToPowder");
+				Map_RemoveTimer("Timer_SulfurToPowder");
+				Map_AddTimer("Timer_SulfurToPowder",mfBoilingTime/1.5f,"OnTimer_SulfurToPowder");
+				Prop_MoveLinearTo("sulfur_liquid_boiling","AreaPos_SulfurBoiled",0.001f,mfBoilingMoveSpeed,0,false);
+				Debug_Log("Boiling Time Left: "+Map_GetTimerTime("Timer_SulfurToPowder"));
+				mfBoilingVolume = 0.4f;
+				Sound_Fade("Sound_Boiling",mfBoilingVolume,1);
+			}
+			else
+			{
+				mfBoilingTime /= 1.5f;
+				mfBoilingVolume = 0.4f;
+				Debug_Log("LID ON! Boiling Time: "+mfBoilingTime);
+				StickyArea_SetInteractionRequired("Sticky_Lid",true);
+			}
+			
+			Sound_CreateAtEntity("Sound_LidOn", "02_03_arsenal/level_items/boiler/lid_on", "stove_lid");
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnDetach_Lid(const tString &in asStickyArea, const tString &in asBodyName)
+		{
+			if (Map_TimerExists("Timer_SulfurToPowder"))
+			{
+				mfBoilingTime = Map_GetTimerTime("Timer_SulfurToPowder");
+				Map_RemoveTimer("Timer_SulfurToPowder");
+				Map_AddTimer("Timer_SulfurToPowder",mfBoilingTime*1.5f,"OnTimer_SulfurToPowder");
+				Prop_MoveLinearTo("sulfur_liquid_boiling","AreaPos_SulfurBoiled",0.001f,mfBoilingMoveSpeed,0,false);
+				Debug_Log("Boiling Time Left: "+Map_GetTimerTime("Timer_SulfurToPowder"));
+				mfBoilingVolume = 1;
+				Sound_Fade("Sound_Boiling",mfBoilingVolume,1);
+			}
+			else
+			{
+				StickyArea_SetInteractionRequired("Sticky_Lid",true);
+				mfBoilingTime *= 1.5f;
+				mfBoilingVolume = 1;
+				Debug_Log("REMOVE LID! Boiling Time: "+mfBoilingTime+" INTERACTION NOW REQUIRED TO ATTACH");
+			}
+			
+			Sound_CreateAtEntity("Sound_LidOff", "02_03_arsenal/level_items/boiler/lid_off", "stove_lid");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_SulfurToPowder(const tString &in asTimer)
+		{
+			Entity_SetActive("InteractAux_PickupSulfurPowder",true);
+			Prop_SetActiveAndFade("sulfur_liquid",false,2);
+			Prop_SetActiveAndFade("sulfur_liquid_boiling",false,4);
+			Prop_SetActiveAndFade("sulfur_powder",true,2);
+			Light_FadeBrightnessTo("Light_Sulfur_Point",0.3f,2,eEasing_SineInOut);
+			Map_AddTimer("Timer_PutBoilerOff",3,"OnTimer_PutBoilerOff");
+			Sound_Stop("Sound_Boiling",3);
+			mbHasBoiled = true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PutBoilerOff(const tString &in asTimer)
+		{
+			Lamp_SetLit("pot_fire",false,true);
+		}
+		
+		//------------------------------------------------------- 
+		
+		bool OnCollide_Player_ForceBoil(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState != 1) return true;
+			
+			if (Map_TimerExists("Timer_SulfurToPowder"))
+			{
+				Map_RemoveTimer("Timer_SulfurToPowder");
+				Entity_SetActive("InteractAux_PickupSulfurPowder",true);
+				Entity_SetActive("sulfur_liquid",false);
+				Entity_SetActive("sulfur_liquid_boiling",false);
+				Entity_SetActive("sulfur_powder",true);
+				Light_FadeBrightnessTo("Light_Sulfur_Point",0.3f,0,eEasing_Linear);
+				Map_AddTimer("Timer_PutBoilerOff",0,"OnTimer_PutBoilerOff");
+				Sound_Stop("Sound_Boiling",3);
+				mbHasBoiled = true;
+				return false;
+			}
+			
+			return true;
+		}
+ 
+		//-------------------------------------------------------
+	 
+		//} END Event B *Player boils the SULFUR SOLUTION and obtains SULFUR*
+		
+		/////////////////////////////////////////
+		// Event C *Player uses the SHELL PRESS to craft the TANK SHELL*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are only used in Scene 4, Event C here.*/
+		
+		int mlPressStage = 1;
+		bool mbPressHasBullet = true;
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are only used in Scene 4, Event C here.*/	
+		
+		void OnInteract_BulletPress(const tString &in asEntity)
+		{
+			Sketchbook_AddIdea("make_bullet");
+		}
+		
+		bool CanUse_SingleIngredients(const tString &in asItemType, const tString &in asItemID, const tString &in asPickedEntity)
+		{
+			return (asPickedEntity == "Interact_Bullet" && Lever_GetPulledAmount("reloading_press_base_1") < 0.5f);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnUse_SingleIngredients(const tString &in asItemType, const tString &in asItemID, const tString &in asTargetEntity, const tString &in asItemEntity, float afTimeElapsed, float afTimeStep)
+		{
+			/*if (Map_TimeHasPassed("Timer_WaitForMixBark",8))
+				Voice_Play("Dialogue_NeedGunpowderMix");
+			return true;*/
+			Debug_Log(asItemType+" "+asItemID+" "+asItemEntity);
+			Item_RemoveFromInventory(asItemID);		
+			//ParticleSystem_SetActive("PS_Gunpowder",true);
+			
+			cColor pColSaltpeter = cColor(0.949f, 0.956f, 0.862f); // #f2f4dc
+			cColor pColSulfur = cColor(0.768f, 0.811f, 0.262f); // #c4cf43
+			cColor pColCharcoal = cColor(0.949f, 0.956f, 0.862f); // #1c1d16
+			//cColor pColCharcoal = cColor(0.274f, 0.282f, 0.203f); // #464835
+			
+			cColor pCol;
+			
+			if (asItemType == "Charcoal_Powder") pCol = pColCharcoal;
+			else if (asItemType == "Sulfur_Powder") pCol = pColSulfur;
+			else if (asItemType == "Saltpeter_Powder") pCol = pColSaltpeter;
+			else if (asItemType == "CharcoalSulfur_Powder") pCol = (pColCharcoal+pColSulfur)/2;
+			else if (asItemType == "SaltpeterSulfur_Powder") pCol = (pColSaltpeter+pColSulfur)/2;
+			else if (asItemType == "CharcoalSaltpeter_Powder") pCol = (pColCharcoal*pColSaltpeter)/2;
+			
+			ParticleSystem_CreateAtEntity("PS_Sulfur"+asItemType,"dust_impact_simple_dark_oneshot.ps","PosArea_IngredientsParticles",false);
+			ParticleSystem_SetColor("PS_Sulfur"+asItemType,pCol);
+			
+			if (asItemType == "Charcoal_Powder" || asItemType == "Sulfur_Powder" || asItemType == "Saltpeter_Powder")
+			{
+				Bullet_AddIngredient(asItemType);
+				Sound_CreateAtEntity("Sound_BulletAddCoal", "level_entity_shared/levers/bullet_press/add_coal", "Interact_Bullet");
+			}
+			else if (asItemType == "CharcoalSulfur_Powder")
+			{
+				Bullet_AddIngredient("Charcoal_Powder");
+				Bullet_AddIngredient("Sulfur_Powder");
+				Sound_CreateAtEntity("Sound_BulletAddPowder", "level_entity_shared/levers/bullet_press/add_powder", "Interact_Bullet");
+			}
+			else if (asItemType == "SaltpeterSulfur_Powder")
+			{
+				Bullet_AddIngredient("Saltpeter_Powder");
+				Bullet_AddIngredient("Sulfur_Powder");
+				Sound_CreateAtEntity("Sound_BulletAddPowder", "level_entity_shared/levers/bullet_press/add_powder", "Interact_Bullet");
+			}
+			else if (asItemType == "CharcoalSaltpeter_Powder")
+			{
+				Bullet_AddIngredient("Charcoal_Powder");
+				Bullet_AddIngredient("Saltpeter_Powder");
+				Sound_CreateAtEntity("Sound_BulletAddPowder", "level_entity_shared/levers/bullet_press/add_powder", "Interact_Bullet");
+			}
+			
+			if (Entity_GetVarBool("Interact_Bullet","HasCharcoal") && Entity_GetVarBool("Interact_Bullet","HasSulfur") && Entity_GetVarBool("Interact_Bullet","HasSaltpeter"))
+				cScript_SetGlobalVarBool("Outpost_Arsenal_GunpowderInShell",true);
+				
+			return true;
+		}
+		
+		void Bullet_AddIngredient(const tString asIngredient)
+		{
+			if 			(asIngredient == "Charcoal_Powder")		Entity_SetVarBool("Interact_Bullet","HasCharcoal",true);
+			else if 	(asIngredient == "Sulfur_Powder")		Entity_SetVarBool("Interact_Bullet","HasSulfur",true);
+			else if 	(asIngredient == "Saltpeter_Powder")	Entity_SetVarBool("Interact_Bullet","HasSaltpeter",true);
+			
+			mlPressStage++;
+			mbPressTried = true;
+			
+			if (Map_TimerExists("Timer_WaitForIngredientsBark"))
+				Map_RemoveTimer("Timer_WaitForIngredientsBark");
+		}
+		
+		//-------------------------------------------------------
+		
+		bool CanUse_GunpowderMix(const tString &in asItemType, const tString &in asItemID, const tString &in asPickedEntity)
+		{
+			return (asPickedEntity == "Interact_Bullet" && Lever_GetPulledAmount("reloading_press_base_1") < 0.5f);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnUse_GunpowderMix(const tString &in asItemType, const tString &in asItemID, const tString &in asTargetEntity, const tString &in asItemEntity, float afTimeElapsed, float afTimeStep)
+		{
+			if (asTargetEntity == "Interact_Bullet")
+			{
+				Item_RemoveFromInventory(ItemType_GetFirstInInventory("GunpowderMix"));
+				ItemType_RemoveFromInventory(asItemEntity);				
+				//ParticleSystem_SetActive("PS_Gunpowder",true);
+				Sound_CreateAtEntity("Sound_BulletAddPowder", "level_entity_shared/levers/bullet_press/add_powder", "Interact_Bullet");
+				cColor pCol = cColor(0.949f, 0.956f, 0.862f);
+				ParticleSystem_CreateAtEntity("PS_GunpowderFinal","dust_impact_simple_dark_oneshot.ps","PosArea_IngredientsParticles",false);
+				ParticleSystem_SetColor("PS_GunpowderFinal",pCol);
+				cScript_SetGlobalVarBool("Outpost_Arsenal_GunpowderInShell",true);
+				mlPressStage = 4;
+				return true;
+			}
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool mbPressTried = false;
+		
+		bool OnCollide_Shell_Press(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState != 1) return true;
+			
+			if (cScript_GetGlobalVarBool("Outpost_Arsenal_GunpowderInShell") == false)
+			{
+				if (mlPressStage != 4) 
+				{
+					if (Entity_IsActive("bullet_empty") && Entity_IsInteractedWith("reloading_press_base_1"))		
+					{
+						if (Map_TimeHasPassed("Timer_WaitForIngredientsBark",16))
+						{
+							tString sVoice = "";
+							
+							switch(mlPressStage)
+							{
+								case 2:
+									sVoice = "Dialogue_MixWrong_OnlyOneIngredient"; break;
+								case 3:
+									if (Entity_GetVarBool("Interact_Bullet","HasSulfur") == false)
+										sVoice = "Dialogue_MixWrong_MissingSulfur";
+									else if (Entity_GetVarBool("Interact_Bullet","HasSaltpeter") == false)
+										sVoice = "Dialogue_MixWrong_MissingSalpeter";
+									else if (Entity_GetVarBool("Interact_Bullet","HasCharcoal") == false)
+										sVoice = "Dialogue_MixWrong_MissingCharcoal";
+									break;
+								default:
+									sVoice = "Dialogue_NeedIngredients";
+							}
+							
+							if (mbPressTried == false)
+							{
+								mbPressTried = true;
+								// Cut out out because this line now feels redundant - IT
+								//bool bUsedTankGun = cScript_GetGlobalVarBool("Outpost_HasUsedTankGun");
+								//sVoice = (bUsedTankGun) ? "Dialogue_SeesPressTriedGun" : "Dialogue_SeesPress";
+								sVoice = "";
+							}
+							
+							if (sVoice!="")
+								Voice_Play(sVoice);
+						}
+						return true;
+					}
+					else return true;
+				}
+			
+			}
+			
+			Entity_SetActive("Interact_Bullet", false);
+			Entity_SetActive("tank_shell_casing_1",false);
+			Entity_SetActive("bullet_empty",false);
+			Entity_SetActive("tank_bullet_2",true);
+			Entity_SetActive("Interact_BulletReady", true);
+			Sound_CreateAtEntity("Sound_BulletCreate", "02_03_arsenal/level_items/bullet_press/shell_create", "Interact_Bullet");
+			Music_Play("A2_2_3_Puzzle_Solved.ogg", 0.12f, false, eMusicPrio_MinorEvent);
+			mlPressStage++;
+			
+			return false;
+		}
+		
+		void OnInteract_PickupShell(const tString &in asEntity)
+		{
+			Sound_CreateAtEntity("Sound_BulletCreate", "player/UI/menu/add_inventory", "Interact_Bullet");
+			Entity_SetActive("tank_shell_casing_1",false);
+			Entity_SetActive("tank_bullet_2",false);
+			Entity_SetActive(asEntity,false);
+			//Item_AddToInventory("Bullet");
+			LoadScreen_ProgressStory();
+			Voice_PlayDelayed("Dialogue_ShellCompleted",0.6f);
+			Entity_SetActive("Trigger_NotTheBestIdea",true);
+			Sketchbook_CompleteIdea("make_bullet");
+			//Music_Play("A2_2_3_Puzzle_Solved.ogg", 0.25f, false, eMusicPrio_MinorEvent);
+		}
+		
+		bool OnCollide_Player_NotTheBestIdea(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			//if (ItemType_IsInInventory("Bullet") == false) return true;
+			
+			Voice_Play("Dialogue_OutOnTheLedge");
+			return true;
+		}
+ 
+		//-------------------------------------------------------
+	 
+		//} END Event C *Player uses the SHELL PRESS to craft the TANK SHELL*
+	
+	//} END SCENE 4
+
+}

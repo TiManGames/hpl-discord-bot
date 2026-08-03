@@ -1,0 +1,149 @@
+uniform cVector3f avUVToView0;
+uniform cVector3f avUVToView1;
+
+uniform float afT;
+uniform float afStepSizeMax;
+uniform float afFarPlane;
+
+uniform float afRadius;
+uniform float afScreenSizeDiv;
+uniform float afLodScale;
+
+uniform cTexture2D normalMap : 0;
+uniform cTexture2D depthMipMap : 1;
+uniform cTexture2D depthMap : 2;
+
+//---------------------------------------------
+
+cVector3f GetViewPosition(in cVector2f avUV, in float afLod)
+{
+	float fLinearDepth = sampleLod(depthMipMap, avUV, afLod).r;
+
+	//////////////////
+	// Transform uv coords to near plane direction and then move in that direction for the length LinearDepth
+	cVector3f vDirection = avUV.xyy * avUVToView0 + avUVToView1;
+	return vDirection * fLinearDepth;
+}
+
+//--------------------------------------------
+
+void main(in cVector4f px_vPosition,
+		  in cVector4f px_vTexCoord0,
+		  out cVector4f out_vColor : 0)
+{
+	const float fPi = 3.14159265;
+	const float fDirectionStep = fPi / ((1.0 + sqrt(5.0)) / 2.0);
+	
+	float fNegInvRadius = -1.0 / (afRadius);
+	float fAO = 0.0;
+	float fTotalWeight = 0.0;
+
+	///////////////
+	// Get the depth to compute AO for
+	@ifdef UseDownsample
+		cVector4f vCore0 = sample(normalMap, px_vTexCoord0.xy, cVector2l(0,0));
+		cVector4f vCore1 = sample(normalMap, px_vTexCoord0.xy, cVector2l(1,0));
+		cVector4f vCore2 = sample(normalMap, px_vTexCoord0.xy, cVector2l(0,1));
+		cVector4f vCore3 = sample(normalMap, px_vTexCoord0.xy, cVector2l(1,1));
+		cVector4f vCore;
+		
+
+		cVector4f vDepth;
+		vDepth.x = sample(depthMap, px_vTexCoord0.xy, cVector2l(0,0)).x;
+		vDepth.y = sample(depthMap, px_vTexCoord0.xy, cVector2l(1,0)).x;
+		vDepth.z = sample(depthMap, px_vTexCoord0.xy, cVector2l(0,1)).x;
+		vDepth.w = sample(depthMap, px_vTexCoord0.xy, cVector2l(1,1)).x;
+
+		vCore.w = max(vDepth.x,
+				  max(vDepth.y,
+				  max(vDepth.z,
+					  vDepth.w)));
+					  
+		vDepth = 1.0 / (abs(vDepth - vCore.wwww) + 0.00000001);
+
+		vCore.xyz = normalize(vCore0.xyz * vDepth.x + vCore1.xyz * vDepth.y + vCore2.xyz * vDepth.z + vCore3.xyz * vDepth.w);
+		cVector2f vUVOffset = vCore0.xy;
+	@else
+		cVector4f vCore = sample(normalMap, px_vTexCoord0.xy);
+		vCore.w = sample(depthMap, px_vTexCoord0.xy).x;
+		cVector2f vUVOffset = vCore.xy;
+	@endif
+	
+	float fLinearDepth = vCore.w;
+	cVector3f vDirection = px_vTexCoord0.xyy * avUVToView0 + avUVToView1;
+	cVector3f vPos = vDirection * fLinearDepth;
+	cVector3f vNormal;
+	vNormal.xyz = vCore.xyz;
+	
+	///////////////
+	// Get random rotation
+	float fRand = fract(sin(dot(px_vPosition.xy,cVector2f(12.9898,78.233))) * 437.5453);
+	float fRandRot = fRand * 2.0 * fPi + afT * 0.5;
+	cVector2f vUV0 = cVector2f(cos(fRandRot), sin(fRandRot));
+	cVector2f vRand = cVector2f(cos(fDirectionStep), sin(fDirectionStep));
+	cMatrix2x2f mtxRot = cMatrix2x2f(vRand.x,-vRand.y,vRand.y,vRand.x);
+
+	////////////
+	// Move the position away from the normal a little bit
+	float fFade = clamp(2.0 - fLinearDepth * afFarPlane / 32.0, 0.0, 1.0);
+
+	float fNormalOffset = max(0.0, fLinearDepth * afFarPlane - 16.0) * 0.025;
+	vPos += vNormal * (0.03 + (1.0 - vNormal.z) * fNormalOffset);
+	
+	float fStepSize = abs(afStepSizeMax * afRadius / vPos.z);
+	float fStepSizePart = (0.5 * fStepSize / ((2 + ($kNumSamples) * ($kNumSamples))));
+	cVector2f vUV = px_vTexCoord0.xy + vUVOffset.xy * fStepSize * 0.25;
+	
+	if(fFade <= 0.0)
+	{
+		fAO = 1.0;
+	}
+	else
+	{
+		cVector3f vAO = cVector3f(0.0, 0.0, 0.0);
+
+		for(float d = 0.0; d < $kNumSamples; d+=4.0)
+		{
+			//////////////
+			// Get two random direction to sample in
+			cVector4f vOffset = (d + cVector4f(2, 3, 4, 5));
+			vOffset *= vOffset * fStepSizePart;
+
+			cVector2f vUV1 = mul(mtxRot, vUV0);
+			vUV0 = mul(mtxRot, vUV1);
+
+			cVector4f vLod = log2(vOffset * afLodScale+1.0);
+
+			cVector3f vDelta0 = GetViewPosition(vUV + vUV1 * vOffset.x, vLod.x) - vPos;
+			cVector3f vDelta1 = GetViewPosition(vUV - vUV1 * vOffset.y, vLod.y) - vPos;
+			cVector3f vDelta2 = GetViewPosition(vUV + vUV0 * vOffset.z, vLod.z) - vPos;
+			cVector3f vDelta3 = GetViewPosition(vUV - vUV0 * vOffset.w, vLod.w) - vPos;
+
+			cVector4f vDistanceSqr = cVector4f(dot(vDelta0, vDelta0),
+									 dot(vDelta1, vDelta1),
+									 dot(vDelta2, vDelta2),
+									 dot(vDelta3, vDelta3));
+
+			cVector4f vInvertedLength = inversesqrt(vDistanceSqr);
+
+			cVector4f vFalloff = cVector4f(1.0, 1.0, 1.0, 1.0) + vDistanceSqr * vInvertedLength * fNegInvRadius;
+			
+			////////////////////
+			// Get AO for xyz direction based on distance from sample and sum
+			cVector4f vSampleAO = max(cVector4f(0.0, 0.0, 0.0, 0.0), vFalloff) * vInvertedLength;
+			
+			vDelta0 *= vSampleAO.x;
+			vDelta1 *= vSampleAO.y;
+			vDelta2 *= vSampleAO.z;
+			vDelta3 *= vSampleAO.w;
+
+			vAO.xyz += vDelta0 + vDelta1 + vDelta2 + vDelta3;
+			
+		}
+		fAO = 1.0 - max(0.0, dot(vNormal, vAO * 0.1988 * (4.0 / ($kNumSamples))));
+		
+		fAO = mix(1.0, fAO, fFade);
+	}
+
+	out_vColor = cVector4f(fLinearDepth, fAO, 0, 0);
+}

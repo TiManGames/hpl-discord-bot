@@ -1,0 +1,267 @@
+#include "props/Prop_Rigid.hps"
+
+//------------------------------------------------------------
+
+const tString gsVineCoverMoveSound = "04_03_undercity/roots/root_movement";
+const tString gsVineCoverAnim = "open";
+const float gfVineCoverMaxOpenAmount = 0.8f;
+
+//------------------------------------------------------------
+
+class cScrPropVineCover : cScrPropRigid
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init() 
+	{
+		mbSetup = false;
+		mbPlayerOnTop = false;
+		mfSpeedGoal = 0.f;
+		mvStartBodyPos = 0.f;
+		mvStartMeshPos = 0.f;
+		mfCheckPlayerCollCount = 0.f;
+		m_idSound = tID_Invalid;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{		
+		mBaseObj.GetMeshEntity().SetVariableAnimationUpdate(true);
+		
+		if (mbSetup == false)
+		{
+			mbSetup = true;
+			mvStartBodyPos = mBaseObj.GetBody(1).GetWorldPosition();
+			mvStartMeshPos = mBaseObj.GetMeshEntity().GetWorldPosition();
+		}
+		
+		mBaseObj.StopAllAnimations(0.f);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnSetActive(bool abX)
+	{
+		if (abX == false)
+		{
+			cSoundEntity@ pSound = cLux_ID_SoundEntity(m_idSound);
+			if (pSound !is null)
+				pSound.Stop(false);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnUpdateAutoSleep()
+	{
+		return mfSpeedGoal == 0.f;
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnVariableUpdate(float afDeltaTime)
+	{
+		///////////////////
+		// Set up vars
+		cAnimationState@ pState = mBaseObj.GetMeshEntity().GetAnimationStateFromName(gsVineCoverAnim);
+		cSoundEntity@ pSound = cLux_ID_SoundEntity(m_idSound);
+		iPhysicsBody@ pBody = mBaseObj.GetBody(1);
+		
+		float fSpeed = pState.GetSpeed();
+		float fT = pState.GetRelativeTimePosition();
+		
+		///////////////////
+		// Sound
+		if (m_idSound == tID_Invalid)
+		{
+			m_idSound = mBaseObj.GetMap().GetWorld().CreateSoundEntity(mBaseObj.GetName() + "_Loop", gsVineCoverMoveSound, false).GetID();
+			@pSound = cLux_ID_SoundEntity(m_idSound);
+			
+			pSound.SetWorldPosition(mvStartMeshPos);
+			pSound.SetScriptableIsSaved(false);
+			pSound.SetUseCustomProperties(true);
+			pSound.SetCustomMinDistance(2.f);
+			pSound.SetCustomMaxDistance(12.f);
+		}
+
+		if (fT > 0.01f && fT < gfVineCoverMaxOpenAmount && cMath_Abs(pState.GetSpeed()) > 0.f)	
+			pSound.FadeIn(1.f, 1.f);
+		else 												
+			pSound.FadeOut(1.f);
+		
+		///////////////////
+		// Body
+		cVector3f vStart = mvStartBodyPos;
+		cVector3f vEnd = vStart - cVector3f(0.f, pBody.GetBoundingVolume().GetSize().y, 0.f);
+		
+		float fBodyT = cMath_Easing(eEasing_CubicIn, fT);
+		pBody.SetWorldPosition(vStart * (1.f - fBodyT) + vEnd * fBodyT);
+		
+		///////////////////
+		// Animation
+		//mBaseObj.GetMeshEntity().SetWorldPosition(mvStartMeshPos);
+		float fSpeedGoal = mfSpeedGoal;
+		
+		// Play it slower if going back up and near beginning of anim (to lessen the wince)
+		if (fT < 0.1f && mfSpeedGoal < 0.f) 
+			fSpeedGoal = -0.25f;		
+		
+		// Don't close if player is on top!
+		mfCheckPlayerCollCount -= afDeltaTime;
+		if (mfCheckPlayerCollCount <= 0.f)
+		{	
+			mfCheckPlayerCollCount = cMath_RandRectf(0.1f, 0.3f);
+			
+			cVector3f vPlayerFeetPos = cLux_GetPlayer().GetCharacterBody().GetFeetPosition();
+			float fDistToPlayerSqr = (vPlayerFeetPos - mBaseObj.GetPosition()).SqrLength();
+			
+			if (mfSpeedGoal < 0.f && fDistToPlayerSqr < 15.f * 15.f)
+			{
+				cBoundingVolume@ pBounds = pBody.GetBoundingVolume();
+				
+			
+				mbPlayerOnTop = vPlayerFeetPos.y > pBounds.GetMax().y - 1.f &&
+								cMath_CheckPointInAABBIntersection(vPlayerFeetPos, pBounds.GetMin(), pBounds.GetMax() + cVector3f_Up);
+			}
+			else
+			{
+				mbPlayerOnTop = false;
+			}			
+		}
+		
+		if (mbPlayerOnTop)
+			fSpeedGoal = 0.f;
+		
+		// Set speed
+		fSpeed = cMath_IncreaseTo(fSpeed, afDeltaTime * 4.f, fSpeedGoal);
+		pState.SetSpeed(fSpeed);
+		
+		// At min or max, time to sleep!
+		if (fT == 0.f && mfSpeedGoal < 0.f || fT >= gfVineCoverMaxOpenAmount && mfSpeedGoal > 0.f || mfSpeedGoal == 0.f)
+		{
+			mfSpeedGoal = 0.f;
+			pState.SetSpeed(0.f);
+			
+			if (mbPlayerOnTop == false && mBaseObj.Timer_Exists(0) == false)
+				mBaseObj.Sleep();
+		}
+	}
+			
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INTERACTION
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+			
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_Open()
+	{
+		mBaseObj.Timer_Remove(0);
+		
+		cAnimationState@ pState = mBaseObj.GetMeshEntity().GetAnimationStateFromName(gsVineCoverAnim);		
+		float fT = pState.GetRelativeTimePosition();
+		
+		mBaseObj.PlayAnimation(gsVineCoverAnim, 0.f, false, false);
+		pState.SetRelativeTimePosition(fT);
+		
+		mfSpeedGoal = 1.f;
+		
+		mBaseObj.WakeUp();
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_Close()
+	{
+		mBaseObj.Timer_Add(0, cMath_RandRectf(1.5f, 2.5f), "OnTimer_Close");
+		mBaseObj.WakeUp();
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnTimer_Close(uint64 alId)
+	{
+		cAnimationState@ pState = mBaseObj.GetMeshEntity().GetAnimationStateFromName(gsVineCoverAnim);		
+		float fT = pState.GetRelativeTimePosition();
+		
+		mBaseObj.PlayAnimation(gsVineCoverAnim, 0.f, false, false);
+		pState.SetRelativeTimePosition(fT);
+		
+		mfSpeedGoal = -3.f;
+		
+		mBaseObj.WakeUp();
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetIndependant()
+	{
+		bool bX = cScript_GetGlobalArgBool(0);
+		mBaseObj.SetVarBool("VineIndependant", bX);
+		
+		if (bX)
+			mBaseObj.Timer_Remove(0);
+	}
+	
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool mbSetup;
+	bool mbPlayerOnTop;
+	float mfSpeedGoal;
+	float mfCheckPlayerCollCount;
+	cVector3f mvStartBodyPos;
+	cVector3f mvStartMeshPos;
+	[nosave] tID m_idSound;
+	
+	//------------------------------------------------------------
+}	

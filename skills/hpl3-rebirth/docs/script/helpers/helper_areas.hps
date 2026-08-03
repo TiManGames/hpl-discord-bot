@@ -1,0 +1,793 @@
+//-------------------------------------------------
+
+/////////////////////////////////////////
+// AREA - GENERAL
+/////////////////////////////////////////
+
+//-------------------------------------------------
+
+/**
+ * Moves the specified area to the current position of the target entity. 
+ * !Does not work on Liquid Areas, instead use LiquidArea_MoveLinearTo!
+ * 
+ * @param asName, name of the area to move, wildcard(s) * are supported.
+ * @param asTargetEntity, name of the entity to move the area to.
+ * @param afAcceleration, acceleration .in m/s^2
+ * @param afMaxSpeed, the maximum speed of movement.
+ * @param afSlowDownDist, the distance at which movement slows down.
+ * @param abResetSpeed, if all static movement for the area should be stopped before starting this movement.
+ * @param asCallback, callback when movement is done: void asCallback(const tString& in asAreaName)
+ **/
+void Area_MoveLinearTo(const tString &in asName, const tString &in asTargetEntity, float afAcceleration, 
+					   float afMaxSpeed, float afSlowDownDist=0.0f, bool abResetSpeed=true, const tString& in asCallback="")
+{
+	////////////////////////////////////////
+	// Get all areas
+	array<iLuxEntity@> vEntities;
+	cLux_GetCurrentMap().GetEntityArray(asName, eLuxEntityType_Area, "", vEntities);
+	if(vEntities.length() == 0)
+	{
+		Error("Could not find any  areas with name '"+asName+"' for Area_MoveLinearTo.");
+		return;
+	}
+	
+	////////////////////////////////////////
+	// Get target position
+	iLuxEntity@ pTargetEntity = cLux_GetCurrentMap().GetEntityByName(asTargetEntity, eLuxEntityType_LastEnum, "");
+	if (pTargetEntity is null)
+	{
+		Error("Could not find the target entity " + asTargetEntity + " for Area_MoveLinearTo.");
+		return;
+	}
+	
+	cVector3f vTargetPos = pTargetEntity.GetPosition();
+		
+	/////////////////////////////
+	// Iterate areas
+	for(uint i=0; i<vEntities.length(); ++i)
+	{
+		cLuxArea@ pArea = cLux_ToArea(vEntities[i]);
+		pArea.MoveLinearTo(vTargetPos, afAcceleration, afMaxSpeed, afSlowDownDist, abResetSpeed, asCallback);
+	}
+}
+
+//-------------------------------------------------
+
+/**
+ * Places the specified area at another entity, optionally aligning its rotation with the target entity.
+ * 
+ * @param asAreaName, name of the area.
+ * @param asTargetEntity, entity to place at
+ * @param abAlignRotation, if true the entity will be given the same rotation as the target entity.
+ **/
+void Area_PlaceAtEntity(const tString &in asAreaName, const tString &in asTargetEntity, 
+						bool abAlignRotation = false)
+{
+	////////////////////////////////////////
+	// Get all areas
+	array<iLuxEntity@> vEntities;
+	cLux_GetCurrentMap().GetEntityArray(asAreaName, eLuxEntityType_Area, "", vEntities);
+	if(vEntities.length() == 0)
+	{
+		Error("Could not find any  areas with name '"+asAreaName+"' for Area_PlaceAtEntity.");
+		return;
+	}
+	
+	iLuxEntity@ pTargetEntity = cLux_GetCurrentMap().GetEntityByName(asTargetEntity, eLuxEntityType_LastEnum, "");
+	
+	if (pTargetEntity is null)
+	{
+		Error("Could not find the target entity '"+asTargetEntity+"' for Area_PlaceAtEntity");
+		return;
+	}
+		
+	/////////////////////////////
+	// Iterate areas
+	for(uint i=0; i<vEntities.length(); ++i)
+	{
+		cLuxArea@ pArea = cLux_ToArea(vEntities[i]);
+		
+		if (abAlignRotation)
+			pArea.SetMatrix(pTargetEntity.GetMatrix());
+		else
+			pArea.SetPosition(pTargetEntity.GetPosition());
+	}
+}
+
+//-------------------------------------------------
+
+
+/**
+ * Stops an area that is already moving. 
+ * !This is not for liquid areas!
+ * 
+ * @param asName, name of the area to stop moving, wildcard(s) * are supported.
+ **/
+void Area_StopMovement(const tString &in asName)
+{
+	////////////////////////////////////////
+	// Get all areas
+	array<iLuxEntity@> vEntities;
+	cLux_GetCurrentMap().GetEntityArray(asName, eLuxEntityType_Area, "", vEntities);
+	if(vEntities.length() == 0)
+	{
+		Error("Could not find any  areas with name '"+asName+"' for Area_MoveLinearTo.");
+		return;
+	}
+		
+	/////////////////////////////
+	// Iterate areas
+	for(uint i=0; i<vEntities.length(); ++i)
+	{
+		cLuxArea@ pArea = cLux_ToArea(vEntities[i]);
+		pArea.StopMove();
+	}
+}
+
+//-------------------------------------------------
+
+/** 
+ * Return how far you are through the area (i.e. along the area's Z axis)
+ */
+float Area_GetPlayerZAxisDepth(const tString& in asName)
+{
+	iLuxEntity@ pEntity = cLux_GetCurrentMap().GetEntityByName(asName, eLuxEntityType_Area);
+	if (!pEntity.CollidesWithPlayer())
+		return 0.0f;
+	
+	cLuxArea@ pArea = cLux_ToArea(pEntity);
+			
+	float fAreaDepth = pArea.GetSize().z;
+	
+	cVector3f vAreaForward = pArea.GetMatrix().GetTranspose().GetForward();
+	vAreaForward.y=0.0f;
+	vAreaForward.Normalize();
+			
+	cVector3f vToPlayer = cLux_GetPlayer().GetCharacterBody().GetFeetPosition()-pArea.GetPosition();
+	vToPlayer.y=0.0f;
+		
+	float fDot = cMath_Vector3Dot(vAreaForward,vToPlayer);
+	float fProgress = cMath_Clamp(fDot/fAreaDepth+0.5f,0.0f,1.0f);
+	return fProgress;
+}
+
+//-------------------------------------------------
+
+/////////////////////////////////////////
+// DOORWAY AREA
+/////////////////////////////////////////
+
+//-------------------------------------------------
+
+/**
+ * Returns true if the player has passed through one of the doorway areas belonging to this group and hasn't gone back out.
+ * 
+ * @param asGroupName, name of the group.
+ **/
+bool Doorway_PlayerIsInGroup(const tString &in asGroupName)
+{
+	return cScript_GetGlobalVarBool("_Doorway_Player_"+asGroupName);
+}
+
+//-------------------------------------------------
+
+/**
+ * Explicitly set, for if the player starts in a group or is teleported in or out.
+ * 
+ * @param asGroupName, name of the group.
+ * @param abIsInGroup, state to set.
+ **/
+void Doorway_SetPlayerIsInGroup(const tString &in asGroupName, bool abIsInGroup=true)
+{
+	cScript_SetGlobalVarBool("_Doorway_Player_"+asGroupName, abIsInGroup);
+}
+
+//-------------------------------------------------
+
+
+/**
+ * Returns true if the specified entity has passed through one of the doorway areas belonging to this group and hasn't gone back out.
+ * Note that this will only return true if the entity has physically passed though the doorway, not if they start out inside or are teleported into the area.
+ * 
+ * @param asEntityName, name of the entity to check.
+ * @param asGroupName, name of the group.
+ **/
+bool Doorway_EntityIsInGroup(const tString &in asEntityName, const tString &in asGroupName)
+{
+	return cScript_GetGlobalVarBool("_Doorway_"+asEntityName+"_"+asGroupName);
+}
+
+//-------------------------------------------------
+
+/**
+ * Explicitly set, for if the specified entity starts in a group or is teleported in or out.
+ * 
+ * @param asEntityName, name of the entity to set the state of.
+ * @param asGroupName, name of the group.
+ * @param abIsInGroup, state to set.
+ **/
+void Doorway_SetEntityIsInGroup(const tString &in asEntityName, const tString &in asGroupName, bool abIsInGroup=true)
+{
+	cScript_SetGlobalVarBool("_Doorway_"+asEntityName+"_"+asGroupName, abIsInGroup);
+}
+
+//-------------------------------------------------
+
+/////////////////////////////////////////
+// LIQUID AREA
+/////////////////////////////////////////
+
+//-------------------------------------------------
+
+/**
+ * Moves the specified liquid area to the current position of the target entity.
+ * 
+ * @param asName, name of the liquid area to move, wildcard(s) * are supported.
+ * @param asTargetEntity, name of the entity to move the liquid area to.
+ * @param afAcceleration, acceleration .in m/s^2
+ * @param afMaxSpeed, the maximum speed of movement.
+ * @param afSlowDownDist, the distance at which movement slows down.
+ * @param abResetSpeed, if all static movement for the liquid area should be stopped before starting this movement.
+ * @param asCallback, callback when movement is done: void asCallback(const tString& in asAreaName)
+ **/
+void LiquidArea_MoveLinearTo(const tString &in asName, const tString &in asTargetEntity, float afAcceleration, 
+					   float afMaxSpeed, float afSlowDownDist=0.0f, bool abResetSpeed=false, const tString& in asCallback="")
+{
+	////////////////////////////////////////
+	// Get all liquid areas
+	array<iLuxEntity@> vEntities;
+	cLux_GetCurrentMap().GetEntityArray(asName, eLuxEntityType_LiquidArea, "", vEntities);
+	if(vEntities.length() == 0)
+	{
+		Error("Could not find any liquid areas with name '"+asName+"' for LiquidArea_MoveLinearTo.");
+		return;
+	}
+	
+	////////////////////////////////////////
+	// Get target position
+	iLuxEntity@ pTargetEntity = cLux_GetCurrentMap().GetEntityByName(asTargetEntity, eLuxEntityType_LastEnum, "");
+	if (pTargetEntity is null)
+	{
+		Error("Could not find the target entity " + asTargetEntity + " for LiquidArea_MoveLinearTo.");
+		return;
+	}
+	
+	cVector3f vTargetPos = pTargetEntity.GetPosition();
+		
+	/////////////////////////////
+	// Iterate liquid areas
+	for(uint i=0; i<vEntities.length(); ++i)
+	{
+		cLuxLiquidArea@ pArea = cLux_ToLiquidArea(vEntities[i]);
+		pArea.MoveLinearTo(vTargetPos, afAcceleration, afMaxSpeed, afSlowDownDist, abResetSpeed, asCallback);
+	}
+}
+
+//-------------------------------------------------
+
+void LiquidArea_StopMovement(const tString &in asName)
+{
+	////////////////////////////////////////
+	// Get all liquid areas
+	array<iLuxEntity@> vEntities;
+	cLux_GetCurrentMap().GetEntityArray(asName, eLuxEntityType_LiquidArea, "", vEntities);
+	if(vEntities.length() == 0)
+	{
+		Error("Could not find any liquid areas with name '"+asName+"' for LiquidArea_MoveLinearTo.");
+		return;
+	}
+		
+	/////////////////////////////
+	// Iterate liquid areas
+	for(uint i=0; i<vEntities.length(); ++i)
+	{
+		cLuxLiquidArea@ pArea = cLux_ToLiquidArea(vEntities[i]);
+		pArea.StopMove();
+	}
+}
+
+//-------------------------------------------------
+
+/**
+ * Sets whether screen effects should be shown when the camera leaves the area.
+ * 
+ * @param asName, name of the liquid area, wildcard(s) * are supported.
+ * @param abState, state to set.
+ **/
+void LiquidArea_SetEffectOnExit(const tString &in asName, bool abState)
+{
+	cScript_SetGlobalArgBool(0, abState);
+	cScript_RunGlobalFunc(asName, "cScrLiquidAreaDefault", "_Global_SetEffectOnExit");
+}
+
+//-------------------------------------------------
+
+/////////////////////////////////////////
+// STICKY
+/////////////////////////////////////////
+
+//-------------------------------------------------
+
+/**
+ * Attaches an entity to a sticky area. The entity must have a physics body.
+ * 
+ * @param asArea, name of sticky area.
+ * @param asEntity, name of entity.
+ * @param asBody, name of specific body on entity, if left as an emtpy string, the main body will be used.
+ **/
+void StickyArea_AttachEntity(const tString &in asArea, const tString &in asEntity, const tString &in asBody)
+{
+	cScript_SetGlobalArgString(0, asEntity);
+	cScript_SetGlobalArgString(1, asBody);
+	cScript_RunGlobalFunc(asArea, "cScrAreaSticky", "_Global_AttachEntity");
+}
+
+//-------------------------------------------------
+
+/**
+ * Attaches a physics body to a sticky area.
+ * 
+ * @param asArea, name of sticky area.
+ * @param asBody, name of body to attach.
+ **/
+void StickyArea_AttachBody(const tString &in asArea, const tString &in asBody)
+{
+	cScript_SetGlobalArgString(0, asBody);
+	cScript_RunGlobalFunc(asArea, "cScrAreaSticky", "_Global_AttachBody");
+}
+
+//-------------------------------------------------
+
+/**
+ * Detaches anything attached to a sticky area.
+ * 
+ * @param asArea, name of sticky area.
+ **/
+void StickyArea_Detach(const tString &in asArea)
+{
+	cScript_RunGlobalFunc(asArea, "cScrAreaSticky", "DetachBody");
+}
+
+//-------------------------------------------------
+
+/**
+ * Returns the entity attached to the area.
+ * 
+ * @param asArea, name of sticky area.
+ * 
+ * @return iLuxEntity@, the attached entity of the area, or null if no entity is attached.
+ **/
+iLuxEntity@ StickyArea_GetProp(const tString &in asArea)
+{
+	cScript_RunGlobalFunc(asArea, "cScrAreaSticky", "_Global_GetAttachedEntityName");
+	tString sName = cScript_GetGlobalReturnString();
+	if (sName == "") return null;
+	
+	return cLux_GetCurrentMap().GetEntityByName(sName, eLuxEntityType_LastEnum, "");
+}
+
+//-------------------------------------------------
+
+/**
+ * Returns the name of the attached entity.
+ * 
+ * @param asArea, name of sticky area.
+ * 
+ * @return tString, name of the attached entity. An empty string if no entity is attached.
+ **/
+tString StickyArea_GetAttachedEntityName(const tString &in asArea)
+{
+	cScript_RunGlobalFunc(asArea, "cScrAreaSticky", "_Global_GetAttachedEntityName");
+	return cScript_GetGlobalReturnString();
+}
+
+//-------------------------------------------------
+
+/**
+ * Returns the body attached to the area.
+ * 
+ * @param asArea, name of sticky area.
+ * 
+ * @return iPhysicsBody@, the attached body of the area, or null if no body is attached.
+ **/
+iPhysicsBody@ StickyArea_GetBody(const tString &in asArea)
+{
+	cScript_RunGlobalFunc(asArea, "cScrAreaSticky", "_Global_GetAttachedBodyName");
+	tString sName = cScript_GetGlobalReturnString();
+	if (sName == "") return null;
+	
+	return cLux_GetCurrentMap().GetPhysicsWorld().GetBody(sName);
+}
+
+//-------------------------------------------------
+
+/**
+ * Returns the time it takes for the specified sticky area to pose an attached entity.
+ * 
+ * @param asArea, name of sticky area.
+ * 
+ * @return float, pose time in seconds.
+ **/
+float StickyArea_GetPoseTime(const tString &in asArea)
+{
+	cScript_RunGlobalFunc(asArea, "cScrAreaSticky", "_Global_GetPoseTime");
+	return  cScript_GetGlobalReturnFloat();
+}
+
+//-------------------------------------------------
+
+/**
+ * Sets if player interaction is required to attach/detach
+ * 
+ * @param asArea, name of sticky area.
+ * @param abX, if interaction is required to attach/detach.
+ **/
+void StickyArea_SetInteractionRequired(const tString &in asArea, bool abX)
+{
+	cScript_SetGlobalArgBool(0, abX);
+	cScript_RunGlobalFunc(asArea, "cScrAreaSticky", "_Global_SetInteractionRequired");
+}
+
+//-------------------------------------------------
+
+/**
+ * Sets the custom rotation of the attached body
+ * 
+ * @param asArea, name of sticky area
+ * @param avRotation, world rotation of the body, in degrees
+ **/
+void StickyArea_SetCustomRotation(const tString &in asArea, const cVector3f &in avRotation)
+{
+	cScript_SetGlobalArgVector3f(0, avRotation);
+	cScript_RunGlobalFunc(asArea, "cScrAreaSticky", "_Global_SetCustomRotation");
+}
+
+//-------------------------------------------------
+
+/**
+ * Sets the rotation offset of the attached body
+ * 
+ * @param asArea, name of sticky area
+ * @param avRotation, offset rotation of the body, in degrees
+ **/
+void StickyArea_SetRotationOffset(const tString &in asArea, const cVector3f &in avRotation)
+{
+	cScript_SetGlobalArgVector3f(0, avRotation);
+	cScript_RunGlobalFunc(asArea, "cScrAreaSticky", "_Global_SetRotationOffset");
+}
+
+//-------------------------------------------------
+
+/**
+ * Sets the translation offset of the attached body
+ * 
+ * @param asArea, name of sticky area
+ * @param avTranslation, translation offset of the body
+ **/
+void StickyArea_SetTranslationOffset(const tString &in asArea, const cVector3f &in avTranslation)
+{
+	cScript_SetGlobalArgVector3f(0, avTranslation);
+	cScript_RunGlobalFunc(asArea, "cScrAreaSticky", "_Global_SetTranslationOffset");
+}
+
+//-------------------------------------------------
+
+/////////////////////////////////////////
+// CAMERA ANIMATION
+/////////////////////////////////////////
+
+//-------------------------------------------------
+
+/**
+ * Returns the maximum yaw for the specified node.
+ * 
+ * @param asArea, name of animation node.
+ * 
+ * @return float, max yaw in radians.
+ **/
+float CameraAnimationNode_GetMaxYaw(const tString &in asArea)
+{
+	cScript_RunGlobalFunc(asArea, "cScrAreaCameraAnimationNode", "_Global_GetMaxYaw");
+	return cScript_GetGlobalReturnFloat();
+}
+
+//-------------------------------------------------
+
+/**
+ * Returns the maximum pitch for the specified node.
+ * 
+ * @param asArea, name of animation node.
+ * 
+ * @return float, max pitch in radians.
+ **/
+float CameraAnimationNode_GetMaxPitch(const tString &in asArea)
+{
+	cScript_RunGlobalFunc(asArea, "cScrAreaCameraAnimationNode", "_Global_GetMaxPitch");
+	return cScript_GetGlobalReturnFloat();
+}
+
+//-------------------------------------------------
+
+/**
+ * Returns the look speed multiplier for the specified node.
+ * 
+ * @param asArea, name of animation node.
+ * 
+ * @return float, look speed multiplier.
+ **/
+float CameraAnimationNode_GetLookSpeedMul(const tString &in asArea)
+{
+	cScript_RunGlobalFunc(asArea, "cScrAreaCameraAnimationNode", "_Global_GetLookSpeedMul");
+	return cScript_GetGlobalReturnFloat();
+}
+	
+//------------------------------------------------------------
+
+/**
+ * Returns the time it takes to go to the next node in the animation.
+ * 
+ * @param asArea, name of animation node.
+ * 
+ * @return float, forward time in seconds
+ **/
+float CameraAnimationNode_GetForwardTime(const tString &in asArea)
+{
+	cScript_RunGlobalFunc(asArea, "cScrAreaCameraAnimationNode", "_Global_GetForwardTime");
+	return cScript_GetGlobalReturnFloat();
+}
+	
+//------------------------------------------------------------
+
+/**
+ * Returns the forward speed for the specified node.
+ * 
+ * @param asArea, name of animation node.
+ * 
+ * @return float, forward speed measured in "nodes per second"
+ **/
+float CameraAnimationNode_GetForwardSpeed(const tString &in asArea)
+{
+	cScript_RunGlobalFunc(asArea, "cScrAreaCameraAnimationNode", "_Global_GetForwardSpeed");
+	return cScript_GetGlobalReturnFloat();
+}
+
+//------------------------------------------------------------
+
+/**
+ * Returns the time it takes to go back to this node from the next node in the animation.
+ * 
+ * @param asArea, name of animation node.
+ * 
+ * @return float, back time in seconds
+ **/
+float CameraAnimationNode_GetBackTime(const tString &in asArea)
+{
+	cScript_RunGlobalFunc(asArea, "cScrAreaCameraAnimationNode", "_Global_GetBackTime");
+	return cScript_GetGlobalReturnFloat();
+}
+
+//------------------------------------------------------------
+
+/**
+ * Returns the back speed for the specified node.
+ * 
+ * @param asArea, name of animation node.
+ * 
+ * @return float, back speed measured in "nodes per second"
+ **/
+float CameraAnimationNode_GetBackSpeed(const tString &in asArea)
+{
+	cScript_RunGlobalFunc(asArea, "cScrAreaCameraAnimationNode", "_Global_GetBackSpeed");
+	return cScript_GetGlobalReturnFloat();
+}
+
+//------------------------------------------------------------
+
+/**
+ * Returns the amount of auto move in the specified node.
+ * 
+ * @param asArea, name of animation node.
+ * 
+ * @return float, auto move amount, 1 being full speed ahead and -1 being full speed back.
+ **/
+float CameraAnimationNode_GetAutoMove(const tString &in asArea)
+{
+	cScript_RunGlobalFunc(asArea, "cScrAreaCameraAnimationNode", "_Global_GetAutoMove");
+	return cScript_GetGlobalReturnFloat();
+}
+
+//------------------------------------------------------------
+
+/**
+ * Sets the auto move amount for the specified node.
+ * 
+ * @param asArea, name of animation node.
+ * @param afAutoMove, amount to set.
+ * 
+ **/
+void CameraAnimationNode_SetAutoMove(const tString &in asArea, const float afAutoMove)
+{
+	cScript_SetGlobalArgFloat(0, afAutoMove);
+	cScript_RunGlobalFunc(asArea, "cScrAreaCameraAnimationNode", "_Global_SetAutoMove");
+}
+
+//------------------------------------------------------------
+
+/**
+ * Fades the auto move amount for the specified node.
+ * 
+ * @param asArea, name of animation node.
+ * @param afAutoMove, Target auto move amount.
+ * 
+ **/
+void CameraAnimationNode_FadeAutoMove(const tString &in asArea, const float afAutoMove, const float afTime, const eEasing aEasing = eEasing_QuartInOut)
+{
+	cScript_SetGlobalArgFloat(0, afAutoMove);
+	cScript_SetGlobalArgFloat(1, afTime);
+	cScript_SetGlobalArgInt(2, aEasing);
+	cScript_RunGlobalFunc(asArea, "cScrAreaCameraAnimationNode", "_Global_FadeAutoMove");
+}
+
+//------------------------------------------------------------
+
+float CameraAnimationNode_GetLookMoveDist(const tString &in asArea)
+{
+	cScript_RunGlobalFunc(asArea, "cScrAreaCameraAnimationNode", "_Global_GetLookMoveDist");
+	return cScript_GetGlobalReturnFloat();
+}
+
+//------------------------------------------------------------
+
+float CameraAnimationNode_GetLookMoveAngle(const tString &in asArea)
+{
+	cScript_RunGlobalFunc(asArea, "cScrAreaCameraAnimationNode", "_Global_GetLookMoveAngle");
+	return cScript_GetGlobalReturnFloat();
+}
+
+//------------------------------------------------------------
+
+/**
+ * Returns if the node takes movement input from the player.
+ * 
+ * @param asArea, name of animation node.
+ * 
+ * @return bool, true if the node's movement is interactive.
+ **/
+bool CameraAnimationNode_GetInteractiveMovement(const tString &in asArea)
+{
+	cScript_RunGlobalFunc(asArea, "cScrAreaCameraAnimationNode", "_Global_GetInteractiveMovement");
+	return cScript_GetGlobalReturnBool();
+}
+
+//------------------------------------------------------------
+
+/**
+ * Sets if the node should take movement input from the player.
+ * 
+ * @param asArea, name of animation node.
+ * @param abX, state to set.
+ **/
+void CameraAnimationNode_SetInteractiveMovement(const tString &in asArea, bool abX)
+{
+	cScript_SetGlobalArgBool(0, abX);
+	cScript_RunGlobalFunc(asArea, "cScrAreaCameraAnimationNode", "_Global_SetInteractiveMovement");
+}
+
+//------------------------------------------------------------
+
+/**
+ * Sets if the node should take movement input from the player.
+ * 
+ * @param asArea, name of animation node.
+ * @param afX, backward time to set.
+ **/
+void CameraAnimationNode_SetBackwardTime(const tString &in asArea, float afX)
+{
+	cScript_SetGlobalArgFloat(0, afX);
+	cScript_RunGlobalFunc(asArea, "cScrAreaCameraAnimationNode", "_Global_SetBackTime");
+}
+
+//------------------------------------------------------------
+
+/**
+ * Returns true if the player should crouch if the animation stops at this node.
+ * 
+ * @param asArea, name of animation node.
+ * 
+ * @return bool, true if the player should crouch on exit.
+ **/
+bool CameraAnimationNode_GetCrouchOnExit(const tString &in asArea)
+{
+	cScript_RunGlobalFunc(asArea, "cScrAreaCameraAnimationNode", "_Global_GetCrouchOnExit");
+	return cScript_GetGlobalReturnBool();
+}
+
+//------------------------------------------------------------
+
+/**
+ * Returns true if the node should be placed at the camera's position and orientation when the animation starts.
+ * 
+ * @param asArea, name of animation node.
+ * 
+ * @return bool, true if the node should initialize to the camera.
+ **/
+bool CameraAnimationNode_GetInitToCamera(const tString &in asArea)
+{
+	cScript_RunGlobalFunc(asArea, "cScrAreaCameraAnimationNode", "_Global_GetInitToCamera");
+	return cScript_GetGlobalReturnBool();
+}
+
+//------------------------------------------------------------
+
+/**
+ * Sets if the node should be placed at the camera's position and orientation when the animation starts.
+ * 
+ * @param asArea, name of animation node.
+ * @param abInitToCamera, state to set.
+ * 
+ **/
+void CameraAnimationNode_SetInitToCamera(const tString &in asArea, bool abInitToCamera)
+{
+	cScript_SetGlobalArgBool(0, abInitToCamera);
+	cScript_RunGlobalFunc(asArea, "cScrAreaCameraAnimationNode", "_Global_SetInitToCamera");
+}
+
+//------------------------------------------------------------
+
+/**
+ * Returns true if the node fades its speeds (back and forward) between this and the previous node in the animation.
+ * 
+ * @param asArea, name of animation node.
+ * 
+ * @return bool, true if the node fades its speeds.
+ **/
+bool CameraAnimationNode_GetUseSpeedFading(const tString &in asArea)
+{
+	cScript_RunGlobalFunc(asArea, "cScrAreaCameraAnimationNode", "_Global_GetUseSpeedFading");
+	return cScript_GetGlobalReturnBool();
+}
+
+//------------------------------------------------------------
+
+/**
+ * Returns the callback function of the specified node.
+ * 
+ * @param asArea, name of animation node.
+ * 
+ * @return tString, the callback function.
+ **/
+tString CameraAnimationNode_GetCallbackFunc(const tString &in asArea)
+{
+	cScript_RunGlobalFunc(asArea, "cScrAreaCameraAnimationNode", "_Global_GetCallbackFunc");
+	return cScript_GetGlobalReturnString();
+}
+
+//------------------------------------------------------------
+
+/**
+ * Sets the callback function of the specified node.
+ * 
+ * @param asArea, name of animation node.
+ * @param asFunction, the callback function to set.
+ **/
+void CameraAnimationNode_SetCallbackFunc(const tString &in asArea, const tString &in asFunction)
+{
+	cScript_SetGlobalArgString(0, asFunction);
+	cScript_RunGlobalFunc(asArea, "cScrAreaCameraAnimationNode", "_Global_SetCallbackFunc");
+}
+
+//------------------------------------------------------------
+
+/**
+ * Returns true if it's possible to move from the next node in the animation to this one.
+ * 
+ * @param asArea, name of animation node.
+ * 
+ * @return bool, true if it's possible to move back to this node.
+ **/
+bool CameraAnimationNode_HasBackMovement(const tString &in asArea)
+{
+	return CameraAnimationNode_GetInteractiveMovement(asArea) && CameraAnimationNode_GetBackSpeed(asArea) > 0;
+}
+
+//-------------------------------------------------

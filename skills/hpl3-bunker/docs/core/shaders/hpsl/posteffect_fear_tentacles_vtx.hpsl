@@ -1,0 +1,83 @@
+/////////////////////////////
+// Tentacle vertex shader  used by deferred poost effects
+//////////////////////////
+
+@include helper_quaternion.hpsl
+
+uniform float afSpreadDist;
+uniform float afTentacleScale;
+uniform int alInstanceStride;
+uniform float afIntensity;
+uniform	float afTime;
+uniform float afMaterialAlpha;
+
+uniform cTexture2D aDisplacementMapA : 2;
+uniform cTexture2D aDisplacementMapB : 3;
+uniform cTextureBuffer aInstanceBuffer : 4;
+
+void main(in cVector4f vtx_vPosition,
+	      in cVector4f vtx_vTexCoord0,
+		  in cVector4f vtx_vBoneIndices,
+		  in cVector4f vtx_vBoneWeight,
+		  out cVector4f px_vPosition,
+		  out cVector4f px_vTexCoord0)
+{	
+	int lBaseOffset = int(vtx_lInstanceID * alInstanceStride);
+	int lBoneOffset = lBaseOffset + 4;
+	cVector4l lvBoneIndices = max(cVector4l(vtx_vBoneIndices), cVector4l(0,0,0,0)) * 2;
+	cVector4f  vBoneWeight   = vtx_vBoneWeight;
+
+	cMatrixf mtxModel = cMatrixf(	load(aInstanceBuffer, lBaseOffset),
+									load(aInstanceBuffer, lBaseOffset + 1),
+									load(aInstanceBuffer, lBaseOffset + 2),
+									load(aInstanceBuffer, lBaseOffset + 3));
+	
+	cVector4f vPos = mix(mul(mtxModel, cVector4f(0, 0, 0, 1)), cVector4f(0, 0, 0, 1), afSpreadDist);
+
+	/////////////
+	// Create bone matrix
+	cMatrix2x4f mtxBones[4];
+
+	for(int i = 0; i < 4; ++i)
+	{
+		mtxBones[i] = cMatrix2x4f(load(aInstanceBuffer, lBoneOffset + lvBoneIndices[i]), load(aInstanceBuffer, lBoneOffset + lvBoneIndices[i] + 1));
+	}
+
+	cMatrix2x4f mtxDualQuat;
+	cMatrix2x4f mtxBase = mtxBones[0];
+
+	mtxDualQuat  = mtxBase * vBoneWeight.x;
+	mtxDualQuat += append(mtxBase, mtxBones[1], vBoneWeight.y);
+	mtxDualQuat += append(mtxBase, mtxBones[2], vBoneWeight.z);
+	mtxDualQuat += append(mtxBase, mtxBones[3], vBoneWeight.w);
+
+	//////////////////
+	// Normalize both quaternions after adding the bones together
+	mtxDualQuat /= length(mtxDualQuat[0]);
+	
+
+	/////////////////
+	// Save vtx pos
+	cVector4f vPosition = vtx_vPosition;
+
+	/////////////
+	// Do vertex based animations from vertex color
+
+	cVector4f vDisplacement = sampleLod(aDisplacementMapA, vtx_vTexCoord0.xy, 0);
+	if(afMaterialAlpha > 1e-5f) 
+		vDisplacement = mix(vDisplacement, sampleLod(aDisplacementMapB, vtx_vTexCoord0.xy, 0), afMaterialAlpha);
+
+	float fTimeAdd = vDisplacement.b * 2.f;
+	float fTime = afTime + fTimeAdd + (vtx_lInstanceID);
+	vPosition.xy += vDisplacement.xy * afIntensity * 0.2 * sin(fTime);
+
+	/////////////
+	// Apply scale, translation and rotation to vertex
+	cVector4f vLocalVertexPos = cVector4f(dqmul(mtxDualQuat, vPosition.xyz) * afTentacleScale, 0.0);
+	@ifdef OS_XBO
+	vLocalVertexPos.z = -0.5;
+	@endif
+
+	px_vPosition = mul(mtxModel, vLocalVertexPos) + vPos;
+	px_vTexCoord0 = vtx_vTexCoord0;
+}

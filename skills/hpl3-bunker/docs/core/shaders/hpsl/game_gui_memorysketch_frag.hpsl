@@ -1,0 +1,108 @@
+////////////////////////////////////////////////////////
+// Null shader, bound when no other shader is bound - Pixel shader
+
+cVector3f Random3(cVector3f avPos)
+{
+	return -0.5 + fract(	sin(avPos * 123.432) *
+							cVector3f(43758.5453123, 3351.34523123, 1234.71283));
+}
+
+float SimplexNoise(cVector3f avPos) 
+{
+	///////////////
+	// Constants for 3d simplex
+	const float kfF3 =  0.3333333;
+	const float kfG3 =  0.1666667;
+
+	/////////////
+	// Setup inital pos
+	cVector3f vX[4];
+	cVector3f vPos = floor(avPos + dot(avPos, cVector3f(kfF3, kfF3, kfF3)));
+	vX[0] = avPos - vPos + dot(vPos, cVector3f(kfG3, kfG3, kfG3));
+	
+	///////////////
+	// Calculate index
+	cVector3f vEdge = step(cVector3f(0.0, 0.0, 0.0), vX[0] - vX[0].yzx);
+	cVector3f vIndex0 = vEdge * (1.0 - vEdge.zxy);
+	cVector3f vIndex1 = 1.0 - vEdge.zxy * (1.0 - vEdge);
+		
+	/////////////
+	// Calculate other offsets
+	vX[1] = vX[0] - vIndex0 + kfG3;
+	vX[2] = vX[0] - vIndex1 + 2.0 * kfG3;
+	vX[3] = vX[0] - 1.0 + 3.0 * kfG3;
+	
+	//////////////
+	// Calculate weights
+	cVector4f vWeights;
+	
+	for(int i = 0; i < 4; ++i)
+	{
+		vWeights[i] = dot(vX[i], vX[i]);
+	}
+	
+	vWeights = max(0.6 - vWeights, 0.0);
+
+	/////////////
+	// Get surface components
+	cVector4f vComponents;
+	vComponents.x = dot(Random3(vPos), vX[0]);
+	vComponents.y = dot(Random3(vPos + vIndex0), vX[1]);
+	vComponents.z = dot(Random3(vPos + vIndex1), vX[2]);
+	vComponents.w = dot(Random3(vPos + 1.0), vX[3]);
+	
+	//////////////
+	// Apply weight to components
+	vWeights *= vWeights;
+	vWeights *= vWeights;
+	vComponents *= vWeights;
+	
+	return dot(vComponents, cVector4f(27.0, 27.0, 27.0, 27.0)) + 0.5; //scale to range 0-1
+}
+
+
+uniform cTexture2D aColorMap : 0;
+uniform cVector2f avAlphaLimit;
+uniform float afTime;
+
+void main(in cVector4f px_vPosition,
+		  in cVector4f px_vColor,
+		  in cVector4f px_vTexCoord0,
+		  in cVector2f px_vNoiseUV,
+		  out cVector4f out_vColor0 : 0)
+{
+	const float kfBlurSize = 2.5f;
+	const float kfBlurSpeed = 0.7f;
+
+	cVector2f vUV = px_vTexCoord0.xy;
+
+	/////////////
+	// Sample again at the new mipmap level
+	cVector4f vColor = cVector4f(px_vColor.xyz, 1) * sample(aColorMap, vUV);
+
+	///////////////
+	// Get random alpha and sampled alpha
+	float fRandomAlpha = SimplexNoise(cVector3f(px_vNoiseUV * kfBlurSize, afTime * kfBlurSpeed));
+	float fSampledAlpha = vColor.a;
+	
+	///////////////
+	// Combined based on alpha limit, if negative the result ends up inverted
+	float fAlpha = 0;
+	if(avAlphaLimit.y >= 0)
+	{
+		fAlpha = fSampledAlpha * fRandomAlpha * avAlphaLimit.y;
+	}
+	else
+	{
+		fAlpha = fSampledAlpha * (1.0 + fRandomAlpha * avAlphaLimit.y);
+	}
+
+	/////////////
+	// Apply alpha offset and clamp to normal range
+	fAlpha = clamp(fAlpha + avAlphaLimit.x, 0.0, 1.0);
+
+	vColor.rgb = mix(cVector3f(1.0, 1.0, 1.0), vColor.rgb, fAlpha * px_vColor.a);
+	vColor.a = 1;
+
+	out_vColor0 = vColor;
+}

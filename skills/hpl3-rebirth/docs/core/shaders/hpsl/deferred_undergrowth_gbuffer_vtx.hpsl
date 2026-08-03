@@ -1,0 +1,165 @@
+////////////////////////////////////////////////////////
+// Undergrowth G-Buffer - Vertex Shader
+//
+//
+////////////////////////////////////////////////////////
+
+@include helper_sway_offset.hpsl
+@include helper_quaternion.hpsl
+@include helper_matrix.hpsl
+
+//----------------------------------------------
+
+cBuffer cUndergrowthVertexArguments : 0
+{
+	cMatrixf a_mtxModelViewProjection;
+	cMatrixf a_mtxModelView;
+	cMatrixf a_mtxNormal;
+
+	float afInvFarPlane;
+	float afT;
+
+	cVector2f avDissolveStartSizeDepth; //This is normalized depth!
+
+	cVector3f  avWindProperties;	//x=Freg, y=Amp, z=Speed
+	cVector3f  avWindOctavesMul;
+	
+	cVector4f avForceFieldPos;	//W=T used for the forcefield sway
+	cVector4f avForceFieldProp; //x=Fade
+
+	cVector3f avForceFieldPos0;
+	cVector3f avForceFieldPos1;
+	cVector3f avForceFieldPos2;
+	cVector3f avForceFieldPos3;
+	
+	cVector4f avForceFieldFadeStarts;
+	cVector4f avForceFieldFadeLengths;
+	cVector4f avForceFieldForces;
+	cVector4f avForceFieldTs;
+	
+	float afForceFieldMaxForce;
+	float afCutoffAlpha;
+	cVector2f avTextureSubDivisions;
+	int alInstanceOffset;
+};
+
+@ifdef UseTextureBuffer
+	uniform cTextureBuffer aInstanceBuffer : 15;
+@endif
+
+//---------------------------------------------
+
+///////////////////////////////
+// Main program
+void main(in cVector4f vtx_vPosition,
+		  in cVector4f vtx_vTexCoord0,
+		  in cVector4f vtx_vTexCoord1,
+		  in cVector3f vtx_vNormal,
+		  in cVector4f vtx_vColor,
+		  out cVector4f px_vTexCoord0,
+		  out cVector3f px_vNormal,
+		  out cVector4f px_vColor,
+		  out float px_fLinearDepth,
+		  out cVector4f px_vPosition)
+{	
+	//////////////////////
+	// Get Position
+	cVector4f vVtxPos =  cVector4f(vtx_vPosition.xyz, 1.0);
+
+	@ifdef UseTextureBuffer
+		int lBaseOffset = int(alInstanceOffset + vtx_lInstanceID * 5);
+		cVector4f vPosition = load(aInstanceBuffer, lBaseOffset);
+		cVector4f vRotation = load(aInstanceBuffer, lBaseOffset + 1);
+		cVector4f vSize = load(aInstanceBuffer, lBaseOffset + 2);
+		cVector4f vColorRand = load(aInstanceBuffer, lBaseOffset + 3);
+		cVector4f vUpUv = load(aInstanceBuffer, lBaseOffset + 4);
+
+		vVtxPos.xyz = qmul(vRotation, vtx_vPosition.xyz) * vSize.xyz + vPosition.xyz;
+
+		float fWindMul = vtx_vTexCoord1.x;
+		float fRand = vColorRand.w;
+		cVector3f vNormal = vUpUv.xyz;
+		cVector3f vColor = vColorRand.xyz;
+		
+		cVector2f vUvMul = cVector2f(1.0, 1.0) / avTextureSubDivisions;
+		cVector2f vUvAdd;
+		vUvAdd.y = floor(vUpUv.w / avTextureSubDivisions.x);
+		vUvAdd.x = vUpUv.w - vUvAdd.y * avTextureSubDivisions.x;
+		vUvAdd *= vUvMul;
+	@else
+		float fWindMul = vtx_vTexCoord1.x;
+		float fRand = vtx_vTexCoord1.y;
+		cVector3f vNormal = vtx_vNormal;
+		cVector3f vColor = vtx_vColor.xyz;
+		cVector2f vUvAdd = cVector2f(1.0, 1.0);
+		cVector2f vUvMul = cVector2f(1.0, 1.0);
+	@endif
+	
+	/////////////////////////////////
+	//Animate the grass
+	@ifdef UseWind
+		cVector3f vOffset = GetSwayOffset(afT, vVtxPos, avWindProperties, avWindOctavesMul, 0.0);
+		
+		vOffset *= fWindMul;//TextureCoord1 = local coords for plant.
+	@else
+		cVector3f vOffset = cVector3f(0, 0, 0);
+	@endif
+	
+	/////////////////////////////////
+	// Single Force field
+	@ifdef UseSingleForceField
+	
+		//Add offset of single force field
+		// note: coord1.y == specific for each mesh.
+		vOffset.xz += GetSingleForceFieldOffset(afT + fRand*6.28, vVtxPos, avForceFieldPos, avForceFieldProp) * fWindMul;
+		
+	/////////////////////////////////
+	// Four Fource fields
+	@elseif UseFourForceFields
+		
+		//Add offset of four force fields
+		vOffset.xz += GetFourForceFieldsOffset(	afT, vVtxPos, 
+												avForceFieldPos0, avForceFieldPos1, avForceFieldPos2, avForceFieldPos3,
+												avForceFieldFadeStarts, avForceFieldFadeLengths, avForceFieldForces,
+												avForceFieldTs, afForceFieldMaxForce) * fWindMul;
+		
+	@endif
+	
+	/////////////////////////////////
+	// Offset fix
+	vOffset.y -= length(vOffset.xz); //To avoid bad stretching!
+	
+	//////////////////////
+	// Set Position
+	vVtxPos.xyz += vOffset;
+	
+	px_vPosition = mul(a_mtxModelViewProjection, vVtxPos);
+		
+	/////////////////////
+	// Uv
+	px_vTexCoord0 = vtx_vTexCoord0;
+	px_vTexCoord0.xy = px_vTexCoord0.xy * vUvMul + vUvAdd;
+
+	//////////////////////
+	// Normals
+	@ifdef UseWind || UseSingleForceField
+		vNormal = normalize(vNormal + vOffset);
+	@endif
+
+	px_vNormal = normalize(mul(ToMatrix3f(a_mtxModelView), vNormal));
+
+	//////////////////////
+	// Linear depth
+	cVector3f vViewPos = mul(a_mtxModelView, vVtxPos).xyz;
+	px_fLinearDepth = -vViewPos.z * afInvFarPlane;//Do not use near plane! Doing like this will make the calcs simpler in the light shader.
+	 
+	//////////////////////
+	// Color
+	px_vColor.xyz = vColor.xyz;
+
+	float fDist = length(vViewPos);
+	float fLength = avDissolveStartSizeDepth.y * (fRand * 0.75 + 0.25);
+	float fStart = avDissolveStartSizeDepth.x - fLength * fWindMul;
+
+	px_vColor.w = 1 - clamp( (fDist - fStart) / fLength, 0.0, 1.0);
+}

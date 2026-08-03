@@ -1,0 +1,390 @@
+#include "interfaces/PlayerState_Interface.hps"
+#include "base/InputHandler_Types.hps"
+#include "helpers/helper_player.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_items.hps"
+#include "helpers/helper_components.hps"
+
+//------------------------------------------------------------
+
+const float gfHideYawRange = cMath_ToRad(45.f);
+const float gfHideMinPitch = cMath_ToRad(-65.f);
+const float gfHideMaxPitch = cMath_ToRad(-20.f);
+const float gfHideStartPitch = cMath_ToRad(-35.f);
+const float gfHideStartPitchFadeTime = 0.6f;
+
+const tString gsHideIdleAnim = "player_hide_idle";
+const tString gsHideIdleLeftArmAnim = "player_hide_idle_larm";
+const tString gsHideIdleRightArmAnim = "player_hide_idle_rarm";
+const tString gsHideExitAnim = "crouch_idle";
+const tString gsHideExitLeftArmAnim = "crouch_idle_larm";
+const tString gsHideExitRightArmAnim = "crouch_idle_rarm";
+
+//------------------------------------------------------------
+
+class cScrPlayerState_Hide : iScrPlayerState, iScrPlayerState_Interface
+{
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// GLOBAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetAllowHint()
+	{
+		mbAllowHint = cScript_GetGlobalArgBool(0);
+	}
+	
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		mlDoFId = -1;
+		mlImageTrailId = -1;
+		mlHintId = -1;
+		mlScreenId = -1;
+		mfStartYaw = 0.f;
+		mfStartPitch = 0.f;
+		mfHideCount = 0.f;	
+		mbAmuletHeld = false;
+		mbLanternHeld = false;
+		mbAllowHint = true;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// USER SETTINGS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void LoadUserConfig() {}
+	void SaveUserConfig() {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ENTER MAP
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap) {}
+	void OnMapLeave(cLuxMap @apMap) {}
+	
+	//------------------------------------------------------------
+	
+	void CreateWorldEntities(cLuxMap @apMap) {}
+	void DestroyWorldEntities(cLuxMap @apMap) {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnEnterState(int alPrevStateId)
+	{
+		///////////////
+		// Setup vars
+		cLuxMap@ pMap = cLux_GetCurrentMap();
+		iCharacterBody@ pCharBody = mBaseObj.mpPlayer.GetCharacterBody();
+		iScrPlayerBodyHandler_Interface@ pPlayerBody = cast<iScrPlayerBodyHandler_Interface>(cLux_GetUserModuleFromID(eModuleType_PlayerBodyHandler));
+		
+		mfHideCount = 0.f;
+		mfStartYaw = pCharBody.GetYaw();
+		mfStartPitch = mBaseObj.mpPlayer.GetCamera().GetPitch();
+		
+		tString sMapName = pMap.GetName();
+		int lLevel = cString_ToInt(cString_Sub(sMapName, 1, 1) + cString_Sub(sMapName, 4, 1), 0);
+		cScript_SetGlobalVarInt("HideMode_LastLevelUsedIn", lLevel);
+		
+		///////////////
+		// Items
+		mbAmuletHeld = Item_GetHeldType(eItemHandlerHand_Right) == "CurseMedallion";
+		mbLanternHeld = Item_GetHeldType(eItemHandlerHand_Left) == "Lantern";
+		
+		Item_PutAway(eItemHandlerHand_Left);
+		Item_PutAway(eItemHandlerHand_Right);
+		
+		///////////////
+		// Player
+		pCharBody.StopMovement();
+		pPlayerBody.AlignLowerBodyToCameraYaw();
+		pPlayerBody.SetCustomStateActive(true);
+		pPlayerBody.SetUseLowerBonesYaw(false);
+		
+		FootPlacement_FadeOut(pPlayerBody.GetEntityName(), 0.3f);
+		
+		///////////////
+		// Vfx
+		if (mlDoFId == -1)
+			mlDoFId = Effect_DoF_Start(0.1f, 1.0f, 0.1f, 3.0f);
+		if (mlImageTrailId == -1)
+			mlImageTrailId = Effect_ImageTrail_Start(1.0f, 1.0f, -1.0f, 3.0f);
+		if (mlScreenId == -1)
+		{
+			//float fAspect =  cLux_GetPlayer().GetCamera().GetAspect();
+			//cLux_AddDebugMessage("" + fAspect);
+			//float fBaseSize = 0.945f - (0.383f * (fAspect - 1.33));
+			cVector2f vSize = cVector2f(1.25, 1);
+			mlScreenId = Effect_Screen_Start("vignette_screen.mat", cVector2f(0.5f, 0.5f), vSize, 0.75f, 0.5f, 9999999.f, 0.5f, -11);
+		}
+		
+		///////////////
+		// Sfx
+		cLux_SetHideModeEffectsActive(true);
+		cLux_PlayGuiSoundData("player/footsteps/temp/player_prone_down", eSoundEntryType_World, 1.0f, true);	
+
+		///////////////
+		// Map callback		
+		tString sCallback = "void OnPlayerEnterHide()";
+		if (pMap.ScriptMethodExists(sCallback) && pMap.ScriptPrepare(sCallback))
+			pMap.ScriptExecute();
+	}
+
+	//------------------------------------------------------------
+
+	void OnLeaveState(int alNextStateId)
+	{
+		///////////////
+		// Player
+		iScrPlayerBodyHandler_Interface@ pPlayerBody = cast<iScrPlayerBodyHandler_Interface>(cLux_GetUserModuleFromID(eModuleType_PlayerBodyHandler));
+		
+		pPlayerBody.AlignLowerBodyToCameraYaw();
+		pPlayerBody.SetCustomStateActive(false);
+		pPlayerBody.SetUseLowerBonesYaw(true);
+		
+		pPlayerBody.PlayAnimationInLayer(gsHideExitAnim, ePlayerBodyAnimationLayer_Body, true, true, true, 0.3f, 1.f, 0.f);
+		pPlayerBody.PlayAnimationInLayer(gsHideExitLeftArmAnim, ePlayerBodyAnimationLayer_LeftArm, true, true, true, 0.3f, 1.f, 0.f);
+		pPlayerBody.PlayAnimationInLayer(gsHideExitRightArmAnim, ePlayerBodyAnimationLayer_RightArm, true, true, true, 0.3f, 1.f, 0.f);
+		
+		FootPlacement_FadeIn(pPlayerBody.GetEntityName(), 0.3f);
+		
+		////////////
+		// Inventory
+		if (mbAmuletHeld)
+			Item_TakeOut(ItemType_GetFirstInInventory("CurseMedallion"));
+		if (mbLanternHeld)
+			Item_TakeOut(ItemType_GetFirstInInventory("Lantern"));			
+		
+		///////////////
+		// Vfx
+		if (mlDoFId != -1)
+			Effect_DoF_FadeOut(mlDoFId, 0.5f);
+		if (mlImageTrailId != -1)	
+			Effect_ImageTrail_FadeOut(mlImageTrailId, 0.5f);
+		if (mlScreenId != -1)
+			Effect_Screen_FadeOut(mlScreenId, 0.5f);
+		
+		mlDoFId = -1;
+		mlImageTrailId = -1;
+		mlScreenId = -1;
+		
+		///////////////
+		// Sfx
+		cLux_SetHideModeEffectsActive(false);
+		
+		///////////////
+		// Hint
+		if (mlHintId != -1)
+		{
+			Hint_Release(mlHintId);
+			mlHintId = -1;
+		}
+	}
+		
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep)
+	{	
+		///////////////
+		// Setup vars
+		cCamera@ pCam = cLux_GetPlayer().GetCamera();
+		iScrPlayerBodyHandler_Interface@ pBody = cast<iScrPlayerBodyHandler_Interface>(cLux_GetUserModuleFromID(eModuleType_PlayerBodyHandler));
+		
+		///////////////
+		// Time
+		float fPrevHideCount = mfHideCount;
+		mfHideCount += afTimeStep;
+		
+		///////////////
+		// Play animations
+		pBody.SetArmAnimationPitch(false, true, true);
+
+		tString[] sAnims = { gsHideIdleAnim, gsHideIdleLeftArmAnim, gsHideIdleRightArmAnim };
+		int[] lLayers = { ePlayerBodyAnimationLayer_Body, ePlayerBodyAnimationLayer_LeftArm, ePlayerBodyAnimationLayer_RightArm };
+		
+		for (int i = 0; i < sAnims.length(); ++i)
+		{
+			if (pBody.GetAnimationState(sAnims[i]).IsActive() == false)
+				pBody.PlayAnimationInLayer(sAnims[i], ePlayerBodyAnimationLayer(lLayers[i]), true, true, true, 0.3f, 1.f, 0.f);
+		}
+		
+		//////////////
+		// Pitch
+		bool bFadeStartPitch = mfStartPitch > gfHideStartPitch || mfStartPitch < gfHideMinPitch;
+		if (bFadeStartPitch && mfHideCount <= gfHideStartPitchFadeTime)
+		{
+			float fPitchT = cMath_Easing(eEasing_SineInOut, cMath_Min(mfHideCount / gfHideStartPitchFadeTime, 1.f));
+			float fNewPitch = cMath_InterpolateLinear(mfStartPitch, gfHideStartPitch, fPitchT);
+			pCam.SetPitch(fNewPitch);
+		}
+				
+		//////////////
+		// Lantern
+		if (mfHideCount > 1.7f)
+			mbLanternHeld = false;
+			
+		/////////////
+		// Hint
+		if (mbAllowHint && fPrevHideCount < 2.f && mfHideCount >= 2.f)
+			mlHintId = Hint_ShowHint_Hold("Hints", "HintHideModeMechanics", false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void PostUpdate(float afTimeStep)
+	{
+	}
+
+	//------------------------------------------------------------
+
+	void OnGui(float afTimeStep)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool OnAction(int alAction, bool abPressed)
+	{
+		if (alAction == eAction_Crouch && abPressed == false)
+			mBaseObj.mpPlayer.ChangeState(ePlayerState_Normal);
+		
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnAnalogInput(int alAnalogId, const cVector3f &in avAmount)
+	{
+		//////////////////
+		// Look
+		if (alAnalogId == eAnalogType_Look)
+		{
+			iCharacterBody@ pCharBody = mBaseObj.mpPlayer.GetCharacterBody();
+			cCamera@ pCam = mBaseObj.mpPlayer.GetCamera();
+			
+			float fMul = Player_GetLookSpeedMul() * 0.5f;
+			
+			//////////////////
+			// Set yaw
+			float fYaw = pCharBody.GetYaw();
+			float fMinYaw = mfStartYaw - gfHideYawRange;
+			float fMaxYaw = mfStartYaw + gfHideYawRange;
+			
+			fYaw += avAmount.x * -1.f * fMul;
+			pCharBody.SetYaw(cMath_Clamp(fYaw, fMinYaw, fMaxYaw));
+			
+			//////////////////
+			// Set pitch
+			if (mfHideCount > gfHideStartPitchFadeTime)
+			{
+				float fPitch = pCam.GetPitch();
+				fPitch += avAmount.y * -1.f * fMul;
+				pCam.SetPitch(cMath_Clamp(fPitch, gfHideMinPitch, gfHideMaxPitch));
+			}
+		}
+		
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnExitPressed()
+	{
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// BODY CALLBACKS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool AllowBuoyancy(iPhysicsBody @apBody)
+	{
+		return true;
+	}
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// CHARACTER CALLBACK
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void CharBody_GravityCollide(iCharacterBody@ apCharBody, iPhysicsBody@ apBody, cCollideData @apCollideData) {}	
+	void CharBody_HitGround(iCharacterBody@ apCharBody,const cVector3f &in avVel) {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	int mlDoFId;
+	int mlImageTrailId;
+	int mlScreenId;
+	int mlHintId;
+	float mfStartYaw;
+	float mfStartPitch;
+	float mfHideCount;	
+	bool mbAmuletHeld;
+	bool mbLanternHeld;
+	bool mbAllowHint;
+	
+	//------------------------------------------------------------
+}

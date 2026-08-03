@@ -1,0 +1,820 @@
+#include "player_types.hps"
+#include "inputhandler_types.hps"
+#include "interfaces/PlayerState_Interface.hps"
+#include "helpers/helper_player.hps"
+#include "helpers/helper_modules.hps"
+#include "utilities/Utility_PickBasics.hps"
+
+//------------------------------------------------------------
+
+const float gfCheckpointGravity = 0.5f;
+const tString gsInteractiveAnimationHint = "InteractiveAnimation";
+const tString gsInteractiveAnimationHintInverted = "InteractiveAnimationInverted";
+
+//------------------------------------------------------------
+	
+class cScrPlayerState_InteractiveCutsceneAnimation : iScrPlayerState, iScrPlayerState_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		mfElapsedTime = 0.f;
+		mfFadeTime = 0.f;
+		
+		mbAnimationOver = false;
+		
+		msPlayerAnim = "";
+		msPlayerLeftAnim = "";
+		msPlayerRightAnim = "";
+		
+		msPlayerStartIdleAnim = "";
+		mbPlayerStartIdleAnimSetup = false;
+		
+		mbSideAnimsOnly = false;
+		mbExitAtStart = false;
+		mbExitAtEnd = true;
+		mbAutoReverse = false;
+		
+		mfSpeed = 0.f;
+		mfWantedSpeed = 0.f;
+		mfSpeedAddRate = 1.f;		
+		
+		mfInteractiveMinT = 0.f;
+		mfInteractiveMaxT = 1.f;
+		mbInteractiveRangeSetup = false;
+		
+		mbAnimationEntitySetup = false;
+		msEntityAnim = "";
+		m_idAnimEntity = tID_Invalid;
+		
+		mlCurrCheckpoint = 0;
+		mlTarCheckpoint = 0;
+		mbCheckpointsSetup = false;
+		mfInteractCount = 0.f;
+		mvCheckpoints.resize(0);
+		
+		msInteractCallback = "";
+		
+		mfHintCount = 0.f;
+		mbAllowHint = true;
+		
+		mbWithinInteractiveRange = false;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// USER SETTINGS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void LoadUserConfig()
+	{
+	
+	}
+	void SaveUserConfig()
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ENTER MAP
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+	}
+	
+	void OnMapLeave(cLuxMap @apMap)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void CreateWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	void DestroyWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnEnterState(int alPrevStateId)
+	{
+		mlPreviousState = alPrevStateId;
+		
+		mfHintCount = 0.f;
+		mbAllowHint = true;
+		Hint_RemoveFromGiven("Hints", "InteractiveAnimation");
+		
+		Player_ShowCrossHairIcons(true, true);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnLeaveState(int alNextStateId)
+	{
+		m_idAnimEntity = tID_Invalid;
+		msEntityAnim = "";
+		
+		mvCheckpoints.resize(0);
+		
+		msPlayerAnim = "";
+		msPlayerLeftAnim = "";
+		msPlayerRightAnim = "";
+		msPlayerStartIdleAnim = "";
+		
+		mbSideAnimsOnly = false;
+		
+		Player_ShowCrossHairIcons(true, true);
+	}
+		
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+		mPickBasics.Reset();
+	}
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep)
+	{	
+		////////////////////////////
+		// Update camera picking
+		cCamera@ pCam = mBaseObj.mpPlayer.GetCamera();
+		if (msInteractCallback != "" && mPickBasics.UpdatePickCheck(pCam, true, -1, true))
+		{
+			int lState = mPickBasics.GetFocusedEntity().GetInteractIconId(0, mPickBasics.GetFocusedBody());
+			Player_SetCrossHairState(lState >= 0 ? eCrossHairState(lState) : eCrossHairState_Default);
+		}
+		
+		//////////////////////
+		// Set up vars
+		iScrPlayerBodyHandler_Interface@ pBody = cast<iScrPlayerBodyHandler_Interface>(cLux_GetUserModuleFromID(eModuleType_PlayerBodyHandler));
+		cAnimationState@ pPlayerAnim = pBody.GetAnimationState(msPlayerAnim);
+		
+		float fT = pPlayerAnim.GetTimePosition();
+		float fRelT = pPlayerAnim.GetRelativeTimePosition();
+		
+		//////////////////////
+		// Anim speed
+		if (mfElapsedTime < 99999.f)
+			mfElapsedTime += afTimeStep;
+		if (mfElapsedTime < 0.1f)
+			mfWantedSpeed = 1.f;
+		
+		float fSpeedTarget = mfWantedSpeed;		
+		if (mfWantedSpeed <= 0.f && mbAutoReverse)
+			fSpeedTarget = -1.f;
+			
+		if (mbSideAnimsOnly || mbLoop)
+		{
+			fSpeedTarget = 1.f;
+			mfWantedSpeed = 0.f;
+		}
+		
+		//////////////////////
+		// Start idle anim
+		bool bStartIdlePlaying = false;		
+		if (mbExitAtStart == false && msPlayerStartIdleAnim != "")
+		{
+			cAnimationState@ pPlayerIdle = pBody.GetAnimationState(msPlayerStartIdleAnim);
+			
+			if (fRelT <= 0.01f && mfWantedSpeed <= 0.f)
+			{			
+				if (pPlayerIdle.IsActive() == false)
+					pBody.PlayAdditativeAnimation(msPlayerStartIdleAnim, true, 0.3f, 1.f, 0.f);
+				
+				bStartIdlePlaying = true;
+			}
+			else
+			{
+				if (pPlayerIdle.IsActive())
+					pBody.StopAnimation(msPlayerStartIdleAnim, 0.3f);
+			}
+			
+			pPlayerAnim.SetWeight(1.f - pPlayerIdle.GetWeight());
+		}
+		
+		/////////////////////
+		// Move to closest checkpoint if no input
+		if (mvCheckpoints.size() > 0 && bStartIdlePlaying == false)
+		{
+			/////////////////////
+			// Get current checkpoint
+			for (int i = 0; i < mvCheckpoints.size(); i++)
+			{
+				if (fT > mvCheckpoints[i] - 0.05f && fT < mvCheckpoints[i] + 0.05f)
+					mlCurrCheckpoint = i;
+			}
+		
+			if (mfWantedSpeed == 0.f)
+			{
+				//////////////////////
+				// Get target checkpoint to move to
+				if (mfInteractCount > 0.f)
+				{
+					int lTar = mlCurrCheckpoint;
+					if (mfPrevWantedSpeed > 0.f && fT > mvCheckpoints[lTar])
+						lTar = cMath_Min(lTar + 1, mvCheckpoints.size() - 1);
+					else if (mfPrevWantedSpeed < 0.f && fT < mvCheckpoints[lTar]) 	
+						lTar = cMath_Max(lTar - 1, 0);
+					
+					float fGravity = gfCheckpointGravity;
+					if (lTar != mlCurrCheckpoint)
+					{
+						float fDist = cMath_Abs(mvCheckpoints[lTar] - mvCheckpoints[mlCurrCheckpoint]);
+						fGravity = fDist < 1.f ? fDist / 2.f : gfCheckpointGravity;
+					}
+					
+					if (mfInteractCount > fGravity)
+					{					
+						mlTarCheckpoint = lTar;
+						mfInteractCount = 0.f;
+					}	
+				}
+				
+				//////////////////////
+				// Always go to nearest previous checkpoint if auto reversing
+				if (mbAutoReverse)
+				{
+					int lTar = cMath_Max(mlCurrCheckpoint, 1);
+					if (fT < mvCheckpoints[lTar])
+						lTar = cMath_Max(mlCurrCheckpoint - 1, 1);
+					
+					mlTarCheckpoint = lTar;
+				}					
+				
+				//////////////////////
+				// Get speed to target checkpoint
+				fSpeedTarget = (mvCheckpoints[mlTarCheckpoint] - fT) * 2.f;	
+				
+				if (cMath_Abs(fSpeedTarget) > 1.f)			
+					fSpeedTarget = cMath_Sign(fSpeedTarget);
+				
+				// Normal speed to target if it's the start or end
+				if (mlTarCheckpoint == mvCheckpoints.size() - 1)	fSpeedTarget = 1.f;
+				else if (mlTarCheckpoint == 0)						fSpeedTarget = -1.f;
+			}
+			else
+			{
+				mfInteractCount += afTimeStep;
+			}		
+		}
+		
+		//////////////////////
+		// Move speed toward tar
+		float fSpeedMul = 3.f;
+		mfSpeed = cMath_IncreaseTo(mfSpeed, afTimeStep * mfSpeedAddRate * fSpeedMul, fSpeedTarget);	
+		
+		//////////////////////
+		// Update interactive range
+		bool bPrevWithinInteractiveRange = mbWithinInteractiveRange;
+		mbWithinInteractiveRange = fT >= mfInteractiveMinT && fT <= mfInteractiveMaxT;
+		
+		if (mbWithinInteractiveRange == false)
+		{
+			float fDist = cMath_Abs(fT - mfInteractiveMinT);
+			mfSpeed = cMath_Clamp(fDist * 2.f, 0.01f, 1.f);
+		}
+		
+		if (fT >= mfInteractiveMaxT && msInteractiveRangeCallback != "")
+		{								
+			cLuxMap@ pMap = cLux_GetCurrentMap();
+			if (pMap.ScriptPrepare("void " + msInteractiveRangeCallback + "(const tString& in asAnim)"))
+			{
+				pMap.SetArgString(0, msPlayerAnim);
+				pMap.ScriptExecute();
+			}
+			
+			msInteractiveRangeCallback = "";
+		}
+		
+		if (mbWithinInteractiveRange != bPrevWithinInteractiveRange)
+			Player_ShowCrossHairIcons(mbWithinInteractiveRange, true);
+		
+		//////////////////////
+		// Update anim speed
+		mfPrevWantedSpeed = mfWantedSpeed;
+		mfWantedSpeed = 0.f;
+		
+		float fSpeedFadeMul = mfFadeTime == -1.f ? 1.f : cMath_Clamp(mfElapsedTime / mfFadeTime, 0.f, 1.f);
+		pPlayerAnim.SetSpeed(mfSpeed * fSpeedFadeMul);
+		
+		//////////////////////
+		// Update animation entity
+		iLuxEntity@ pEnt = cLux_ID_Entity(m_idAnimEntity);
+		cAnimationState@ pEntAnim = null;
+		if (pEnt !is null)
+		{
+			@pEntAnim = pEnt.GetMeshEntity().GetAnimationStateFromName(msEntityAnim);
+						
+			// Fix to make sure anim doesn't stop when at 0 and speed < 0
+			if (pEntAnim.IsOver() && pEntAnim.GetRelativeTimePosition() <= 0.f)
+				pEnt.GetMeshEntity().ResetGraphicsUpdated();
+			
+			// Sync with player anim
+			if (pEntAnim !is null && pEntAnim.IsActive())
+				pEntAnim.SetSpeed(mfSpeed);
+		}
+		
+		//////////////////////
+		// Handle loop
+		if (mbLoop)
+		{
+			if (fRelT >= 1.f)
+				pPlayerAnim.SetRelativeTimePosition(0.f);
+				
+			if (pEntAnim !is null && pEntAnim.GetRelativeTimePosition() > 1.f)
+				pEntAnim.SetRelativeTimePosition(0.f);
+		}
+		else
+		{
+			//////////////////////
+			// Exit state?
+			if (mfElapsedTime > 0.1f && (mbExitAtStart && fRelT <= 0.f || mbExitAtEnd && fRelT >= 1.f))
+				mbAnimationOver = true;
+		}
+		
+		//////////////////////
+		// Hint
+		bool bIsInteractive = mbWithinInteractiveRange && mbLoop == false && mbSideAnimsOnly == false;
+		bool bInteracting = cMath_Sign(mfPrevWantedSpeed) == 1;
+		
+		if (mbAllowHint && bIsInteractive)
+		{
+			if (bInteracting == false)
+			{
+				if (Hint_IsShowing())
+					mfHintCount = -10.f; // Delay a bit if another hint is showing
+				
+				float fPrevHintCount = mfHintCount;
+				mfHintCount += afTimeStep;
+				
+				if (fPrevHintCount < 5.f && mfHintCount >= 5.f)
+					Hint_ShowHint_Hold("Hints", GetHintEntry(), true, 100.f, false);
+			}
+		}
+		
+		if (bInteracting && mfElapsedTime > 0.1f)
+		{
+			mbAllowHint = false;		
+			
+			if (Hint_GetCurrentEntry() == GetHintEntry())
+				Hint_StopHint();
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void PostUpdate(float afTimeStep)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	tString GetHintEntry()
+	{
+		return mbAnyInputDir ? gsInteractiveAnimationHintInverted : gsInteractiveAnimationHint;
+	}
+	
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// GLOBAL FUNCTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_Setup()
+	{
+		msPlayerAnim = cScript_GetGlobalArgString(0);
+		mfFadeTime = cScript_GetGlobalArgFloat(1);
+		mfSpeedAddRate = cScript_GetGlobalArgFloat(2);
+		mbAutoReverse = cScript_GetGlobalArgBool(3);
+		mbExitAtStart = cScript_GetGlobalArgBool(4);
+		mbExitAtEnd = cScript_GetGlobalArgBool(5);
+		mbLoop = cScript_GetGlobalArgBool(6);
+		mbAnyInputDir = cScript_GetGlobalArgBool(7);
+		
+		/////////////////////////
+		// Set up vars
+		cAnimationState@ pAnim = PlayerBody_GetAnimationState(msPlayerAnim);
+		float fAnimLength = pAnim.GetLength();
+		
+		mfElapsedTime = 0.f;
+		mbAnimationOver = false;
+		
+		/////////////////////////
+		// Set up speed
+		if (mBaseObj.mpPlayer.GetCurrentStateId() != ePlayerState_InteractiveCutsceneAnimation)
+		{
+			mfSpeed = 0.f;
+			mfWantedSpeed = mbAutoReverse && mbExitAtStart ? 1.f : 0.f;
+		}
+		
+		/////////////////////
+		// Set up start idle
+		if (mbPlayerStartIdleAnimSetup == false)
+		{
+			msPlayerStartIdleAnim = "";
+		}
+		mbPlayerStartIdleAnimSetup = false;
+		
+		/////////////////////
+		// Set up anim entity
+		if (mbAnimationEntitySetup == false)
+		{
+			msEntityAnim = "";
+			m_idAnimEntity = tID_Invalid;
+		}		
+		mbAnimationEntitySetup = false;
+		
+		/////////////////////////
+		// Set up interactive range
+		if (mbInteractiveRangeSetup == false)
+		{	
+			mfInteractiveMinT = 0.f;
+			mfInteractiveMaxT = fAnimLength;
+			msInteractiveRangeCallback = "";
+		}		
+		mbInteractiveRangeSetup = false;
+		
+		/////////////////////////
+		// Set up checkpoints
+		if (mbCheckpointsSetup == false)
+		{
+			mvCheckpoints.resize(0);
+		}
+		else
+		{
+			mlCurrCheckpoint = 0;
+			mlTarCheckpoint = 1;
+			
+			bool bAddStart = true;
+			bool bAddEnd = true;
+			
+			for (int i = 0; i < mvCheckpoints.size(); i++)
+			{
+				if (mvCheckpoints[i] == 0.f)			bAddStart = false;
+				if (mvCheckpoints[i] == fAnimLength)	bAddEnd	= false;
+			}
+			
+			if (bAddStart) 	mvCheckpoints.push_back(0.f);
+			if (bAddEnd) 	mvCheckpoints.push_back(fAnimLength);
+			
+			mvCheckpoints.sortAsc();
+		}
+		
+		mbCheckpointsSetup = false;
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetAnimationOver()
+	{
+		cScript_SetGlobalReturnBool(mbAnimationOver);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetAnimationOver()
+	{
+		mbAnimationOver = true;
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetAllowHint()
+	{
+		mbAllowHint = cScript_GetGlobalArgBool(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_LeaveState()
+	{
+		mBaseObj.mpPlayer.ChangeState(mlPreviousState);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetAnimationEntity()
+	{
+		m_idAnimEntity = cScript_GetGlobalArgID(0);
+		msEntityAnim = cScript_GetGlobalArgString(1);
+		mbAnimationEntitySetup = true;
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_PlayEntityAnimation()
+	{
+		iLuxEntity@ pEnt = cLux_ID_Entity(m_idAnimEntity);
+		if (pEnt is null) return;
+		
+		float fFadeTime = cScript_GetGlobalArgFloat(0);
+		pEnt.PlayAnimation(msEntityAnim, fFadeTime);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetInteractiveRange()
+	{
+		mfInteractiveMinT = cScript_GetGlobalArgFloat(0);
+		mfInteractiveMaxT = cScript_GetGlobalArgFloat(1);
+		msInteractiveRangeCallback = cScript_GetGlobalArgString(2);
+		mbInteractiveRangeSetup = true;
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_AddCheckpoint()
+	{
+		if (mbCheckpointsSetup == false)
+			mvCheckpoints.resize(0);
+		
+		mbCheckpointsSetup = true;
+		
+		float fNewCheckpoint = cScript_GetGlobalArgFloat(0);
+		for (int i = 0; i < mvCheckpoints.size(); i++)
+		{
+			if (mvCheckpoints[i] == fNewCheckpoint) return;
+		}
+		
+		mvCheckpoints.push_back(fNewCheckpoint);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetInteractiveSideAnimations()
+	{
+		mbSideAnimsOnly = true;
+		msPlayerLeftAnim = cScript_GetGlobalArgString(0);
+		msPlayerRightAnim = cScript_GetGlobalArgString(1);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetInteractCallback()
+	{
+		msInteractCallback = cScript_GetGlobalArgString(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetStartIdleAnimation()
+	{
+		msPlayerStartIdleAnim = cScript_GetGlobalArgString(0);
+		mbPlayerStartIdleAnimSetup = true;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool OnAction(int alAction, bool abPressed)
+	{
+		////////////////////////////
+		// Physical interaction
+		if (alAction == eAction_Interact && abPressed)
+		{
+			if (mPickBasics.GetFocusedEntity() is null) 
+				return false;
+			
+			cLuxMap@ pMap = cLux_GetCurrentMap();
+			if (msInteractCallback != "" && pMap.ScriptPrepare("void " + msInteractCallback + "(const tString &in asEntity)"))
+			{
+				tString sName = mPickBasics.GetFocusedEntity().GetName();
+				pMap.SetArgString(0, sName);
+				pMap.ScriptExecute();
+			}
+		}
+		
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnAnalogInput(int alAnalogId, const cVector3f &in avAmount)
+	{
+		///////////////////////////////////
+		// Override move
+		if(alAnalogId == eAnalogType_GamepadMove)
+		{
+			if (avAmount.Length() > 0.1f)
+			{
+				float fAmount;
+				if (mbAnyInputDir)
+					fAmount = avAmount.Length();
+				else
+					fAmount = cMath_Sign(avAmount.y);
+					
+				mfWantedSpeed += fAmount;
+			}
+			return false;
+		}
+		else if (alAnalogId == eAnalogType_Move)
+		{
+			iScrPlayerBodyHandler_Interface @pBody = cast<iScrPlayerBodyHandler_Interface>(cLux_GetUserModuleFromID(eModuleType_PlayerBodyHandler));
+			cAnimationState@ pPlayerLeftAnim = pBody.GetAnimationState(msPlayerLeftAnim);
+			cAnimationState@ pPlayerRightAnim = pBody.GetAnimationState(msPlayerRightAnim);
+			
+			if (pPlayerLeftAnim !is null && pPlayerLeftAnim.IsOver() == true && avAmount.x < 0)
+				pBody.PlayAdditativeAnimation(msPlayerLeftAnim,false,0.2f,1,0);
+			if (pPlayerRightAnim !is null && pPlayerRightAnim.IsOver() == true && avAmount.x > 0)
+				pBody.PlayAdditativeAnimation(msPlayerRightAnim,false,0.2f,1,0);
+			
+			float fAmount;
+			if (mbAnyInputDir)
+				fAmount = avAmount.Length();
+			else
+				fAmount = cMath_Sign(avAmount.y);		
+			mfWantedSpeed += fAmount;
+			return false;
+		}
+		
+		///////////////////////////////////
+		// Override look
+		else if(alAnalogId == eAnalogType_Look)
+		{		
+			float fLookSpeedMul = Player_GetLookSpeedMul();
+			
+			iScrPlayerBodyHandler_Interface @pBody = cast<iScrPlayerBodyHandler_Interface>(cLux_GetUserModuleFromID(eModuleType_PlayerBodyHandler));
+			pBody.Cutscene_AddPitch(avAmount.y * fLookSpeedMul);
+			pBody.Cutscene_AddYaw(avAmount.x * fLookSpeedMul);
+			return false;
+		}
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnExitPressed()
+	{
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// SPECIFIC METHODS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// BODY CALLBACKS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool AllowBuoyancy(iPhysicsBody @apBody)
+	{
+		return false;
+	}
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// CHARACTER CALLBACK
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void CharBody_GravityCollide(iCharacterBody@ apCharBody, iPhysicsBody@ apBody, cCollideData @apCollideData)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void CharBody_HitGround(iCharacterBody@ apCharBody,const cVector3f &in avVel)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPER METHODS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	void SaveBodyProperties(iPhysicsBody @apBody)
+	{
+		
+	}
+
+	//-----------------------------------------------------------------------
+
+
+	bool BodyIsAdded(iPhysicsBody @apBody)
+	{
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	int mlPreviousState;
+	
+	bool mbAnimationOver;
+	
+	float mfElapsedTime;
+	float mfFadeTime;
+	
+	float mfSpeed;
+	float mfWantedSpeed;
+	float mfPrevWantedSpeed;
+	float mfSpeedAddRate;
+	
+	float mfInteractiveMinT;
+	float mfInteractiveMaxT;
+	bool mbInteractiveRangeSetup;
+	tString msInteractiveRangeCallback;
+	
+	bool mbAutoReverse;
+	bool mbExitAtStart;
+	bool mbExitAtEnd;
+	
+	bool mbSideAnimsOnly;
+	tString msPlayerLeftAnim;
+	tString msPlayerRightAnim;
+	
+	bool mbLoop;
+	bool mbAnyInputDir;
+	
+	tString msPlayerAnim;
+	
+	tString msPlayerStartIdleAnim;
+	bool mbPlayerStartIdleAnimSetup;
+	
+	bool mbAnimationEntitySetup;
+	tString msEntityAnim;	
+	tID m_idAnimEntity;
+	
+	int mlCurrCheckpoint;
+	int mlTarCheckpoint;
+	bool mbCheckpointsSetup;
+	float mfInteractCount;	
+	array<float> mvCheckpoints;
+	
+	float mfHintCount;
+	bool mbAllowHint = true;
+	
+	bool mbWithinInteractiveRange;
+	
+	tString msInteractCallback;
+	cUtility_PickBasics mPickBasics;
+	
+	//------------------------------------------------------------
+}

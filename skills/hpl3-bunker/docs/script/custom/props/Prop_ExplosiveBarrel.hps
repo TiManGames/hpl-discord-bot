@@ -1,0 +1,373 @@
+#include "custom/props/Prop_Rigid.hps"
+#include "base/Base_Types.hps"
+#include "custom/player/PlayerTypes_Custom.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_effects.hps"
+
+#include "player/Player_Types.hps"
+#include "custom/helpers/helper_player_custom.hps"
+#include "custom/helpers/helper_gun.hps"
+#include "helpers/helper_audio.hps"
+#include "props/Prop_Push.hps"
+#include "custom/helpers/helper_props_custom.hps"
+
+#include "custom/helpers/helper_particle_settings.hps"
+
+//------------------------------------------------------------
+
+const float gfExplosiveBarrel_TimeUntilExplosion = 4.f;
+const float gfExplosiveBarrel_Radius = 4.f;
+const float gfExplosiveBarrel_Damage = 100.f;
+const float gfExplosiveBarrel_Force = 500.f;
+const float gfExplosiveBarrel_MaxImpulse = 7.f;
+const float gfExplosiveBarrel_Strength = 1.f;
+const float gfExplosiveBarrel_HitSpeed = 6.f;
+const int glExplosiveBarrel_MaxAffectedBodies = 8;
+
+const tString gsExplosiveBarrel_ExplosionParticles = "grenade_explosion.ps";
+const tString gsExplosiveBarrel_ExplosionSmallRoomSound = "weapons/throwables/barrel/small_room_exp";
+const tString gsExplosiveBarrel_ExplosionMediumRoomSound = "weapons/throwables/barrel/med_room_exp";
+const tString gsExplosiveBarrel_ExplosionLargeRoomSound = "weapons/throwables/barrel/large_room_exp";
+const tString gsExplosiveBarrel_ExplosionExteriorSound = "weapons/throwables/grenade/exterior_explode";
+
+//------------------------------------------------------------
+
+class cScrPropExplosiveBarrel : cScrPropPush
+{
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// INIT
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+
+	void Init()
+	{
+		cScrPropPush::Init();
+		
+		mbExploded = false;
+		mfExplosionCount = 0.f;
+		mlFireDamageCount = 0;
+
+		EnvironmentalDamage_AddEntityToCheck(mBaseObj.GetID());
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld@ apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		cScrPropPush::SetupAfterLoad(apWorld, apVars, apInstanceVars);
+		
+		mBaseObj.SetAutoSleep(false);
+		mBaseObj.SetDisableBreakable(true);
+
+		ParticleSetting_PreloadParticles(gsExplosiveBarrel_ExplosionParticles);
+		ParticleSystem_Preload("dust_impact_wood.ps");
+	}	
+	
+	//------------------------------------------------------------
+
+	void OnMapEnter()
+	{
+		EnvironmentalDamage_AddEntityToCheck(mBaseObj.GetID());
+	}
+
+	void OnMapLeave()
+	{
+		EnvironmentalDamage_RemoveEntityToCheck(mBaseObj.GetID());
+	}
+	//------------------------------------------------------------
+
+	
+	///////////////////////////////
+	// GENERAL
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnUpdate(float afTimeStep)
+	{
+		//////////////
+		// Explode?
+		if (mbExploded)
+			return;
+		
+		if (mfExplosionCount > 0)
+		{
+			mfExplosionCount -= afTimeStep;
+		
+			if (mfExplosionCount <= 0)
+				Explode();
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void GiveDamage(iPhysicsBody@ apBodyHit, const cVector3f&in avOrigin, const cVector3f&in avHitPos, cLuxDamageProperties@ apDamageProps)
+	{
+		if (mbExploded) return;
+		
+		mBaseObj.SetVarBool("BarrelExploded", true);
+			
+		iLuxEntity@ pSource = cLux_ID_Entity(apDamageProps.m_idSource);
+		
+		/////////////////
+		// Bullets
+		if (apDamageProps.mDamageType == eDamageType_Gun)
+		{
+			if (mfExplosionCount <= 0.f)
+				mfExplosionCount = 0.1;
+		}
+		
+		////////////////////
+		// Fire damage
+		else if (apDamageProps.mDamageType == eDamageType_Fire)
+		{
+			mlFireDamageCount++;
+			int lExplosiveThreashold = cMath_RandRectl(4, 6);
+			if (mlFireDamageCount > lExplosiveThreashold)
+			{
+				Explode();
+			}
+		}
+		
+		////////////////////
+		// Explosions
+		else if (apDamageProps.mDamageType == eDamageType_Grenade)
+		{
+			if (mfExplosionCount <= 0.f)
+				mfExplosionCount = cMath_RandRectf(0.25, 1.);
+		}
+		
+		////////////////////
+		// Stalker
+		else if (pSource !is null && pSource.GetClassName() == "cScrAgentStalker")
+		{
+			mBaseObj.SetVarString("TriggerCause", "Stalker");
+			Explode();
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void Explode()
+	{
+		mBaseObj.SetDisableBreakable(false);
+		mBaseObj.Break();
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnHealthChange()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	//NOTE: This is only useable if SetScriptCollisionCallbackActive is true
+	void OnPhysicsCollision(iPhysicsBody@ apBody, iPhysicsBody@ apCollideBody, cPhysicsContactData &in apContactData)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void BeforeEntityDestruction()
+	{
+		if (mpExplosionShape !is null)
+		{
+			mBaseObj.GetMap().GetPhysicsWorld().DestroyShape(mpExplosionShape);
+			@mpExplosionShape = null;
+		}
+
+		EnvironmentalDamage_RemoveEntityToCheck(mBaseObj.GetID());
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnSetActive(bool abX) {}
+	
+	//------------------------------------------------------------
+	
+	void OnCustomBreak()
+	{
+		//////////////
+		// Setup vars
+		mbExploded = true;
+		
+		cLuxMap@ pMap = mBaseObj.GetMap();
+		iPhysicsWorld@ pPhysicsWorld = pMap !is null ? pMap.GetPhysicsWorld() : null;
+			
+		if (pMap is null || pPhysicsWorld is null) 
+			return;
+					
+		/////////////
+		// Do damage!
+		if (mpExplosionShape is null)
+			@mpExplosionShape = pPhysicsWorld.CreateSphereShape(mfExplosionRadius, cMatrixf_Identity);
+		
+		cLux_ShapeDamage_AddPriorityEntityClass("cScrPropSwingDoor");
+		cLux_ShapeDamage_AddPriorityEntityClass("cScrPropPadlock");
+		cLux_ShapeDamage_AddPriorityEntityClass("cScrAgentRat");
+		cLux_ShapeDamage_AddPriorityEntityClass("cScrAgentStalker");
+		cLux_ShapeDamage_AddPriorityEntityClass("cScrAgentShotgunner");
+		cLux_ShapeDamage_AddPriorityEntityClass("cScrAgentPrisoner");
+		cLux_ShapeDamage_AddPriorityEntityClass("cScrPropGasCanister");
+		cLux_ShapeDamage_AddPriorityEntityClass("cScrPropExplosiveBarrel");
+		cLux_ShapeDamage_AddPriorityEntityClass("cScrPropFuelSpill");
+		cLux_ShapeDamage_AddPriorityEntityClass("cScrPropAnimationHitbox");
+		cLux_ShapeDamage_AddPriorityEntityClass("cScrPropTrap");
+		
+		array<iLuxEntity@> vFuelSpills;
+		pMap.GetEntityArray("*", eLuxEntityType_Prop, "cScrPropFuelSpill", vFuelSpills);
+		SetHitboxesActive(vFuelSpills);
+		
+		cLux_ShapeDamage(mpExplosionShape,
+						 cMath_MatrixTranslate(mBaseObj.GetPosition()),
+						 mBaseObj.GetPosition(),
+						 gfExplosiveBarrel_Damage, 
+						 gfExplosiveBarrel_Force,
+						 gfExplosiveBarrel_MaxImpulse,
+						 gfExplosiveBarrel_Strength,
+						 gfExplosiveBarrel_HitSpeed, 
+						 eDamageType_Grenade, true, true, true,
+						 glExplosiveBarrel_MaxAffectedBodies, false, false, true, 
+						 mBaseObj.GetID(),
+						 pMap.GetNewAttackInstanceID());
+		
+		//////////////
+		// Sound
+		tString sSound;
+		tString sPrefix = cLux_GetSoundscapeHandler().GetCurrentSoundPrefix();
+		eSoundEntryType soundType = eSoundEntryType_GuiWorld;
+			
+		if (sPrefix == "small_room")			sSound = gsExplosiveBarrel_ExplosionSmallRoomSound;
+		else if (sPrefix == "medium_room")		sSound = gsExplosiveBarrel_ExplosionMediumRoomSound;
+		else if (sPrefix == "large_room")		sSound = gsExplosiveBarrel_ExplosionLargeRoomSound;
+		else if (sPrefix == "exterior")			sSound = gsExplosiveBarrel_ExplosionExteriorSound;
+			
+		mBaseObj.PlaySound("Sound_BarrelExplosion", sSound, true, false);
+		
+		if (sPrefix != "exterior")
+		{
+			Gun_ActivateMuffledEffect(7.f);
+		}
+		
+		//////////////
+		// AI sound event
+		pMap.BroadcastSoundHeardEvent("GrenadeExplosion", mBaseObj.GetPosition(), 500.f, 5); 
+			
+		//////////////
+		// Particles
+		ParticleSetting_CreateParticleSystemFromSetting(cast<iLuxEntity@>(mBaseObj), "PS_GrenadeExplosion", gsExplosiveBarrel_ExplosionParticles, true, false);
+		
+		//////////////
+		// Light flash
+		LightFlash_Add(0.f, 0.1f, 0.05f, mBaseObj.GetPosition(), cColor(1,0.645,0,1), 1.f, 10.f);
+		
+		//////////////
+		// Shake
+		int lShakeId = Effect_Shake_Start(0.3f, 0.05f, 0.2f, 0.6f);
+		Effect_Shake_SetSourceEntity(lShakeId, mBaseObj.GetName(), 0.f, 20.f, eEasing_Linear);
+		
+		///////////////
+		// Map callback
+		tString sCallback = "void OnExplosion(const tString&in asEntity)";
+		if (pMap.ScriptMethodExists(sCallback) && pMap.ScriptPrepare(sCallback))
+		{
+			tString sName = mBaseObj.GetName();
+			pMap.SetArgString(0, sName);
+			pMap.ScriptExecute();
+		}
+		
+		////////////////////
+		// Broadcast message
+		array<iLuxEntity@> vAgents;
+		pMap.GetEntityArray("*", eLuxEntityType_Agent, "", vAgents);
+		
+		for (int i = 0; i < vAgents.size(); ++i)
+		{
+			cLuxAgent@ pAgent = cLux_ToAgent(vAgents[i]);
+			if (pAgent is null) continue;
+			
+			pAgent.BroadcastMessage(eCustomEntityMessage_Explosion, null, mBaseObj.GetPosition(), -1);
+		}
+		
+		/////////////////////////////////
+		// Hide prop before destroying it
+		mBaseObj.SetInteractionDisabled(true);
+		mBaseObj.GetMeshEntity().SetVisible(false);
+		
+		for (int i = 0; i < mBaseObj.GetBodyNum(); ++i)
+		{
+			iPhysicsBody@ pBody = mBaseObj.GetBody(i);
+			
+			pBody.SetActive(false);
+			pBody.SetCollide(false);
+		}
+		
+		//////////////
+		// Destroy prop (delay so its position can be used for the shake)
+		mBaseObj.Timer_Add(0, 0.25f, "OnTimer_DestroyProp", false, false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnTimer_DestroyProp(uint64 alId)
+	{			 
+		mBaseObj.GetMap().DestroyEntity(mBaseObj);
+	}
+
+	//------------------------------------------------------------
+	
+	void SetHitboxesActive(const array<iLuxEntity@> &in avFuelSpills)
+	{
+		///////////////////////
+		// Fuel Spills
+		for (int i = 0; i < avFuelSpills.size(); ++i)
+		{
+			cLuxProp@ pFuelSpill = cLux_ToProp(avFuelSpills[i]);
+			
+			if (pFuelSpill is null) continue;
+			if (pFuelSpill.IsActive() == false) continue;
+			
+			pFuelSpill.GetMainBody().SetCollide(true);
+			pFuelSpill.Timer_Add("DeactivateHitbox", 0.00f, "OnTimer_DeactivateHitbox", false);
+		}
+	}
+
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// GLOBAL
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetRadius()
+	{
+		mfExplosionRadius = cScript_GetGlobalArgFloat(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// PROPERTIES
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool mbExploded = false;
+	float mfExplosionCount = 0.f;
+	float mfExplosionRadius = gfExplosiveBarrel_Radius;
+	[nosave] iCollideShape@ mpExplosionShape = null;
+	int mlFireDamageCount = 0;
+	
+	//------------------------------------------------------------
+}

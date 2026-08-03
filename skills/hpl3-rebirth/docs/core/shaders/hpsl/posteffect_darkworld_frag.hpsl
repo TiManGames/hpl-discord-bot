@@ -1,0 +1,157 @@
+////////////////////////////////////////////////////////
+// PostEffect Video Distortion - Fragment Shader
+//
+// Adds bad video like noise.
+////////////////////////////////////////////////////////
+
+uniform cTexture2D diffuseMap : 0;
+
+uniform cVector2f avScreenSize;
+uniform float afAmount;
+uniform float afSeed;
+uniform float afLineDensity;
+uniform float afOffsetMul;
+uniform cVector2f avScreenOffset;
+uniform cVector2f avScreenBendAmount;
+
+/*float Hash1D( float p )
+{
+	return fract(sin(127.1*p)*43758.5453123);
+}*/
+
+float noise(cVector3f p) //Thx to Las^Mercury
+{
+	cVector3f i = floor(p);
+	cVector4f a = dot(i, cVector3f(1., 57., 21.)) + cVector4f(0., 57., 21., 78.);
+	cVector3f f = cos((p-i)*acos(-1.))*(-.5)+.5;
+	a = mix(sin(cos(a)*a),sin(cos(1.+a)*(1.+a)), f.x);
+	a.xy = mix(a.xz, a.yw, f.y);
+	return mix(a.x, a.y, f.z);
+}
+
+float sphere(cVector3f p, cVector4f spr)
+{
+	return length(spr.xyz-p) - spr.w;
+}
+
+/*float sampleMusicA() { // https://www.shadertoy.com/view/llB3W1
+	return 0.5 * (
+		texture2D( iChannel0, cVector2f( 0.15, 0.05 ) ).x + 
+		texture2D( iChannel0, cVector2f( 0.30, 0.05 ) ).x)*afAmount;
+}*/
+
+
+float flame(cVector3f p)
+{
+	float d = sphere(p*cVector3f(.2,.5,1.), cVector4f(0.,-1.,.0,1.));
+	return d + (noise(p+cVector3f(.0,(afAmount)*2.,.0)) + noise(p*3.)*.5) ; // noise(p+cVector3f(.0,afAmount*2.,.0))
+}
+
+float scene(cVector3f p)
+{
+	return min(100.-length(p) , abs(flame(p)) );
+}
+
+cVector4f raymarch(cVector3f org, cVector3f dir)
+{
+	float d = 0.0, glow = 0.0, eps = 0.02;
+	cVector3f  p = org;
+	bool glowed = false;
+	
+	for(int i=0; i<100; i++)
+	{
+		d = scene(p) + eps;
+		p += d * dir;
+		if( d>eps )
+		{
+			if(flame(p) < 20.)
+				glowed=true;
+			if(glowed)
+       			glow = float(i)/64.;
+		}
+	}
+	return cVector4f(p,glow);
+}
+
+void main(in cVector4f px_vPosition,
+		  in cVector4f px_vTexCoord0,
+		  out cVector4f out_vColor : 0)
+{
+	cVector2f v = -1.0 + 2.0 * px_vPosition.xy / avScreenSize.xy;
+	v.x *= avScreenSize.x/avScreenSize.y;
+	
+	cVector3f org = cVector3f(0., -2., 4.);
+	cVector3f dir = normalize(cVector3f(v.x*1.6, -v.y, -1.5));
+	
+	cVector4f p = raymarch(org, dir);
+	float glow = p.w;
+	
+	cVector4f col = mix(cVector4f(.1,1.5,0.,0.), mix(cVector4f(0.1,.1,1.,1.0),cVector4f(1.,.5,0.,1.0),p.w), p.y*.02+.4);
+	
+	cVector2f vScreenCoords = px_vTexCoord0.xy;
+	vScreenCoords += avScreenOffset;
+	cVector4f vColor = sample(diffuseMap, vScreenCoords);
+	
+	out_vColor = mix(vColor, mix(cVector4f(0.), col, pow(glow*2.,4.)), 0.5*afAmount);
+	
+	/*///////////////////////////////////
+	// Set up coordinates
+	cVector2f vCoords = px_vTexCoord0.xy;
+	
+	vCoords += avScreenOffset;
+	
+	cVector2f vNormalCoords = vCoords;
+	vNormalCoords = vNormalCoords*2-1;
+	cVector2f vCoordBendAdd = cVector2f(	cos( (3.142/2.0) * vNormalCoords.y) *vNormalCoords.x - vNormalCoords.x*1.5,
+								cos( (3.142/2.0) * vNormalCoords.x) *vNormalCoords.y - vNormalCoords.y*1.5);
+	vCoords += vCoordBendAdd * avScreenBendAmount; 
+	
+	cVector4f vColor = sample(diffuseMap, vCoords);
+	
+	cVector2f vVirtualCoords = vCoords*100;
+			
+	
+	///////////////////////////////////
+	// Calculate the rows
+	float fRowRand = Hash1D(afSeed+floor(vVirtualCoords.y*0.1));
+	float fYMul = mix(0.05, 0.8, fRowRand*fRowRand);
+	float fRandStrength = Hash1D(floor(vVirtualCoords.y*fYMul)+100+fRowRand);
+	
+	///////////////////////////////////
+	// If this is a row, then calculate the distortion
+	float fFinalAmount = 0; 
+		
+	float fCoordAdd=0;
+	if(fRandStrength>(1.0-afLineDensity))
+	{
+		float fDistortAmount = 0.15;
+		
+		fFinalAmount = afAmount*(0.5f + (Hash1D(floor(vVirtualCoords.y*fYMul) +1273+floor(afAmount*4) )*2-1)*0.5f);
+			
+		float fRA = Hash1D(floor(vVirtualCoords.y))*2-1;
+		fCoordAdd = fRA*fDistortAmount*fFinalAmount*1.0;
+		fCoordAdd += (Hash1D(floor(vVirtualCoords.x*0.25))*2-1) * fDistortAmount*0.4f;
+		fCoordAdd *= afOffsetMul;
+	}
+	
+	///////////////////////////////////
+	// Intensity
+	float fIntensity = dot( vColor.xyz, cVector3f(0.3f, 0.58f, 0.12f));
+	fIntensity = clamp(fIntensity, 0, 1);
+	
+	float fDualIntensity = abs(fIntensity*2-1);
+	fDualIntensity *= fDualIntensity;
+	
+	///////////////////////////////////
+	// Distortion color
+	cVector4f vSamp1 = sample(diffuseMap, vCoords+cVector2f(fCoordAdd*-0.65*fDualIntensity, 0));
+	cVector4f vSamp2 = sample(diffuseMap, vCoords+cVector2f(fCoordAdd*1*fDualIntensity, 0));
+	cVector4f vDistortColor = vSamp1*0.5+vSamp2*0.5;
+	
+	///////////////////////////////////
+	// Final Color
+	float fMixAmount = fDualIntensity*fFinalAmount;
+	out_vColor = mix(vColor,vDistortColor,fMixAmount) + cVector4f(cVector3f(fIntensity*fFinalAmount*0.05),1);
+*/
+
+}

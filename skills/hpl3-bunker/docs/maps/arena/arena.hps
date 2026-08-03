@@ -1,0 +1,3956 @@
+#include "interfaces/Map_Interface.hps"
+#include "base/Inputhandler_Types.hps"
+
+#include "helpers/helper_map.hps"
+#include "helpers/helper_props.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_audio.hps"
+#include "helpers/helper_imgui.hps"
+#include "helpers/helper_sequences.hps"
+#include "helpers/helper_game.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_ai.hps"
+#include "helpers/helper_agent.hps"
+#include "helpers/helper_gun.hps"
+#include "helpers/helper_props_custom.hps"
+#include "helpers/helper_level_specific.hps"
+#include "helpers/helper_components.hps"
+#include "helpers/helper_components_custom.hps"
+#include "helpers/helper_menu.hps"
+#include "custom/helpers/helper_player_custom.hps"
+
+//--------------------------------------------------
+ 
+/*Place any global values here. These must be const variables as they will not be saved*/
+/*This is also the place for enums and classes, but these should be avoided whenever possible*/
+  
+//--------------------------------------------------
+
+const float gfEnding_DefaultFogStart = 1.f;
+const float gfEnding_DefaultFogEnd = 40.f;
+const float gfEnding_LightningFogStart = 20.f;
+const float gfEnding_LightningFogEnd = 200.f;
+const float gfEnding_PlatformNodeEdgeCostMed = 5.f;
+const float gfEnding_PlatformNodeEdgeCostHigh = 10.f;
+const float gfEnding_PlatformNodeEdgeCostMax = 10.f;
+const float gfEnding_PlatformNodeEdgeCostDefault = 1.f;
+const float gfEnding_JumpToBridgeMinDistToPlayer = 12.5f;
+
+const bool gbEnding_GenerateArena = true;
+
+const tString gsEnding_PlayerClimbLedgeAnim = "player_climb_ledge";
+
+//TODO: set these up
+const tString gsCreditsExitBunkerBg = "";
+const tString gsCreditsExitBunkerWithStalkerBg = "";
+const tString gsCreditsMusic = "Bunker_EndCredits.ogg";
+
+//--------------------------------------------------
+ 
+class cScrMap : iScrMap
+{
+	//--------------------------------------------
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN CALLBACKS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+ 
+	////////////////////////////
+	// Set up map environment
+	void Setup()
+	{
+		// Put display name entry in english.lang / Levels
+		GetBase().SetDisplayNameEntry("arena");
+		
+		SetupDefaultPresetFog();
+		Map_Preset_SetupDirLight("Inside", true, cColor(0,0,0,1), 0.02f, cVector3f(-0.495, 0.867, 0.05), cColor(0.023,0.033,0.03,1), cColor(0.137,0.193,0.185,1));
+		Map_Preset_SetupSkybox("Inside", cColor(0.684,0.989,1,1), 1.f);
+				
+		Map_Preset_SetupFog("Lightning", true, gfEnding_LightningFogStart, gfEnding_LightningFogEnd, 1.f, cColor(0.047,0.057,0.054,1), 1.f, false, false, false);
+		Map_Preset_SetupDirLight("Lightning", true, cColor(0.641,0.971,1,1), 0.02f, cVector3f(-0.495, 0.867, 0.05), cColor(0.023,0.033,0.03,1), cColor(0.137,0.193,0.185,1));
+		Map_Preset_SetupSkybox("Lightning", cColor(0.684,0.989,1,1), 1.f);
+		
+		Map_Preset_SetupFog("Outside", true, 0.f, 75.f, 0.25f, cColor(0.002,0.002,0.002,1), 1.f, false, false, false);
+		Map_Preset_SetupDirLight("Outside", true, cColor(0.91,1,0.722,1), 0.4f, cVector3f(-0.383f, -0.594f, -0.707f), cColor(0.336,0.369,0.268,1), cColor(0,0,0,1));
+		Map_Preset_SetupSkybox("Outside", cColor(0.684,0.989,1,1), 1.f);
+		
+		// Set up color grading etc.
+		Light_SetFlickerActive("lightning_flash_*", false);
+		Light_SetBrightness("lightning_flash_*", 10.f);
+		Map_SetEnvironmentParticlesActive(false);
+	}
+	
+	//-------------------------------------------------------
+		
+	void PreloadData()
+	{
+		///////////////
+		// Preload particles
+		ParticleSystem_Preload("sand_falling_stream_small_oneshot_instant.ps");
+		ParticleSystem_Preload("ghoul_ceiling_dust.ps");
+		ParticleSystem_Preload("splash_underwater_ending.ps");
+		ParticleSystem_Preload("debris_falling_arena_large.ps");
+		ParticleSystem_Preload("dust_impact_large_oneshot.ps");
+		ParticleSystem_Preload("water_splash_oneshot.ps");
+		
+		///////////
+		// Preload entity
+		Entity_Preload("player_bunker.ent");
+		Entity_Preload("path_area_blocker.ent");
+		Entity_Preload("darkworld_drawbridge_01.ent");
+		Entity_Preload("darkworld_drawbridge_rampdown.ent");
+		Entity_Preload("darkworld_drawbridge_rampup.ent");
+		Entity_Preload("darkworld_drawbridge_01_sidewalls.ent");
+		Entity_Preload("wheel_ottoman.ent");
+		Entity_Preload("scatter_rock04_shatter.ent");
+		Entity_Preload("scatter_rock04.ent");
+	}
+	
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run first time starting map
+	void OnStart()
+	{
+		// Any general setup of script / entities
+		
+		/////////////////
+		// Debug
+		if (cLux_ScriptDebugOn())
+		{
+			if (ItemType_GetCountInInventory("Gun") == 0)
+			{			
+				Item_SetCurrentSlotsCount(15);
+				Item_AddToInventory("DynamoLantern");
+				Item_AddToInventory("Gun");
+				Item_AddToInventory("Shotgun");
+				Item_AddManyToInventory("ShotgunAmmunition", 3);
+				Item_AddToInventory("Lighter");
+				Item_AddToInventory("Fuel");
+				Item_AddToInventory("Grenade");
+				Item_AddToInventory("Grenade");;
+				Item_AddToInventory("GasGrenade");		
+				Item_AddToInventory("Ammunition");
+				Item_AddToInventory("Grenade");
+				Item_AddToInventory("Grenade");
+				Item_AddToInventory("Torch");
+				Item_AddToInventory("RabbitDoll");
+				
+				Revolver_LoadChamber(0);
+				Revolver_LoadChamber(1);
+				Revolver_LoadChamber(2);
+				Revolver_LoadChamber(3);
+			}
+		}
+		
+		///////////////////////
+		// Setup pathfinder
+		mMapPathfinder.GeneratePlatformNodeEdgeCosts(true);
+		mPlayerPathfinder.GeneratePlatformNodeEdgeCosts(false);
+		mStalkerPathfinder.GeneratePlatformNodeEdgeCosts(false);
+		
+		///////////////////////
+		// Generate gameplay space
+		GenerateArena();		
+		
+		Map_AddTimer("Timer_SetupCurrentPlatforms", 0.1f, "OnTimer_SetupCurrentPlatforms");
+		mBaseObj.GetEntityArrayID("Trigger_Bridge_*", eLuxEntityType_Area, "", mvBridgeTriggerIds);
+		
+		//////////////////////
+		// Setup environment
+		Lamp_SetLit("Lamp_PowerSwitch_2_10", Generator_GetState() == eGeneratorState_On, false);
+		Lamp_SetupFlicker("Lamp_PowerSwitch_2_10", 0.1f, 1.f, 0.1f, 1.f, false, "level_entity_shared/lights/light_flicker");
+		Lamp_SetFlickerActive("Lamp_PowerSwitch_2_10", true);
+		
+		cLightMaskBox@ pLightMask = mBaseObj.GetWorld().GetLightMask("LightMaskBox_DirLight");
+		if (pLightMask !is null)
+		{
+			pLightMask.SetExcludeLight(true);
+			mBaseObj.GetWorld().GetDirectionalLight().SetMask(pLightMask);
+		}
+		
+		iLight@ pLightningLightA = mBaseObj.GetWorld().GetLight("lightning_flash_1");
+		iLight@ pLightningLightB = mBaseObj.GetWorld().GetLight("lightning_flash_2");
+		m_idLightningLightA = pLightningLightA !is null ? pLightningLightA.GetID() : tID_Invalid;
+		m_idLightningLightB = pLightningLightB !is null ? pLightningLightB.GetID() : tID_Invalid;
+		
+		iLight@ pEntranceLight = mBaseObj.GetWorld().GetLight("Light_EntranceFlash");
+		m_idEntranceLight = pEntranceLight !is null ? pEntranceLight.GetID() : tID_Invalid;
+		
+		iLight@ pStalkerEmergeLight = mBaseObj.GetWorld().GetLight("Light_StalkerFlash");
+		m_idStalkerEmergeLight = pStalkerEmergeLight !is null ? pStalkerEmergeLight.GetID() : tID_Invalid;
+				
+		//////////////////////
+		// Setup stalker
+		{
+			iLuxEntity@ pStalker = Map_GetEntity("Stalker_1", eLuxEntityType_Agent);
+			m_idStalker = pStalker !is null ? pStalker.GetID() : tID_Invalid;
+			
+			array<iLuxEntity@> vBuildUpAreas;
+			Map_GetEntityArray("Area_StalkerBuildUp_*", vBuildUpAreas);
+			
+			for (int i = 1; i < vBuildUpAreas.size() + 1; ++i)
+			{
+				iLuxEntity@ pArea = Map_GetEntity("Area_StalkerBuildUp_" + i, eLuxEntityType_Area);
+				if (pArea is null) continue;
+				
+				mvStalkerBuildUpPositions.push_back(pArea.GetPosition());
+			}
+			
+			iLuxEntity@ pEndArea = Map_GetEntity("Area_End", eLuxEntityType_Area);
+			if (pEndArea !is null)
+			{
+				cScript_SetGlobalArgID(0, pEndArea.GetID());
+				cScript_RunGlobalFunc("Stalker_1", "cScrAgentStalker", "_Global_BossFight_SetEndArea");
+			}
+			
+			for (int i = 0; i < mStalkerPathfinder.mvPlatformNodeGraph.size(); ++i)
+			{
+				cPlatformNode@ pNode = mStalkerPathfinder.mvPlatformNodeGraph[i];
+				if (pNode is null) continue;
+				
+				cScript_SetGlobalArgVector3f(0, GetPlatformNodePosition(pNode.msName));
+				cScript_RunGlobalFunc("Stalker_1", "cScrAgentStalker", "_Global_BossFight_AddRetreatPosition");
+			}
+					
+			Agent_AddAnimationHitbox("Stalker_1", "StalkerAnimationHitbox", "Socket_Stomach");
+			
+			array<tID> vBridgeIds;
+			mBaseObj.GetEntityArrayID("Bridge_*", eLuxEntityType_Prop, "", vBridgeIds);
+			
+			cScript_SetGlobalArgInt(0, vBridgeIds.size());
+			for (int i = 0; i < vBridgeIds.size(); ++i)
+				cScript_SetGlobalArgID(i + 1, vBridgeIds[i]);
+			
+			cScript_RunGlobalFunc("Stalker_1", "cScrAgentStalker", "_Global_BossFight_AddBridgeEntityIds");
+		}
+		
+		//////////////////////
+		// Setup entities
+		Entity_SetActive("BlockBox_Ending_*", true);
+		FogArea_SetVisible("fog_outside_pit", false);
+		
+		mBaseObj.GetEntityArrayID("Area_CeilingDebris_*", eLuxEntityType_Area, "", mvCeilingDebrisAreaIds);
+		
+		//////////////////////
+		// Setup done
+		mbSetup = false;
+	}
+	
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when entering map
+	void OnEnter()
+	{
+		cLux_GetSaveHandler().AddWaitForMap(cLux_GetCurrentMap().GetName());
+		
+		////////////////////////
+		// Set rich presence
+		RichPresence_SetCurrent(eRichPresence_Arena);
+		
+		///////////////
+		// Bombing effect
+		BombingHandler_SetActive(false);
+		
+		///////////////////
+		// Setup save game info hint
+		SaveRoom_SetSaveHintActive(false);
+
+		///////////////////////
+		// Setup player body
+		if (PlayerBody_IsActive() == false)
+		{
+			PlayerBody_SetActive(true);
+			PlayerBody_SetModel("player_bunker.ent");
+		}
+		
+		cScript_SetGlobalVarBool("GunMuffledEffectDisabled", true);
+		
+		///////////////////////
+		// Disable player hurt speed mul
+		Player_SetHealthSpeedMulActive(false);
+		
+		///////////////////////////////
+		// Setup low height auto-teleport
+		Player_SetAutoTeleportWhenBelowAltitude(-70.f);
+		
+		/////////////
+		// Music
+		Terror_SetEnemyMusicActive(false);
+		
+		////////////
+		// Map change
+		Game_SetupAfterMapChange();
+
+		////////////
+		// Disable shadows on Xbox/PS4 for lights in ceiling
+		if(Platform_IsPS4() || Platform_IsXboxOne())
+		{
+			Light_SetCastShadows("Light_Spot_1", false);
+			Light_SetCastShadows("Light_Spot_4", false);
+			Light_SetCastShadows("Light_Spot_11", false);
+			Light_SetCastShadows("Light_Spot_14", false);
+
+			Light_SetCastShadows("lightning_flash_*", false);
+
+			Billboard_SetVisible("Billboard_UnstableRift*", false); 
+		}
+	}
+		
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when leaving map
+	void OnLeave()
+	{
+		cScript_SetGlobalVarBool("GunMuffledEffectDisabled", false);
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// To get when player makes input (mostly used for debug)
+	void OnAction(int alAction, bool abPressed) 
+	{
+		if (abPressed == false) return;
+				
+		if (alAction == eAction_Test0)
+		{
+			Player_Teleport("Start_Arena", true);
+			SetLightningActive(true);
+		}
+		
+		if (alAction == eAction_Test1)
+		{
+			OnTrigger_Player_SpawnStalker("", "", 1);
+		}
+		
+		if (alAction == eAction_Test2)
+		{
+			Player_Teleport("Start_Arena", true);
+			Prop_SetHealth("Bridge_BC_2", 0.f);
+		}
+		
+		if (alAction == eAction_Test3)
+		{
+			Map_Preset_Fade("Outside", 1);
+		}
+		
+		if (alAction == eAction_Test4)
+		{
+			Prop_SetHealth("Bridge_HZ_2", 0.f);
+			Prop_SetHealth("Bridge_HZ_1", 0.f);
+		}
+		
+		if (alAction == eAction_Test5)
+		{
+			//Agent_PlayCutsceneAnimation("Stalker_1", "alert", 0.3f, true);
+			//Item_AddToInventory("Grenade");
+			Item_AddToInventory("MolotovCocktail");
+			Item_AddToInventory("GasGrenade");
+		}
+		
+		if (alAction == eAction_Test6)
+		{						
+			//cScript_SetGlobalArgInt(0, 1);			
+			//cScript_RunGlobalFunc("Stalker_1", "cScrAgentStalker", "_Global_BossFight_UpdateBehaviour");
+			cLux_AddTodoMessage("A:" + mPlayerPathfinder.msCurrentNode);
+			cLux_AddTodoMessage("B:" + mStalkerPathfinder.msCurrentNode);
+			
+			array<cPlatformNode@> vTest = mStalkerPathfinder.GetPlatformNodePath(mStalkerPathfinder.msCurrentNode, mPlayerPathfinder.msCurrentNode);
+			for (int i = 0; i < vTest.size(); ++i)
+			{
+				cLux_AddTodoMessage(""+vTest[i].msName);
+			}
+		}
+		
+		if (alAction == eAction_Test7)
+		{
+		    Seq_ExitBunkerWithStalker("");
+		}
+		
+		if (alAction == eAction_Test8)
+		{
+			//Map_AddTimer("Timer_DoLightning", cMath_RandRectf(0.5f, 1.f), "OnTimer_DoLightning");
+			OnStalkerFall();
+			Entity_SetActive("Stalker_1", false);
+		}
+		
+		if (alAction == eAction_Test9)
+		{
+			cScript_RunGlobalFunc("Stalker_1", "cScrAgentStalker", "_Global_Debug");
+		}
+		
+		if (alAction == eAction_TestMinus)
+		{						
+			Seq_ExitBunkerNoStalker("");
+		}
+		
+		if (alAction == eAction_TestPlus)
+		{
+			Prop_SetHealth("Bridge_HZ_1", 0.f);
+			Prop_SetHealth("Bridge_HZ_2", 0.f);
+			//Prop_SetHealth("Bridge_GH_1", 0.f);
+			//Prop_SetHealth("Bridge_GH_2", 0.f);
+			Map_GetEntity("Stalker_1").GiveDamage(null, 0, 0, eDamageType_Grenade, 1, 1, 1, 1, tID_Invalid, mBaseObj.GetNewAttackInstanceID());
+		}
+	}
+	
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// This only used for pure debug purposes when info needs to printed.
+	float DrawDebugOutput(cGuiSet@ apSet, iFontData@ apFont, float afY)
+	{
+		//afY = cLux_DrawDebugText("My Debug value:"+..., afY);
+		return afY;
+	}
+ 
+	//-------------------------------------------------------
+ 
+	//} END MAIN CALLBACKS
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN FUNCTIONS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+ 
+	/*Put any variables that are used in more than one scene here.*/
+	
+	bool mbSetup = true;	
+	bool mbPlayerPushingTunnelRock = false;
+	tString msCurrentMapPreset = "Inside";
+	
+	//-------------------------------------------------------
+ 
+	/*Put any functions that are used in more than one scene here.*/
+	
+	//-------------------------------------------------------
+	
+	void SetupAimAssistTargets()
+	{
+		for (int i = 0; i < mvBreakableBridges.size(); ++i)
+		{
+			tString sBridge = mvBreakableBridges[i];
+			Player_AddAimAssistTarget(Entity_GetID(sBridge), "", "", cVector3f(0.f, 0.25f, 0.f), 1.f, 18.f, -1.f, false, false, 1);
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void SetupDefaultPresetFog()
+	{
+		Map_Preset_SetupFog("Inside", true, gfEnding_DefaultFogStart, gfEnding_DefaultFogEnd, 1, cColor(0.047,0.057,0.054,1), 1.f, false, false, false);
+	}
+	
+	//-------------------------------------------------------
+	
+	void SetLightningActive(bool abX)
+	{
+		Map_RemoveTimer("Timer_StopLightning");
+		Map_RemoveTimer("Timer_DoLightning");
+			
+		if (abX)
+		{
+			Map_AddTimer("Timer_DoLightning", cMath_RandRectf(0.5f, 1.f), "OnTimer_DoLightning");	
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_DoLightning(const tString &in asTimer)
+	{
+		msCurrentMapPreset = "Lightning";
+		
+		Map_Preset_Fade("Lightning", 0.2f);
+		
+		cColor color = cColor(0.746,1,0.949,0);
+		if (mbStalkerFell)
+			color = color * 1.2f;
+		
+		Light_FadeTo("lightning_flash_*", color, cMath_RandRectf(107.f, 112.f), cMath_RandRectf(0.08f, 1.12f));
+		Light_SetFlickerActive("lightning_flash_*", true);			
+		
+		float fTime = mbStalkerEmerging ? 2.f : cMath_RandRectf(0.75f, 1.25f);
+		Map_AddTimer("Timer_StopLightning", fTime, "OnTimer_StopLightning");
+		Sound_Play("Sound_Lightning", 0.0f);
+	}
+		
+	//-------------------------------------------------------
+		
+	void OnTimer_StopLightning(const tString &in asTimer)
+	{
+		msCurrentMapPreset = "Inside";
+		
+		Map_Preset_Fade("Inside", 1.f);
+		
+		Light_FadeTo("lightning_flash_*", cColor(0,0,0,1), cMath_RandRectf(107.f, 112.f), cMath_RandRectf(0.95f, 1.05f));
+		Light_SetFlickerActive("lightning_flash_*", false);
+		
+		float fTime = mbStalkerEmerging ? 1.f : cMath_RandRectf(4.f, 7.f);
+		if (mbStalkerFell)
+			fTime = cMath_RandRectf(2.f, 4.f);
+		
+		Map_AddTimer("Timer_DoLightning", fTime, "OnTimer_DoLightning");
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnPlayerBulletHit(const tString &in asEntity, const cVector3f &in avHitPos)
+	{
+		if (BulletHandler_GetLastDamageBulletType() == eBulletType_Shotgun)
+		{
+			Map_AddTimer("Timer_PlayerUsedWeapon", 2.f, "");
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnExplosion(const tString&in asEntity)
+	{
+		Map_AddTimer("Timer_PlayerUsedWeapon", 2.f, "");
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnAddDamageArea(const tString &in asDamageArea)
+	{		
+		iLuxEntity@ pDamageArea = Map_GetEntity(asDamageArea, eLuxEntityType_Prop);
+		cBoundingVolume@ pDamageBounds = pDamageArea !is null ? pDamageArea.GetMainBody().GetBoundingVolume() : null;
+		
+		if (pDamageArea is null) return;
+		if (pDamageBounds is null) return;
+		
+		////////////////
+		// Iterate bridge triggers
+		for (int i = 0; i < mvBridgeTriggerIds.size(); ++i)
+		{
+			iLuxEntity@ pTrigger = cLux_ID_Area(mvBridgeTriggerIds[i]);
+			cBoundingVolume@ pTriggerBounds = pTrigger !is null ? pTrigger.GetMainBody().GetBoundingVolume() : null;
+			
+			if (pTrigger is null) continue;
+			if (pTriggerBounds is null) continue;
+			
+			////////////////
+			// Remove pathfinding edges if damage area intersects bridge			
+			if (cMath_CheckAABBIntersection(pDamageBounds.GetMin(), pDamageBounds.GetMax(), pTriggerBounds.GetMin(), pTriggerBounds.GetMax()))
+			{
+				tString sTrigger = pTrigger.GetName();
+				tString sNodeA = cString_Sub(sTrigger, 15, 1);
+				tString sNodeB = cString_Sub(sTrigger, 16, 1);
+				
+				AddPathBlocker(pDamageArea, sNodeA, sNodeB, -1.f);
+				
+				////////////////
+				// Allow slowdown
+				SetAllowSlowdownTime(60.f);
+				break;
+			}
+		}		
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnRemoveDamageArea(const tString &in asDamageArea)
+	{
+		iLuxEntity@ pDamageArea = Map_GetEntity(asDamageArea, eLuxEntityType_Prop);		
+		RemovePathBlocker(pDamageArea);
+	}
+	
+	//-------------------------------------------------------
+	
+	void VariableUpdate(float afDeltaTime)
+	{		
+		////////////////////
+		// Stalker build up
+		UpdateStalkerBuildUp(afDeltaTime);
+		
+		////////////////////
+		// Player climb ledge
+		UpdatePlayerClimbLedge(afDeltaTime);
+		
+		////////////////////
+		// Sync lights	
+		iLight@ pLightningLightA = cLux_ID_Light(m_idLightningLightA);
+		iLight@ pLightningLightB = cLux_ID_Light(m_idLightningLightB);
+		iLight@ pEntranceLight = cLux_ID_Light(m_idEntranceLight);
+		iLight@ pStalkerEmergeLight = cLux_ID_Light(m_idStalkerEmergeLight);
+		cColor lightningColor = pLightningLightA !is null ? pLightningLightA.GetDiffuseColor() : cColor_White;
+		
+		if (pLightningLightA !is null && 
+		    pLightningLightB !is null && 
+			pStalkerEmergeLight !is null &&
+			pEntranceLight !is null &&
+			lightningColor.a > 0.f)
+		{
+			pEntranceLight.SetDiffuseColor(lightningColor);
+			pStalkerEmergeLight.SetDiffuseColor(lightningColor);
+		}
+		
+		////////////////////
+		// Shadow death
+		if (mlShadowDeathStage >= 0)
+		{
+			cBillboard@ pBillboard = mBaseObj.GetWorld().GetBillboard("Billboard_ShadowDeath");
+			if (pBillboard is null) return;
+			
+			float fShadowDeathSpeedGoal = mfShadowDeathT >= 0.75f ? 4.f : 1.f;
+			mfShadowDeathSpeed = cMath_IncreaseTo(mfShadowDeathSpeed, afDeltaTime, fShadowDeathSpeedGoal);			
+			mfShadowDeathT = cMath_IncreaseTo(mfShadowDeathT, afDeltaTime * 0.12f * mfShadowDeathSpeed, 1.f);
+			float fT = cMath_Easing(eEasing_ExpoIn, cMath_Clamp((mfShadowDeathT - 0.1f) / (1.f - 0.1f), 0.f, 1.f));
+			
+			if (mlShadowDeathStage == 0 && mfShadowDeathT >= 0.1f)
+			{
+				mlShadowDeathStage = 1;		
+				
+				Effect_Shake_Start(0.1f, 20.f, 10.f, 1.f);			
+				Sound_PlayGui("DW_tunnel/level/shadow_roar", 1.f, eSoundEntryType_Gui);
+				
+				Player_SetScared(10.f);
+			}
+			else if (mlShadowDeathStage == 1 && mfShadowDeathT >= 0.4f)
+			{
+				mlShadowDeathStage = 2;
+				Effect_Blur_Start(0.5f, 5.f);						
+			}
+			else if (mlShadowDeathStage == 2 && mfShadowDeathT >= 0.78f)
+			{
+				mlShadowDeathStage = 3;
+				Effect_Fade_Out(0.1f);
+				Sound_PlayGui("player/foley/damage/player_shadow_hit", 1.f, eSoundEntryType_Gui);
+				Sound_FadeGlobalVolume(0.f, 0.1f, eSoundEntryType_World);
+			}
+			else if (mlShadowDeathStage == 3 && mfShadowDeathT >= 1.f)
+			{
+				mlShadowDeathStage = -1;
+				SequenceStates_Resume("Seq_FallInToRift");
+			}
+			
+			cVector2f vSizeStart(0.f);
+			cVector2f vSizeGoal(170.f);
+			cVector2f vNewSize = vSizeStart * (1.f - fT) + vSizeGoal * fT;
+			pBillboard.SetSize(vNewSize);
+			
+			cVector3f vPos = cLux_GetPlayer().GetCharacterBody().GetPosition() - cVector3f(11.25f, 0.f, 0.f);
+			vPos.y = pBillboard.GetWorldPosition().y;
+			pBillboard.SetPosition(vPos);
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void Update(float afTimeStep)
+	{
+		////////////////////
+		// Move player forward when pushing end rock
+		if (mbPlayerPushingTunnelRock)
+		{			
+			iCharacterBody@ pCharBody = cLux_GetPlayer().GetCharacterBody();
+			if (pCharBody !is null)
+			{
+				if (pCharBody.GetMoveSpeed(eCharDir_Forward) < 0.001f)
+					pCharBody.AddForceVelocity(cVector3f(0.f, 0.f, 10.f) * afTimeStep);
+				
+				pCharBody.Move(eCharDir_Forward, 0.15f);					
+				Push_SimulateMovement(cVector3f(0.f, 0.15f, 0.f));
+			}
+		}
+	}
+	 
+	//-------------------------------------------------------
+ 
+	//} END MAIN FUNCTIONS
+	
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// PLATFORMS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+		
+	array<tString> mvDrawbridges;
+	array<tString> mvUnbreakableBridges;
+	array<cBridgeData> mvBridgeData;
+	array<int> mvDestroyedBridgeDataIds;
+	array<tID> mvBridgeBlockerEntIds;
+	array<tID> mvBridgeBlockerEntsToUpdate;
+	array<tID> mvBridgeBlockerEntsToSkipUpdate;
+	array<tString> mvHighCostBridgeEdges;
+	array<tString> mvMedCostBridgeEdges;
+	array<tString> mvMaxCostBridgeEdges;
+	array<tID> mvBridgeTriggerIds;
+	array<cBridgePathBlockerData> mvPathBlockers;
+	array<tString> mvRampDownBridges = { "Bridge_EZ_2", "Bridge_FZ_2", "Bridge_HZ_2", "Bridge_AD_1", "Bridge_AC_1", "Bridge_AB_1" };
+	array<tString> mvRampUpBridges = { "Bridge_AB_2", "Bridge_AC_2", "Bridge_AD_2", "Bridge_HZ_1", "Bridge_EZ_1", "Bridge_FZ_1" };
+	
+	cPlatformPathfinder mPlayerPathfinder;
+	cPlatformPathfinder mStalkerPathfinder;
+	cPlatformPathfinder mMapPathfinder;
+	
+	//-------------------------------------------------------
+	
+	void GenerateArena()
+	{		
+		/////////////////
+		// Generate stuff
+		if (gbEnding_GenerateArena)
+		{
+			mvDrawbridges.resize(0);
+			mvUnbreakableBridges.resize(0);
+			
+			/////////////////
+			// Get path from start to goal	
+			array<cPlatformNode@> vPath = mMapPathfinder.GetPlatformNodePath("A", "Z");
+			
+			/////////////////
+			// Get path drawbridge count
+			int lMaxDrawBridges = 5;
+			int lBridgeCount = vPath.size() - 1;
+			int lWantedPathDrawbridges = cMath_Min(cMath_RandRectl(1, (lBridgeCount / 2) + 1), lMaxDrawBridges);
+			
+			array<int> vPathDrawbridgeIndices(lBridgeCount);
+			
+			for (int i = 0; i < vPathDrawbridgeIndices.size(); ++i)
+			{
+				vPathDrawbridgeIndices[i] = i + 1;
+			}
+				
+			while (vPathDrawbridgeIndices.size() > lWantedPathDrawbridges)
+			{
+				vPathDrawbridgeIndices.removeAt(cMath_RandRectl(0, vPathDrawbridgeIndices.size() - 1));
+			}
+			
+			/////////////////
+			// Create path bridges
+			for (int i = 0; i < vPath.size(); ++i)
+			{
+				cPlatformNode@ pNode = vPath[i];
+				cPlatformNodeHistory@ pHistory = mMapPathfinder.GetPlatformNodeHistory(pNode.msName);
+					
+				if (pHistory.msPrev == "") continue;
+													
+				array<iLuxEntity@> vBridge = GetBridgeFromPlatformNodes(pHistory.msPrev, pHistory.msName);	
+				
+				if (vPathDrawbridgeIndices.find(i) != -1)
+				{
+					CreateDrawbridge(vBridge[0], vBridge[1]);
+				}
+				else
+				{
+					for (int j = 0; j < vBridge.size(); ++j)
+					{								
+						CreateUnbreakableBridge(vBridge[j]);
+					}		
+				}
+			}
+			
+			/////////////////
+			// Get every node that doesn't have an unbreakable bridge
+			tString sBridgeBase = "Bridge_";
+			tString sBridgeEnd = "_1";			
+			array<tString> vNodesWithNoUnbreakableBridge;
+			
+			for (int i = 0; i < mMapPathfinder.mvPlatformNodeGraph.size(); ++i)
+			{
+				bool bHasUnbreakableBridge = false;
+				
+				cPlatformNode@ pNode = mMapPathfinder.mvPlatformNodeGraph[i];
+				
+				for (int j = 0; j < pNode.mvNeighbours.size(); ++j)
+				{
+					tString sNeighbour = pNode.mvNeighbours[j];
+					tString sBridgeA = sBridgeBase + pNode.msName + sNeighbour + sBridgeEnd;
+					tString sBridgeB = sBridgeBase + sNeighbour + pNode.msName + sBridgeEnd;
+					
+					if (mvDrawbridges.find(sBridgeA) != -1 ||
+						mvDrawbridges.find(sBridgeB) != -1 ||
+						mvUnbreakableBridges.find(sBridgeA) != -1 ||
+						mvUnbreakableBridges.find(sBridgeB) != -1)
+					{
+						bHasUnbreakableBridge = true;
+						break;
+					}
+				}
+				
+				if (bHasUnbreakableBridge == false)
+				{
+					vNodesWithNoUnbreakableBridge.push_back(pNode.msName);
+				}
+			}
+			
+			/////////////////
+			// Create unbreakable bridges at every node
+			// (Except for one!)
+			int lIsolatedNodeId = cMath_RandRectl(0, vNodesWithNoUnbreakableBridge.size() - 1);
+			tString sIsolatedNode = vNodesWithNoUnbreakableBridge[lIsolatedNodeId];
+			
+			vNodesWithNoUnbreakableBridge.removeAt(lIsolatedNodeId);
+			
+			while (vNodesWithNoUnbreakableBridge.size() > 0)
+			{
+				cPlatformNode@ pNode = mMapPathfinder.GetPlatformNode(vNodesWithNoUnbreakableBridge[0]);
+				
+				/////////////////
+				// Get random neighbour
+				// (That's not the isolated node)	
+				bool bFoundNeighbour = false;
+				tString sNeighbour = "";
+				array<int> vNeighourIndices(pNode.mvNeighbours.size());
+				
+				for (int i = 0; i < vNeighourIndices.size(); ++i)
+				{
+					vNeighourIndices[i] = i;
+				}
+				
+				while (vNeighourIndices.size() > 0)
+				{
+					int lNeighbourId = cMath_RandRectl(0, vNeighourIndices.size() - 1);
+					sNeighbour = pNode.mvNeighbours[lNeighbourId];
+					
+					vNeighourIndices.removeAt(lNeighbourId);
+					
+					if (sNeighbour != sIsolatedNode)
+					{
+						bFoundNeighbour = true;
+						break;
+					}						
+				}
+				
+				if (bFoundNeighbour == false)
+					continue;
+				
+				/////////////////
+				// Create bridge to neighbour
+				array<iLuxEntity@> vBridge = GetBridgeFromPlatformNodes(pNode.msName, sNeighbour);					
+				
+				bool bDrawbridge = mvDrawbridges.size() < lMaxDrawBridges && cMath_RandRectl(0, 2) == 2;	
+				if (bDrawbridge)
+				{
+					CreateDrawbridge(vBridge[0], vBridge[1]);
+				}
+				else
+				{
+					for (int i = 0; i < vBridge.size(); ++i)
+					{
+						CreateUnbreakableBridge(vBridge[i]);
+					}
+				}
+
+				/////////////////
+				// Remove nodes at new bridge from selection
+				int lRemoveNodeCount = 0;
+				for (int i = 0; i < vNodesWithNoUnbreakableBridge.size(); ++i)
+				{
+					tString sNodeRemoveCandidate = vNodesWithNoUnbreakableBridge[i];
+					if (sNodeRemoveCandidate == pNode.msName ||
+						sNodeRemoveCandidate == sNeighbour)
+					{
+						vNodesWithNoUnbreakableBridge.removeAt(i);
+						--i;
+						
+						++lRemoveNodeCount;
+						if (lRemoveNodeCount == 2)
+							break;
+					}						
+				}
+			}	
+			
+			/////////////////
+			// Some drawbridges should be up
+			int lOpenDrawbridgeCount = 0;
+			int lMaxOpenDrawbridges = cMath_RandRectl(0, mvDrawbridges.size());
+			
+			for (int i = 0; i < mvDrawbridges.size(); ++i)
+			{
+				if (lOpenDrawbridgeCount >= lMaxOpenDrawbridges) break;
+				if (cMath_RandRectl(0, 1) != 1) continue;
+				
+				///////////////
+				// Skip bridges that can block the view of stalker's emerge
+				tString sBridge = mvDrawbridges[i];
+				tString sId = cString_Sub(sBridge, 7, 2);
+				
+				if (sId == "CF" ||
+					sId == "EF" ||
+					sId == "BC" ||
+					sId == "FG" ||
+					sId == "FZ")
+				{
+					continue;
+				}
+				
+				///////////////
+				// Open drawbridge!
+				++lOpenDrawbridgeCount;				
+				
+				int lSuffix = cString_GetNumericSuffixInt(sBridge);			
+				tString sWheel = "Wheel_" + sId + "_" + lSuffix;
+				
+				Wheel_SetAngle(sWheel, 90.f, true);
+			}
+			
+			///////////////////////
+			// Reset costs
+			mMapPathfinder.GeneratePlatformNodeEdgeCosts(false);
+		}
+		
+		///////////////////////
+		// Set up bridge walls
+		array<iLuxEntity@> vBridgeWalls;
+		Map_GetEntityArray("Bridge_Wall_*", vBridgeWalls, eLuxEntityType_Prop);
+		
+		for (int i = 0; i < vBridgeWalls.size(); ++i)
+		{
+			iLuxEntity@ pEnt = vBridgeWalls[i];
+			if (pEnt is null) continue;
+			
+			pEnt.SetActive(true); // Inactive until now, so the paths can build properly
+			
+			tString sBridge = pEnt.GetName();
+			tString sId = cString_Sub(sBridge, 12, 2);
+			tString sBridgeToFind = "Bridge_" + sId + "_1";
+			
+			if (mvDrawbridges.find(sBridgeToFind) != -1) continue;
+			if (mvUnbreakableBridges.find(sBridgeToFind) != -1) continue;
+			
+			BulletHandler_AddGlobalIgnoredEntity(pEnt.GetID());
+			WoodenBreakable_SetIsBreakable(pEnt.GetName(), false);
+		}
+		
+		///////////////////////
+		// Set up bridges
+		{
+			array<iLuxEntity@> vBridges;
+			Map_GetEntityArray("Bridge_*", vBridges, eLuxEntityType_Prop);
+			
+			for (int i = 0; i < vBridges.size(); ++i)
+			{
+				iLuxEntity@ pEnt = vBridges[i];
+				tString sName = pEnt !is null ? pEnt.GetName() : "";
+				
+				if (pEnt is null) continue;
+				
+				///////////////////////
+				// Skip if wall
+				bool bSkip = false;
+				for (int j = 0; j < vBridgeWalls.size(); ++j)
+				{
+					if (pEnt is vBridgeWalls[j])
+					{
+						bSkip = true;
+						break;
+					}
+				}
+				
+				if (bSkip) continue;
+				
+				///////////////////////
+				// Calculate base pos
+				cVector3f vBridgePos = pEnt.GetPosition();
+				cVector3f vJointPos = pEnt.GetMainBody().GetJoint(0).GetPivotPoint();
+				cVector3f vToJointPos = vJointPos - vBridgePos;
+				cVector3f vBridgeDir = pEnt.GetMatrix().GetTranspose().GetForward() * -1.f;
+				cVector3f vToBridgeStart = cMath_Vector3Project(vToJointPos, vBridgeDir);
+				cVector3f vBridgeStart = vBridgePos + vToBridgeStart;
+				cVector3f vBridgeEnd = vBridgePos + vToBridgeStart * -1.f;
+				
+				///////////////////////
+				// Get id and platform
+				tString sId = cString_Sub(sName, 7, 2);
+				int lSuffix = cString_GetNumericSuffixInt(sName);
+				tString sPlatform = cString_Sub(sId, lSuffix - 1, 1);
+				
+				///////////////////////
+				// Store data
+				cBridgeData data;
+				data.msName = sName;
+				data.msId = sId;
+				data.msPlatform = sPlatform;
+				data.mvStartPos = vBridgeStart;
+				data.mvEndPos = vBridgeEnd;
+				mvBridgeData.push_back(data);
+				
+				/////////////////////
+				// Create path blockers		
+				cMatrixf mtxOnLoad = pEnt.GetOnLoadTransform();
+				cMatrixf mtxPathBlockerA = cMath_MatrixMul(cMath_MatrixTranslate(vBridgeDir * 1.5f), mtxOnLoad);
+				cMatrixf mtxPathBlockerB = cMath_MatrixMul(cMath_MatrixTranslate(vBridgeDir * 4.5f), mtxOnLoad);
+				mtxPathBlockerA = cMath_MatrixMul(cMath_MatrixTranslate(cVector3f(0.f, 1.f, 0.f)), mtxPathBlockerA);
+				mtxPathBlockerB = cMath_MatrixMul(cMath_MatrixTranslate(cVector3f(0.f, 1.f, 0.f)), mtxPathBlockerB);
+				
+				tString sBlockerA = "BridgeBlocker_" + sId + "_" + lSuffix + "_A";
+				tString sBlockerB = "BridgeBlocker_" + sId + "_" + lSuffix + "_B";
+				
+				mBaseObj.CreateEntity(sBlockerA, "path_area_blocker.ent", mtxPathBlockerA, cVector3f(3.f, 1.75f, 3.f));
+				iLuxEntity@ pBlockerA = mBaseObj.GetLatestEntity();
+				mBaseObj.CreateEntity(sBlockerB, "path_area_blocker.ent", mtxPathBlockerB, cVector3f(3.f, 1.75f, 3.f));
+				iLuxEntity@ pBlockerB = mBaseObj.GetLatestEntity();
+				
+				if (pBlockerA !is null && pBlockerB !is null)
+				{
+					pBlockerA.SetActive(false);
+					pBlockerB.SetActive(false);
+					
+					tID idBlockerA = pBlockerA.GetID();
+					tID idBlockerB = pBlockerB.GetID();
+					
+					if (mvBridgeBlockerEntIds.find(idBlockerA) == -1)
+						mvBridgeBlockerEntIds.push_back(idBlockerA);
+					if (mvBridgeBlockerEntIds.find(idBlockerB) == -1)
+						mvBridgeBlockerEntIds.push_back(idBlockerB);
+						
+					Stalker_AddIgnoredPathBlockerBody("Stalker_1", pBlockerA.GetMainBody().GetID());
+					Stalker_AddIgnoredPathBlockerBody("Stalker_1", pBlockerB.GetMainBody().GetID());
+				}
+				
+				///////////////////////
+				// Stalker's obstacle system should ignore the bridge bodies
+				Stalker_AddIgnoredPathBlockerBody("Stalker_1", pEnt.GetMainBody().GetID());
+				
+				///////////////////////
+				// Get on start break bridge candidates
+				if (mvDrawbridges.find(sName) != -1) 			continue;
+				if (mvUnbreakableBridges.find(sName) != -1) 	continue;
+				
+				if (mvBreakableBridges.find(sName) == -1)
+					mvBreakableBridges.push_back(sName);
+				
+				if (cString_GetFirstStringPos(sId, "A") == -1 &&
+					cString_GetFirstStringPos(sId, "B") == -1 &&
+					cString_GetFirstStringPos(sId, "C") == -1 &&
+					cString_GetFirstStringPos(sId, "D") == -1) 
+				{
+					continue;
+				}
+				
+				if (mvOnEnterBreakBridges.find(sName) == -1)
+					mvOnEnterBreakBridges.push_back(sName);
+			}
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_SetupCurrentPlatforms(const tString &in asTimer)
+	{	
+		cLuxAgent@ pStalker = cLux_ToAgent(mBaseObj.GetEntityByName("Stalker_1", eLuxEntityType_Agent));			
+		cVector3f vPlayerPos = cLux_GetPlayer().GetCharacterBody().GetPosition();
+		
+		mPlayerPathfinder.msCurrentNode = GetClosestPlatformToPoint(vPlayerPos);
+		mStalkerPathfinder.msCurrentNode = pStalker !is null ? GetClosestPlatformToPoint(pStalker.GetPosition()) : "Z";
+	}
+	
+	//-------------------------------------------------------
+	
+	tString GetClosestPlatformToPoint(const cVector3f &in avPoint)
+	{
+		tString sClosest = "";
+		float fMinDistSqr = 10000.f * 10000.f;
+		
+		for (int i = 0; i < mMapPathfinder.mvPlatformNodeGraph.length(); ++i)
+		{
+			tString sNode = mMapPathfinder.mvPlatformNodeGraph[i].msName;
+			cVector3f vPos = GetPlatformNodePosition(sNode);	
+			
+			float fDistSqr = (avPoint - vPos).SqrLength();
+			if (fDistSqr < fMinDistSqr)
+			{
+				fMinDistSqr = fDistSqr;
+				sClosest = sNode;
+			}
+		}
+				
+		return sClosest;
+	}
+	
+	//-------------------------------------------------------
+	
+	cVector3f GetPlatformNodePosition(const tString &in asNode)
+	{
+		tString sArea = "Area_Node_" + asNode;
+		iLuxEntity@ pEnt = Map_GetEntity(sArea, eLuxEntityType_Area);
+				
+		return pEnt !is null ? pEnt.GetPosition() : cVector3f(0.f);
+	}
+	
+	//-------------------------------------------------------
+	
+	array<iLuxEntity@>@ GetBridgeFromPlatformNodes(const tString &in asNodeA, const tString &in asNodeB)
+	{		
+		array<iLuxEntity@> vBridge;
+		
+		tString sBridgeBase = "Bridge_";
+		tString sBridgeId = asNodeA + asNodeB;
+		tString sBridgeSuffix = "_*";
+		tString sBridge = sBridgeBase + sBridgeId + sBridgeSuffix;
+		
+		Map_GetEntityArray(sBridge, vBridge, eLuxEntityType_Prop);
+		
+		if (vBridge.size() == 0)
+		{
+			sBridgeId = asNodeB + asNodeA;
+			sBridge = sBridgeBase + sBridgeId + sBridgeSuffix;
+			
+			Map_GetEntityArray(sBridge, vBridge, eLuxEntityType_Prop);
+		}
+		
+		return vBridge;
+	}
+	
+	//-------------------------------------------------------
+	
+	cLuxProp@ CreateUnbreakableBridge(iLuxEntity@ apBridge, bool abIsDrawbridge = false)
+	{
+		if (apBridge is null) return null;
+		
+		////////////////////////
+		// Setup vars
+		tString sName = apBridge.GetName();
+		tString sId = cString_Sub(sName, 7, 2);
+		tString sSuffix = cString_GetNumericSuffix(sName);
+		tString sBridgeWall = "Bridge_Wall_" + sId + "_" + sSuffix;
+		
+		iLuxEntity@ pBridgeWall = mBaseObj.GetEntityByName(sBridgeWall, eLuxEntityType_Prop);
+		if (pBridgeWall is null) return null;
+		
+		uint lBridgeCollideFlag = apBridge.GetMainBody().GetCollideFlags();
+		cMatrixf mtxBridge = apBridge.GetOnLoadTransform();
+		cVector3f vBridgeScale = apBridge.GetOnLoadScale();
+		
+		uint lBridgeWallCollideFlag = pBridgeWall.GetMainBody().GetCollideFlags();
+		cMatrixf mtxBridgeWall = pBridgeWall.GetOnLoadTransform();
+		cVector3f vBridgeWallScale = pBridgeWall.GetOnLoadScale();
+		
+		////////////////////////
+		// Destroy breakable bridge
+		mBaseObj.DestroyEntity(apBridge);
+		mBaseObj.DestroyEntity(pBridgeWall);
+		
+		////////////////////////
+		// Create unbreakable version
+		tString sDrawbridgeEnt = "darkworld_drawbridge_01.ent";		
+		if (mvRampDownBridges.find(sName) != -1)		sDrawbridgeEnt = "darkworld_drawbridge_rampdown.ent";
+		else if (mvRampUpBridges.find(sName) != -1)		sDrawbridgeEnt = "darkworld_drawbridge_rampup.ent";
+		
+		mBaseObj.CreateEntity(sName, sDrawbridgeEnt, mtxBridge, vBridgeScale);
+		cLuxProp@ pNewBridge = cLux_ToProp(mBaseObj.GetLatestEntity());
+		
+		mBaseObj.CreateEntity(sBridgeWall, "darkworld_drawbridge_01_sidewalls.ent", mtxBridgeWall, vBridgeWallScale);
+		cLuxProp@ pNewBridgeWall = cLux_ToProp(mBaseObj.GetLatestEntity());
+		
+		for (int i = 0; i < pNewBridge.GetBodyNum(); ++i)
+			pNewBridge.GetBody(i).SetCollideFlags(lBridgeCollideFlag);
+			
+		for (int i = 0; i < pNewBridgeWall.GetBodyNum(); ++i)
+			pNewBridgeWall.GetBody(i).SetCollideFlags(lBridgeWallCollideFlag);
+			
+		pNewBridge.SetDisableBreakable(true);
+		pNewBridgeWall.SetDisableBreakable(true);
+		
+		pNewBridgeWall.AttachToEntity(pNewBridge, pNewBridge.GetMainBody(), true, false, true);
+		
+		////////////////////////
+		// Store as unbreakable bridge?
+		if (abIsDrawbridge == false)
+		{
+			mvUnbreakableBridges.push_back(sName);	
+		}
+		
+		return pNewBridge;
+	}
+	
+	//-------------------------------------------------------
+	
+	void CreateDrawbridge(iLuxEntity@ apBridgeA, iLuxEntity@ apBridgeB)
+	{
+		if (apBridgeA is null) return;
+		if (apBridgeB is null) return;
+		
+		//////////////////
+		// Create bridge
+		cLuxProp@ pBridgeA = CreateUnbreakableBridge(apBridgeA, true);
+		cLuxProp@ pBridgeB = CreateUnbreakableBridge(apBridgeB, true);		
+		cLuxProp@ pWheelA = CreateBridgeWheel(pBridgeA, pBridgeB);
+		cLuxProp@ pWheelB = CreateBridgeWheel(pBridgeB, pBridgeA);
+		
+		//////////////////
+		// Setup wheels
+		pWheelA.AddInteractConnection(pWheelB.GetName(), pWheelB, false, eEasing_Linear);
+		pWheelB.AddInteractConnection(pWheelA.GetName(), pWheelA, false, eEasing_Linear);
+
+		//////////////////
+		// Keep track of them
+		mvDrawbridges.push_back(pBridgeA.GetName());
+		mvDrawbridges.push_back(pBridgeB.GetName());
+	}
+	
+	//-------------------------------------------------------
+	
+	cLuxProp@ CreateBridgeWheel(cLuxProp@ apBridgeA, cLuxProp@ apBridgeB)
+	{
+		if (apBridgeA is null) return null;
+		if (apBridgeB is null) return null;
+		
+		//////////////////
+		// Setup vars
+		tString sBridge = apBridgeA.GetName();		
+		int lSuffix = cString_GetNumericSuffixInt(sBridge);			
+		tString sId = cString_Sub(sBridge, 7, 2);
+		tString sWheel = "Wheel_" + sId + "_" + lSuffix;
+		
+		//////////////////
+		// Create wheel
+		cMatrixf mtxBridge = apBridgeA.GetOnLoadTransform();
+		cVector3f vBridgeDir = cMath_Vector3Normalize(mtxBridge.GetTranspose().GetForward());
+		
+		cVector3f vFwd = vBridgeDir * -1.f;
+		vFwd.y = 0.f;
+		vFwd.Normalize();
+		
+		cVector3f vRight = cMath_Vector3Normalize(cMath_Vector3Cross(vFwd, cVector3f_Down));
+		cVector3f vWheelPos = mtxBridge.GetTranslation() + vBridgeDir * 0.1f + vRight * -1.5f + cVector3f(0.f, 1.4f, 0.f);		
+		cMatrixf mtxWheel = cMath_MatrixUnitVectors(vRight, cVector3f_Up, vFwd, vWheelPos);
+		
+		mBaseObj.CreateEntity(sWheel, "mechanism_wheel.ent", mtxWheel, cVector3f(0.875f));
+		
+		//////////////////
+		// Setup wheel
+		cLuxProp@ pWheel = cLux_ToProp(mBaseObj.GetLatestEntity());
+		if (pWheel !is null)
+		{
+			Wheel_SetMinLimit(sWheel, 0.f);
+			Wheel_SetMaxLimit(sWheel, 90.f);
+			Wheel_SetAutoRotateMul(sWheel, 2.f);
+			Wheel_SetAngle(sWheel, 0.f, false);
+			
+			pWheel.AddInteractConnection(apBridgeA.GetName(), apBridgeA, false, eEasing_Linear);
+			pWheel.AddInteractConnection(apBridgeB.GetName(), apBridgeB, false, eEasing_Linear);		
+
+			pWheel.SetConnectionStateChangeCallback("OnConnectionStateChange_Wheel");
+			pWheel.SetPlayerInteractCallback("OnInteract_Wheel", false);
+			
+			uint lWheelCollideFlag = mBaseObj.GetCollideFlag("-bridge");
+			for (int i = 0; i < pWheel.GetBodyNum(); ++i)
+				pWheel.GetBody(i).SetCollideFlags(lWheelCollideFlag);
+		}
+		
+		//////////////////
+		// Create pedastal
+		cMatrixf mtxPedastal = mtxWheel;
+		cVector3f vPedastalPos = mtxPedastal.GetTranslation() + vFwd * 0.125f - cVector3f(0.f, 1.31f, 0.f);		
+		mtxPedastal = cMath_MatrixMul(cMath_MatrixRotateY(cMath_Pi), mtxPedastal);
+		mtxPedastal.SetTranslation(vPedastalPos);
+
+		if (sId == "HZ")
+		{
+			Entity_SetActive("Statue_HZ", false);
+		}
+		
+		mBaseObj.CreateEntity("Pedastal_" + sWheel, "mechanism_wheel_pedastal.ent", mtxPedastal, cVector3f(1.15f));
+		
+		return pWheel;
+	}
+	 
+	//-------------------------------------------------------
+ 
+	//} END PLATFORMS
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// EVENTS
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+		
+		/////////////////////////////////////////
+		// Event *Enter the tunnels*
+		//{//////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		bool mbDoStalkerBuildUp = false;
+		int mlStalkerBuildUpPositionIndex = 0;
+		float mfStalkerBuildUpSpeed = 4.f;
+		cVector3f mvStalkerBuildUpPos(0.f);
+		array<cVector3f> mvStalkerBuildUpPositions;
+		tID m_idStalkerBuildUpPS = tID_Invalid;
+		tID m_idStalkerBuildUpSound = tID_Invalid;
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_CartCollide(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState == 1 && Map_TimeHasPassed("Timer_CrateFeedback", 0.5f))
+			{
+				Sound_CreateAtEntity("Sound_CrateBlocked", "physics/wood/wood_trap_door/trap_door_impact", asParent);
+			}
+			
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_StartStalkerBuildUp(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			mbDoStalkerBuildUp = true;
+			mvStalkerBuildUpPos = mvStalkerBuildUpPositions[0];
+			
+			Music_StopAll(3.f);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void UpdateStalkerBuildUp(float afDeltaTime)
+		{
+			if (mbDoStalkerBuildUp == false) return;
+			
+			/////////////////
+			// Move
+			bool bAtEnd = false;
+			float fDistToNext = 0.f;
+			
+			if (mvStalkerBuildUpPositions.size() > 0)
+			{
+				if (mlStalkerBuildUpPositionIndex > 0)
+					mfStalkerBuildUpSpeed = cMath_IncreaseTo(mfStalkerBuildUpSpeed, afDeltaTime, 10.f);
+				
+				cVector3f vDir = (mvStalkerBuildUpPositions[mlStalkerBuildUpPositionIndex] - mvStalkerBuildUpPos);		
+				fDistToNext = vDir.Length();
+				vDir.Normalize();
+				
+				float fFrameMove = cMath_Clamp(mfStalkerBuildUpSpeed * afDeltaTime, 0.f, fDistToNext);
+				mvStalkerBuildUpPos += vDir * fFrameMove;
+				
+				/////////////////
+				// At goal?
+				if (fFrameMove <= 0.001f)
+				{
+					if (mlStalkerBuildUpPositionIndex == 1)
+					{
+						Sound_CreateAtEntity("Sound_StalkerBuildUp", "creatures/stalker/tunnel_bark", "Area_StalkerBuildUpSound");
+						
+						cParticleSystem@ pPS = ParticleSystem_CreateAtEntity("PS_BuildUpStart", "sand_falling_stream_small_oneshot_instant.ps", "Area_StalkerBuildUpParticles", false);
+						if (pPS !is null)
+							pPS.SetColor(cColor(0.376,0.325,0.251,1));
+					}
+					
+					if (mlStalkerBuildUpPositionIndex < int(mvStalkerBuildUpPositions.size()) - 1)
+					{
+						++mlStalkerBuildUpPositionIndex;
+					}
+					else
+					{
+						bAtEnd = true;
+					}
+				}
+			}
+			
+			//////////////////
+			// Particles
+			cParticleSystem@ pPS = cLux_ID_ParticleSystem(m_idStalkerBuildUpPS);
+			if (pPS is null)
+			{
+				@pPS = mBaseObj.GetWorld().CreateParticleSystem("PS_StalkerCeilingDust", "ghoul_ceiling_dust.ps", 1.f, true, false);
+				m_idStalkerBuildUpPS = pPS.GetID();
+			}
+			
+			if (pPS !is null)
+			{
+				float fRayDist;
+				cVector3f vRayNrm;			
+				iPhysicsBody@ pHitBody = cLux_GetClosestBody(mvStalkerBuildUpPos, cVector3f_Up, 10.f, fRayDist, vRayNrm);
+				
+				cVector3f vParticlePos = mvStalkerBuildUpPos + cVector3f_Up * fRayDist;
+				pPS.SetWorldPosition(vParticlePos);
+			}
+			
+			/////////////////
+			// Sound				
+			cSoundEntity@ pSound = cLux_ID_SoundEntity(m_idStalkerBuildUpSound);
+			if (pSound is null)
+			{
+				@pSound = mBaseObj.GetWorld().CreateSoundEntity("Sound_StalkerCeilingMove", "creatures/stalker/tunnel", true);
+				m_idStalkerBuildUpSound = pSound.GetID();
+			}
+			
+			if (pSound !is null)
+			{
+				pSound.SetWorldPosition(mvStalkerBuildUpPos);
+			}
+				
+			//////////////////
+			// At end?
+			if (bAtEnd)
+			{
+				mbDoStalkerBuildUp = false;
+				
+				pPS.Kill();
+				pSound.FadeOut(1.f);
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_PlayMusic(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Music_Play("Bunker_Arena_Reveal.ogg", 0.4f, false, eMusicPrio_MinorEvent);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event *Enter the area*
+		
+		/////////////////////////////////////////
+		// Event *Enter the area*
+		//{//////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		bool mbAllowDoubleImpact = false;
+		bool mbInteseImpacts = false;
+		int mlDebrisRockId = 0;
+		array<tString> mvOnEnterBreakBridges;
+		array<tString> mvBreakableBridges;
+		array<tID> mvCeilingDebrisAreaIds;
+		array<tID> mvInteractableDebrisRockIds;
+
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_EnableRiftEffects(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState == 1)
+			{
+				SetLightningActive(true);
+				Light_SetBrightness("Light_EntranceFlash", 1.f);
+			}
+			else
+			{
+				if (Entity_PlayerIsInFront(asParent) == false)
+				{
+					SetLightningActive(false);
+					Light_SetBrightness("Light_EntranceFlash", 0.f);
+				}
+			}
+			
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_BreakFirstBridge(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			SetLightningActive(false);
+			SetLightningActive(true);
+			
+			//////////////////
+			// Get best bridge to break
+			tString sBridge = "";
+			cVector3f vCamPos = Player_GetCameraPosition();
+			float fMinDistSqr = 100.f * 100.f;
+			
+			for (int i = 0; i < mvOnEnterBreakBridges.size(); ++i)
+			{
+				iLuxEntity@ pBridge = Map_GetEntity(mvOnEnterBreakBridges[i], eLuxEntityType_Prop);
+				
+				if (pBridge is null) continue;
+				if (cLux_CheckLineOfSight(vCamPos, pBridge.GetPosition() + cVector3f_Up * 4.f, false, false) == false)
+					continue;
+				
+				float fDistSqr = (pBridge.GetPosition() - vCamPos).SqrLength();
+				if (fDistSqr < fMinDistSqr)
+				{
+					fMinDistSqr = fDistSqr;
+					sBridge = pBridge.GetName();
+				}
+			}
+			
+			if (sBridge == "") return false;
+			
+			//////////////////
+			// Spawn the rock that breaks it
+			Entity_PlaceAtEntity("BreakBridgeRock_1", sBridge, cVector3f(0.f, 30.f, 0.f), true);
+			Map_AddTimer(sBridge, 1.f, "OnTimer_SpawnFirstRock");
+			
+			ParticleSystem_CreateAtEntity("PS_Debris", "debris_falling_arena_large.ps", "BreakBridgeRock_1", false);
+			cParticleSystem@ pPS = ParticleSystem_CreateAtEntity("PS_FirstRockDust", "dust_impact_large_oneshot.ps", "BreakBridgeRock_1", false);
+			if (pPS !is null)
+				pPS.SetColor(cColor(0.512,0.366,0.27,0.208));
+			
+			int lId = Effect_Shake_Start(0.03f, 1.f, 0.5f, 0.5f);
+			Effect_Rumble_Start(0.35f, 2.f, 0.5f, 0.5f);
+			
+			Sound_CreateAtEntity("Sound_CeilingBreak", "DW_tunnel/bomb/war_bomb", "BreakBridgeRock_1", 0.f, false, 1.f, 15.f, 70.f);
+			
+			//////////////////
+			// Start random impacts		
+			Map_AddTimer("Timer_DoImpact", cMath_RandRectf(7.f, 10.f), "OnTimer_DoImpact");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_SpawnFirstRock(const tString &in asTimer)
+		{
+			Entity_SetActive("BreakBridgeRock_1", true);
+			Entity_AddImpulse("BreakBridgeRock_1", cVector3f(0.f, -12.f, 0.f), false, false);
+			Entity_AddTorque("BreakBridgeRock_1", cVector3f(500.f, 0.f, 300.f), true, true);
+			Prop_SetDisableBreakable("BreakBridgeRock_1", true);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_EnterEncounterSpace(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Entity_SetActive("BlockBox_Start_*", true);
+			Light_FadeBrightnessTo("Light_EntranceFlash", 0.f, 5.f);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_DoImpact(const tString &in asTimer)
+		{
+			//////////////////////
+			// Get a few random areas
+			array<tString> vAreas;
+			int lMaxAreas = 10;
+			
+			cVector3f vCamPos = Player_GetCameraPosition();	
+			cVector3f vFwd = cLux_GetPlayer().GetCamera().GetForward();
+			vFwd.y = 0.f;
+			vFwd.Normalize();
+			
+			for (int i = 0; i < mvCeilingDebrisAreaIds.size(); ++i)
+			{
+				cLuxArea@ pArea = cLux_ID_Area(mvCeilingDebrisAreaIds[i]);
+				if (pArea is null) continue;
+					
+				cVector3f vDelta = pArea.GetPosition() - vCamPos;				
+				vDelta.y = 0.f;
+					
+				float fDistSqr = vDelta.SqrLength();
+				if (mbInteseImpacts && fDistSqr > 25.f * 25.f)
+					continue;
+			
+				float fDot = cMath_Vector3Dot(vFwd, vDelta);					
+				if (fDot >= 0.f)
+				{
+					vAreas.push_back(pArea.GetName());
+					
+					if (vAreas.size() > lMaxAreas)
+						break;
+				}
+			}
+			
+			if (vAreas.size() == 0 && mvCeilingDebrisAreaIds.size() > 0)
+			{
+				int lRandId = cMath_RandRectl(0, mvCeilingDebrisAreaIds.size() - 1);
+				iLuxEntity@ pArea = cLux_ID_Area(mvCeilingDebrisAreaIds[lRandId]);
+				if (pArea !is null)
+					vAreas.push_back(pArea.GetName());
+			}
+			
+			if (vAreas.size() == 0) return;
+			
+			//////////////////////
+			// Do impact effects
+			tString sArea = vAreas[cMath_RandRectl(0, vAreas.size() - 1)];
+			iLuxEntity@ pArea = Map_GetEntity(sArea, eLuxEntityType_Area);
+			
+			if (pArea !is null)
+			{
+				cLuxProp@ pRock = SpawnRock(pArea.GetPosition(), mbInteseImpacts, "scatter_rock04_shatter.ent", mbInteseImpacts);
+				if (pRock !is null)
+				{
+					tString sEffectEntity = mbInteseImpacts ? pRock.GetName() : sArea;
+					DoImpactEffects(sEffectEntity);
+				}
+				else
+				{
+					DoImpactEffects(sArea);
+				}
+			}
+			
+			//////////////////////
+			// Setup next impact
+			float fTime = mbStalkerFell ? cMath_RandRectf(6.f, 10.f) : cMath_RandRectf(10.f, 17.f);
+			if (mbAllowDoubleImpact && 
+				mbStalkerFell == false && 
+				cMath_RandRectl(0, 2) == 2)
+			{
+				fTime = cMath_RandRectf(3.75f, 4.f);
+				mbAllowDoubleImpact = false;
+			}
+			else
+			{
+				mbAllowDoubleImpact = true;
+			}
+			
+			if (asTimer != "NoRepeat")
+				Map_AddTimer("Timer_DoImpact", fTime, "OnTimer_DoImpact");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_StartQuake(const tString &in asTimer)
+		{
+			mbStalkerFell = true;
+			
+			if (Player_GetPosition().z < -8.f)
+			{
+				Map_AddTimer("Timer_StartQuake", 1.f, "OnTimer_StartQuake");
+				return;
+			}
+			
+			SetLightningActive(true);
+	
+			Map_AddTimer("Timer_DoImpact", 5.f, "OnTimer_DoImpact");
+			Map_AddTimer("Timer_DoQuakeEffects", 1.f, "OnTimer_DoQuakeEffects");
+			Map_AddTimer("Timer_AllowEndWallBreak", 3.f, "OnTimer_AllowEndWallBreak");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_AllowEndWallBreak(const tString &in asTimer)
+		{
+			Entity_SetActive("Trigger_TriggerBreakEndWall", true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_DoQuakeEffects(const tString &in asTimer)
+		{
+			//////////////////
+			// Break bridges
+			array<iLuxEntity@> vBridges;
+			cVector3f vPlayerPos = Player_GetPosition();
+			
+			float fMaxDistSqr = 1000.f * 1000.f;
+			for (int i = 0; i < mvBreakableBridges.size(); ++i)
+			{
+				iLuxEntity@ pBridge = Map_GetEntity(mvBreakableBridges[i], eLuxEntityType_Prop, "");
+				if (pBridge is null) continue;
+					
+				float fDistSqr = (pBridge.GetPosition() - vPlayerPos).SqrLength();
+				if (fDistSqr > 25.f * 25.f)
+				{
+					vBridges.push_back(pBridge);
+				}
+			}
+			
+			if (vBridges.size() > 0 && vPlayerPos.z < 28.f)
+			{
+				iLuxEntity@ pBridge = vBridges[cMath_RandRectl(0, vBridges.size() - 1)];
+				if (pBridge !is null)
+				{
+					cLuxProp@ pRock = SpawnRock(pBridge.GetPosition() + cVector3f(0.f, 30.f, 0.f), true, "scatter_rock04.ent", false);
+					
+					if (pRock !is null)
+						DoImpactEffects(pRock.GetName());
+				}
+			}
+			else
+			{
+				if (vPlayerPos.z >= 28.f)
+					mbInteseImpacts = true;
+				
+				OnTimer_DoImpact("NoRepeat");
+			}
+			
+			//////////////////
+			// Restart timer	
+			Map_AddTimer("Timer_DoQuakeEffects", cMath_RandRectf(5.f, 7.f), "OnTimer_DoQuakeEffects");
+		}
+		
+		//-------------------------------------------------------
+		
+		cLuxProp@ SpawnRock(const cVector3f &in avPos, bool abSkipGroundCheck, const tString &in asRockEnt, bool abInteractable)
+		{
+			float fDist;
+			cVector3f vNrm;			
+			
+			if (abSkipGroundCheck || 
+				cLux_GetClosestBody(avPos, cVector3f_Down, 50.f, fDist, vNrm) is null)
+			{				
+				++mlDebrisRockId;
+				tString sRock = "DebrisRock_" + mlDebrisRockId;
+
+				cVector3f vPos = avPos;
+				if (abInteractable)
+				{
+					cVector3f vOffset = cMath_RandomSphereSurfacePoint(cMath_RandRectf(0.f, 6.f));
+					vOffset.y = 0.f;
+					vPos += vOffset;
+				}
+				
+				cMatrixf mtxRock = cMath_MatrixTranslate(vPos);				
+				cVector3f vScale = abInteractable ? cVector3f(1.f) : cVector3f(2.f);
+				mBaseObj.CreateEntity(sRock, asRockEnt, mtxRock, vScale);
+						
+				cLuxProp@ pProp = cLux_ToProp(mBaseObj.GetLatestEntity());
+				if (pProp !is null)
+				{
+					pProp.SetDisableBreakable(true);
+					
+					if (abInteractable == false)
+						pProp.SetInteractionDisabled(true);
+							
+					for (int i = 0; i < pProp.GetBodyNum(); ++i)
+					{
+						iPhysicsBody@ pBody = pProp.GetBody(i);
+						if (pBody is null) continue;
+								
+						pBody.AddImpulse(cVector3f(0.f, cMath_RandRectf(-2.f, -17.f), 0.f));
+						pBody.AddTorque(cMath_RandomSphereSurfacePoint(500.f));
+					}							
+					
+					if (abInteractable)
+					{
+						mvInteractableDebrisRockIds.push_back(pProp.GetID());
+						if (mvInteractableDebrisRockIds.size() > 20)
+						{
+							cLuxProp@ pPropToDestroy = cLux_ID_Prop(mvInteractableDebrisRockIds[0]);
+							
+							if (pPropToDestroy !is null)
+							{
+								mBaseObj.DestroyEntity(pPropToDestroy);
+								mvInteractableDebrisRockIds.removeAt(0);
+							}
+						}
+					}
+				}
+				
+				if (abInteractable == false)
+					Map_AddTimer(sRock, 12.f, "OnTimer_DisableRock");
+				
+				return pProp;
+			}
+			
+			return null;
+		}
+		
+		//-------------------------------------------------------
+		
+		void DoImpactEffects(const tString &in asEntity)
+		{		
+			ParticleSystem_CreateAtEntity("PS_Debris_" + asEntity, "debris_falling_arena_large.ps", asEntity, false);
+			cParticleSystem@ pPS = ParticleSystem_CreateAtEntity("PS_FirstRockDust", "dust_impact_large_oneshot.ps", "BreakBridgeRock_1", false);
+			if (pPS !is null)
+				pPS.SetColor(cColor(0.512,0.366,0.27,0.208));
+				
+			int lId = Effect_Shake_Start(0.05f, 1.f, 0.5f, 0.5f);
+			Effect_Shake_SetSourceEntity(lId, asEntity, 10.f, 80.f);
+			Effect_Rumble_Start(0.35f, 2.f, 0.5f, 0.5f);
+			
+			Sound_CreateAtEntity("Sound_Impact", "DW_tunnel/bomb/war_bomb", asEntity, 0.f, false, 1.f, 20.f, 80.f);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_DisableRock(const tString &in asTimer)
+		{
+			iLuxEntity@ pRock = Map_GetEntity(asTimer, eLuxEntityType_Prop);
+			if (pRock !is null)
+			{
+				mBaseObj.DestroyEntity(pRock);
+			}
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event *Enter the area*
+		
+		/////////////////////////////////////////
+		// Event *Encounter the STALKER on the BRIDGES*
+		//{//////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		bool mbStalkerEmerging = false;
+		bool mbStalkerRetreating = false;
+		bool mbPlayerClimbAnimActive = false;
+		bool mbStalkerFell = false;
+		float mfPlayerClimbAnimAngle = 0.f;
+		tString msPlayerClimbAnimHeldItemL = "";
+		tString msPlayerClimbAnimHeldItemR = "";
+		tID m_idLightningLightA = tID_Invalid;
+		tID m_idLightningLightB = tID_Invalid;
+		tID m_idStalkerEmergeLight = tID_Invalid;
+		tID m_idEntranceLight = tID_Invalid;
+		tID m_idStalker = tID_Invalid;
+		array<tString> mvBlockedBridgeIds;
+		
+		//-------------------------------------------------------
+		
+		void OnStalkerMoveTo(int alBehaviour, const cVector3f &in avGoalPos)
+		{
+			UpdateStalkerBehaviour(alBehaviour, avGoalPos);
+		}
+		
+		//-------------------------------------------------------
+			
+		void SetStalkerDesperate(bool abX)
+		{
+			if (abX)
+			{
+				mbStalkerHasBeenDesperate = true;
+			}
+				
+			cScript_SetGlobalArgBool(0, abX);
+			cScript_RunGlobalFunc("Stalker_1", "cScrAgentStalker", "_Global_BossFight_SetIsDesperate");
+		}
+		
+		//-------------------------------------------------------
+		
+		void SetAllowSlowdownTime(float afTime)
+		{
+			cScript_SetGlobalArgFloat(0, afTime);
+			cScript_RunGlobalFunc("Stalker_1", "cScrAgentStalker", "_Global_BossFight_SetAllowSlowdownTime");
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_SpawnStalker(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			OnTimer_SpawnStalker("");
+			Entity_SetActive("Trigger_SpawnStalker_*", false);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_SpawnStalker(const tString &in asTimer)
+		{
+			if (cLux_GetPlayer().GetCurrentStateId() == ePlayerState_CutsceneAnimation)
+			{
+				Map_AddTimer("Timer_SpawnStalker", 0.1f, "OnTimer_SpawnStalker");
+				return;
+			}
+			
+			mbStalkerEmerging = true;
+			
+			Sound_CreateAtEntity("Sound_CrateBreak", "level_entity_shared/item_break/crate/break", "StalkerEmergeCrate", 0.f, false, 1.f, 1.f, 100.f);
+			Prop_SetHealth("StalkerEmergeCrate", 0.f);
+			
+			Entity_SetActive("Stalker_1", true);
+			Agent_SetSensesActive("Stalker_1", false);
+			Agent_PlayCutsceneAtEntity("Stalker_1", "crawl_out_of_hole_ending", "Area_StalkerEmergeAnim", 0.f, false, "OnAnimEnd_StalkerEmerge");			
+			
+			Map_AddTimer("Timer_DoStalkerEmergeLightning", 0.5f, "OnTimer_DoStalkerEmergeLightning");
+			Map_AddTimer("Timer_PlayerStalkerEmergeSound", 0.2f, "OnTimer_PlayerStalkerEmergeSound");
+			
+			Music_Play("Bunker_Arena_Hunt.ogg", 0.4f, true, eMusicPrio_BgAmb);
+			
+			Map_RemoveTimer("Timer_DoImpact");
+			Map_AddTimer("Timer_DoImpact", cMath_RandRectf(7.f, 10.f), "OnTimer_DoImpact");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_DoStalkerEmergeLightning(const tString &in asTimer)
+		{
+			SetLightningActive(false);
+			Light_SetBrightness("Light_StalkerFlash", 20.f);
+			Map_AddTimer("Timer_ResetStalkerFlashLight", 6.f, "OnTimer_ResetStalkerFlashLight");
+			
+			Map_AddTimer("Timer_DoLightning", 0.f, "OnTimer_DoLightning");	
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PlayerStalkerEmergeSound(const tString &in asTimer)
+		{
+			Sound_CreateAtEntity("Sound_StalkerEmerge", "creatures/stalker/tunnel_warning", "Area_StalkerEmergeAnim", 0.f, false, 1.f, 1.f, 70.f);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnAnimEnd_StalkerEmerge(const tString &in asAgent, const tString &in asAnim)
+		{			
+			Agent_SetSensesActive("Stalker_1", true);
+			cScript_RunGlobalFunc("Stalker_1", "cScrAgentStalker", "_Global_BossFight_Enter");			
+			
+			Map_AddTimer("Timer_StalkerEmergeDone", 0.5f, "OnTimer_StalkerEmergeDone");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_StalkerEmergeDone(const tString &in asTimer)
+		{
+			mbStalkerEmerging = false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ResetStalkerFlashLight(const tString &in asTimer)
+		{
+			Light_FadeBrightnessTo("Light_StalkerFlash", 0.f, 1.f);
+		}
+		
+		//-------------------------------------------------------
+		
+		void UpdatePlayerClimbLedge(float afDeltaTime)
+		{			
+			///////////////////////
+			// Setup vars
+			array<int> vBridgeIdsToCheck;
+			cLuxPlayer@ pPlayer = cLux_GetPlayer();
+			iCharacterBody@ pCharBody = pPlayer !is null ? pPlayer.GetCharacterBody() : null;
+			cCamera@ pCam = pPlayer !is null ? pPlayer.GetCamera() : null;
+			cPlatformNode@ pNode = mPlayerPathfinder.GetPlatformNode(mPlayerPathfinder.msCurrentNode);
+			cLuxAgent@ pStalker = cLux_ID_Agent(m_idStalker);
+			cAnimationState@ pAnim = PlayerBody_GetAnimationState(gsEnding_PlayerClimbLedgeAnim);
+
+			if (pPlayer is null) return;
+			if (pCharBody is null) return;
+			if (pCam is null) return;
+			if (pNode is null) return;
+			if (pStalker is null) return;
+			if (pCharBody.IsOnGround()) return;
+			
+			///////////////////////
+			// Climbing anim active?
+			if (mbPlayerClimbAnimActive)
+			{
+				if (pAnim is null || pAnim.IsOver())
+					mbPlayerClimbAnimActive = false;
+				
+				return;
+			}
+			
+			///////////////////////
+			// In cutscene?
+			if (pPlayer.GetCurrentStateId() == ePlayerState_CutsceneAnimation) return;
+			
+			///////////////////////
+			// Get broken bridges to check
+			for (int i = 0; i < pNode.mvNeighbours.size(); ++i)
+			{
+				tString sNodeA = pNode.msName;
+				tString sNodeB = pNode.mvNeighbours[i];
+				
+				for (int j = 0; j < mvDestroyedBridgeDataIds.size(); ++j)
+				{
+					cBridgeData@ pData = mvBridgeData[mvDestroyedBridgeDataIds[j]];
+					if (pData is null) continue;
+					
+					if (pData.msId == sNodeA + sNodeB ||
+						pData.msId == sNodeB + sNodeA)
+					{
+						vBridgeIdsToCheck.push_back(mvDestroyedBridgeDataIds[j]);
+					}
+				}
+			}
+			
+			///////////////////////
+			// Get closest ledge data
+			float fMinDistSqr = 1000.f * 1000.f;
+			cVector3f vLedgePos(0.f);
+			cVector3f vLedgeDir(0.f);
+			cVector3f vPlayerPos = pCharBody.GetPosition();
+			
+			for (int i = 0; i < vBridgeIdsToCheck.size(); ++i)
+			{
+				cBridgeData@ pData = mvBridgeData[vBridgeIdsToCheck[i]];
+				if (pData is null) continue;
+				
+				float fDistSqrA = (vPlayerPos - pData.mvStartPos).SqrLength();
+				float fDistSqrB = (vPlayerPos - pData.mvEndPos).SqrLength();
+				
+				if (fDistSqrA < fDistSqrB && fDistSqrA < fMinDistSqr)
+				{
+					fMinDistSqr = fDistSqrA;
+					vLedgePos = pData.mvStartPos;
+					vLedgeDir = cMath_Vector3Normalize(pData.mvStartPos - pData.mvEndPos);
+				}
+				else if (fDistSqrB < fDistSqrA && fDistSqrB < fMinDistSqr)
+				{
+					fMinDistSqr = fDistSqrB;
+					vLedgePos = pData.mvEndPos;
+					vLedgeDir = cMath_Vector3Normalize(pData.mvEndPos - pData.mvStartPos);
+				}
+			}
+			
+			vLedgePos += vLedgeDir * 0.7f + cVector3f(0.f, 0.15f, 0.f);
+			
+			///////////////////////
+			// Play anim if close enough and in front
+			cVector3f vToLedge = vLedgePos - pCam.GetPosition();
+			bool bInFront = cMath_Vector3Dot(pCam.GetForward(), cMath_Vector3Normalize(vToLedge)) > 0.f;
+			
+			if (bInFront &&
+				vToLedge.SqrLength() < 1.7f * 1.7f &&
+				pCharBody.GetFeetPosition().y < vLedgePos.y - 1.f)
+			{
+				mbPlayerClimbAnimActive = true;
+				
+				msPlayerClimbAnimHeldItemL = Item_GetHeldType(eItemHandlerHand_Left);
+				msPlayerClimbAnimHeldItemR = Item_GetHeldType(eItemHandlerHand_Right);
+				
+				mfPlayerClimbAnimAngle = -cMath_ATan2(vLedgeDir.x, -vLedgeDir.z);
+				
+				PlayerBody_PlayCutsceneAnimation(gsEnding_PlayerClimbLedgeAnim, false, 0.2f, "OnAnimEnd_ClimbLedge", 1.f, 0.f, true, vLedgePos, mfPlayerClimbAnimAngle);
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnAnimEnd_ClimbLedge(const tString &in asAnim)
+		{
+			Item_TakeOut(ItemType_GetFirstInInventory(msPlayerClimbAnimHeldItemL));
+			Item_TakeOut(ItemType_GetFirstInInventory(msPlayerClimbAnimHeldItemR));
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnBreak_Bridge(const tString &in asEntity)
+		{
+			/////////////////////
+			// Setup vars
+			int lSuffix = cString_GetNumericSuffixInt(asEntity);			
+			tString sBridgeId = cString_Sub(asEntity, 7, 2);
+			tString sBridgeA = "Bridge_" + sBridgeId + "_1";
+			tString sBridgeB = "Bridge_" + sBridgeId + "_2";
+			tString sBridgeWall = "Bridge_Wall_" + sBridgeId + "_" + lSuffix;
+			tString sBlockerA = "BridgeBlocker_" + sBridgeId + "_" + lSuffix + "_A";
+			tString sBlockerB = "BridgeBlocker_" + sBridgeId + "_" + lSuffix + "_B";
+			tString sArea = "Trigger_Bridge_" + sBridgeId + "_" + lSuffix;
+			
+			iLuxEntity@ pBridgeA = Map_GetEntity(sBridgeA, eLuxEntityType_Prop);
+			iLuxEntity@ pBridgeB = Map_GetEntity(sBridgeB, eLuxEntityType_Prop);
+			iLuxEntity@ pBridge = lSuffix == 1 ? pBridgeA : pBridgeB;
+			iLuxEntity@ pOtherBridge  = lSuffix == 1 ? pBridgeB : pBridgeA;
+			iLuxEntity@ pBlockerA = Map_GetEntity(sBlockerA, eLuxEntityType_Prop);
+			iLuxEntity@ pBlockerB = Map_GetEntity(sBlockerB, eLuxEntityType_Prop);
+			cLuxAgent@ pAgent = cLux_ToAgent(Map_GetEntity("Stalker_1", eLuxEntityType_Agent));
+			
+			tString sNodeA = cString_Sub(sBridgeId, 0, 1);
+			tString sNodeB = cString_Sub(sBridgeId, 1, 1);	
+			
+			if (pBridge is null) return;
+			if (pAgent is null) return;
+			if (pBlockerA is null) return;
+			if (pBlockerB is null) return;
+			
+			/////////////////////
+			// Keep track of destroyed bridges
+			int lDestroyedBridgeId = -1;
+			for (int i = 0; i < mvBridgeData.size(); ++i)
+			{
+				cBridgeData@ pData = mvBridgeData[i];
+				if (pData is null) continue;
+				if (pData.msName != asEntity) continue;
+				
+				lDestroyedBridgeId = i;
+				break;
+			}
+			
+			if (mvDestroyedBridgeDataIds.find(lDestroyedBridgeId) == -1)
+				mvDestroyedBridgeDataIds.push_back(lDestroyedBridgeId);
+				
+			int lBreakableBridgeId = mvBreakableBridges.find(asEntity);
+			if (lBreakableBridgeId != -1)
+				mvBreakableBridges.removeAt(lBreakableBridgeId);
+				
+			Map_AddTimer("BridgeBroke_" + sBridgeId, 1.f, "");
+			
+			/////////////////////
+			// Deactivate walls
+			WoodenBreakable_SetIsBreakable(sBridgeWall, true);
+			Prop_SetHealth(sBridgeWall, 0.f);
+			
+			////////////////////
+			// Enable blockers
+			pBlockerA.SetActive(true);
+			pBlockerB.SetActive(true);
+			
+			////////////////////
+			// Jump?
+			Map_RemoveTimer(sArea);
+			DoStalkerJump(sBridgeId, lSuffix, true);
+			
+			/////////////////////
+			// Update pathfinders
+			{				
+				/////////////////////
+				// Both bridge parts gone!
+				if (pOtherBridge is null)
+				{
+					tString sEdgeA = sNodeA + sNodeB;
+					tString sEdgeB = sNodeB + sNodeA;
+					cPlatformNodeEdge@ pEdgeA = mStalkerPathfinder.GetPlatformNodeEdge(sEdgeA);
+					cPlatformNodeEdge@ pEdgeB = mStalkerPathfinder.GetPlatformNodeEdge(sEdgeB);
+					
+					if (pEdgeA !is null)
+						pEdgeA.mfCost = gfEnding_PlatformNodeEdgeCostMax;
+					if (pEdgeB !is null)
+						pEdgeB.mfCost = gfEnding_PlatformNodeEdgeCostMax;
+						
+					if (mvMaxCostBridgeEdges.find(sEdgeA) == -1)
+						mvMaxCostBridgeEdges.push_back(sEdgeA);
+					if (mvMaxCostBridgeEdges.find(sEdgeB) == -1)
+						mvMaxCostBridgeEdges.push_back(sEdgeB);
+						
+					for (int i = 0; i < mvMedCostBridgeEdges.size(); ++i)
+					{
+						tString sEdge = mvMedCostBridgeEdges[i];
+						if (sEdge == sEdgeA || sEdge == sEdgeB)
+						{
+							mvMedCostBridgeEdges.removeAt(i);
+							--i;
+						}
+					}
+					
+					for (int i = 0; i < mvHighCostBridgeEdges.size(); ++i)
+					{
+						tString sEdge = mvHighCostBridgeEdges[i];
+						if (sEdge == sEdgeA || sEdge == sEdgeB)
+						{
+							mvHighCostBridgeEdges.removeAt(i);
+							--i;
+						}
+					}
+					
+					/////////////////
+					// Update player pathfinder					
+					mPlayerPathfinder.RemovePlatformNodeEdge(sNodeA, sNodeB);
+					mPlayerPathfinder.RemovePlatformNodeEdge(sNodeB, sNodeA);
+				}
+				
+				/////////////////////
+				// Part of the bridge remains!
+				else
+				{
+					/////////////////////
+					// Get bridge platform
+					tString sBridgePlatform = "";				
+					for (int i = 0; i < mvBridgeData.size(); ++i)
+					{
+						cBridgeData@ pData = mvBridgeData[i];
+						if (pData.msName == pBridge.GetName())
+						{
+							sBridgePlatform = pData.msPlatform;
+							break;
+						}			
+					}
+					
+					/////////////////////
+					// Increase costs for using bridge
+					// (Especially when jumping to the remaining bridge)
+					tString sMedCostEdge = "";
+					tString sHighCostEdge = "";	
+				
+					if (sBridgePlatform == sNodeA) 
+					{
+						sHighCostEdge = sNodeA + sNodeB;
+						sMedCostEdge = sNodeB + sNodeA;
+					}
+					else if (sBridgePlatform == sNodeB)
+					{
+						sHighCostEdge = sNodeB + sNodeA;
+						sMedCostEdge = sNodeA + sNodeB;
+					}
+					
+					cPlatformNodeEdge@ pMedCostEdge = mStalkerPathfinder.GetPlatformNodeEdge(sMedCostEdge);
+					cPlatformNodeEdge@ pHighCostEdge = mStalkerPathfinder.GetPlatformNodeEdge(sHighCostEdge);
+							
+					if (pMedCostEdge !is null)
+						pMedCostEdge.mfCost = gfEnding_PlatformNodeEdgeCostMed;
+					if (pHighCostEdge !is null)
+						pHighCostEdge.mfCost = gfEnding_PlatformNodeEdgeCostHigh;
+					
+					if (mvMedCostBridgeEdges.find(sMedCostEdge) == -1)
+						mvMedCostBridgeEdges.push_back(sMedCostEdge);
+					if (mvHighCostBridgeEdges.find(sHighCostEdge) == -1)
+						mvHighCostBridgeEdges.push_back(sHighCostEdge);
+				}
+			}
+			
+			////////////////
+			// Allow slowdown?
+			if (Map_TimerExists("Timer_PlayerUsedWeapon"))
+			{
+				SetAllowSlowdownTime(60.f);
+			}			
+			
+			/////////////////////
+			// Update blockers
+			UpdateBridgePathBlockers(0.1f);
+		}
+		
+		//-------------------------------------------------------
+		
+		void UpdateBridgeEdgeCost(const array<tString> &in avBridgeEdgeCosts, float afMaxCost)
+		{
+			cVector3f vPlayerPos = Player_GetPosition();
+			array<tID> vBridgePathBlockersToUpdate;
+			
+			/////////////////////
+			// Iterate edge costs
+			for (int i = 0; i < avBridgeEdgeCosts.size(); ++i)
+			{
+				tString sEdge = avBridgeEdgeCosts[i];
+				tString sNodeA = cString_Sub(sEdge, 0, 1);
+				tString sNodeB = cString_Sub(sEdge, 1, 1);
+				
+				tString sId = "";
+				tString sSuffix = "";
+				tString sTimer = "Timer_UpdatedBrokenBridgeEdgeCost_" + sEdge;
+				cVector3f vPosA = cVector3f(0.f);
+				cVector3f vPosB = cVector3f(0.f);
+				
+				cPlatformNodeEdge@ pEdge = mStalkerPathfinder.GetPlatformNodeEdge(sEdge);
+				if (pEdge is null) continue;
+				
+				for (int j = 0; j < mvDestroyedBridgeDataIds.size(); ++j)
+				{
+					cBridgeData@ pData = mvBridgeData[mvDestroyedBridgeDataIds[j]];
+					if (pData is null) continue;
+					
+					if (pData.msId == (sNodeA + sNodeB) ||
+						pData.msId == (sNodeB + sNodeA))
+					{
+						sId = pData.msId;
+						vPosA = pData.mvStartPos;
+						vPosB = pData.mvEndPos;
+						sSuffix = cString_GetNumericSuffixInt(pData.msName);
+						break;
+					}					
+				}
+				
+				/////////////////////
+				// Increase costs if player is close!
+				float fDistA = (vPlayerPos - vPosA).SqrLength();
+				float fDistB = (vPlayerPos - vPosB).SqrLength();
+				float fMinDist = cMath_Min(fDistA, fDistB);				
+				float fPrevCost = pEdge.mfCost;
+				
+				if (fMinDist < gfEnding_JumpToBridgeMinDistToPlayer * gfEnding_JumpToBridgeMinDistToPlayer)
+				{
+					pEdge.mfCost = afMaxCost;
+					
+					/////////////////////
+					// Cost updated? Update blockers!
+					if (pEdge.mfCost != fPrevCost)
+					{
+						tString sBlockerA = "BridgeBlocker_" + sId + "_" + sSuffix + "_A";
+						tString sBlockerB = "BridgeBlocker_" + sId + "_" + sSuffix + "_B";						
+						iLuxEntity@ pBlockerA = Map_GetProp(sBlockerA);
+						iLuxEntity@ pBlockerB = Map_GetProp(sBlockerB);
+						
+						if (pBlockerA !is null && pBlockerB !is null)
+						{
+							array<tID> vBlockers = { pBlockerA.GetID(), pBlockerB.GetID() };
+							ActivateBridgePathBlockers(vBlockers);
+							
+							Map_AddTimer(sTimer, 10.f, "");
+						}
+					}
+				}
+				else
+				{
+					if (Map_TimerExists(sTimer) == false)
+						pEdge.mfCost = gfEnding_PlatformNodeEdgeCostDefault;
+				}
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void AddPathBlocker(iLuxEntity@ apEnt, const tString &in asNodeA, const tString &in asNodeB, float afEdgeCost)
+		{
+			if (apEnt is null) return;
+			
+			///////////////////
+			// Add data
+			for (int i = 0; i < mvPathBlockers.size(); ++i)
+			{
+				cBridgePathBlockerData@ pData = mvPathBlockers[i];
+				if (pData.m_idBlockerEnt == apEnt.GetID())
+					return;
+			}
+			
+			cBridgePathBlockerData data;
+			data.mfEdgeCost = afEdgeCost;
+			data.msNodeA = asNodeA;
+			data.msNodeB = asNodeB;
+			data.m_idBlockerEnt = apEnt.GetID();					
+			mvPathBlockers.push_back(data);
+						
+			///////////////////
+			// Remove edges?
+			if (afEdgeCost < 0.f)
+			{
+				mStalkerPathfinder.RemovePlatformNodeEdge(asNodeA, asNodeB);
+				mStalkerPathfinder.RemovePlatformNodeEdge(asNodeB, asNodeA);
+				
+				tString sEdgeA = asNodeA + asNodeB;
+				tString sEdgeB = asNodeB + asNodeA;
+				if (mvBlockedBridgeIds.find(sEdgeA) == -1) mvBlockedBridgeIds.push_back(sEdgeA);
+				if (mvBlockedBridgeIds.find(sEdgeB) == -1) mvBlockedBridgeIds.push_back(sEdgeB);
+			}
+			
+			///////////////////
+			// Custom cost?
+			else
+			{
+				cPlatformNodeEdge@ pEdgeA = mStalkerPathfinder.GetPlatformNodeEdge(asNodeA, asNodeB);
+				cPlatformNodeEdge@ pEdgeB = mStalkerPathfinder.GetPlatformNodeEdge(asNodeB, asNodeA);
+				
+				if (pEdgeA !is null && pEdgeB !is null)
+				{
+					pEdgeA.mfCost = afEdgeCost;
+					pEdgeB.mfCost = afEdgeCost;
+				}
+			}
+			
+			///////////////////
+			// Add blocker
+			tID idBlocker = apEnt.GetMainBody().GetID();
+			Stalker_AddPathBlockerBody("Stalker_1", idBlocker, true);
+			Stalker_AddIgnoredPathBlockerBody("Stalker_1", idBlocker);
+		}
+		
+		//-------------------------------------------------------
+		
+		void RemovePathBlocker(iLuxEntity@ apBlocker)
+		{
+			if (apBlocker is null) return;
+			
+			////////////////
+			// Setup vars
+			int lAreaCount = 0;
+			bool bExists = false;
+			float fEdgeCost = -1.f;
+			tString sNodeA = "";
+			tString sNodeB = "";
+			tID idBlocker = tID_Invalid;
+			
+			////////////////
+			// Get affected nodes
+			// (And remove current one)
+			for (int i = 0; i < mvPathBlockers.size(); ++i)
+			{
+				 cBridgePathBlockerData@ pData = mvPathBlockers[i];
+				
+				if (pData is null) continue;
+				if (pData.m_idBlockerEnt != apBlocker.GetID()) continue;
+				
+				bExists = true;
+				fEdgeCost = pData.mfEdgeCost;
+				sNodeA = pData.msNodeA;
+				sNodeB = pData.msNodeB;
+				idBlocker = pData.m_idBlockerEnt;
+				mvPathBlockers.removeAt(i);
+				break;
+			}
+			
+			if (bExists == false) return;
+						
+			////////////////
+			// Count other blockers affecting same nodes
+			for (int i = 0; i < mvPathBlockers.size(); ++i)
+			{
+				cBridgePathBlockerData@ pData = mvPathBlockers[i];
+				
+				if (pData is null) continue;
+				if (pData.msNodeA != sNodeA) continue;
+				if (pData.msNodeB != sNodeB) continue;
+				
+				++lAreaCount;			
+			}		
+			
+			////////////////
+			// Restore edges if no other relevant edges affected
+			// (And isn't a closed drawbridge)
+			tString sEdgeA = sNodeA + sNodeB;
+			tString sEdgeB = sNodeB + sNodeA;
+			
+			if (lAreaCount == 0)
+			{
+				if (fEdgeCost < 0.f)
+				{
+					bool bIsClosedDrawbridge = false;					
+					for (int i = 0; i < mvClosedDrawbridgeIds.size(); ++i)
+					{
+						tString sId = mvClosedDrawbridgeIds[i];
+						if (sId == sEdgeA ||
+							sId == sEdgeB)
+						{
+							bIsClosedDrawbridge = true;
+							break;
+						}
+					}
+					
+					if (bIsClosedDrawbridge == false)
+					{
+						mStalkerPathfinder.AddPlatformNodeEdge(sNodeA, sNodeB);
+						mStalkerPathfinder.AddPlatformNodeEdge(sNodeB, sNodeA);
+					}
+					
+					int lIdA = mvBlockedBridgeIds.find(sEdgeA);
+					if (lIdA != -1) mvBlockedBridgeIds.removeAt(lIdA);
+					int lIdB = mvBlockedBridgeIds.find(sEdgeB);
+					if (lIdB != -1) mvBlockedBridgeIds.removeAt(lIdB);
+				}
+				else
+				{
+					cPlatformNodeEdge@ pEdgeA = mStalkerPathfinder.GetPlatformNodeEdge(sNodeA, sNodeB);
+					cPlatformNodeEdge@ pEdgeB = mStalkerPathfinder.GetPlatformNodeEdge(sNodeB, sNodeA);
+					
+					if (pEdgeA !is null && pEdgeB !is null)
+					{
+						pEdgeA.mfCost = gfEnding_PlatformNodeEdgeCostDefault;
+						pEdgeB.mfCost = gfEnding_PlatformNodeEdgeCostDefault;
+					}
+				}
+			}		
+			
+			////////////////
+			// Remove blocker
+			Stalker_RemovePathBlockerBody("Stalker_1", apBlocker.GetMainBody().GetID());
+		}
+		
+		//-------------------------------------------------------
+		
+		bool DoStalkerJump(const tString &in asId, int alSuffix, bool abBridgeWillBreak)
+		{
+			////////////////
+			// Jump not allowed?
+			if (Map_TimerExists("Timer_DisallowJump"))
+			{
+				return false;
+			}
+			
+			//////////////////
+			// Early out if jumping
+			if (StateMachine_GetCurrentStateName("Stalker_1") == "Jump")
+			{
+				return false;
+			}
+				
+			/////////////////////
+			// Setup vars
+			int lSuffixA = alSuffix;
+			int lSuffixB = (alSuffix == 1 ? 2 : 1);
+			
+			tString sBridgeA = "Bridge_" + asId + "_" + lSuffixA;
+			tString sBridgeB = "Bridge_" + asId + "_" + lSuffixB;
+			tString sBlockerA_1 = "BridgeBlocker_" + asId + "_" + lSuffixA + "_A";
+			tString sBlockerA_2 = "BridgeBlocker_" + asId + "_" + lSuffixA + "_A";
+			tString sBlockerB_1 = "BridgeBlocker_" + asId + "_" + lSuffixB + "_A";
+			tString sBlockerB_2 = "BridgeBlocker_" + asId + "_" + lSuffixB + "_B";
+			tString sArea = "Trigger_Bridge_" + asId + "_" + lSuffixA;
+						
+			cLuxAgent@ pAgent = cLux_ToAgent(Map_GetEntity("Stalker_1", eLuxEntityType_Agent));
+			iCharacterBody@ pCharBody = pAgent !is null ? pAgent.GetCharBody() : null;
+			iLuxEntity@ pBridgeA = Map_GetEntity(sBridgeA, eLuxEntityType_Prop);
+			iLuxEntity@ pBridgeB = Map_GetEntity(sBridgeB, eLuxEntityType_Prop);
+			iLuxEntity@ pTrigger = Map_GetEntity(sArea, eLuxEntityType_Area);
+			
+			iLuxEntity@[] pBlockers = { Map_GetEntity(sBlockerA_1, eLuxEntityType_Prop), 
+										Map_GetEntity(sBlockerA_2, eLuxEntityType_Prop), 
+										Map_GetEntity(sBlockerB_1, eLuxEntityType_Prop), 
+										Map_GetEntity(sBlockerB_2, eLuxEntityType_Prop) }; 
+			
+			if (pAgent is null) return false;
+			if (pCharBody is null) return false;
+			if (pTrigger is null) return false;
+			
+			/////////////////////
+			// On ground check (unless on broken bridge)
+			if (abBridgeWillBreak == false && 
+				pCharBody.IsOnGround() == false)
+			{
+				return false;
+			}
+			
+			/////////////////////
+			// Jump if heading through a blocker!
+			bool bJump = false;
+			cVector3f vAgentPos = pAgent.GetPosition();
+			cVector3f vAgentFwdOffset = pCharBody.GetForward() * 1.5f;
+			
+			for (int i = 0; i < pBlockers.size(); ++i)
+			{				
+				iLuxEntity@ pBlocker = pBlockers[i];
+				cBoundingVolume@ pBounds = pBlocker !is null ? pBlocker.GetMainBody().GetBoundingVolume() : null;
+				
+				if (pBlocker is null) continue;
+				if (pBlocker.IsActive() == false) continue;
+				if (pBounds is null) continue;
+				
+				if (cMath_CheckPointInBVIntersection(vAgentPos, pBounds) ||
+					cMath_CheckPointInBVIntersection(vAgentPos + vAgentFwdOffset, pBounds))
+				{
+					bJump = true;
+					break;
+				}				
+			}
+			
+			/////////////////////
+			// If bridge will break, jump if inside area!
+			bool bInsideTrigger = false;
+			if (abBridgeWillBreak)
+			{
+				cBoundingVolume@ pBounds = pTrigger.GetMainBody().GetBoundingVolume();
+				if (cMath_CheckPointInBVIntersection(vAgentPos, pBounds))
+				{
+					bJump = true;
+					bInsideTrigger = true;
+					
+					// Make stalker fall
+					int lAggressiveness = GameDifficulty_GetSettingValueByID_Int(eGameDifficultySetting_StalkerAggressiveness);
+					if (lAggressiveness < eDifficultySettingValue_StalkerAggressiveness_High &&
+						StateMachine_GetCurrentStateName("Stalker_1") == "ExamineRabbit")
+					{
+						pAgent.GiveDamage(pAgent.GetMainBody(), pAgent.GetPosition(), pAgent.GetPosition(), eDamageType_Grenade, 
+										  1.f, 1, 1.f, 1.f, mBaseObj.GetPlayerEntity().GetID(), mBaseObj.GetNewAttackInstanceID());
+					}
+				}
+			}
+			
+			/////////////////////
+			// Do jump
+			if (bJump)
+			{
+				cBridgeData@ pDataA = null;
+				cBridgeData@ pDataB = null;
+				
+				for (int i = 0; i < mvBridgeData.size(); ++i)
+				{
+					cBridgeData@ pData = mvBridgeData[i];
+					if (pData is null) continue;
+					
+					if (pData.msName == sBridgeA) 		@pDataA = pData;
+					else if (pData.msName == sBridgeB) 	@pDataB = pData;
+					
+					if (pDataA !is null && pDataB !is null)
+						break;
+				}
+				
+				cVector3f vGoalPos = cVector3f(0.f);
+				bool bJumpingToBridge = false;
+				bool bJumpBack = false;
+									
+				cVector3f vPosA = pDataA.mvStartPos;
+				cVector3f vPosB = pDataB.mvStartPos;
+				cVector3f vToPosB = (vPosB - vPosA);
+				cVector3f vMiddle = vPosA + (vToPosB / 2.f);
+				cVector3f vOffsetDir = cMath_Vector3Normalize(vPosB - vPosA);
+				
+				bool bInFrontA = pAgent.GetPointIsInFront(vPosA);
+				bool bInFrontB = pAgent.GetPointIsInFront(vPosB);				
+				float fAgentDistToA = (vPosA - vAgentPos).Length();
+				float fAgentDistToMiddle = (vMiddle - vAgentPos).Length();
+								
+				if (bInFrontA && bInFrontB == false)
+				{
+					vGoalPos = vPosA;
+					bJumpingToBridge = false;
+				}
+				else if (bInFrontB && bInFrontA == false)
+				{					
+					if (bInsideTrigger)
+					{
+						if (pBridgeB is null && 
+							fAgentDistToMiddle < fAgentDistToA + 2.f)
+						{
+							vGoalPos = vPosB;
+							vOffsetDir = vOffsetDir * -1.f;
+							bJumpingToBridge = false;
+						}
+						else
+						{
+							bJumpBack = true;
+							vGoalPos = vPosA;
+							bJumpingToBridge = false;
+						}						
+					}
+					else if (pBridgeB !is null)
+					{
+						vGoalPos = vMiddle;
+						vOffsetDir = cVector3f(0.f);
+						bJumpingToBridge = true;
+					}
+					else
+					{
+						vGoalPos = vPosB;
+						vOffsetDir = vOffsetDir * -1.f;
+						bJumpingToBridge = false;
+					}
+				}
+				
+				if (vGoalPos.SqrLength() <= 0.f)
+					return false;
+					
+				cVector3f vGoalPosOffset = vOffsetDir * 0.3f;
+				vGoalPos += vGoalPosOffset;
+				
+				cScript_SetGlobalArgVector3f(0, vGoalPos);
+				cScript_SetGlobalArgBool(1, bJumpingToBridge == false);
+				cScript_SetGlobalArgBool(2, bJumpBack);
+				cScript_SetGlobalArgBool(3, Map_TimerExists("BridgeBroke_" + asId));
+				cScript_RunGlobalFunc("Stalker_1", "cScrAgentStalker", "_Global_Jump");
+								
+				Map_AddTimer("Timer_DisallowJump", 0.3f, "");
+				return true;
+			}
+			
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Bridge(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			////////////////
+			// Setup vars
+			int lId = cString_GetNumericSuffixInt(asParent);
+			
+			tString sNode = "";
+			tString sBridgeId = cString_Sub(asParent, 15, 2);
+			tString sBridge = "Bridge_" + sBridgeId + "_" + lId;
+			
+			bool bIsDrawbridgeTrigger = mvDrawbridges.find(sBridge) != -1;
+			
+			if (alState == 1)
+			{
+				////////////////
+				// Set current node		
+				if (lId == 1) 		sNode = cString_Sub(sBridgeId, 0, 1);
+				else 				sNode = cString_Sub(sBridgeId, 1, 1);
+				
+				if (asChild == "Player")
+				{
+					mPlayerPathfinder.msCurrentNode = sNode;
+					return true;
+				}
+				else
+				{
+					mStalkerPathfinder.msCurrentNode = sNode;
+				}
+								
+				////////////////
+				// Should stalker jump?
+				if (asChild == "Stalker_1" && 
+					bIsDrawbridgeTrigger == false)
+				{
+					OnTimer_CheckShouldStalkerJump(asParent);
+				}
+			}
+			else if (alState == -1)
+			{
+				////////////////
+				// Stop jump check
+				if (asChild == "Stalker_1" && 
+					bIsDrawbridgeTrigger == false)
+				{
+					Map_RemoveTimer(asParent);
+				}
+			}
+			
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_CheckShouldStalkerJump(const tString &in asTimer)
+		{
+			////////////////
+			// Jump not allowed?
+			if (Map_TimerExists("Timer_DisallowJump"))
+			{
+				Map_AddTimer(asTimer, 0.01f, "OnTimer_CheckShouldStalkerJump");
+				return;
+			}
+			
+			////////////////
+			// Setup vars
+			iLuxEntity@ pTrigger = Map_GetEntity(asTimer, eLuxEntityType_Area);
+			cLuxAgent@ pAgent = cLux_ToAgent(Map_GetEntity("Stalker_1", eLuxEntityType_Agent));
+			
+			if (pAgent is null) return;
+			if (pTrigger is null) return;
+			
+			int lSuffix = cString_GetNumericSuffixInt(asTimer);			
+			tString sId = cString_Sub(asTimer, 15, 2);
+						
+			////////////////
+			// Jump?		
+			if (DoStalkerJump(sId, lSuffix, false))
+			{
+				UpdateBridgePathBlockers(1.f);
+			}
+			
+			////////////////
+			// Restart timer
+			Map_AddTimer(asTimer, 0.01f, "OnTimer_CheckShouldStalkerJump");
+		}
+		
+		//-------------------------------------------------------
+		
+		void UpdateBridgePathBlockers(float afDelay)
+		{						
+			mvBridgeBlockerEntsToUpdate = mvBridgeBlockerEntIds;			
+			for (int i = 0; i < mvBridgeBlockerEntsToUpdate.size(); ++i)
+			{
+				for (int j = 0; j < mvBridgeBlockerEntsToSkipUpdate.size(); ++j)
+				{
+					if (mvBridgeBlockerEntsToUpdate[i] == mvBridgeBlockerEntsToSkipUpdate[j])
+					{
+						mvBridgeBlockerEntsToUpdate.removeAt(i);
+						--i;
+						break;
+					}
+				}
+			}
+			
+			Map_RemoveTimer("Timer_UpdateBridgePathBlockers");
+			Map_AddTimer("Timer_UpdateBridgePathBlockers", afDelay, "OnTimer_UpdateBridgePathBlockers");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_UpdateBridgePathBlockers(const tString &in asTimer)
+		{						
+			//////////////////
+			// Early out if jumping
+			if (StateMachine_GetCurrentStateName("Stalker_1") == "Jump")
+			{
+				Map_AddTimer(asTimer, 0.1f, "OnTimer_UpdateBridgePathBlockers");
+				return;
+			}
+			
+			//////////////////
+			// Update blockers			
+			ActivateBridgePathBlockers(mvBridgeBlockerEntsToUpdate);
+						
+			/////////////////
+			// Blockers left to update? Go again!
+			if (mvBridgeBlockerEntsToUpdate.size() > 0)
+			{
+				Map_AddTimer(asTimer, 0.1f, "OnTimer_UpdateBridgePathBlockers");
+				return;
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void ActivateBridgePathBlockers(array<tID> &inout avBlockerEntIds)
+		{
+			//////////////////
+			// Set up vars
+			cLuxAgent@ pAgent = cLux_ID_Agent(m_idStalker);
+			cLuxProp@ pAgentHitbox = Map_GetProp("StalkerAnimationHitbox");
+			cBoundingVolume@ pAgentBounds = pAgent !is null ? pAgent.GetCharBody().GetCurrentBody().GetBoundingVolume() : null;
+			cBoundingVolume@ pAgentHitboxBounds = pAgentHitbox !is null ? pAgentHitbox.GetMainBody().GetBoundingVolume() : null;
+			
+			if (pAgent is null) return;
+			if (pAgentHitbox is null) return;
+			if (pAgentBounds is null) return;
+			if (pAgentHitboxBounds is null) return;
+			
+			//////////////////
+			// Update blockers
+			for (int i = 0; i < avBlockerEntIds.size(); ++i)
+			{
+				///////////////////
+				// Setup vars
+				iLuxEntity@ pBlocker = cLux_ID_Entity(avBlockerEntIds[i]);
+				cBoundingVolume@ pBounds = pBlocker !is null ? pBlocker.GetMainBody().GetBoundingVolume() : null;
+				tID idBlocker = pBlocker !is null ? pBlocker.GetMainBody().GetID() : tID_Invalid;
+				
+				if (pBlocker is null) continue;
+				if (pBlocker.IsActive() == false) continue;
+				if (idBlocker == tID_Invalid) continue;
+				if (pBounds is null) continue;
+				
+				///////////////////
+				// Inside blocker?				
+				if (cMath_CheckAABBIntersection(pAgentBounds.GetMin(), pAgentBounds.GetMax(), pBounds.GetMin(), pBounds.GetMax()))
+				{
+					continue;
+				}
+				
+				///////////////////
+				// Inside hitbox?
+				if (pAgentHitbox.IsActive() &&
+					cMath_CheckAABBIntersection(pAgentHitboxBounds.GetMin(), pAgentHitboxBounds.GetMax(), pBounds.GetMin(), pBounds.GetMax()))
+				{
+					continue;
+				}
+				
+				///////////////////
+				// Add blocker	
+				Stalker_AddPathBlockerBody("Stalker_1", idBlocker, true);	
+				avBlockerEntIds.removeAt(i);
+				--i;
+			}
+		}
+
+		//-------------------------------------------------------
+		
+		void UpdateStalkerBehaviour(int alBehaviour, const cVector3f &in avGoalPos)
+		{					
+			//////////////////
+			// Update edge costs
+			UpdateBridgeEdgeCost(mvMedCostBridgeEdges, gfEnding_PlatformNodeEdgeCostMed);
+			UpdateBridgeEdgeCost(mvHighCostBridgeEdges, gfEnding_PlatformNodeEdgeCostHigh);
+			
+			//////////////////
+			// Get goal node
+			tString sGoalNode;			
+			{
+				//////////////////
+				// Retreat or pacing
+				if (alBehaviour == 1 || alBehaviour == 2)
+				{
+					mbStalkerRetreating = alBehaviour == 2;
+					
+					float fMinDistSqr = 1000.f * 1000.f;
+					for (int i = 0; i < mStalkerPathfinder.mvPlatformNodeGraph.size(); ++i)
+					{
+						cPlatformNode@ pNode = mStalkerPathfinder.mvPlatformNodeGraph[i];
+						if (pNode is null) continue;
+						
+						cVector3f vPos = GetPlatformNodePosition(pNode.msName);
+						float fDistSqr = (vPos - avGoalPos).SqrLength();
+						
+						if (fDistSqr < fMinDistSqr)
+						{
+							fMinDistSqr = fDistSqr;
+							sGoalNode = pNode.msName;
+						}
+					}
+				}
+				
+				//////////////////
+				// Default
+				else
+				{
+					mbStalkerRetreating = false;
+					sGoalNode = mPlayerPathfinder.msCurrentNode;
+				}
+			}
+			
+			//////////////////
+			// Get paths
+			array<cPlatformNode@> vToGoal = mStalkerPathfinder.GetPlatformNodePath(mStalkerPathfinder.msCurrentNode, sGoalNode);				
+			bool bPathToGoalExists = vToGoal.size() > 0;
+			
+			cLuxAgent@ pStalker = cLux_ID_Agent(m_idStalker);
+			cVector3f vStalkerPos = pStalker !is null ? pStalker.GetPosition() : cVector3f(0.f);
+			cVector3f vClosestDestroyedBridgePos(0.f);
+			float fMinDistToDestroyedBridgeSqr = 1000.f * 1000.f;
+			
+			//////////////////
+			// Remove blockers on the path!
+			// (Since the path exists and is selected, the stalker needs to be able to go there!)
+			if (bPathToGoalExists)
+			{			
+				mvBridgeBlockerEntsToSkipUpdate.resize(0);
+		
+				//////////////////
+				// Get edges on path
+				array<tString> vRemoveBlockerEdges;						
+				for (int i = 1; i < vToGoal.size(); ++i)
+				{
+					tString sNodeA = vToGoal[i - 1].msName;
+					tString sNodeB = vToGoal[i].msName;
+					tString sEdge = sNodeA + sNodeB;
+					
+					vRemoveBlockerEdges.push_back(sEdge);
+				}
+				
+				//////////////////
+				// Remove any blockers along the edges!
+				for (int i = 0; i < vRemoveBlockerEdges.size(); ++i)
+				{
+					tString sEdge = vRemoveBlockerEdges[i];
+					tString sNodeA = cString_Sub(sEdge, 0, 1);
+					tString sNodeB = cString_Sub(sEdge, 1, 1);
+					
+					//////////////////
+					// Any path blockers at the edge?
+					for (int j = 0; j < mvPathBlockers.size(); ++j)
+					{
+						cBridgePathBlockerData@ pData = mvPathBlockers[j];
+						if (pData is null) continue;
+						
+						if ((pData.msNodeA == sNodeA &&
+							 pData.msNodeB == sNodeB) ||
+							(pData.msNodeA == sNodeB &&
+							 pData.msNodeB == sNodeA))
+						{
+							iLuxEntity@ pEnt = cLux_ID_Entity(pData.m_idBlockerEnt);
+							tID idBlocker = pEnt !is null ? pEnt.GetMainBody().GetID() : tID_Invalid;
+							
+							if (pEnt is null) continue;
+							
+							Stalker_RemovePathBlockerBody("Stalker_1", idBlocker);
+							
+							if (mvBridgeBlockerEntsToSkipUpdate.find(idBlocker) == -1)
+								mvBridgeBlockerEntsToSkipUpdate.push_back(idBlocker);
+						}
+					}
+					
+					//////////////////
+					// Any destroyed bridge at the edge? Remove blockers!
+					for (int j = 0; j < mvDestroyedBridgeDataIds.size(); ++j)
+					{
+						cBridgeData@ pData = mvBridgeData[mvDestroyedBridgeDataIds[j]];
+						if (pData is null) continue;
+						
+						tString sBridge = pData.msName;
+						tString sId = cString_Sub(sBridge, 7, 2);
+						
+						if (sId != (sNodeA + sNodeB) &&
+							sId != (sNodeB + sNodeA))
+						{
+							continue;
+						}
+						
+						tString sSuffix = cString_GetNumericSuffix(sBridge);
+						tString sBlockerA = "BridgeBlocker_" + sId + "_" + sSuffix + "_A";
+						tString sBlockerB = "BridgeBlocker_" + sId + "_" + sSuffix + "_B";
+						iLuxEntity@ pBlockerA = Map_GetEntity(sBlockerA, eLuxEntityType_Prop);
+						iLuxEntity@ pBlockerB = Map_GetEntity(sBlockerB, eLuxEntityType_Prop);
+						tID idBlockerA = pBlockerA !is null ? pBlockerA.GetMainBody().GetID() : tID_Invalid;
+						tID idBlockerB = pBlockerB !is null ? pBlockerB.GetMainBody().GetID() : tID_Invalid;
+						
+						if (pBlockerA is null) continue;
+						if (pBlockerB is null) continue;
+						
+						Stalker_RemovePathBlockerBody("Stalker_1", idBlockerA);
+						Stalker_RemovePathBlockerBody("Stalker_1", idBlockerB);
+						
+						if (mvBridgeBlockerEntsToSkipUpdate.find(idBlockerA) == -1)
+							mvBridgeBlockerEntsToSkipUpdate.push_back(idBlockerA);
+						if (mvBridgeBlockerEntsToSkipUpdate.find(idBlockerB) == -1)
+							mvBridgeBlockerEntsToSkipUpdate.push_back(idBlockerB);
+						
+						//////////////////
+						// Get position of closest destroyed bridge						
+						float fDistSqrA = (pBlockerA.GetPosition() - vStalkerPos).SqrLength();
+						float fDistSqrB = (pBlockerB.GetPosition() - vStalkerPos).SqrLength();
+								
+						if (fDistSqrA < fDistSqrB && fDistSqrA < fMinDistToDestroyedBridgeSqr)
+						{
+							fMinDistToDestroyedBridgeSqr = fDistSqrA;
+							vClosestDestroyedBridgePos = pBlockerA.GetPosition();
+						}
+						else if (fDistSqrB < fDistSqrA && fDistSqrB < fMinDistToDestroyedBridgeSqr)
+						{
+							fMinDistToDestroyedBridgeSqr = fDistSqrB;
+							vClosestDestroyedBridgePos = pBlockerB.GetPosition();
+						}
+					}
+				}
+			}
+			
+			//////////////////
+			// Give position of closest destroyed bridge to stalker
+			cScript_SetGlobalArgVector3f(0, vClosestDestroyedBridgePos);
+			cScript_RunGlobalFunc("Stalker_1", "cScrAgentStalker", "_Global_SetClosestJumpPos");		
+			
+			//////////////////
+			// Update behaviour
+			if (mbStalkerRetreating == false)
+			{							
+				int lBehaviourId = alBehaviour;
+				tString sPaceNode = "";
+				
+				array<cPlatformNode@> vPathToPlayer = mStalkerPathfinder.GetPlatformNodePath(mStalkerPathfinder.msCurrentNode, mPlayerPathfinder.msCurrentNode);
+				bool bPathToPlayerExists = vPathToPlayer.size() > 0;
+							
+				//////////////////
+				// Should pace?
+				{
+					///////////////////////
+					// No path to player?
+					if (bPathToPlayerExists == false)
+					{
+						///////////////////////
+						// Get closest neighour to player
+						int lMinPathSize = 100;
+						cPlatformNode@ pNode = mMapPathfinder.GetPlatformNode(mPlayerPathfinder.msCurrentNode);
+
+						if (pNode !is null)
+						{
+							for (int i = 0; i < pNode.mvNeighbours.size(); ++i)
+							{								
+								tString sNeighbour = pNode.mvNeighbours[i];
+								array<cPlatformNode@> vToNeighbour = mStalkerPathfinder.GetPlatformNodePath(mStalkerPathfinder.msCurrentNode, sNeighbour);
+								
+								int lPathSize = vToNeighbour.size();
+								if (lPathSize == 0) continue;
+								
+								if (lPathSize < lMinPathSize)
+								{
+									lMinPathSize = lPathSize;
+									sPaceNode = sNeighbour;
+								}
+							}
+						}
+						
+						///////////////////////
+						// Failsafe: go to current
+						if (sPaceNode == "")
+							sPaceNode = mStalkerPathfinder.msCurrentNode;
+					}
+					
+					///////////////////////
+					// Need to jump to get to player no other path available?
+					// Go to closest node to player!
+					else if (vPathToPlayer.size() > 1 && 
+							 GetDestroyedBridgeOnPath(vPathToPlayer, true))
+					{
+						tString sNodeA = vPathToPlayer[vPathToPlayer.size() - 2].msName;
+						tString sNodeB = vPathToPlayer[vPathToPlayer.size() - 1].msName;
+							
+						cPlatformPathfinder pathfinder = mStalkerPathfinder;
+						pathfinder.RemovePlatformNodeEdge(sNodeA, sNodeB);
+						
+						array<cPlatformNode@> vAltPathToPlayer = pathfinder.GetPlatformNodePath(mStalkerPathfinder.msCurrentNode, mPlayerPathfinder.msCurrentNode);
+						if (vAltPathToPlayer.size() == 0)
+						{
+							array<cPlatformNode@> vPacePath = mStalkerPathfinder.GetPlatformNodePath(mStalkerPathfinder.msCurrentNode, sNodeA);
+							if (vPacePath.size() > 0)
+								sPaceNode = sNodeA;
+						}
+					}
+					
+					///////////////////////
+					// On the same platform?
+					else if (vPathToPlayer.size() == 1)
+					{
+						cLuxPathfinder@ pPathfinder = cast<cLuxPathfinder@>(pStalker.GetComponentByType(eLuxEntityComponentType_Pathfinder));
+						if (pPathfinder !is null)
+						{
+							cAINode@ pNode = pPathfinder.GetNodeAtPos(pStalker.GetPlayerPos(), 0.f, 5.f, true, false, false, null);
+							if (pNode is null || 
+								pPathfinder.BuildPathNodeArrayToPos(pNode.GetPosition()) == false)
+							{
+								sPaceNode = mStalkerPathfinder.msCurrentNode;
+							}
+						}
+					}
+				}
+				
+				//////////////////
+				// Update behaviour
+				if (sPaceNode != "")
+				{			
+					lBehaviourId = 1;
+					if (alBehaviour != 1)
+					{						
+						cPlatformNode@ pNode = mStalkerPathfinder.GetPlatformNode(sPaceNode);
+						cVector3f vPacePos = pNode !is null ? GetPlatformNodePosition(pNode.msName) : pStalker.GetPosition();
+						
+						cScript_SetGlobalArgVector3f(0, vPacePos);						
+						cScript_RunGlobalFunc("Stalker_1", "cScrAgentStalker", "_Global_BossFight_SetPacePosition");
+					}
+				}
+				else
+				{
+					lBehaviourId = 0;
+				}
+				
+				if (lBehaviourId != alBehaviour)
+				{
+					cScript_SetGlobalArgInt(0, lBehaviourId);			
+					cScript_RunGlobalFunc("Stalker_1", "cScrAgentStalker", "_Global_BossFight_UpdateBehaviour");
+				}
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		tString GetLowPrioStalkerRetreatPositions()
+		{
+			tString sToReturn = "";
+			array<cVector3f> vDestroyedBridgePlatformPositions;
+			
+			for (int i = 0; i < mvDestroyedBridgeDataIds.size(); ++i)
+			{
+				cBridgeData@ pData = mvBridgeData[mvDestroyedBridgeDataIds[i]];
+				if (pData is null) continue;
+				
+				cVector3f vPos = GetPlatformNodePosition(pData.msPlatform);
+				sToReturn += (";" + cString_ToString(vPos.x) + " " + cString_ToString(vPos.y) + " " + cString_ToString(vPos.z));
+			}
+			
+			return sToReturn;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool GetDestroyedBridgeOnPath(const array<cPlatformNode@> &in avPath, bool abBridgeIsLastOnPath)
+		{
+			int lIndex = abBridgeIsLastOnPath ? avPath.size() - 1 : 1;
+			for (; lIndex < avPath.size(); ++lIndex)
+			{
+				tString sNodeA = avPath[lIndex - 1].msName;
+				tString sNodeB = avPath[lIndex].msName;
+				
+				for (int j = 0; j < mvDestroyedBridgeDataIds.size(); ++j)
+				{
+					cBridgeData@ pData = mvBridgeData[mvDestroyedBridgeDataIds[j]];
+					if (pData is null) continue;
+							
+					tString sBridge = pData.msName;
+					tString sId = cString_Sub(sBridge, 7, 2);
+								
+					if (sId == (sNodeA + sNodeB) ||
+						sId == (sNodeB + sNodeA))
+					{
+						return true;
+					}
+				}
+			}
+			
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnStalkerFall()
+		{
+			if (mbStalkerFell) return;
+			
+			mbStalkerFell = true;
+			Seq_StalkerFall("");
+		}
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSeqDataStalkerFall;
+		void Seq_StalkerFall(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_StalkerFall", mSeqDataStalkerFall);
+			if (Sequence_DoStepAndWait(3.1f))
+			{
+				Sound_CreateAtEntity("Sound_StalkerFall", "DW_tunnel/level/creature_death", "Stalker_1", 0.f, false, 1.f, 1.f, 90.f);
+				Music_Stop(3.f, eMusicPrio_BgAmb);
+				
+				SetLightningActive(false);
+			}
+			else if (Sequence_DoStepAndWait(0.1f))
+			{				
+				OnTimer_DoLightning("");
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{
+				Sound_PlayGui("DW_tunnel/level/portal_death", 1.f, eSoundEntryType_Gui);
+				Effect_Shake_Start(0.02f, 1.5f, 5.f, 0.5f);
+			}
+			else if (Sequence_DoStepAndWait(2.f))
+			{
+				Sound_Play("Sound_Quake*", 0.f);
+			}
+			else if (Sequence_DoStepAndWait(6.f))
+			{
+				Light_SetBrightness("lightning_flash_*", 16.f);
+				SetLightningActive(false);
+				SetLightningActive(true);
+				
+				Map_AddTimer("Timer_StartQuake", 1.f, "OnTimer_StartQuake");
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{
+				Music_Play("Bunker_Arsenal_Phase2.ogg", 0.3f, true, eMusicPrio_BgAmb);
+			}
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event *Encounter the STALKER on the BRIDGES*
+		
+		/////////////////////////////////////////
+		// Event *Use the DRAWBRIDGES*
+		//{//////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		array<tString> mvClosedDrawbridgeIds;
+		
+		//-------------------------------------------------------
+		
+		void OnConnectionStateChange_Wheel(const tString &in asEntity, int alState)
+		{		
+			if (mbSetup) return;
+			
+			//////////////////
+			// Setup vars
+			tString sSuffix = "_" + cString_GetNumericSuffixInt(asEntity);			
+			tString sId = cString_Sub(asEntity, 6, 2);
+			tString sNodeA = cString_Sub(sId, 0, 1);
+			tString sNodeB = cString_Sub(sId, 1, 1);
+			tString sBridge = "Bridge_" + sId + sSuffix;
+			tString sBlockerA = "BridgeBlocker_" + sId + sSuffix + "_A";
+			tString sBlockerB = "BridgeBlocker_" + sId + sSuffix + "_B";
+			
+			iLuxEntity@ pBridge = Map_GetEntity(sBridge, eLuxEntityType_Prop);
+			iLuxEntity@ pBlockerA = Map_GetEntity(sBlockerA, eLuxEntityType_Prop);
+			iLuxEntity@ pBlockerB = Map_GetEntity(sBlockerB, eLuxEntityType_Prop);
+			
+			if (pBlockerA is null) return;
+			if (pBlockerB is null) return;
+			
+			//////////////////
+			// Activate blockers
+			pBlockerA.SetActive(alState != -1);
+			pBlockerB.SetActive(alState != -1);
+			
+			//////////////////
+			// Bridge open?
+			if (alState == -1)
+			{													
+				Stalker_RemovePathBlockerBody("Stalker_1", pBlockerA.GetMainBody().GetID());
+				Stalker_RemovePathBlockerBody("Stalker_1", pBlockerB.GetMainBody().GetID());
+				
+				if (mvBlockedBridgeIds.find(sNodeA + sNodeB) == -1)
+					mStalkerPathfinder.AddPlatformNodeEdge(sNodeA, sNodeB);
+				if (mvBlockedBridgeIds.find(sNodeB + sNodeA) == -1)
+					mStalkerPathfinder.AddPlatformNodeEdge(sNodeB, sNodeA);
+				
+				UpdateBridgePathBlockers(0.1f);				
+					
+				int lId = mvClosedDrawbridgeIds.find(sId);
+				if (lId != -1)
+					mvClosedDrawbridgeIds.removeAt(lId);
+			}
+			
+			//////////////////
+			// Bridge closed?
+			else if (alState == 0)
+			{								
+				Stalker_AddPathBlockerBody("Stalker_1", pBlockerA.GetMainBody().GetID(), true);
+				Stalker_AddPathBlockerBody("Stalker_1", pBlockerB.GetMainBody().GetID(), true);
+				
+				mStalkerPathfinder.RemovePlatformNodeEdge(sNodeA, sNodeB);
+				mStalkerPathfinder.RemovePlatformNodeEdge(sNodeB, sNodeA);
+					
+				UpdateBridgePathBlockers(0.1f);					
+				
+				if (mvClosedDrawbridgeIds.find(sId) == -1)
+					mvClosedDrawbridgeIds.push_back(sId);
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_Wheel(const tString &in asEntity)
+		{
+			Map_AddTimer(asEntity, 0.01f, "OnTimer_CheckAgentIsOnBridge");
+			Entity_SetVarFloat(asEntity, "StartInteractAngle", Wheel_GetCurrentAngle(asEntity));
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_CheckAgentIsOnBridge(const tString &in asTimer)
+		{
+			//////////////////
+			// Is agent on a bridge?
+			cLuxAgent@ pAgent = cLux_ToAgent(Map_GetEntity("Stalker_1", eLuxEntityType_Agent));
+			if (pAgent is null) return;
+			
+			bool bAgentOnBridge = false;
+			
+			if (pAgent.IsActive())
+			{
+				tString sId = cString_Sub(asTimer, 6, 2);
+				tString sBridge = "Bridge_" + sId + "_*";
+				
+				array<iLuxEntity@> vBridges;
+				Map_GetEntityArray(sBridge, vBridges, eLuxEntityType_Prop);		
+				
+				for (int i = 0; i < vBridges.size(); ++i)
+				{
+					iLuxEntity@ pBridge = vBridges[i];
+					
+					cBoundingVolume@ pAgentBounds = pAgent.GetCharBody().GetCurrentBody().GetBoundingVolume();
+					cBoundingVolume@ pBounds = pBridge.GetMainBody().GetBoundingVolume();
+					
+					if (cMath_CheckAABBIntersection(pBounds.GetMin(), pBounds.GetMax(), pAgentBounds.GetMin(), pAgentBounds.GetMax()))
+					{
+						bAgentOnBridge = true;
+						break;
+					}
+				}
+			}
+			
+			//////////////////
+			// Jam/unjam if agent is on bridge or not
+			float fAngle = Wheel_GetCurrentAngle(asTimer);			
+			if (bAgentOnBridge && Wheel_GetJammed(asTimer) == false)
+			{
+				Wheel_SetJammed(asTimer, true, fAngle - 1.f, fAngle + 1.f);
+			}
+			else if (bAgentOnBridge == false && Wheel_GetJammed(asTimer))
+			{
+				Wheel_SetJammed(asTimer, false, 0.f, 0.f);
+			}
+			
+			//////////////////
+			// Interacted with? Keep checking!
+			if (Entity_IsInteractedWith(asTimer))
+			{
+				Map_AddTimer(asTimer, 0.01f, "OnTimer_CheckAgentIsOnBridge");
+			}
+			
+			//////////////////
+			// Not interacted with, auto open/close bridge!
+			else
+			{
+				if (Wheel_GetJammed(asTimer))
+					Wheel_SetJammed(asTimer, false, 0.f, 0.f);			
+				
+				float fStartAngle = Entity_GetVarFloat(asTimer, "StartInteractAngle");
+				float fDiff = fAngle - fStartAngle;
+				float fAngleGoal = fAngle >= 45.f ? 90.f : 0.f;
+				
+				if (fDiff >= 20.f) fAngleGoal = 90.f;
+				if (fDiff <= -30.f) fAngleGoal = 0.f;
+				
+				Wheel_SetAngle(asTimer, fAngleGoal, true);
+			}
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event *Use the DRAWBRIDGES*
+		
+		/////////////////////////////////////////
+		// Event *Jump over the GATE*
+		//{//////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		bool mbStalkerHasBeenDesperate = false;
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_Crate(const tString &in asEntity)
+		{
+			if (mbStalkerHasBeenDesperate) return;				
+			Map_AddTimer(asEntity, 0.5f, "OnTimer_SetStalkerIsDesperate");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_SetStalkerIsDesperate(const tString &in asTimer)
+		{
+			if (Entity_IsInteractedWith(asTimer) == false) 
+				return;
+			
+			SetStalkerDesperate(true);
+		}	
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_UpdateKillDistance(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			cScript_SetGlobalArgFloat(0, alState == 1 ? 4.f : -1.f);
+			cScript_RunGlobalFunc("Stalker_1", "cScrAgentStalker", "_Global_BossFight_SetKillDistance");
+			return true;
+		}
+	
+		//-------------------------------------------------------
+
+		//} END Event *Jump over the GATE*
+	 
+		/////////////////////////////////////////
+		// Event *Exit the Bunker*
+		//{//////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		bool mbExitBunkerWithStalker = false;
+		int mlEndingFovId = -1;
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_TriggerBreakEndWall(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (mbStalkerFell == false) return false;
+			
+			ParticleSystem_CreateAtEntity("PS_Debris", "debris_falling_arena_large.ps", "BreakWallRock_1", false);
+			cParticleSystem@ pPS = ParticleSystem_CreateAtEntity("PS_FirstRockDust", "dust_impact_large_oneshot.ps", "BreakWallRock_1", false);
+			if (pPS !is null)
+				pPS.SetColor(cColor(0.512,0.366,0.27,0.208));
+			
+			int lId = Effect_Shake_Start(0.03f, 1.f, 0.5f, 0.5f);
+			Effect_Rumble_Start(0.35f, 2.f, 0.5f, 0.5f);
+			
+			Sound_CreateAtEntity("Sound_CeilingBreak", "DW_tunnel/bomb/war_bomb", "BreakWallRock_1", 0.f, false, 1.f, 15.f, 70.f);
+			
+			Entity_SetActive("BreakWallRock_*", true);
+			
+			Entity_AddImpulse("BreakWallRock_1", cVector3f(0.f, -15.f, 0.f), false, false);
+			Entity_AddImpulse("BreakWallRock_2", cVector3f(0.f, -5.f, 0.f), false, false);
+			Entity_AddTorque("BreakWallRock_1", cVector3f(1000.f, 0.f, 500.f), false, false);
+			Entity_AddTorque("BreakWallRock_2", cVector3f(-500.f, 1000.f, 250.f), false, false);
+			return false;
+		}
+
+		//-------------------------------------------------------
+		
+		bool OnTrigger_BreakEndWall(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			WoodenBreakable_SetIsBreakable("ExitBlocker", true);
+			Prop_SetHealth("ExitBlocker", 0.f);
+			Entity_SetActive("BlockBox_Ending_*", false);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_SetFenceBreakable(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			WoodenBreakable_SetIsBreakable("ExitBlocker", true);
+			Entity_SetActive("BlockBox_Ending_*", false);
+			
+			SetStalkerDesperate(true);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnBreak_ExitBlocker(const tString &in asEntity)
+		{
+			Map_AddTimer("Timer_UpdateExitBlockerCollision", 1.f, "OnTimer_UpdateExitBlockerCollFlag");
+			Map_AddTimer(asEntity, 0.05f, "OnTimer_DoExitBlockerShake");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_DoExitBlockerShake(const tString &in asTimer)
+		{
+			int lId = Effect_Shake_Start(0.05f, 0.4f, 0.1f, 0.3f);
+			Effect_Shake_SetSourceEntity(lId, asTimer + "_broken", 3.f, 15.f);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_UpdateExitBlockerCollFlag(const tString &in asTimer)
+		{
+			iLuxEntity@ pEnt = Map_GetEntity("ExitBlocker_broken", eLuxEntityType_Prop);
+			if (pEnt is null) return;
+			
+			uint lFlag = mBaseObj.GetCollideFlag("-agent");
+			for (int i = 0; i < pEnt.GetBodyNum(); ++i)
+			{
+				iPhysicsBody@ pBody = pEnt.GetBody(i);
+				if (pBody is null) continue;
+				pBody.SetCollideFlags(lFlag);
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_ActivateOutsidePreset(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState == 1) return true;
+			
+			bool bInFront = Entity_PlayerIsInFront(asParent);
+			if (bInFront)
+			{
+				Map_Preset_Fade("Outside", 0.3f);
+				SetLightningActive(false);
+			}
+			else
+			{
+				Map_Preset_Fade("Inside", 0.3f);
+				SetLightningActive(true);
+			}
+			
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_TunnelRock(const tString &in asEntity)
+		{
+			Push_SetCanLeaveState(false);
+			
+			mbPlayerPushingTunnelRock = true;
+			
+			Prop_SetStaticPhysics("TunnelRock_*", false);
+			
+			for (int i = 2; i < 6; ++i)
+			{
+				cLuxProp@ pProp = cLux_ToProp(Map_GetEntity("TunnelRock_" + i, eLuxEntityType_Prop));
+				if (pProp !is null) continue;
+				
+				pProp.GetMainBody().SetMass(0.1f);
+			}
+			
+			Map_AddTimer("Timer_DisableSmallRockCollision", 1.f, "OnTimer_DisableSmallRockCollision");
+			Map_AddTimer("Timer_PushSmallTunnelRocks", 0.1f, "OnTimer_PushSmallTunnelRocks");
+			
+			if (Entity_IsActive("Stalker_1"))
+			{
+				mbExitBunkerWithStalker = true;
+			}
+			
+			// Keep hearing footsteps
+			Agent_PlayCutsceneAnimation("Stalker_1", "run_map_transfer", 0.f, true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_DisableSmallRockCollision(const tString &in asTimer)
+		{
+			uint lFlag = mBaseObj.GetCollideFlag("-bigrock");
+			
+			for (int i = 3; i < 6; ++i)
+			{
+				cLuxProp@ pProp = cLux_ToProp(Map_GetEntity("TunnelRock_" + i, eLuxEntityType_Prop));
+				if (pProp is null) continue;
+				
+				pProp.GetMainBody().SetCollideFlags(lFlag);
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PushSmallTunnelRocks(const tString &in asTimer)
+		{
+			for (int i = 2; i < 6; ++i)
+			{
+				Entity_AddImpulse("TunnelRock_" + i, cVector3f(0.f, 0.f, 0.25f), false, false);
+			}
+			
+			Map_AddTimer("Timer_PushSmallTunnelRocks", 0.1f, "OnTimer_PushSmallTunnelRocks");
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_StartEndingCutscene(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Push_SetCanLeaveState(true);
+			Player_ChangeStateToNormal();
+			
+			mbPlayerPushingTunnelRock = false;
+		
+			Music_StopAll(3.0f);
+		
+			if (mbExitBunkerWithStalker)
+				Seq_ExitBunkerWithStalker("");
+			else
+				Seq_ExitBunkerNoStalker("");
+				
+			if (GameDifficulty_GetSettingValueByID_Bool(eGameDifficultySetting_HardcoreHealthSystem))
+				Player_StopBleeding();
+				
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void StartExitSequence()
+		{	
+			Player_SetCrouching(false, true);
+			
+			tString sPlayerAnim = mbExitBunkerWithStalker ? "player_end_tumble_into_trench" : "player_end_tumble_into_trench_no_stalker";
+			
+			PlayerBody_PlayCutsceneAtEntity(sPlayerAnim, "Area_ExitBunkerCutscene", false, 0.5f);
+			Entity_SetAnimationMessageEventCallback(PlayerBody_GetEntityName(), "OnAnimMessage_Player", false);
+			
+			PlayerBody_SetCutsceneMaxPitch(0.f);
+			PlayerBody_SetCutsceneMaxYaw(0.f);
+			
+			tString sArmAnim = mbExitBunkerWithStalker ? "severed_arn_end_tumble" : "severed_arn_end_tumble_no_stalker";
+			Entity_SetActive("severed_arm", true);
+			Entity_PlayAnimation("severed_arm", sArmAnim, 0.f);
+			
+			float fSplashTime = mbExitBunkerWithStalker ? 27.5f : 19.85f;
+			Map_AddTimer("Timer_PlaySeveredArmSplash", fSplashTime, "OnTimer_PlaySeveredArmSplash");
+			
+			Map_AddTimer("Timer_DeactivateStalkerEnding", 1.f, "OnTimer_DeactivateStalkerEnding");
+				
+			Map_Preset_Fade("Outside", 0.1f);
+			Billboard_SetVisible("billboard_exit_*", false);
+			Light_SetVisible("light_exit_*", false);
+				
+			mBaseObj.GetWorld().GetDirectionalLight().SetCastShadows(true);
+			Map_SetEnvironmentParticlesActive(true);
+			
+			Map_RemoveTimer("Timer_PushSmallTunnelRocks");
+			Map_AddTimer("Timer_PushTunnelRock", 0.1f, "OnTimer_PushTunnelRock");
+			Map_AddTimer("Timer_DeactivateTunnelRock", 5.f, "OnTimer_DeactivateTunnelRock");
+			
+			Map_RemoveTimer("Timer_DoImpact");
+			Map_RemoveTimer("Timer_DoQuakeEffects");
+			
+			Sound_Stop("Sound_Quake*", 1.f);
+			Sound_Stop("Sound_Energy", 1.f);
+			
+			Map_AddTimer("Timer_DoEndingSeqFov", 6.f, "OnTimer_DoEndingSeqFov_1");
+			Map_AddTimer("Timer_SpawnEndingDust", 1.5f, "OnTimer_SpawnEndingDust");
+			Map_AddTimer("Timer_SpawnEndingDust", 3.f, "OnTimer_SpawnEndingDust");
+			Map_AddTimer("Timer_SpawnEndingDust", 5.f, "OnTimer_SpawnEndingDust");
+			Map_AddTimer("Timer_SpawnEndingRubble", 10.f, "OnTimer_SpawnEndingRubble");
+			Music_StopAll(3.f);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_SpawnEndingDust(const tString &in asTimer)
+		{
+			cParticleSystem@ pPS = ParticleSystem_CreateAtEntity("PS_DustEnding", "dust_impact_large_oneshot.ps", "Camera", false);
+			if (pPS !is null)
+			{
+				pPS.SetColor(cColor(0.541,0.457,0.387,1));
+				pPS.SetBrightness(3.5f);
+				pPS.SetFadeAtDistance(false);
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_SpawnEndingRubble(const tString &in asTimer)
+		{
+			Entity_SetActive("rock_tumble_*", true);
+		}
+		
+		//-------------------------------------------------------
+		
+        bool Oncollide_Waterplane(const tString &in asParent, const tString &in asChild, int alState)
+        {
+		    ParticleSystem_CreateAtEntityExt("Bubbles", "bubble_splash_pit.ps", "ps_position_bubbles", false, cColor_White, 1, false, 0, 0, 0, 0);
+		    ParticleSystem_CreateAtEntityExt("Splash", "splash_pit.ps", "ps_position_splash", false, cColor_White, 1, false, 0, 0, 0, 0);
+	        return true;
+        }
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_DeactivateStalkerEnding(const tString &in asTimer)
+		{
+			Entity_SetActive("Stalker_1", false);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PlaySeveredArmSplash(const tString &in asTimer)
+		{
+			ParticleSystem_CreateAtEntity("PS_ArmSplash", "water_splash_oneshot.ps", "Area_ArmSplash", false);
+		}
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSeqDataExitBunkerNoStalker;
+		void Seq_ExitBunkerNoStalker(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_ExitBunkerNoStalker", mSeqDataExitBunkerNoStalker);
+			if (Sequence_DoStepAndWait(33.7f))
+			{
+				StartExitSequence();
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{
+				Seq_ExitBunkerEnding("");
+			}
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSeqDataExitBunkerWithStalker;
+		void Seq_ExitBunkerWithStalker(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_ExitBunkerWithStalker", mSeqDataExitBunkerWithStalker);
+			if (Sequence_DoStepAndWait(10.333f))
+			{
+				StartExitSequence();
+			}
+			else if (Sequence_DoStepAndWait(31.2f))
+			{
+				Entity_SetActive("Stalker_EndingCutscene", true);
+				Entity_PlayAnimation("Stalker_EndingCutscene", "stalker_ending_scene", 0.f, false, true, "OnAnimEnd_StalkerEndingCutscene");
+			}
+			else if (Sequence_DoStepAndWait(0.3f))
+			{
+				Seq_ExitBunkerEnding("");
+			}
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_DoEndingSeqFov_1(const tString &in asTimer)
+		{
+			mlEndingFovId = Effect_DoF_Start(0.f, 1.f, 1.f, 1.f);
+			Map_AddTimer("Timer_DoEndingSeqFov", 5.5f, "OnTimer_DoEndingSeqFov_2");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_DoEndingSeqFov_2(const tString &in asTimer)
+		{
+			if (mlEndingFovId != -1)
+				Effect_DoF_FadeFocus(mlEndingFovId, 5.f, 20.f, 1.f);
+			
+			float fTime = mbExitBunkerWithStalker ? 10.f : 2.5f;
+			Map_AddTimer("Timer_DoEndingSeqFov", fTime, "OnTimer_DoEndingSeqFov_3");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_DoEndingSeqFov_3(const tString &in asTimer)
+		{
+			if (mlEndingFovId != -1)
+				Effect_DoF_FadeFocus(mlEndingFovId, 0.f, 1.f, 1.f);
+				
+			Map_AddTimer("Timer_DoEndingSeqFov", 6.f, "OnTimer_DoEndingSeqFov_4");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_DoEndingSeqFov_4(const tString &in asTimer)
+		{
+			if (mlEndingFovId != -1)
+				Effect_DoF_FadeOut(mlEndingFovId, 2.f);
+			
+			mlEndingFovId = -1;			
+		}
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSeqDataExitBunkerEnding;
+		void Seq_ExitBunkerEnding(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_ExitBunkerEnding", mSeqDataExitBunkerEnding);
+			if (Sequence_DoStepAndWait(2.f))
+			{
+			    Entity_SetActive("soldier_ending_*", true);
+			    Prop_MoveLinearTo("soldier_ending_1","soldier_01_target",1,3.5f,0.5f,true);
+			    Prop_MoveLinearTo("soldier_ending_2","soldier_02_target",1,3.5f,0.5f,true);
+				Sound_Play("Sound_Alert*", 0.0f);
+			}
+			else if (Sequence_DoStepAndWait(3.7f))
+			{
+				Sound_Play("Sound_Spotted", 0.0f);
+			}
+			else if (Sequence_DoStepAndWait(0.2f))
+			{
+				Sound_Stop("Sound_AlertWhistle", 0.2f);
+			}
+			else if (Sequence_DoStepAndWait(0.3f))
+			{
+				Effect_Fade_Out(0.1f);
+				Sound_FadeGlobalVolume(0.f, 0.1f, eSoundEntryType_WorldAll);
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{
+				Player_SetActive(false);
+					
+				Credits_Start("Credits.cfg","OnEndOfCredits", gsCreditsExitBunkerWithStalkerBg, cVector3f(-0.15,-0.15,1.75f), gsCreditsMusic);
+				
+				MainMenu_SetGameCompletedOnce(true);
+				Achievement_EndGame(true);
+			}
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PushTunnelRock(const tString &in asTimer)
+		{
+			Entity_AddImpulse("TunnelRock_*", cVector3f(0.f, 0.f, 1.f), false, false);
+			Map_AddTimer("Timer_PushTunnelRock", 0.1f, "OnTimer_PushTunnelRock");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_DeactivateTunnelRock(const tString &in asTimer)
+		{
+			Map_RemoveTimer("Timer_PushTunnelRock");
+			Entity_SetActive("TunnelRock_*", false);
+			Entity_SetActive("TunnelRockWater", true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnAnimEnd_StalkerEndingCutscene(const tString &in asEntity, const tString &in asAnim)
+		{
+			Entity_SetActive("Stalker_EndingCutscene", false);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnEndOfCredits()
+		{
+			if (!cLux_ScriptDebugOn())
+			{
+				GameStats_Save();
+				GameStats_SetGuiActive(true);
+				//Map_ChangeMap("main_menu.hpm","PlayerStartArea_1","","",false);
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnAnimMessage_Player(const tString &in asEntityName, const tString &in asAnimName, int alMessageEventID)
+		{
+			if (alMessageEventID == 2)
+				Effect_Rumble_Start(0.5, 0.8);
+			if (alMessageEventID == 4)
+				Effect_Rumble_Start(0.5, 0.8);
+			if (alMessageEventID == 6)
+				Effect_Rumble_Start(0.35, 0.8);
+			else
+				Effect_Rumble_Start(0.5, 0.25);
+			
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event *Exit the Bunker*
+		
+		/////////////////////////////////////////
+		// Event *Fall into the RIFT*
+		//{//////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		int mlShadowBlurId = -1;
+		int mlShadowDeathStage = -1;
+		float mfShadowDeathSpeed = 1.f;
+		float mfShadowDeathT = 0.f;
+		
+		//-------------------------------------------------------	
+		
+		bool OnTrigger_FallIntoRift(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Seq_FallInToRift("");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSeqDataFallInToRift;
+		void Seq_FallInToRift(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_FallInToRift", mSeqDataFallInToRift);
+			if (Sequence_DoStepAndWait(0.3f))
+			{
+				Map_RemoveTimer("Timer_StopLightning");
+				Map_RemoveTimer("Timer_DoLightning");
+				Map_RemoveTimer("Timer_DoImpact");
+				Map_RemoveTimer("NoRepeat");
+				Map_RemoveTimer("Timer_StartQuake");	
+				Map_RemoveTimer("Timer_DoQuakeEffects");	
+				Map_RemoveTimer("Timer_SpawnStalker");
+				Map_RemoveTimer("Timer_DoStalkerEmergeLightning");
+				Map_RemoveTimer("Timer_PlayerStalkerEmergeSound");
+				
+				SequenceStates_Stop("Seq_StalkerFall");
+				SequenceStates_Stop("Seq_ExitBunkerNoStalker");
+				SequenceStates_Stop("Seq_ExitBunkerWithStalker");
+				SequenceStates_Stop("Seq_ExitBunkerEnding");
+				
+				Sound_Stop("Sound_Quake*", 0.3f);
+				Sound_Stop("Sound_Energy", 0.3f);
+				
+				Effect_Flash_Start(0.3f, 0.5f, 0.3f, 1.f);				
+				Sound_PlayGui("DW_tunnel/level/portal_death", 1.f, eSoundEntryType_Gui);
+				
+				Music_StopAll(0.3f);
+			}
+			else if (Sequence_DoStepAndWait(0.5f))
+			{								
+				cLux_GetPlayer().ChangeState(ePlayerState_Null);
+				Player_SetActive(false);
+				cLux_GetPlayer().GetCharacterBody().SetTestCollision(false);
+				Entity_SetActive("Stalker_1", false);
+				Player_PlaceAtEntity("Area_ShadowDeath", true, true);
+				
+				if (GameDifficulty_GetSettingValueByID_Bool(eGameDifficultySetting_HardcoreHealthSystem))
+					Player_StopBleeding();
+				
+				Entity_SetActive("BreakBridgeRock*", false);
+				Entity_SetActive("DebrisRock*", false);
+			}
+			else if (Sequence_DoStepAndWait(3.f))
+			{
+				Effect_Fade_Out(0.3f);			
+			}
+			else if (Sequence_DoStepAndWait(1.5f))
+			{				
+				Sound_PlayGui("player/foley/damage/player_fall_damage", 1.f, eSoundEntryType_Gui);
+			}
+			else if (Sequence_DoStepAndWait(0.1f))
+			{				
+				Player_SetActive(true);
+				PlayerBody_PlayCutsceneAtEntity("fall_and_get_up_slow", "Area_ShadowDeath", false, 0.f, "OnAnimEnd_FallIntoRift");
+				PlayerBody_SetCutsceneMaxPitch(0.f);
+				PlayerBody_SetCutsceneMaxYaw(0.f);
+				
+				mlShadowBlurId = Effect_Blur_Start(2.f, 0.f);
+				Effect_ImageTrail_Start(2.f, 0.f, 5.f, 1.f);
+			}
+			else if (Sequence_DoStepAndPause(2.f))
+			{				
+				Effect_Fade_In(1.f);
+				Effect_Blur_FadeOut(mlShadowBlurId, 5.f);
+				mlShadowBlurId = -1;
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{				
+				Death_Start("Fall");
+			}
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnAnimEnd_FallIntoRift(const tString &in asAnim)
+		{
+			mlShadowDeathStage = 0;
+			
+			Player_FadeLookSpeedMulTo(0.05f, 1.f);
+			Player_FadeMoveSpeedMulTo(0.5f, 1.f);
+			Player_FadeRunSpeedMulTo(0.f, 1.f);
+			Player_SetCrouchDisabled(true);
+			Player_SetJumpDisabled(true);
+			Player_SetCanEquipItems(false);
+			Player_SetLeanDisabled(true);
+			Player_SetCheckHealthAllowed(false);
+			Player_SetCanEquipItems(false);
+			Player_ShowCrossHairIcons(false, false);
+			FootPlacement_SetActive(PlayerBody_GetEntityName(), false);
+			Sketchbook_SetCanOpen(false);
+			
+			Player_StartLookAt("Area_ShadowDeathLookAt", 1.f, 2.f, 5.f, false);
+			
+			Map_AddTimer("Timer_SetupAfterFallAnim", 0.01f, "OnTimer_SetupAfterFallAnim");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_SetupAfterFallAnim(const tString &in asTimer)
+		{
+			Player_ShowCrossHairIcons(false, false);
+			FootPlacement_SetActive(PlayerBody_GetEntityName(), false);
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event *Fall into the RIFT*
+	 
+	//} END EVENTS
+}

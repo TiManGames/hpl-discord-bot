@@ -1,0 +1,629 @@
+#include "player/PlayerState_Interact.hps"
+#include "helpers/helper_player.hps"
+#include "player_types.hps"
+#include "utilities/utility_readables.hps"
+#include "base/InputHandler_Types.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_menu.hps"
+
+/////////////////////////////////////////
+// SETTINGS
+/////////////////////////////////////////
+
+//------------------------------------------------------------
+
+const float gfHeadMoveAcc = 6.0f;
+const float gfHeadMoveSpeed = 1.5f;
+const float gfHeadMoveSlowdownDist = 0.15f;
+
+const float gfHeadRotateAcc = 6.0f;
+const float gfHeadRotateMaxSpeed = 1.5f;
+const float gfHeadRotateSpeedMul = 2;
+
+const float gfCheckMaxPushDist = 2.5f;
+
+//------------------------------------------------------------
+
+class cScrPlayerState_Interact_ZoomArea : iScrPlayerState, iScrPlayerState_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// USER SETTINGS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void LoadUserConfig()
+	{
+	
+	}
+	void SaveUserConfig()
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ENTER MAP
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+	
+	}
+	void OnMapLeave(cLuxMap @apMap)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void CreateWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	void DestroyWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL FUNCTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupZoomArea()
+	{
+		mfCurrentCameraSpeed = 0;
+		mbReturnCamera = false;
+		
+		mAreaID = cScript_GetGlobalArgID(0);
+		
+		mReadable.SetupReading(cScript_GetGlobalArgString(1), cScript_GetGlobalArgString(2), "" );
+		mReadable.SetTextAvailable(eTextSide_Front);
+		
+		mfZoomDistance = cScript_GetGlobalArgFloat(3);
+		
+		mReadable.SetGuiFunction(cScript_GetGlobalArgString(4));
+		
+		msZoomedCallback = cScript_GetGlobalArgString(5);
+		
+		mbAllowExtraZoom = cScript_GetGlobalArgBool(6);
+		
+		mReadable.SetupPrompts(true, true, false, mbAllowExtraZoom);
+		
+		iLuxEntity@ pAreaEntity = cLux_GetCurrentMap().GetEntityByID(mAreaID, eLuxEntityType_Area);
+		cLuxArea@ pArea = cLux_ToArea(pAreaEntity);
+		pArea.SetIsInteractedWith(true);
+		
+		mvZoomMin = pArea.GetPosition()-cMath_MatrixMul(pArea.GetMatrix().GetRotation(), pArea.GetSize())*0.5f;
+		mvZoomMax = pArea.GetPosition()+cMath_MatrixMul(pArea.GetMatrix().GetRotation(), pArea.GetSize())*0.5f;
+		
+		////////////////////////////////
+		// Get specific params
+		cMatrixf matArea = cMath_MatrixInverse(pArea.GetMatrix().GetRotation());
+		cVector3f vDirection = matArea.GetForward();
+		cVector3f vTerminalPosition = pArea.GetPosition();
+
+		///////////////////////////////////////////
+		// Get target camera and feet positions
+		iCharacterBody@ pCharBody = cLux_GetPlayer().GetCharacterBody();
+		
+		cVector3f vCurrentFeetPos = pCharBody.GetFeetPosition();
+		mvCenterCameraPosition = vTerminalPosition+vDirection*mfZoomDistance;
+		mvZoomedCameraPosition = vTerminalPosition+vDirection*mfZoomDistance*0.375;
+		cVector3f vFeetPosition = mvTargetCameraPosition;
+		vFeetPosition.y = vCurrentFeetPos.y;
+		
+		mvTargetCameraPosition = mvCenterCameraPosition;
+			
+		////////////////////////////////////
+		//Try to find a position in front of terminal where the player fits
+		cVector3f vPushBack;
+		bool bFitting = pCharBody.CheckCharacterFits(vFeetPosition, true,0, vPushBack);
+
+		if(	bFitting==false && vPushBack.y > -0.01 && vPushBack.Length() <= gfCheckMaxPushDist)
+		{
+			vFeetPosition = vFeetPosition + vPushBack;
+			bFitting = pCharBody.CheckCharacterFits(vFeetPosition, true,0, vPushBack);
+			if(bFitting == false) vFeetPosition += vPushBack;
+		}
+		
+		////////////////////////////////
+		// Move camera back to initial position
+		cVector3f vPosAdd = cLux_GetPlayer().GetCameraPosAdd(eCameraAddType_Terminal);
+		cVector3f vPosDifference = vCurrentFeetPos - pCharBody.GetFeetPosition();
+
+		cMatrixf mtxCharBodyRotation = cMath_MatrixInverse(cMath_MatrixUnitVectors(pCharBody.GetRight(), pCharBody.GetUp(), pCharBody.GetForward(), cVector3f(0)));
+		cLux_GetPlayer().SetCameraPosAdd(eCameraAddType_Terminal, cMath_MatrixMul(mtxCharBodyRotation, vPosDifference));
+		
+		////////////////////////////////
+		//Stop character body
+		pCharBody.SetMoveSpeed(eCharDir_Forward, 0);
+		pCharBody.SetMoveSpeed(eCharDir_Right, 0);
+		pCharBody.SetForceVelocity(cVector3f(0));
+
+		///////////////////////////////////////////
+		// Rotate camera towards screen
+		cLux_GetPlayer().RotateCameraTowards(gfHeadRotateAcc, gfHeadRotateSpeedMul, gfHeadRotateMaxSpeed, vDirection * -1, true);
+	}
+	
+	//------------------------------------------------------------
+	
+	void Exit()
+	{
+		mbExit=true;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnEnterState(int alPrevStateId)
+	{
+		mbExit = false;
+		mbEnteringState = true;
+		mlPreviousState = alPrevStateId;
+		mbZoomed = false;
+		mvZoomOffset = 0;
+		mReadable.Reset();
+		
+		PlayerBody_SetCoverageAmount(0);
+		
+		cScript_SetGlobalArgBool(0, false);
+		cScript_RunGlobalFunc(PlayerBody_GetEntityName(), "cScrPropPlayerBody", "_Global_SetAttachmentPropsActive");
+		
+		PauseMenu_Enabled(false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnLeaveState(int alNextStateId)
+	{			
+		//////////////
+		// Restore fov
+		Player_FadeFOVToDefault(1.0f);
+		
+		Effect_Shake_EnableAll(true);
+		
+		cLux_ID_Area(mAreaID).SetIsInteractedWith(false);
+		
+		PlayerBody_SetCoverageAmount(1);
+		
+		//////////////
+		// Make sure everything is reset 
+		if (mbReturnCamera == false)
+		{
+			mReadable.HideText();
+			mReadable.StopReading();
+		
+			cLux_GetPlayer().SetCameraPosAdd(eCameraAddType_Terminal, 0.f);
+			cLux_GetPlayer().StopCameraRotate(0);
+		}
+		
+		cScript_SetGlobalArgBool(0, true);
+		cScript_RunGlobalFunc(PlayerBody_GetEntityName(), "cScrPropPlayerBody", "_Global_SetAttachmentPropsActive");
+		
+		PauseMenu_Enabled(true);
+	}
+		
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+		mbEnteringState = false;
+	}
+	
+	//------------------------------------------------------------
+	void Update(float afTimeStep)
+	{
+		if(mbExit) {
+			mBaseObj.mpPlayer.ChangeState(mlPreviousState);
+			return;
+		}
+		
+		if (mbReturnCamera)
+		{
+			float fDist = cLux_GetPlayer().GetCameraPosAdd(eCameraAddType_Terminal).Length();
+			if (fDist < 0.25) PlayerBody_SetCoverageAmount(1);
+			if (fDist == 0.0f)
+			{
+				ExecuteZoomedCallback(-1);
+				mBaseObj.mpPlayer.ChangeState(mlPreviousState);
+			}
+			return;
+		}
+								
+		iCharacterBody@ pCharBody = cLux_GetPlayer().GetCharacterBody();
+		cMatrixf mtxCharBodyRotation = cMath_MatrixUnitVectors(pCharBody.GetRight(), pCharBody.GetUp(), pCharBody.GetForward(), cVector3f(0));
+		
+		///////////////////////////
+		// Zoom movement
+		cVector3f vLocalZoomOffset;
+		if (mbZoomed)
+		{
+			mfZoomOffsetFadeInT = cMath_Min(afTimeStep+afTimeStep, 1.0f);
+			
+			cLuxArea@ pArea = cLux_ID_Area(mAreaID);
+			cVector3f vZoomMinScreenPos = GetScreenPosFromWorldPos(mvZoomMin);
+			cVector3f vZoomMaxScreenPos = GetScreenPosFromWorldPos(mvZoomMax);
+			if (mvCameraMoveDir.x < 0 && vZoomMinScreenPos.x >= 0) mvCameraMoveDir.x = 0;
+			if (mvCameraMoveDir.x > 0 && vZoomMaxScreenPos.x <= 1.0f) mvCameraMoveDir.x = 0;
+			if (mvCameraMoveDir.y < 0 && vZoomMinScreenPos.y <= 1.0f) mvCameraMoveDir.y = 0;
+			if (mvCameraMoveDir.y > 0 && vZoomMaxScreenPos.y >= 0) mvCameraMoveDir.y = 0;
+			mvZoomOffset += mvCameraMoveDir * afTimeStep;
+			vLocalZoomOffset = cMath_MatrixMul(mtxCharBodyRotation, mvZoomOffset);
+		}
+		else
+		{
+			mfZoomOffsetFadeInT = cMath_Max(afTimeStep-afTimeStep, 0.0f);
+		}
+		mvCameraMoveDir = 0;
+		cLux_GetPlayer().SetCameraPosAdd(eCameraAddType_ZoomAreaOffset, vLocalZoomOffset*mfZoomOffsetFadeInT);
+		
+		///////////////////////////////////////////
+		// Calculate direction to target position in the player's local space
+		cVector3f vToTarget = mvTargetCameraPosition - cLux_GetPlayer().GetCamera().GetPosition();
+		cVector3f vLocalToTarget = cMath_MatrixMul(mtxCharBodyRotation, vToTarget);
+		vLocalToTarget += vLocalZoomOffset;
+		float fDist = vLocalToTarget.Length();
+		vLocalToTarget.Normalize();
+		
+		///////////////////////////////////////////
+		// Move camera
+		cVector3f vPosAdd = cLux_GetPlayer().GetCameraPosAdd(eCameraAddType_Terminal);
+		vPosAdd += vLocalToTarget * cMath_Min(fDist, mfCurrentCameraSpeed*afTimeStep);
+		cLux_GetPlayer().SetCameraPosAdd(eCameraAddType_Terminal, vPosAdd);
+		
+		///////////////////////////////////////////
+		// Update camera speed
+		float fMaxSpeed = gfHeadMoveSpeed;
+		if (fDist < gfHeadMoveSlowdownDist)
+			fMaxSpeed *= fDist/gfHeadMoveSlowdownDist;
+			
+		if (mbEnteringState && fDist<0.01f)
+		{
+			mbEnteringState = false;
+			
+			// Auto pop up text if not English
+			tString sLang = cString_SetFileExt(cLux_GetCurrentLanguage(), "");
+			if (sLang!="english")
+			{
+				if (!mReadable.IsShowingText())
+					mReadable.ShowText();
+			}
+			
+			ExecuteZoomedCallback(1);
+		}
+		
+		mfCurrentCameraSpeed = cMath_Min(fMaxSpeed, mfCurrentCameraSpeed + gfHeadMoveAcc * afTimeStep);
+				
+		//Show no crosshair!
+		Player_SetCrossHairState(eCrossHairState_None);
+		
+		mReadable.Update(afTimeStep);
+	}
+	
+	//-------------------------------------------------------
+	
+	cVector3f GetScreenPosFromWorldPos(const cVector3f &in avWorldPos)
+	{
+		cBoundingVolume vol;
+		vol.SetPosition(avWorldPos);
+		cVector3f vMin, vMax;
+		cMath_GetNormalizedClipRectFromBV(vMin, vMax, vol, cLux_GetViewport().GetCamera().GetFrustum());
+		
+		vMin.y *= -1.0f;
+		return (vMin+cVector3f_One)*0.5f;
+	}
+	
+	//------------------------------------------------------------
+	
+	void PostUpdate(float afTimeStep)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnGui(float afTimeStep)
+	{
+		mReadable.DrawGui(afTimeStep);
+	}
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// GLOBAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetIsZoomedIn()
+	{
+		cScript_SetGlobalReturnBool(mbZoomed);
+	}
+	
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool OnAction(int alAction, bool abPressed)
+	{
+		bool bShowText = alAction == eAction_ShowText;
+		
+		// If gbReadablesHoldInteract is set, allow releasing the interact
+		// button to cancel. So the player needs to hold.
+		if (gbReadablesHoldInteract && !abPressed && bShowText)
+		{
+			LeaveState();
+			return false;
+		}
+		
+		if (alAction == eAction_Crouch || alAction == eAction_Jump)
+			return false;
+		
+		if (abPressed && alAction == eAction_Interact && mbAllowExtraZoom)
+		{
+			mbZoomed = !mbZoomed;
+
+			if (mbZoomed)
+			{
+				mvTargetCameraPosition = mvZoomedCameraPosition;
+			}
+			else
+			{
+				mvTargetCameraPosition = mvCenterCameraPosition;
+			}
+		}
+		
+		if (abPressed && !mReadable.IsFading())
+		{
+			///////////////////////////////
+			// SPACE / A
+			if (bShowText)
+			{
+				if (!mReadable.IsShowingText())
+				{
+					mReadable.ShowText();
+					Effect_Shake_EnableAll(false);
+				}
+				else
+				{
+					// Increase page num
+					if(mReadable.GetPage() < mReadable.GetPageNum())
+					{
+						mReadable.NextPage();
+					}
+					else
+					{
+						mReadable.HideText();
+						Effect_Shake_EnableAll(true);
+					}
+				}
+				
+				return false;
+			}
+			
+			///////////////////////////////
+			// Right click
+			if (alAction == eAction_InteractCancel || alAction == eAction_OpenMenu)
+			{
+				LeaveState();
+				return false;
+			}
+		}
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnAnalogInput(int alAnalogId, const cVector3f &in avAmount)
+	{
+		//////////////////////
+		// Move Camera
+		if (alAnalogId == eAnalogType_Move || alAnalogId == eAnalogType_GamepadMove)
+		{	
+			if (!mbZoomed) return false;
+			
+			mvCameraMoveDir += avAmount;
+			mvCameraMoveDir = cMath_Vector3ClampLength(mvCameraMoveDir, 0, 1.0f);
+			return false;
+		}
+		
+		//////////////////////
+		// Disable look
+		if (alAnalogId == eAnalogType_Look)
+		{			
+			return false;
+		}
+		
+		//////////////////////
+		// Disable lean
+		if (alAnalogId == eAnalogType_Lean)
+		{			
+			return false;
+		}
+		
+		//////////////////////
+		// Text scrolling
+		if (alAnalogId == eAnalogType_Scroll)
+		{
+			if (mReadable.IsShowingText())
+			{
+				return false;
+			}
+		}
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnExitPressed()
+	{
+		LeaveState();
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	void LeaveState()
+	{
+		mbReturnCamera = true;
+		
+		////////////////////////////////////////
+		// Reset camera
+		float fSpeedMul = 4.0f;
+		cLux_GetPlayer().MoveCameraPosAdd(eCameraAddType_Terminal, cVector3f(0), fSpeedMul * gfHeadMoveAcc, fSpeedMul * gfHeadMoveSpeed, gfHeadMoveSlowdownDist);
+		cLux_GetPlayer().StopCameraRotate(0);
+		
+		//////////////////////////////
+		// Fade out text
+		mReadable.HideText();
+		mReadable.StopReading();
+		
+//		mBaseObj.mpPlayer.ChangeState(mlPreviousState);
+	}
+	
+	//------------------------------------------------------------
+	
+	void ExecuteZoomedCallback(int alState)
+	{
+		if (msZoomedCallback == "") return;
+		tString sMethodName = "void " + msZoomedCallback + "(int alState)";
+		if (cLux_GetCurrentMap().ScriptMethodExists(sMethodName) && cLux_GetCurrentMap().ScriptPrepare(sMethodName))
+		{
+			cLux_GetCurrentMap().SetArgInt(0, alState);
+			cLux_GetCurrentMap().ScriptExecute();
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// BODY CALLBACKS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool AllowBuoyancy(iPhysicsBody @apBody)
+	{
+		return false;
+	}
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// CHARACTER CALLBACK
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void CharBody_GravityCollide(iCharacterBody@ apCharBody, iPhysicsBody@ apBody, cCollideData @apCollideData)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void CharBody_HitGround(iCharacterBody@ apCharBody,const cVector3f &in avVel)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPER METHODS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	void SaveBodyProperties(iPhysicsBody @apBody)
+	{
+		
+	}
+
+	//-----------------------------------------------------------------------
+
+
+	bool BodyIsAdded(iPhysicsBody @apBody)
+	{
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	cVector3f mvTargetCameraPosition;
+	cVector3f mvCenterCameraPosition;
+	cVector3f mvZoomedCameraPosition;
+	bool mbReturnCamera = false;
+	float mfZoomDistance;
+	float mfCurrentCameraSpeed;
+	bool mbExit;
+	int mlPreviousState;
+	bool mbAllowExtraZoom;
+	
+	bool mbZoomed = false;
+	cVector3f mvCameraMoveDir;
+	cVector3f mvZoomOffset;
+	cVector3f mvZoomMin;
+	cVector3f mvZoomMax;
+	float mfZoomOffsetFadeInT = 0;
+	
+	tID mAreaID;
+	
+	[nosave] cUtility_Readable mReadable;
+	tString msGuiFunction;
+	tString msZoomedCallback;
+	bool mbEnteringState = false;
+	
+	//------------------------------------------------------------
+		
+}

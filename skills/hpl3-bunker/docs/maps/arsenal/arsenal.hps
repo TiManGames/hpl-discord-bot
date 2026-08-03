@@ -1,0 +1,1504 @@
+#include "interfaces/Map_Interface.hps"
+#include "base/Inputhandler_Types.hps"
+
+#include "helpers/helper_map.hps"
+#include "helpers/helper_props.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_audio.hps"
+#include "helpers/helper_imgui.hps"
+#include "helpers/helper_sequences.hps"
+#include "helpers/helper_game.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_ai.hps"
+#include "helpers/helper_agent.hps"
+#include "helpers/helper_player.hps"
+#include "helpers/helper_areas.hps"
+#include "custom/helpers/helper_gun.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+#include "custom/helpers/helper_props_custom.hps"
+
+//--------------------------------------------------
+ 
+/*Place any global values here. These must be const variables as they will not be saved*/
+/*This is also the place for enums and classes, but these should be avoided whenever possible*/
+ 
+//--------------------------------------------------
+ 
+class cScrMap : iScrMap
+{
+	//--------------------------------------------
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN CALLBACKS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+ 
+	////////////////////////////
+	// Set up map environment
+	void Setup()
+	{
+		// Put display name entry in english.lang / Levels
+		GetBase().SetDisplayNameEntry("arsenal");
+		
+		// Set up color grading etc.
+	}
+	
+	//-------------------------------------------------------
+		
+	void PreloadData()
+	{
+		///////////
+		// Preload entity
+		Entity_Preload("player_bunker.ent");
+	}
+	
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run first time starting map
+	void OnStart()
+	{
+		// Any general setup of script / entities
+		
+		/////////////////////////
+		// Debug
+		if(cLux_ScriptDebugOn())
+		{
+			//Item_AddToInventory("DynamiteBundle");
+			//if (ItemType_GetCountInInventory("Gun") == 0) 
+			Item_AddToInventory("Shotgun");
+			Item_AddToInventory("Fuse");
+			Item_AddToInventory("DynamoLantern");
+			Item_AddToInventory("Cutters");				
+			//Item_AddToInventory("Grenade");
+			//Item_AddToInventory("GasMask");
+			//Item_AddToInventory("GasGrenade");
+			//Item_AddToInventory("Flare");			
+			Item_AddToInventory("Fuel");
+			Item_AddToInventory("Lighter");
+		}
+		
+		///////////////////////
+		// Setup path blocker
+		Prop_SetStaticPhysics("Barrel_PathBlocker", true);
+		
+		///////////////////////
+		// Activate rat crusher
+		Map_AddTimer("Timer_ActivateRatCrusher", 1.f, "OnTimer_ActivateRatCrusher");
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when entering map
+	void OnEnter()
+	{
+		// Set rich presence
+		RichPresence_SetCurrent(eRichPresence_Arsenal);
+
+		///////////////////////
+		// Setup player body
+		if (PlayerBody_IsActive() == false)
+		{
+			PlayerBody_SetActive(true);
+			PlayerBody_SetModel("player_bunker.ent");
+		}
+		
+		/////////////////////
+		// Enable rats
+		RatHandler_SetActive(true);
+		
+		///////////////////////
+		// Setup generator
+		SetupGenerator();
+		
+		///////////////////////////////
+		// Setup low height auto-teleport
+		Player_SetAutoTeleportWhenBelowAltitude(-20.f);
+		
+		///////////////////////
+		// Setup stalker
+		Blackboard_DoStalkerMapTransfer("Stalker_1");
+		
+		if (cScript_GetGlobalVarBool("StalkerEnterActiveAfterTunnels"))
+		{
+			Map_AddTimer("Timer_SetupStalkerAfterTunnels", cMath_RandRectf(10.f, 20.f), "OnTimer_SetupStalkerAfterTunnels");
+		}
+		
+		///////////////////////
+		// Setup pump room
+		UpdatePumpState();
+		
+		iLuxEntity@ pPump = Map_GetEntity("water_pump_1", eLuxEntityType_Prop);
+		iLuxEntity@ pPumpLever = Map_GetEntity("PumpLever", eLuxEntityType_Prop);
+		m_idPump = pPump !is null ? pPump.GetID() : tID_Invalid;
+		m_idPumpHandle = pPumpLever !is null ? pPumpLever.GetID() : tID_Invalid;
+		
+		if (mbPumpOn)
+			Sound_CreateAtEntity("Sound_PumpLoop", "arsenal/level/generator_loop", "water_pump_1");
+		
+		////////////////
+		// Setup bombing effect
+		BombingHandler_SetActive(true);
+		
+		///////////////////
+		// Setup save game info hint
+		SaveRoom_SetSaveHintActive(true);
+		
+		///////////////////
+		// Setup save lamp
+		SaveRoom_SetupSaveLamp(true, "SaveLamp_Easy_Lamp");
+		
+		/////////////////
+		// In game map
+		InGameMap_UpdateGlobalMapState();
+		
+		///////////////////////
+		// Audio
+		Sound_Play("Sound_RoofCreak_*", 1.0f);
+		Sound_Play("Sound_ShelfSweet_*", 1.0f);
+		Sound_Play("Sound_TransferRoof_*", 1.0f);
+		Sound_Play("Sound_RoofBar_*", 1.0f);
+		Sound_Play("Sound_WarSounds_*", 1.0f);
+
+		if (Sound_Exists("Sound_RoofCreak_*"))
+		{
+			Sound_Stop("Sound_RoofCreak_*", 5.0f);
+			Sound_Stop("Sound_ShelfSweet_*", 5.0f);
+			Sound_Stop("Sound_TransferRoof_*", 5.0f);
+			Sound_Stop("Sound_RoofBar_*", 1.0f);
+			Sound_Stop("Sound_WarSounds_*", 1.0f);
+
+			Sound_Play("Sound_RoofCreak_*", 1.0f);
+			Sound_Play("Sound_ShelfSweet_*", 1.0f);
+			Sound_Play("Sound_TransferRoof_*", 1.0f);
+			Sound_Play("Sound_RoofBar_*", 1.0f);
+			Sound_Play("Sound_WarSounds_*", 1.0f);
+		}
+		
+		////////////
+		// Map change
+		Game_SetupAfterMapChange();
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when leaving map
+	void OnLeave()
+	{
+		Map_RemoveTimer("Timer_SetupStalkerAfterTunnels");
+		
+		/////////////////////////
+		// Audio
+		{
+			Sound_Stop("Sound_RoofCreak_*", 5.0f);
+			Sound_Stop("Sound_ShelfSweet_*", 5.0f);
+			Sound_Stop("Sound_TransferRoof_*", 5.0f);
+			Sound_Stop("Sound_RoofBar_*", 1.0f);
+		}
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// To get when player makes input (mostly used for debug)
+	void OnAction(int alAction, bool abPressed) 
+	{
+		if(abPressed==false) return;
+		
+		if(alAction == eAction_Test1)
+		{
+			if (Generator_GetState() == eGeneratorState_On)
+			{
+				Generator_SetRunForever(false);
+				Generator_ChangeState(eGeneratorState_Off);
+			}
+			else
+			{
+				Generator_AddFuel(2);
+				Generator_ChangeState(eGeneratorState_On);
+				Generator_SetRunForever(true);
+			}
+		}
+		
+		if (alAction == eAction_Test2)
+		{
+			////////////////
+			// Broadcast shot message
+			array<iLuxEntity@> vAgents;
+			cLux_GetCurrentMap().GetEntityArray("*", eLuxEntityType_Agent, "", vAgents);
+			
+			for (int i = 0; i < vAgents.size(); ++i)
+			{
+				vAgents[i].BroadcastMessage(40, null, Player_GetPosition(), -1);
+			}
+		}
+		
+		if (alAction ==eAction_Test3)
+		{
+			////////////////
+			// Disable all agents
+			RatHandler_SetActive(false);
+			
+			array<iLuxEntity@> vAgents;
+			cLux_GetCurrentMap().GetEntityArray("*", eLuxEntityType_Agent, "", vAgents);
+			
+			for (int i = 0; i < vAgents.size(); ++i)
+			{
+				vAgents[i].SetActive(false);
+			}
+		}
+		
+		if (alAction == eAction_Test4)
+		{
+			////////////////
+			// Disable all traps
+			array<iLuxEntity@> vTraps;
+			cLux_GetCurrentMap().GetEntityArray("*", eLuxEntityType_Prop, "cScrPropTrap", vTraps);
+			
+			for (int i = 0; i < vTraps.size(); ++i)
+			{
+				tString sName = vTraps[i].GetName();
+				Entity_SetActive(sName, false);
+				Entity_SetActive(sName+"_*", false);
+			}
+		}
+		
+		if (alAction == eAction_Test5)
+		{
+			const int lNewInventorySlotsCount = Item_GetCurrentSlotsCount() + 1;
+			Item_SetCurrentSlotsCount(lNewInventorySlotsCount);
+		}
+		
+		if (alAction == eAction_Test6)
+		{
+			//Sketchbook_AddCode("Radio Code", "2 9 1 1 ");
+			//Entity_SetActive("Stalker_1", true);
+			//cScript_RunGlobalFunc("Stalker_1", "cScrAgentStalker", "_Global_Debug");
+			
+			Entity_SetActive("Stalker_1", true);
+			Stalker_GoToHole("Stalker_1", "GhoulHole_10", true, true);
+			Sound_CreateAIEventAtEntity("player", 100, 4);
+			//Stalker_SetEmergeAllowed("Stalker_1", false);
+		}
+		
+		if (alAction == eAction_Test7)
+		{
+			//Entity_SetActive("Stalker_1", true);
+			//Stalker_GoToHole("Stalker_1", "GhoulHole_1", true, true);
+			//Stalker_SetMode("Stalker_1", eStalkerMode_Passive, true);
+			//cScript_RunGlobalFunc("Stalker_1", "", "_Global_Debug");
+			//Entity_SetActive("path_area_blocker*", false);
+			SwingDoor_SetBlocked("metal_door_window_1", false, true);
+			SwingDoor_SetOpenAmount("metal_door_window_1", 1.f);
+			Player_PlaceAtEntity("metal_door_window_1", true, true);
+			Generator_AddFuel(5);
+			Generator_ChangeState(eGeneratorState_On);
+			Entity_SetActive("path_area_blocker_forwar*", false);
+			Entity_SetActive("GhoulHole_*", true);
+		}
+		
+		if (alAction == eAction_TestPlus)
+		{
+			if (Generator_GetState() == eGeneratorState_On)
+			{
+				Entity_SetActive("Trigger_KillGenerator", false);	
+				Generator_SetRunForever(false);
+				Generator_ChangeState(eGeneratorState_Off);
+			}
+			else
+			{
+				Entity_SetActive("Trigger_KillGenerator", true);
+				Generator_AddFuel(2);
+				Generator_ChangeState(eGeneratorState_On);
+				Generator_SetRunForever(true);
+			}
+		}
+
+		if (alAction == eAction_TestMinus)
+		{
+			Entity_SetActive("Stalker_1", true);
+			Sound_CreateAIEventAtEntity(cLux_GetPlayer().GetCharacterBody().GetName(), 1000.f, 10);
+		}
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// This only used for pure debug purposes when info needs to printed.
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afY)
+	{
+		//afY = cLux_DrawDebugText("My Debug value:"+..., afY);
+		return afY;
+	}
+ 
+	//-------------------------------------------------------
+ 
+	//} END MAIN CALLBACKS
+ 
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN FUNCTIONS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+ 
+	tID m_idPump = tID_Invalid;
+	tID m_idPumpHandle = tID_Invalid;
+	float mfPumpSpeed = 0.f;
+	float mfPumpHandleGlowCount = 0.f;
+	float mfPumpHandleGlowMul = 0.f;
+	
+	//-------------------------------------------------------
+	
+	bool OnTrigger_LockDoor(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		bool bLock = alState==1;
+		SwingDoor_SetBlocked(Entity_GetVarString(asChild, ""), alState == 1, true);		
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	void VariableUpdate(float afDeltaTime)
+	{
+		UpdatePumpAnimation(afDeltaTime);
+		UpdatePumpHandleHighlight(afDeltaTime);
+	}
+	
+	//-------------------------------------------------------
+	
+	void UpdatePumpAnimation(float afDeltaTime)
+	{
+		cLuxProp@ pPump = cLux_ID_Prop(m_idPump);
+		cMeshEntity@ pMeshEnt = pPump !is null ? pPump.GetMeshEntity() : null;
+		cSubMeshEntity@ pBand = pMeshEnt !is null ? pMeshEnt.GetSubMeshEntityName("rubberband") : null;
+		cSubMeshEntity@ pWheelA = pMeshEnt !is null ? pMeshEnt.GetSubMeshEntityName("large_wheel") : null;
+		cSubMeshEntity@ pWheelB = pMeshEnt !is null ? pMeshEnt.GetSubMeshEntityName("small_wheel") : null;
+		
+		if (pPump is null) return;
+		if (pMeshEnt is null) return;
+		if (pBand is null) return;
+		if (pWheelA is null) return;
+		if (pWheelB is null) return;
+		
+		float fPumpSpeedGoal = mbPumpOn ? 1.f : 0.f;
+		float fPumpSpeedAcc = mbPumpOn ? (1.f / 5.f) : (1.f / 9.f);
+		mfPumpSpeed = cMath_IncreaseTo(mfPumpSpeed, afDeltaTime * fPumpSpeedAcc, fPumpSpeedGoal);
+		
+		float fBandSpeed = mfPumpSpeed * 0.9f;
+		pBand.GetMaterial().SetUvAnimationSpeed(0, fBandSpeed);
+		
+		float fWheelSpeed = mfPumpSpeed * cMath_ToRad(10.f);
+		cMatrixf mtxWheelA = pWheelA.GetLocalMatrix();
+		cMatrixf mtxWheelB = pWheelB.GetLocalMatrix();
+		mtxWheelA = cMath_MatrixMul(mtxWheelA, cMath_MatrixRotateX(fWheelSpeed));
+		mtxWheelB = cMath_MatrixMul(mtxWheelB, cMath_MatrixRotateX(fWheelSpeed));
+		pWheelA.SetMatrix(mtxWheelA);
+		pWheelB.SetMatrix(mtxWheelB);
+	}
+	
+	//-------------------------------------------------------
+	
+	void UpdatePumpHandleHighlight(float afDeltaTime)
+	{
+		cLuxProp@ pProp = cLux_ID_Prop(m_idPumpHandle);
+		cMeshEntity@ pMeshEnt = pProp !is null ? pProp.GetMeshEntity() : null;
+		cSubMeshEntity@ pSubMesh = pMeshEnt !is null ? pMeshEnt.GetSubMeshEntityName("handle_int")  : null;
+		
+		if (pProp is null) return;
+		if (pMeshEnt is null) return;
+		if (pSubMesh is null) return;
+		
+		bool bGlow = true;
+		float fDistToPlayerSqr = (cLux_GetPlayer().GetCharacterBody().GetPosition() - pProp.GetPosition()).SqrLength();
+		
+		if (fDistToPlayerSqr > 4.f * 4.f)
+			bGlow = false;
+		if (mbPumpOn)
+			bGlow = false;
+			
+		float fGlowMulGoal = bGlow ? 1.f : 0.f;
+		mfPumpHandleGlowMul = cMath_IncreaseTo(mfPumpHandleGlowMul, afDeltaTime * 2.f, fGlowMulGoal);
+		
+		if (mfPumpHandleGlowMul <= 0.f)
+		{
+			mfPumpHandleGlowCount = 0.f;
+		}
+		else
+		{
+			mfPumpHandleGlowCount += afDeltaTime;
+			if (mfPumpHandleGlowCount >= 4.f)
+				mfPumpHandleGlowCount = 0.f;
+		}		
+		
+		float fY = cMath_Min(mfPumpHandleGlowCount, 1.f);
+		float fGlow = 1.f - cMath_Abs(2.f * fY - 1.f);
+		fGlow = cMath_Easing(eEasing_QuadInOut, fGlow) * mfPumpHandleGlowMul;
+		fY = cMath_Easing(eEasing_SineInOut, fY);
+		
+		float fColorMul = 3.f;
+		cColor color = cColor(0.35f * fColorMul, 0.15f * fColorMul, 0.f, fGlow);
+		
+		if (fGlow > 0.f)
+			cLux_GetEffectHandler().AddGlowObject(pSubMesh, color, fY);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnStalkerEmerge()
+	{
+		Map_RemoveTimer("Timer_StalkerEmerge");
+		
+		if (cString_GetFirstStringPos(msStalkerEmergeTrigger, "StalkerEmerge_A") != -1)
+		{
+			Entity_SetActive("Trigger_StalkerEmerge_A_*", false);
+		}
+		else if (cString_GetFirstStringPos(msStalkerEmergeTrigger, "StalkerEmerge_B") != -1)
+		{
+			Entity_SetActive("Trigger_StalkerEmerge_B_*", false);
+		}		
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_SetupStalkerAfterTunnels(const tString &in asTimer)
+	{
+		if (cScript_GetGlobalVarBool("StalkerEnterActiveAfterTunnels") == false)
+			return;
+		
+		cScript_SetGlobalVarBool("StalkerEnterActiveAfterTunnels", false);
+		
+		if (Stalker_GetMode("Stalker_1") == eStalkerMode_Passive)
+			Stalker_SetMode("Stalker_1", eStalkerMode_Active, true);
+	}
+		
+	//-------------------------------------------------------
+	
+	void OnCombinationLock_Unlocked(const tString&in asEntityName)
+	{
+		tString sName = Entity_GetVarString(asEntityName, "");
+		
+		const tString sPickupName = "LockerPickup_" + sName + "_*";
+		
+		Pickup_SetCanPickup("RandomLocker_Pickup_*", true);
+		Pickup_SetIsLockerItem("RandomLocker_Pickup_*", false);
+		HighlightEffect_RemoveIgnoreLosEntity("RandomLocker_Pickup_*");
+		
+		Achievement_IncreaseUnlockedLockerCount();
+	
+		///////////////
+		// Deactivate aux areas
+		Entity_SetActive("RandomLocker_InteractAux_*", false);
+	}
+		
+	//-------------------------------------------------------
+	
+	void OnInteract_Player_PrepareGun(const tString &in asEntity)
+	{
+		Map_AddTimer("Timer_GunEquipHint", 9.f, "OnTimer_GunEquipHint");
+	}
+		
+	//-------------------------------------------------------
+	
+	void OnTimer_GunEquipHint(const tString&in asTimer)
+	{
+		if (ItemType_GetCountInInventory("Gun") == 0) return;
+		
+		Hint_StopHint();
+		Hint_ShowHint_Hold("Hints", "HintEquipGun", true, 1.5f, true, 15.f, true, true);
+	}
+ 
+	//-------------------------------------------------------
+ 
+	//} END MAIN FUNCTIONS
+	
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAP STREAMING
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+		
+	//-------------------------------------------------------
+	
+	bool OnTrigger_Player_SwitchMap_Hub(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		if (alState == -1) return true;
+		
+		Blackboard_SetupStalkerMapTransfer("Stalker_1");		
+		Game_DoMapChange("officer_hub.hpm", "MapTransfer_Hub_Arsenal");
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnTrigger_Player_SwitchMap_Tunnels(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		if (alState == -1) return true;
+			
+		Game_DoMapChange("tunnels.hpm", "MapTransfer_Tunnels_Arsenal");
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	//} END MAP STREAMING
+	
+	//-------------------------------------------------------
+	
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// GENERATOR
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+
+	//-------------------------------------------------------
+	
+	void SetupGenerator()
+	{
+		Generator_SetupEntities("", "", "", "", "Lamp_Generator_*", "Lamp_GeneratorBackup_*");
+		Generator_AddPowerSwitch("PowerSwitch_1", "", "", "", false);
+		Generator_SetupFuseBox("FuseBox", "FuseBox_Lamp", "FuseBox_BackupLamp", "FuseBox_Lever", "FuseBox_Socket",
+							   "FuseBox_Grating", "FuseBox_Fuse_Pickup", "FuseBox_Note", "FuseBox_NoteNail", 
+							   "FuseBox_NoteInteractAux", "FuseBox_InteractArea", "Sound_FuseBoxLoop", "Lamp_Generator_15");
+		Generator_EndSetup();
+		
+		if (GameDifficulty_GetSettingValueByID_Bool(eGameDifficultySetting_FusesAndFuseBoxes))
+		{
+			Entity_SetActive("Lamp_GeneratorBackup_4", true);
+			Entity_SetActive("Lamp_Generator_15", true);
+		}
+		else
+		{
+			Entity_SetActive("Lamp_GeneratorBackup_4", false);
+			Entity_SetActive("Lamp_Generator_15", false);
+			Light_SetBrightness("Light_GeneratorBackup_4_*", 0.f);
+			Light_SetBrightness("Light_Generator_15_*", 0.f);
+			Light_SetBrightness("Light_FuseBox_BackupLamp", 0.f);
+			Light_SetBrightness("Light_FuseBox_Lamp", 0.f);
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnStateChange_Generator(int alState)
+	{
+		///////////////////
+		// Pump
+		UpdatePumpState();
+		
+		///////////////////
+		// Generator Sounds
+		if (alState!=1)
+			Sound_Play("Sound_GeneratorOff", 0.f);		
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnConnectionState_PowerSwitch(const tString &in asEntity, int alState)
+	{
+		if (alState == 0) return;
+		if (cLux_GetCurrentMap() is null) return;
+		if (cLux_IsChangingMap()) return;
+		if (Generator_GetIsSetupDone() == false) return;
+		
+		Generator_SetPowerSwitchOn(asEntity, alState == 1);
+		UpdatePumpState();
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnInteract_FuseBoxFuse(const tString &in asEntity)
+	{
+		Entity_SetActive(Generator_GetFuseInteractArea(), true);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnConnectionStateChange_FuseBoxLever(const tString &in asEntity, int alState)
+	{
+		if (alState != 1) return;
+		if (cLux_GetCurrentMap() is null) return;
+		if (cLux_IsChangingMap()) return;
+		if (Generator_GetIsSetupDone() == false) return;
+		
+		Generator_ActivateFuseBox();
+		UpdatePumpState();
+		
+		if (Generator_GetState(true) == eGeneratorState_On)
+			Lamp_SetLit("Lamp_GeneratorBackup_4", false, true);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnLookAt_FuseBoxNote(const tString &in asEntity, int alState)
+	{
+		Generator_SetFuseBoxNoteDiscovered(alState == 1);
+	}
+	
+	//-------------------------------------------------------
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// EVENTS
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		/////////////////////////////////////////
+		// General
+		//{//////////////////////////////////////
+		 
+		//-------------------------------------------------------
+		
+		void OnBreak_BreakOtherEntityAboveIt(const tString &in asEntity)
+		{
+			//////////////////
+			// making sure this entity breaks if the one below it breaks so it doesn't float in the air.
+			if (asEntity=="arsenal_quartermaster_shelf_244")
+				Prop_SetHealth("arsenal_quartermaster_shelf_245", 0.f);
+			else if (asEntity=="military_wooden_crate_2")
+				Prop_SetHealth("military_wooden_crate_3", 0.f);
+			else if (asEntity=="military_wooden_crate_4")
+				Prop_SetHealth("military_wooden_crate_8", 0.f);
+			else if (asEntity=="military_wooden_crate_11")
+				Prop_SetHealth("military_wooden_crate_12", 0.f);
+		}
+		
+		//-------------------------------------------------------
+	
+		void OnInteract_ShowArsenalMap(const tString &in asEntity)
+		{
+			InGameMap_SetMapFound("arsenal");
+		}
+		 
+		//-------------------------------------------------------
+		
+		void OnGui_Map(float afTimeStep, float afAlpha)
+		{
+			bool bZoomed = ZoomArea_GetIsZoomedIn();
+			
+			cImGuiLabelData labelData = ImGui_GetDefaultLabel();
+			labelData.mFont.SetFile(FontHandler_GetFont(eFontType_Readable,96));
+			labelData.mFont.mvSize = bZoomed ? 24 : 18;
+			labelData.mColorBase = cColor_White;
+			labelData.mGfxBackground.mColor = cColor(0, afAlpha);
+			labelData.mbUseBackgroundGfx = true;
+			
+			ImGui_SetModColorMul(cColor(1, afAlpha));
+			ImGui_SetAlignment(eImGuiAlign_CenterCenter);
+			ImGui_SetTransCategory("MapOverlay");
+			
+			DrawMapPins("Map_Arsenal_Pin_*", labelData, bZoomed);		
+			if (bZoomed) DrawMapPins("Map_Arsenal_ZoomPin_*", labelData, bZoomed);
+			
+			ImGui_SetAlignment(eImGuiAlign_TopLeft);
+			ImGui_SetModColorMul(cColor_White);
+		}
+		
+		//-------------------------------------------------------
+		
+		void DrawMapPins(const tString &in asName, cImGuiLabelData@ apLabelData, bool abZoomed)
+		{
+			array<iLuxEntity@> vPins;
+			Map_GetEntityArray(asName, vPins, eLuxEntityType_Area);
+			
+			for (int i = 0; i < vPins.length(); i++)
+			{
+				iLuxEntity@ pEnt = vPins[i];
+				tString sText = pEnt.GetVarString("");
+				ImGui_DoLabelExt(sText, apLabelData, GetHudPosFromWorldPos(pEnt.GetPosition(), abZoomed));
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		cVector3f GetHudPosFromWorldPos(const cVector3f &in avWorldPos, bool abZoomed)
+		{
+			cVector3f vMagicOffset = abZoomed ? cVector3f(25, 25, 0) : cVector3f(12, 12, 0);
+			cVector2f vScreenSize = cGraphics_GetLowLevel().GetScreenSizeFloat();
+			cRect2l rect = cMath_GetClipRectFromSphere(avWorldPos, 0.01, cLux_GetViewport().GetCamera().GetFrustum(), cVector2l(vScreenSize.x, vScreenSize.y), false, false);
+			cVector2f vHudPos = (cVector2f(rect.x, rect.y) * cLux_GetHudVirtualSize()) / vScreenSize;
+			
+			return cLux_GetHudVirtualStartPos() + cVector3f(vHudPos.x, vHudPos.y, 1) - ImGui_GetCurrentGroupPos() + vMagicOffset;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnLookAt_GiveDynamiteObjective(const tString &in asEntity, int alState)
+		{
+			InGameMap_AddObjective("Obj_GetDynamite");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnLookAt_GiveHandleObjective(const tString &in asEntity, int alState)
+		{
+			InGameMap_AddObjective("Obj_GetHandle");
+		}
+
+		//-------------------------------------------------------
+		
+		
+		void OnLookAt_SaveLamp(const tString &in asEntity, int alState)
+		{
+			tString sHint = GameDifficulty_GetSaveHint();
+			if(alState == 1)
+			{
+				if (Hint_GetCurrentEntry() != sHint)
+				{
+					Hint_StopHint();
+					Hint_RemoveFromGiven("Hints", sHint);
+					Hint_ShowHint_Hold("Hints", sHint, true, 1.5f, true, 15.f, true, true);
+				}
+			}
+			else
+			{
+				if (Hint_GetCurrentEntry() == sHint)
+					Hint_StopHint();
+					
+				Entity_SetPlayerLookAtCallback(asEntity, "");
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_SaveLamp(const tString &in asEntity)
+		{
+			////////////////
+			// About to get lit!
+			if (Lamp_GetLit(asEntity) == false)
+			{
+				Sound_CreateAtEntity("SaveLampLit", "level_entity_shared/fire/fire_ignite/glass_lantern_ignite", asEntity);
+				SaveGameProgress();
+			}
+			else
+			{
+				Sound_CreateAtEntity("SaveLampLit", "level_entity_shared/fire/lantern_lamp/lantern_lamp_extinguish", asEntity);
+				Map_AddTimer(asEntity, 1.f, "OnTimer_SaveGameProgress");
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_SaveGameProgress(const tString&in asTimer)
+		{
+			Lamp_SetLit(asTimer, true, true);
+			Sound_CreateAtEntity("SaveLampLit", "level_entity_shared/fire/fire_ignite/glass_lantern_ignite", asTimer);
+			SaveGameProgress();
+		}
+		
+		//-------------------------------------------------------
+		
+		void SaveGameProgress()
+		{
+			/////////////////
+			// Save game
+			SaveRoom_SaveGame(true, true);
+			
+			////////////////
+			// Hints
+			if (Hint_GetCurrentEntry() == GameDifficulty_GetSaveHint())
+				Hint_StopHint();
+			
+			GameStats_IncreaseEntryAmount(eHeroStats_TimesSaved);
+		}
+		
+		//-------------------------------------------------------
+			 
+		bool CanUse_Fuel(const tString &in asItemType, const tString &in asItemID, const tString &in asPickedEntity)
+		{
+			return asPickedEntity == "SaveLamp_SavingCostsFuel_Aux" && GameDifficulty_GetSettingValueByID_Int(eGameDifficultySetting_SaveSystem) == eDifficultySettingValue_SaveSystem_SavingCostsFuel;
+		}
+			
+		//-------------------------------------------------------
+			 
+		bool CanUse_FuelBottle(const tString &in asItemType, const tString &in asItemID, const tString &in asPickedEntity)
+		{
+			return CanUse_Fuel(asItemType, asItemID, asPickedEntity);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnUse_FuelBottle(const tString &in asItemType, const tString &in asItemID, const tString &in asTargetEntity, const tString &in asItemEntity, float afTimeElapsed, float afTimeStep)
+		{
+			return OnUse_Fuel(asItemType, asItemID, asTargetEntity, asItemEntity, afTimeElapsed, afTimeStep);
+		}
+	
+		//-------------------------------------------------------
+
+		bool OnUse_Fuel(const tString &in asItemType, const tString &in asItemID, const tString &in asTargetEntity, const tString &in asItemEntity, float afTimeElapsed, float afTimeStep)
+		{
+			//////////////////
+			// Save
+			OnInteract_SaveLamp("SaveLamp_Easy_Lamp");
+			Lamp_SetLit("SaveLamp_Easy_Lamp", !Lamp_GetLit("SaveLamp_Easy_Lamp"), true);
+		
+			Sound_PlayGui("update/lantern_fill/fill", 1.f, eSoundEntryType_Gui);
+			
+			//////////////////
+			// Unequip & remove item
+			Item_RemoveFromInventory(asItemID);
+			Player_ChangeStateToNormal();
+			PlayerBody_StopAnimationLayer(ePlayerBodyAnimationLayer_LeftArm, 0.5);
+			PlayerBody_PlayLayerIdleAnimation(ePlayerBodyAnimationLayer_LeftArm, 0.5);
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END General
+		
+		/////////////////////////////////////////
+		// Audio
+		/////////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_PlaySweet_1(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Entity_SetActive("Trigger_SoundSweet_1",false);
+			Sound_Play("Sound_TriggerSweet_1", 0.0f);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+
+		bool OnCollide_PlaySweet_2(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Entity_SetActive("Trigger_SoundSweet_2",false);
+			Sound_Play("Sound_TriggerSweet_2", 0.0f);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+
+		bool OnCollide_PlaySweet_3(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Entity_SetActive("Trigger_SoundSweet_3",false);
+			Sound_Play("Sound_TriggerSweet_3", 0.0f);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Audio
+		
+		//MUSIC--------------------------------------------------
+		//-------------------------------------------------------
+
+		bool OnTrigger_StopHubMusic(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Music_Stop(15.0f, eMusicPrio_BgAmb);
+			Map_RemoveTimer("Timer_HubMusic");
+			Map_RemoveTimer("Timer_MusicStartRand");
+			return false;
+		}
+
+		//-------------------------------------------------------
+
+		bool OnTrigger_PlayArsenalMusic(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Map_AddTimer("Timer_MusicStop", cMath_RandRectf(240.f, 300.f), "OnTimer_StopMusic");
+			Music_PlayExt("Bunker_Arsenal.ogg", true, 0.08f, 1.0f, 15.0f, 1.0f, eMusicPrio_SceneAmb, true);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_StopMusic(const tString &in asTimer)
+			{
+				Music_Stop(15.0f, eMusicPrio_SceneAmb);
+			}
+
+		//-------------------------------------------------------
+		
+		bool OnTrigger_PlayMainArsenalMusic(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Map_AddTimer("Timer_MusicStop", cMath_RandRectf(240.f, 300.f), "OnTimer_StopMainMusic");
+			Music_PlayExt("Bunker_Arsenal_Phase2", true, 0.08f, 1.0f, 15.0f, 1.0f, eMusicPrio_SceneAmb, true);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+
+		void OnTimer_StopMainMusic(const tString &in asTimer)
+			{
+				Music_Stop(15.0f, eMusicPrio_SceneAmb);
+				Map_AddTimer("Timer_MusicRand", cMath_RandRectf(240.f, 270.f), "OnTrigger_PlayMainArsenalMusic");
+			}
+
+		//-------------------------------------------------------
+		
+		//MUSIC_END----------------------------------------------
+	 
+		/////////////////////////////////////////
+		// Event: Stalker maze encounter
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+		
+		bool mbPlayerIsInTheSecondMaze = false;
+		bool mbStalkerEncounterStarted = false;
+		bool mbPlayerInsideMaze = false;
+		tString msStalkerEmergeTrigger = "";
+			
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_SetupStalker(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (mbStalkerEncounterStarted)
+				return false;
+				
+			if (Entity_IsActive("Stalker_1") == false)
+			{
+				Entity_SetActive("Stalker_1", true);
+				Stalker_GoToHole("Stalker_1", "GhoulHole_4", true, true);
+				Stalker_SetMode("Stalker_1", eStalkerMode_Passive, true);
+			}
+					
+			return false;
+		}
+
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_EnterMaze(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState == 1) return true;
+			
+			bool bInFront = Entity_PlayerIsInFront(asParent);			
+			mbPlayerInsideMaze = bInFront;			
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_StalkerEmerge(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (Stalker_GetIsInsideWalls("Stalker_1") == false)
+			{
+				Entity_SetActive("Trigger_StalkerEmerge_*", false);
+				return true;
+			}
+			
+			if (Map_TimerExists("Timer_StalkerEmerge"))
+				return true;
+			
+			msStalkerEmergeTrigger = asParent;
+			
+			float fTime;
+			if (cString_GetFirstStringPos(asParent, "StalkerEmerge_A") != -1)
+			{				
+				fTime = cMath_RandRectf(5.f, 60.f * 2.f);
+			}
+			else
+			{
+				fTime = cMath_RandRectf(20.f, 60.f * 1.f);
+			}
+						
+			Map_RemoveTimer("Timer_StalkerEmerge");
+			Map_AddTimer("Timer_StalkerEmerge", fTime, "OnTimer_StalkerEmerge");	
+			
+			cLux_AddDebugMessage("Stalker will emerge in: " + fTime + ", Trigger:" + msStalkerEmergeTrigger);
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_StalkerEmerge(const tString &in asTimer)
+		{
+			if (mbPlayerInsideMaze == false) return;	
+			mbStalkerEncounterStarted = true;		
+			
+			Entity_SetActive("Trigger_StalkerEmerge_*", false);
+			
+			tString sHole = Entity_GetVarString(msStalkerEmergeTrigger, "");	
+		
+			if (Entity_IsActive("Stalker_1") == false)
+			{
+				Entity_SetActive("Stalker_1", true);
+				Stalker_GoToHole("Stalker_1", sHole, true, true);
+			}
+					
+			Map_AddTimer(sHole, 1.f, "OnTimer_SoundEvent");		
+			
+			if (cString_GetFirstStringPos(msStalkerEmergeTrigger, "StalkerEmerge_B") != -1)
+			{
+				Music_Stop(20.0f, eMusicPrio_SceneAmb);
+				Music_PlayExt("Bunker_Arsenal_Phase2", true, 0.11f, 1.0f, 20.0f, 1.0f, eMusicPrio_SceneAmb, true);
+				Map_RemoveTimer("Timer_MusicStop");
+				Map_AddTimer("Timer_MusicPhase2Stop", 360.0f, "OnTimer_StopMainMusic");
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_SoundEvent(const tString &in asTimer)
+		{
+			tString sArea = "";
+			if (cString_GetFirstStringPos(msStalkerEmergeTrigger, "StalkerEmerge_A") != -1)
+				sArea = "Area_Investigate_A";
+			else if (cString_GetFirstStringPos(msStalkerEmergeTrigger, "StalkerEmerge_B") != -1)
+				sArea = "Area_Investigate_B";
+	
+			Sound_CreateAIEventAtEntity(sArea, 500.f, 7);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_ActivateGhoulHole(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (asParent == "Trigger_ActivateGhoulHole_2A" || 
+				asParent == "Trigger_ActivateGhoulHole_2B")
+			{
+				Entity_SetActive("path_area_blocker_forward_2*", false);
+				Entity_SetActive("Trigger_ActivateGhoulHole_2*", false);
+			}
+			else if (asParent == "Trigger_ActivateGhoulHole_3A" || 
+					 asParent == "Trigger_ActivateGhoulHole_3B")
+			{
+				Entity_SetActive("GhoulHole_3", true);
+				Entity_SetActive("GhoulHole_5", true);
+				Entity_SetActive("GhoulHole_10", true);
+				
+				Entity_SetActive("path_area_blocker_forward_3*", false);
+				Entity_SetActive("Trigger_ActivateGhoulHole_3*", false);
+			}			
+			else if (asParent == "Trigger_ActivateGhoulHole_6")
+			{
+				Entity_SetActive("path_area_blocker_forward_6", false);
+				Entity_SetActive("GhoulHole_6", true);
+			}
+			else if (asParent == "Trigger_ActivateGhoulHole_7")
+			{
+				Entity_SetActive("path_area_blocker_forward_7", false);
+				Entity_SetActive("GhoulHole_7", true);
+			}
+			
+			cLux_AddDebugMessage("New area open for stalker to emerge!");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnBreak_OpenNewPath(const tString &in asEntity)
+		{
+			if (asEntity == "Shelf_PathBlocker_1")
+			{
+				Entity_SetActive("GhoulHole_3", true);
+				Entity_SetActive("GhoulHole_5", true);
+				Entity_SetActive("GhoulHole_10", true);
+				
+				Entity_SetActive("path_area_blocker_forward_3*", false);
+				Entity_SetActive("Trigger_ActivateGhoulHole_3*", false);
+				
+				if (Entity_Exists("Shelf_PathBlocker_2"))
+					Prop_SetHealth("Shelf_PathBlocker_2", 0.f);
+			}
+		}
+				
+		//-------------------------------------------------------
+		
+		bool OnCollide_ManageGhoulHoles(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState==1) return true;
+			
+			mbPlayerIsInTheSecondMaze = !mbPlayerIsInTheSecondMaze;
+			
+			if (mbPlayerIsInTheSecondMaze)
+			{
+				Entity_SetActive("GhoulHole_1", false);
+				Entity_SetActive("GhoulHole_3", false);
+				Entity_SetActive("GhoulHole_4", false);
+				Entity_SetActive("GhoulHole_8", false);
+				Entity_SetActive("GhoulHole_9", false);
+				
+				cLux_AddDebugMessage("First ghoul holes group disabled");
+				return true;
+			}
+			
+			Entity_SetActive("GhoulHole_1", true);
+			Entity_SetActive("GhoulHole_3", true);
+			Entity_SetActive("GhoulHole_4", true);
+			Entity_SetActive("GhoulHole_8", true);
+			Entity_SetActive("GhoulHole_9", true);
+			
+			cLux_AddDebugMessage("First ghoul holes group enabled");
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_MazeReturnTripStarted(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (ItemType_GetCountInInventory("DynamiteBundle") == 0)
+				return true;
+
+			if (Stalker_GetMode("Stalker_1") == eStalkerMode_Passive)
+			{	
+				Stalker_SetMode("Stalker_1", eStalkerMode_Active, true);
+			}
+			
+			Entity_SetActive(asParent, false);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTear_BarricadePlank(const tString &in asEntity)
+		{
+			tID idBody = Entity_GetMainBodyID(asEntity);
+			iPhysicsBody@ pBody = cLux_ID_Body(idBody);
+			
+			if (pBody !is null)
+				pBody.SetCollideFlags(mBaseObj.GetCollideFlag("+plank"));
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event: Stalker maze encounter
+		
+		/////////////////////////////////////////
+		// Event: Push barrel on rats
+		//{//////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ActivateRatCrusher(const tString&in asTimer)
+		{
+			Entity_SetActive("Trigger_ColliderBarrel", true);
+		}
+		
+		//-------------------------------------------------------
+		
+        bool OnCollide_CrashRats(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			bool bChildIsColliding = alState==1;
+			
+			////////////////////////////////
+			// Check for any rat in the area
+			iLuxEntity@ pRatInArea = Map_GetEntity(asChild, eLuxEntityType_Agent, "cScrAgentRat");
+			if (pRatInArea !is null)
+			{
+				////////////////////
+				// And mark them as such
+				Entity_SetVarBool(asChild, "IsCollidingWithRatCrusher", bChildIsColliding);
+				return true;
+			}
+			
+			///////////////////////////////
+			// Check for the barrel falling
+			if (bChildIsColliding==false)
+				return true;
+			
+			if (asChild == "barrel_rats")
+			{
+				///////////////
+				// Iterate through rats
+				array<iLuxEntity@> vCollidingRats;
+				Map_GetEntityArray("dark_world_rat_*", vCollidingRats, eLuxEntityType_Agent);
+				
+				for(int i=0; i<vCollidingRats.size(); ++i)
+				{
+					iLuxEntity@ pCurrentRat = vCollidingRats[i];
+					
+					if (pCurrentRat is null)
+						continue;
+						
+					tString sRatName = pCurrentRat.GetName();
+					
+					//////////////////////
+					// Ignore rats no longer in the area
+					bool bRatIsStillInTheArea = Entity_GetVarBool(sRatName, "IsCollidingWithRatCrusher");					
+					if (bRatIsStillInTheArea==false)
+						continue;
+					
+					//////////////
+					// Kill the remaining ones
+					cLuxAgent@ pRatAgent = cLux_ToAgent(pCurrentRat);
+					if (pRatAgent is null)
+						continue;
+					
+					pRatAgent.GiveDamage(pRatAgent.GetMainBody(), cVector3f_Zero, cVector3f_Zero, eDamageType_Grenade, 1000.f, 1.f, 1.f, 1.f, tID_Invalid, 0);
+				}
+				
+				/////////////////
+				// All Done! Disable the trigger
+				Prop_SetHealth("barrel_rats", 0.f);
+				return false;
+			}
+		
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event: Push barrel on rats
+		
+		/////////////////////////////////////////
+		// Event: Pick up dynamite
+		//{//////////////////////////////////////
+		
+		//-------------------------------------------------------
+	
+		void OnInteract_PickUpDynamite(const tString &in asEntity)
+		{			
+			Map_RemoveTimer(asEntity);
+			Map_AddTimer(asEntity, 0.1f, "OnTimer_DynamitePickedUp");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_DynamitePickedUp(const tString&in asTimer)
+		{
+			if (Entity_Exists(asTimer)) return;
+			if (Entity_IsActive(asTimer)) return;
+
+			Achievement_Unlock(eAchievement_MunitionsExpert);
+			Map_AddTimer("Timer_CompleteDynamiteObjective", 1.f, "OnTimer_CompleteDynamiteObjective");
+			
+			Music_Play("Bunker_DynamitePickup.ogg", 0.1f, false, eMusicPrio_MinorEvent);
+			
+			Map_RemoveTimer("Timer_StalkerEmerge");
+			Entity_SetActive("Trigger_StalkerEmerge_A_*", false);
+			
+			if (Stalker_GetIsInsideWalls("Stalker_1"))
+			{
+				Entity_SetActive("Trigger_StalkerEmerge_B_*", true);
+			}
+			
+			//////////////
+			// Increase stalker escalation
+			bool bFullStep = GameDifficulty_GetSettingValueByID_Int(eGameDifficultySetting_StalkerAggressiveness) > eDifficultySettingValue_StalkerAggressiveness_Default;
+			Blackboard_IncreaseStalkerEscalation(bFullStep);
+			cScript_SetGlobalVarInt("LevelProgression", cScript_GetGlobalVarInt("LevelProgression") + 1);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_CompleteDynamiteObjective(const tString &in asTimer)
+		{
+			InGameMap_SetObjectiveCompleted("Obj_GetDynamite");
+			
+			if (InGameMap_IsObjectiveCompleted("Obj_GetHandle"))
+				InGameMap_AddObjective("Obj_BlowUpExit");
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event: Pick up dynamite
+		
+		/////////////////////////////////////////
+		// Event: Pump out the water
+		//{//////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		bool mbPumpOn = false;
+		bool mbPlayWaterTunnelBlockerFeedback = true;
+		bool mbShowPumpWaterStreamParticles = true;
+				
+		//-------------------------------------------------------
+		
+		void OnConnectionStateChange_PumpLever(const tString &in asEntity, int alState)
+		{			
+			UpdatePumpState();
+			
+			if (alState == 1 && mbPumpOn==false)
+				Sound_AddClosedCaption("GeneralClosedCaptions", "Arsenal_PumpNotPowered", -1);
+		}
+		
+		//-------------------------------------------------------
+		
+		void UpdatePumpState()
+		{					
+			bool bPrevPumpOn = mbPumpOn;
+			bool bGeneratorHasPower = Generator_GetState(true) == eGeneratorState_On &&
+									  Lever_GetState("PowerSwitch_1") == 1;
+			
+			///////////////////
+			// Pump on
+			if (bGeneratorHasPower && Lever_GetState("PumpLever") == 1)
+			{
+				mbPumpOn = true;
+				
+				Lever_SetStuckState("PumpLever", 1, true);
+				Lever_SetAutoMoveEnabled("PumpLever", false);
+				
+				Lamp_SetLit("PumpLamp_On", true, true);
+				Lamp_SetLit("PumpLamp_Off", false, true);
+				
+				Prop_SetStaticPhysics("WaterTunnelPlank", false);
+				Entity_SetInteractionDisabled("WaterTunnelPlank", false);
+				
+				Light_FadeBrightnessTo("Light_WaterTunnel_*", 0.f, 1.f);
+				
+				Map_AddTimer("Timer_MovePumpRoomLiquid", 2.f, "OnTimer_MovePumpRoomLiquid");
+				
+				if (mbShowPumpWaterStreamParticles)
+					{
+						Prop_SetActiveAndFade("WaterStream", true, 2.f);
+						Sound_Play("Sound_WaterDrain", 2.0f);
+					}
+				ParticleSystem_SetVisible("PS_WaterRipples_*", false);
+				ParticleSystem_Destroy("PS_WaterRipples_*");
+				
+				if (bPrevPumpOn == false)
+				{
+					Sound_CreateAtEntity("Sound_PumpStart", "arsenal/level/generator_start", "water_pump_1");
+					Sound_CreateAtEntity("Sound_PumpLoop", "arsenal/level/generator_loop", "water_pump_1");
+					
+					Sound_AddClosedCaption("GeneralClosedCaptions", "Arsenal_PumpPowered", -1);
+				}
+			}
+			
+			///////////////////
+			// Pump off
+			else
+			{
+				mbPumpOn = false;
+				
+				if (bGeneratorHasPower)
+				{
+					Lamp_SetLit("PumpLamp_On", false, true);
+					Lamp_SetLit("PumpLamp_Off", true, true);
+				}
+				else
+				{
+					Lamp_SetLit("PumpLamp_On", false, true);
+					Lamp_SetLit("PumpLamp_Off", false, true);
+				}
+				
+				Lever_SetStuckState("PumpLever", 0, true);
+				Lever_SetAutoMoveEnabled("PumpLever", true);
+				
+				if (Entity_IsActive("WaterStream"))
+					
+					Prop_SetActiveAndFade("WaterStream", false, 5.f);
+					Sound_Stop("Sound_WaterDrain", 2.0f);
+				
+				Map_RemoveTimer("Timer_MovePumpRoomLiquid");
+				LiquidArea_StopMovement("Liquid_PumpRoom");
+				
+				if (bPrevPumpOn)
+				{
+					Sound_Stop("Sound_PumpStart", 1.f);
+					Sound_Stop("Sound_PumpLoop", 1.f);
+					Sound_CreateAtEntity("Sound_PumpEnd", "arsenal/level/generator_stop", "water_pump_1");
+				}
+			}		
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_MovePumpRoomLiquid(const tString &in asTimer)
+		{
+			LiquidArea_MoveLinearTo("Liquid_PumpRoom", "Area_LiquidGoal", 0.1f, 0.1f, 0.f, false, "OnMoveLiquidArea_PumpRoom");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnMoveLiquidArea_PumpRoom(const tString &in asArea)
+		{
+			float fDist = Entity_GetDeltaToEntity(asArea, "Area_LiquidGoal").Length();
+			if (fDist <= 0.1f && mbShowPumpWaterStreamParticles)
+			{
+				mbShowPumpWaterStreamParticles = false;
+				Prop_SetActiveAndFade("WaterStream", false, 5.f);	
+				Sound_Stop("Sound_WaterDrain", 2.0f);
+				
+				// Failsafe if it bugs out!
+				iLuxEntity@ pProp = Map_GetProp("WaterTunnelBlocker");
+				if (pProp !is null && 
+					pProp.GetBaseMatrix().GetTranslation().y > -0.8f)
+				{
+					pProp.SetPosition(cVector3f(-63.467f, -0.695f, 112.052f));
+					pProp.WakeUp();
+					
+					cLux_AddDebugMessage("Moved tunnel blocker!");
+				}
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_WaterTunnelBlocker(const tString &in asEntity)
+		{
+			if (mbPlayWaterTunnelBlockerFeedback)
+			{
+				Map_AddTimer(asEntity, 0.01f, "OnTimer_DoWaterTunnelBlockerFeedback");
+				Map_SetTimerUserVarInt(asEntity, 0);
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_DoWaterTunnelBlockerFeedback(const tString &in asTimer)
+		{
+			if (Entity_IsInteractedWith(asTimer) == false) return;
+			if (mbPlayWaterTunnelBlockerFeedback == false) return;
+			
+			iLuxEntity@ pEnt = Map_GetEntity(asTimer, eLuxEntityType_Prop);
+			iPhysicsBody@ pBody = pEnt !is null ? pEnt.GetMainBody() : null;
+			
+			if (Map_GetTimerUserVarInt(asTimer) == 0 ||
+				(pBody !is null && 
+				 pBody.GetLinearVelocity().Length() > 0.02f &&
+				 Map_TimeHasPassed("Timer_WaterTunnelBlockerFeedback", 1.5f)))
+			{
+				Effect_Rumble_Start(0.5, 0.2);
+				Sound_CreateAtEntity("Sound_WaterTunnelBlockerFeedback", "level_entity_shared/doors/tank_hatch/tank_hatch_max_stuck", asTimer);
+			}
+			
+			
+			
+			Map_RestartCurrentTimer();
+			Map_SetTimerUserVarInt(asTimer, 1);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTear_WaterTunnelPlank(const tString &in asEntity)
+		{
+			mbPlayWaterTunnelBlockerFeedback = false;
+			Entity_SetActive("WaterTunnelBlocker_*", false);
+			Entity_SetActive("WaterTunnelBlockerLow", true);
+			Entity_SetActive("Trigger_WaterTunnelBlockerFeedback_*", false);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_FadeOutPumpSounds(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState == 1) return true;
+			
+			bool bInFront = Entity_PlayerIsInFront(asParent);
+			
+			if (bInFront)
+			{
+				Sound_Stop("Sound_PumpLoop", 1.f);
+			}
+			else
+			{
+				if (mbPumpOn)
+					Sound_CreateAtEntity("Sound_PumpLoop", "arsenal/level/generator_loop", "water_pump_1");
+			}
+			
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event: Pump out the water
+	 
+	//} END SCENE X
+	
+	//------------------------------------------------------- 
+}

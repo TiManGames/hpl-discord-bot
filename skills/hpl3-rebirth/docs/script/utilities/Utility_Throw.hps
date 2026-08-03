@@ -1,0 +1,178 @@
+#include "helpers/helper_imgui.hps"
+#include "helpers/helper_modules.hps"
+
+//------------------------------------------------------------
+// Used by A2 item system and by prop_grab to control item throwing
+
+//const float gfThrowMinPower = 0.5f;
+//const float gfThrowMaxPower = 1.5f;
+
+
+const float gfThrowMinTime = 0.015f;	// min time
+const float gfThrowMaxTime = 0.75f;		// Max time to hold for full power throw
+
+const float gfBaseThrowPower = 0.6f;		// Base (tap and release) power
+const float gfAdditionalThrowPower = 0.4f;	// Additional power on top of base scaled by throw time
+
+//------------------------------------------------------------
+
+class cUtility_Throw
+{
+	//------------------------------------------------------------
+	
+	void Start()
+	{
+		mlThrowTime = cLux_GetCurrentMap().GetTimeStamp();
+		cScript_SetGlobalVarBool("IsThrowing",true);
+	}
+	
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+		mlThrowTime=-1;
+		cScript_SetGlobalVarBool("IsThrowing",false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void Do(tID aBodyID, float afImpulse, bool abAllowDrop)
+	{	
+		iPhysicsBody@ pBody = cLux_ID_Body(aBodyID);
+		iLuxEntity@ pEnt = cLux_GetBodyEntity(pBody);
+		
+		cCamera@ pCam = cLux_GetPlayer().GetCamera();	
+				
+		///////////////////////////////////////////
+		// Work out power based on how long the key
+		// has been held down.
+		float fRayLength = 2.25f;
+		cVector3f vFwd =  pCam.GetForward();
+		cVector3f vOrigin = pEnt.GetPosition();
+		cVector3f vEnd = vOrigin+(vFwd*fRayLength);
+		
+		float fDistance=0.0;
+		cVector3f vSurfaceNormal;
+		
+		float fMax = gfBaseThrowPower + gfAdditionalThrowPower;
+		float fMin = gfBaseThrowPower;
+		
+		float fThrowPower = GetPower();
+		fThrowPower = fMin+(fThrowPower*fMax);
+		
+		////////////////////////////
+		// Check for an intersection if the player taps a button
+		float fTimePassed = cLux_GetCurrentMap().GetElapsedTime(mlThrowTime);
+		fTimePassed = cMath_Clamp(fTimePassed,0.0f,gfThrowMaxTime);
+		if (abAllowDrop && fTimePassed < 0.2)
+		{
+			bool bClear = cLux_CheckLineOfSight(vOrigin,vEnd,false,true, pEnt);
+			bool bIntersection = !bClear;
+			cLux_AddDebugMessage("Player tapped button. Nearby intersection? <"+bIntersection+">");
+			if (bIntersection)
+			{
+				cLux_AddDebugMessage("Player is attempting to drop, not throw " + pEnt.GetName());
+				fThrowPower = 0;
+			}
+		}
+		
+		// Reset
+		mlThrowTime = -1;
+		cScript_SetGlobalVarBool("IsThrowing",false);
+		
+		////////////////////////////////////////////
+		// Add impulse and reset speed
+	
+		float fImpulseMul=1.0f;
+		float fMass = pBody.GetMass();
+		// Boost for small items
+		if(fMass<3) fImpulseMul=1.5f;
+
+		pBody.SetLinearVelocity(cVector3f_Zero);
+		pBody.SetAngularVelocity(cVector3f_Zero);
+		pBody.AddImpulse(pCam.GetForward() * afImpulse * fImpulseMul * fThrowPower);
+		
+		if (fMass>6.0f)
+		{
+			ModEvent_Trigger(eModEvent_Throw_Heavy);
+		}
+		else if (fMass>3.0f)
+		{
+			ModEvent_Trigger(eModEvent_Throw_Medium);
+		}
+	}
+	
+	//------------------------------------------------------------
+
+	void Cancel()
+	{
+		mlThrowTime=-1;
+		cScript_SetGlobalVarBool("IsThrowing",false);
+	}
+	
+	//------------------------------------------------------------
+
+	bool IsActive()
+	{
+		return (mlThrowTime!=-1);
+	}
+	
+	//------------------------------------------------------------
+
+	// For meters etc.
+	float GetPower()
+	{
+		float fTimePassed = cLux_GetCurrentMap().GetElapsedTime(mlThrowTime);
+		fTimePassed = cMath_Clamp(fTimePassed,0.0f,gfThrowMaxTime);
+		
+		float fThrowPower = gfBaseThrowPower;
+		float fThrowAdditionalPower = (fTimePassed / gfThrowMaxTime) * gfAdditionalThrowPower;
+		fThrowPower += fThrowAdditionalPower;
+		
+		return fThrowPower;
+	}
+	
+	//------------------------------------------------------------
+
+	void DrawGuiMeter(float afTimeStep)
+	{
+		// dont think we need to display this in game unless script debug is on?
+		//if (cLux_ScriptDebugOn()==false)
+			return;
+		
+/*		if (mlThrowTime==-1)
+			return;
+
+		int lPercent = 100*GetPower();
+		tString sText = ""+lPercent+"%";
+		cVector3f vPos;
+		vPos.x = -cLux_GetHudVirtualOffset().x;
+		vPos.y = -cLux_GetHudVirtualOffset().y;
+		vPos.z = 0.0f;
+
+		ImGui_GroupBegin(vPos, ImGui_GetSize());
+
+		cVector3f vTextPos = ImGui_NrmPosGroup(0.4f,0.525f,1.0f);
+		cVector2f vSize = ImGui_NrmSizeGroup(0.2f,0.05f);
+
+		cImGuiLabelData labelData;
+		labelData.mColorBase = cColor(1.0f,1.0f,1.0f, 1.0f);
+		labelData.mFontAlign = eFontAlign_Center;
+		labelData.mFont.mvSize = cVector2f(20,20);
+		labelData.mFont.SetFile("sansation_large_bold.fnt");
+
+		ImGui_SetTransCategory("");
+		ImGui_DoLabelExt(sText, labelData, vTextPos, vSize, 1.0f);
+		ImGui_SetModColorMul(cColor(0,0,0));
+		ImGui_DoLabelExt(sText, labelData, vTextPos+cVector3f(1.0f,1.0f,-1.0f), vSize, 1.0f);
+		ImGui_ResetModifiers();
+		
+		ImGui_GroupEnd();*/
+	}
+	
+	//------------------------------------------------------------
+	
+	int mlThrowTime=-1;
+	
+	//------------------------------------------------------------
+}

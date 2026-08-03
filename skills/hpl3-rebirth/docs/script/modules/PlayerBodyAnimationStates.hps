@@ -1,0 +1,1490 @@
+#include "interfaces/UserModule_Interface.hps"
+#include "modules/ModuleInterfaces.hps"
+#include "InputHandler_Types.hps"
+#include "helper_player.hps"
+
+#include "helpers/helper_components.hps"
+
+#include "custom/helpers/helper_player_custom.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+
+float gfBodyHipTurnSpeed = 0.75f; 			//Controls how quickly the hip will turn to match the upper body
+int glBodyAnimationDirections = 8;
+
+//const int glBodyRenderLayer = 0; // Gets this from being included in PlayerBodyHandler.hps
+
+//------------------------------------------------------------
+
+enum ePlayerBodyAnimationState
+{
+	ePlayerBodyAnimationState_Idle,
+	ePlayerBodyAnimationState_Walk,
+	ePlayerBodyAnimationState_Run,
+	ePlayerBodyAnimationState_CrouchTransition,
+	ePlayerBodyAnimationState_InAir,
+	ePlayerBodyAnimationState_Ladder,
+	ePlayerBodyAnimationState_Cutscene,
+	ePlayerBodyAnimationState_Custom,
+	ePlayerBodyAnimationState_Interactive,
+	ePlayerBodyAnimationState_AnimatedMove,
+	ePlayerBodyAnimationState_CustomAnimation,
+	ePlayerBodyAnimationState_LastEnum
+}
+	
+//------------------------------------------------------------
+
+class cDirMovementAnimation
+{
+	void Reset()
+	{
+		mBaseAnim = ePlayerBodyAnimation(-1);
+		mfWeight = 0;
+		mfFadeT = 0;
+	}
+	
+	
+	void SetWeight(float afWeight)
+	{
+		mfWeight = afWeight;
+		mfWeightTarget = afWeight;
+		mfFadeT = 1;
+		
+		mbFadingOut = afWeight <= 0;
+	}
+	
+	void FadeWeight(float afTarget, float afTime)
+	{
+		mfFadeT = 0;
+		mfFadeSpeed = 1.0f/afTime;
+		mfWeightTarget = afTarget;
+		
+		mbFadingOut = afTarget <= 0;
+	}
+	
+	void UpdateWeight(float afTimeStep)
+	{
+		mfFadeT = cMath_Min(mfFadeT+afTimeStep*mfFadeSpeed, 1.0f);
+		mfWeight = cMath_InterpolateLinear(mfWeight, mfWeightTarget, mfFadeT);
+	}
+	
+	ePlayerBodyAnimation mBaseAnim = ePlayerBodyAnimation(-1);
+	tString msSet = "";
+	float mfWeight = 0;
+	float mfWeightTarget = 0;
+	float mfFadeT = 0;
+	float mfFadeSpeed = 0;
+	
+	bool mbFadingOut = false;
+}
+	
+//------------------------------------------------------------
+
+class cPlayerBodyAnimationState
+{
+	void OnEnter(cScrPlayerBodyHandler@ aBody){}
+	void OnLeave(cScrPlayerBodyHandler@ aBody){}
+	void OnVariableUpdate(cScrPlayerBodyHandler@ aBody, float afTimeStep){}
+	void OnUpdate(cScrPlayerBodyHandler@ aBody, float afTimeStep){}
+	tString GetBaseAnimation(cScrPlayerBodyHandler@ aBody, ePlayerBodyAnimationLayer aLayer){return "";}
+	void SetCrouch(cScrPlayerBodyHandler@ aBody, bool abCrouch, bool abInstant){}
+	
+	void OnAnimationSetLeave(cScrPlayerBodyHandler@ aBody) 
+	{
+		aBody.StopAnimationLayer(ePlayerBodyAnimationLayer_FullBody, 0.3f, false, true);
+		OnLeave(aBody);
+	}
+	
+	void OnAnimationSetEnter(cScrPlayerBodyHandler@ aBody) 
+	{
+		OnEnter(aBody);
+	}
+	
+	bool GetDisableLowerYawBones(){ return false; }
+	
+	void PlayLayerIdleAnimation(cScrPlayerBodyHandler@ aBody)
+	{
+		
+	}
+	
+	bool AnimationIsBaseAnimation(cScrPlayerBodyHandler@ aBody, const tString &in asAnim, ePlayerBodyAnimationLayer aLayer)
+	{
+		return asAnim == GetBaseAnimation(aBody, aLayer);
+	}
+	
+	float GetIdleRelativeTime(cScrPlayerBodyHandler@ aBody)
+	{
+		cAnimationState@ pState = aBody.GetAnimationState(GetBaseAnimation(aBody, ePlayerBodyAnimationLayer_Body));
+		return pState.GetRelativeTimePosition();
+	}
+	
+	float GetTargetFeetYaw(cScrPlayerBodyHandler@ aBody, float afTimeStep)
+	{
+		return aBody.mfTargetYaw;
+	}
+	
+	float GetTargetFeetYaw_InMovementDirection(cScrPlayerBodyHandler@ aBody, float afTimeStep, bool abUseInputDirection=true)
+	{
+		float fTargetYaw = aBody.mfTargetYaw;
+		
+		cVector3f vVel2D = aBody.GetVelocity2D(abUseInputDirection);
+		
+		float fCharBodyYaw = cLux_GetPlayer().GetCharacterBody().GetYaw();
+		
+		// If not moving, just keep target yaw the same
+		if (vVel2D.SqrLength() > 0)
+		{
+			float fMoveAngle = cMath_ATan2(-vVel2D.x, -vVel2D.z);
+			if (aBody.mlFeetDirection == -1) fMoveAngle += cMath_Pi;
+			float fAngleDiff = cMath_GetAngleDistanceRad(fCharBodyYaw, fMoveAngle);
+			
+			fTargetYaw = fCharBodyYaw+fAngleDiff;
+		}
+		
+		return fTargetYaw;
+	}
+	
+	float GetTargetFeetYaw_Forward(cScrPlayerBodyHandler@ aBody)
+	{
+		return cLux_GetPlayer().GetCharacterBody().GetYaw();
+	}
+	
+	
+	void FadeWeight(float afTarget, float afTime)
+	{
+		mfFadeStart = mfWeight;
+		mfFadeSpeed = 1.f / afTime;
+		mfFadeTarget = afTarget;
+		mfFadeT = 0.f;
+	}
+	
+	void UpdateWeight(float afTimeStep)
+	{
+		mfFadeT = cMath_Min(mfFadeT+afTimeStep*mfFadeSpeed, 1.0f);
+		mfWeight = cMath_InterpolateLinear(mfFadeStart, mfFadeTarget, mfFadeT);
+	}
+	
+	bool IsCameraAnimation()
+	{
+		return false;
+	}
+	
+	float mfFadeT = 0;
+	float mfFadeSpeed = 1;
+	float mfFadeTarget = 1;
+	float mfFadeStart = 0;
+	float mfWeight = 0;
+	
+	tString GetName(){return "INVALID";}
+}
+	
+//------------------------------------------------------------
+
+class cPlayerBodyAnimationState_Idle : cPlayerBodyAnimationState
+{
+	cVector3f mvExitVel = 0;
+	cPlayerBodyAnimationState_Idle()
+	{
+	}
+	
+	void OnEnter(cScrPlayerBodyHandler@ aBody) override
+	{
+		ePlayerBodyAnimationLayer eLayer = ePlayerBodyAnimationLayer_FullBody;
+		
+		float fCharBodyYaw = cLux_GetPlayer().GetCharacterBody().GetYaw();
+		float fBodyYawDistance = cMath_GetAngleDistanceRad(aBody.mfYaw, fCharBodyYaw);
+		// Play only idle animations on arms if yaw distance is to big, since turn animation will play instead
+		if (aBody.mbCrouching == false && cMath_Abs(fBodyYawDistance) > aBody.GetYawSoftLimit())
+		{
+			eLayer = ePlayerBodyAnimationLayer_Arms;
+		}
+		
+		aBody.PlayLayerIdleAnimation(eLayer, mbSkipFadeIn ? 0 : 0.3, true, mbSkipFadeIn);
+		//aBody.PlayAnimationInLayer(ePlayerBodyAnimation_Idle, eLayer, true, false, false, 0.f, 1.f, 0.f, true, false);
+		mbSkipFadeIn = false;
+		mfTurnFadeIn = 0.3f;
+		
+		//FootPlacement_FadeIn(aBody.GetEntityName(), 0.3);
+		FootPlacement_SetFootActive(aBody.GetEntityName(), true, true);
+		FootPlacement_SetFootActive(aBody.GetEntityName(), true, false);
+		
+	}
+	
+	void OnLeave(cScrPlayerBodyHandler@ aBody) override
+	{
+		if (mCurrentTurnAnim != -1)
+		{
+			//aBody.StopAnimationInLayer(mCurrentTurnAnim, ePlayerBodyAnimationLayer_Body, 0.3f);
+			mCurrentTurnAnim = ePlayerBodyAnimation(-1);
+		}
+		//FootPlacement_FadeOut(aBody.GetEntityName(), 0.3);
+	}
+	
+	void OnUpdate(cScrPlayerBodyHandler@ aBody, float afTimeStep) override
+	{
+		///////////////////////////
+		// Update turn animation
+		mfTurnFadeIn -= afTimeStep;
+		if (mCurrentTurnAnim != -1)
+		{
+			cAnimationState@ pAnim = aBody.GetAnimationState(mCurrentTurnAnim);
+			if (pAnim !is null)
+			{
+				// If animation has been stopped elsewhere it should no longer be the current turn anim
+				if (pAnim.GetFadeStep() < 0 || pAnim.IsOver())
+				{
+					mCurrentTurnAnim = ePlayerBodyAnimation(-1);
+					
+					FootPlacement_SetFootActive(aBody.GetEntityName(), true, true);
+					FootPlacement_SetFootActive(aBody.GetEntityName(), true, false);
+				}
+				
+				// Make sure rotation anims triggered early in the state are faded in a bit slower
+				// to avoid weirdness when blending with animations from the previous state
+				else if (mfTurnFadeIn > 0)
+				{
+					pAnim.SetWeight(mfWeight);
+					pAnim.FadeIn(mfTurnFadeIn);
+				}
+			}
+		}
+		else
+		{
+			cAnimationState@ pAnimState = aBody.GetAnimationState(GetBaseAnimation(aBody, ePlayerBodyAnimationLayer_FullBody) );
+        
+			if (pAnimState !is null)
+			{
+				pAnimState.SetWeight(mfWeight);
+			}
+		}
+		//////////////////////
+		// State transitions
+		cVector3f vVelocity = aBody.GetVelocity2D(false);
+		float fSpeed = vVelocity.Length();
+		
+		if(mCurrentTurnAnim != -1)
+			return;
+		
+		if(mfWeight < 1.f)
+			return;
+		
+		if (cLux_GetPlayer().GetCharacterBody().IsOnGround()==false)
+		{
+			aBody.ChangeAnimationState(ePlayerBodyAnimationState_InAir, false);
+		}
+		else if (fSpeed>0.1)
+		{
+			float fTime = 0.3f;
+			mvExitVel = vVelocity;
+			aBody.ChangeAnimationState(ePlayerBodyAnimationState_Walk, false, fTime);
+		}
+	}
+	
+	tString GetBaseAnimation(cScrPlayerBodyHandler@ aBody, ePlayerBodyAnimationLayer aLayer) override
+	{
+		if (mCurrentTurnAnim != -1 && aLayer == ePlayerBodyAnimationLayer_Body)
+			return aBody.GetAnimationForLayer(mCurrentTurnAnim, aLayer);
+		
+		tString sBase = aBody.GetAnimation(ePlayerBodyAnimation_Idle);
+		if (aBody.mbCrouching) sBase = aBody.GetAnimation(ePlayerBodyAnimation_CrouchIdle);
+				
+		return aBody.GetAnimationForLayer(sBase, aLayer);
+	}
+	
+	void SetCrouch(cScrPlayerBodyHandler@ aBody, bool abCrouch, bool abInstant)
+	{
+		if (abInstant || mCurrentTurnAnim != -1)
+		{
+			ePlayerBodyAnimation animation;
+			if (abCrouch) animation = ePlayerBodyAnimation_CrouchIdle;
+			else 		  animation = ePlayerBodyAnimation_Idle;
+			
+			float fFadeTime = abInstant ? 0 : 0.3;
+			
+			aBody.PlayAnimationInLayer(animation, ePlayerBodyAnimationLayer_Body, true, true, false, fFadeTime, 1, 0);
+			aBody.PlayAnimationInLayer(animation, ePlayerBodyAnimationLayer_LeftArm, true, true, false, fFadeTime, 1, 0);
+			aBody.PlayAnimationInLayer(animation, ePlayerBodyAnimationLayer_RightArm, true, true, false, fFadeTime, 1, 0);
+		}
+		else
+		{
+			aBody.mAnimationState_CrouchTransition.mbCrouching = abCrouch;
+			aBody.ChangeAnimationState(ePlayerBodyAnimationState_CrouchTransition);
+		}
+	}
+		
+	float GetTargetFeetYaw(cScrPlayerBodyHandler@ aBody, float afTimeStep) override
+	{
+		float fCharBodyYaw = cLux_GetPlayer().GetCharacterBody().GetYaw();
+		float fBodyYawDistance = cMath_GetAngleDistanceRad(aBody.mfYaw, fCharBodyYaw);
+		
+		if (cMath_Abs(fBodyYawDistance) > aBody.GetYawSoftLimit() /*|| cMath_Abs(fCharBodyYaw - aBody.mfYaw) > cMath_Pi*/)
+		{
+			float fDir = cMath_Sign(fBodyYawDistance);
+			ePlayerBodyAnimation prevAnim = mCurrentTurnAnim;
+			ePlayerBodyAnimation newAnim = ePlayerBodyAnimation(-1);
+			if (aBody.mbCrouching)
+				newAnim = fDir > 0 ? ePlayerBodyAnimation_CrouchTurnLeft : ePlayerBodyAnimation_CrouchTurnRight;
+			else
+				newAnim = fDir > 0 ? ePlayerBodyAnimation_TurnLeft : ePlayerBodyAnimation_TurnRight;
+			
+			cAnimationState@ pAnimState = aBody.GetAnimationState(newAnim);
+			cAnimationState@ pOtherAnimState = null;
+		
+			if (aBody.mbCrouching)
+				@pOtherAnimState = aBody.GetAnimationState(newAnim == ePlayerBodyAnimation_CrouchTurnRight ? ePlayerBodyAnimation_CrouchTurnLeft : ePlayerBodyAnimation_CrouchTurnRight);
+			else
+				@pOtherAnimState = aBody.GetAnimationState(newAnim == ePlayerBodyAnimation_TurnRight ? ePlayerBodyAnimation_TurnLeft : ePlayerBodyAnimation_TurnRight);
+			
+			
+			if (aBody.mbCrouching == false && pAnimState !is null && pOtherAnimState.IsActive() == false)
+			{
+				if (prevAnim != newAnim)
+				{
+					aBody.PlayAnimationInLayer(newAnim, ePlayerBodyAnimationLayer_Body, false, true, true, 0.1f, gfBodyHipTurnSpeed, 0);
+					mCurrentTurnAnim = newAnim;
+				}
+				else if(pAnimState.IsOver())
+					pAnimState.SetRelativeTimePosition(0); // Reset time without resetting weight fading
+			}
+			
+			return fCharBodyYaw;
+		}
+		
+		return aBody.mfTargetYaw;
+	}
+	
+	tString GetName() override
+	{
+		return "Idle";
+	}
+	
+	bool mbSkipFadeIn = false;
+	float mfTurnFadeIn = 0.3f;
+	ePlayerBodyAnimation mCurrentTurnAnim = ePlayerBodyAnimation(-1);
+}
+
+//------------------------------------------------------------
+
+class cPlayerBodyAnimationState_DirectionalMovement : cPlayerBodyAnimationState
+{
+
+	void OnEnter(cScrPlayerBodyHandler@ aBody) override
+	{
+		mbCrouching = aBody.mbCrouching;
+		if(aBody.mPrevAnimationState == ePlayerBodyAnimationState_Idle)
+			mvMovementDir = aBody.mAnimationState_Idle.mvExitVel;
+			
+		if(mfWeight == 0.f)
+			mvCurrentBaseAnims.resize(0);
+	}
+	
+	void OnLeave(cScrPlayerBodyHandler@ aBody) override
+	{	
+		float fStopTime = 0.3;
+		for (int i = mvCurrentBaseAnims.length()-1; i >= 0; i--)
+		{
+			cDirMovementAnimation@ anim = mvCurrentBaseAnims[i];
+			aBody.StopAnimation(aBody.GetAnimationForLayer(anim.mBaseAnim, ePlayerBodyAnimationLayer_Body), fStopTime);
+			aBody.StopAnimation(aBody.GetAnimationForLayer(anim.mBaseAnim, ePlayerBodyAnimationLayer_LeftArm), fStopTime);
+			aBody.StopAnimation(aBody.GetAnimationForLayer(anim.mBaseAnim, ePlayerBodyAnimationLayer_RightArm), fStopTime);
+			//mvCurrentBaseAnims.removeAt(i);
+		}
+		
+		mvMovementDir = 0;
+		aBody.mlFeetDirection = 1;
+	}
+	
+	void OnAnimationSetLeave(cScrPlayerBodyHandler@ aBody) 
+	{
+		cPlayerBodyAnimationState::OnAnimationSetLeave(aBody);
+	}
+	
+	void OnAnimationSetEnter(cScrPlayerBodyHandler@ aBody) 
+	{
+		cPlayerBodyAnimationState::OnAnimationSetEnter(aBody);
+	}
+	
+	void OnUpdate(cScrPlayerBodyHandler@ aBody, float afTimeStep) override
+	{
+		cVector3f vVelocity = aBody.GetVelocity2D(true);
+		float fSpeed = vVelocity.Length();
+		
+		if(fSpeed == 0 && mvCurrentBaseAnims.size() == 0)
+		{
+			vVelocity = aBody.mAnimationState_Idle.mvExitVel;
+			fSpeed = vVelocity.Length();
+		}
+		
+		// Get normalized direction relative to body direction
+		iCharacterBody@ pCharBody = cLux_GetPlayer().GetCharacterBody();
+		cMatrixf mtxRotMatrix;
+		mtxRotMatrix.SetForward(pCharBody.GetForward());
+		mtxRotMatrix.SetUp(pCharBody.GetUp());
+		mtxRotMatrix.SetRight(pCharBody.GetRight());
+		
+		cVector3f vDir = cMath_MatrixMul(mtxRotMatrix, vVelocity);
+		vDir.y = 0;
+		vDir = cMath_Vector3Normalize(vDir);
+		//if (HandleStateChanges(aBody, vDir, fSpeed)==false)
+		{
+			// Update animation directions
+			if (mvMovementDir != vDir && vDir != cVector3f_Zero)
+			{
+				mvMovementDir = vDir;
+				UpdateWalkAnimationDirection(aBody);
+			}
+		}
+		// Make sure animations are pointed in the right direction
+		// and playing at the right speed
+		UpdateWalkAnimWeightsAndSpeeds(aBody, afTimeStep, fSpeed/mfMaxSpeedForDir);
+		HandleStateChanges(aBody, vDir, fSpeed);
+		
+		//cLux_AddDebugMessage("num anims: " + mvCurrentBaseAnims.size() + " frame no: " + (mlNumFrames++) + "Velocity: " + aBody.GetVelocity2D(false));
+		//cLux_AddDebugMessage(aBody.GetVelocity2D(true) + " : " + aBody.GetVelocity2D(false));
+		aBody.mlFeetDirection = 1;
+	}
+	
+	bool HandleStateChanges(cScrPlayerBodyHandler@ aBody, const cVector3f &in avNewDir, float afSpeed)
+	{
+		Error("[PlayerBodyHandler] HandleStateChanges not implemented in Directional Movement state "+GetName()+"!");
+		return false;
+	}
+	
+	void UpdateWalkAnimationDirection(cScrPlayerBodyHandler@ aBody, float afChangeTime=0.3f)
+	{		
+		/////////////////////////////////////////////////////////////
+		// Figure out which animations to used based on direction
+		float fYaw = cMath_Pi-cMath_ATan2(mvMovementDir.x, -mvMovementDir.z);
+		if (fYaw>=cMath_PiMul2) fYaw = 0;
+		float fSectionLength = cMath_PiMul2/float(glBodyAnimationDirections);
+		float fSection = fYaw/fSectionLength;
+		float fFraction = cMath_GetFraction(fSection);
+		ePlayerBodyAnimation startingPoint = GetFwdAnimation();
+		int lDirectionAdd_1 = cMath_FloorToInt(fSection);
+		int lDirectionAdd_2 = -1;
+		ePlayerBodyAnimation newAnim_1 = ePlayerBodyAnimation(startingPoint + lDirectionAdd_1);
+		
+		//////////////////////////////////////////////////////
+		// Get second animation to blend with if necessary
+		ePlayerBodyAnimation newAnim_2 = ePlayerBodyAnimation(-1);
+		if (fFraction > 0.01)
+		{
+			int lAdd = cMath_CeilToInt(fSection);
+			if (lAdd >= glBodyAnimationDirections)
+			{
+				newAnim_2 = startingPoint;
+				lDirectionAdd_2 = 0;
+			}
+			else
+			{
+				lDirectionAdd_2 = cMath_CeilToInt(fSection);
+				newAnim_2 = ePlayerBodyAnimation(startingPoint + lDirectionAdd_2);
+			}
+		}
+		
+		/////////////////////////////////////////////////////////////
+		// Get the relative time pos of an active animation, if any
+		float fRelativeTime = GetRelativeTimeIfAny(aBody, true);
+		
+		bool bSetWeightsZero = false;
+		
+		for (int i = 0; i < mvCurrentBaseAnims.length(); i++)
+		{
+			if (mvCurrentBaseAnims[i].mbFadingOut==true)
+				continue;
+				
+			///////////////////////////////////////////////////
+			// Stop currently playing animations if necessary
+			if (mvCurrentBaseAnims[i].mBaseAnim != newAnim_1 && 
+				mvCurrentBaseAnims[i].mBaseAnim != newAnim_2)
+			{
+				aBody.RemoveAnimationFromLayer(mvCurrentBaseAnims[i].mBaseAnim, ePlayerBodyAnimationLayer_Body);
+				aBody.RemoveAnimationFromLayer(mvCurrentBaseAnims[i].mBaseAnim, ePlayerBodyAnimationLayer_LeftArm);
+				aBody.RemoveAnimationFromLayer(mvCurrentBaseAnims[i].mBaseAnim, ePlayerBodyAnimationLayer_RightArm);
+				
+				mvCurrentBaseAnims[i].FadeWeight(0, afChangeTime);
+				bSetWeightsZero = true;
+			}
+		}
+		
+
+		float fWeight_1 = fFraction > 0.01 ? (1.0f-fFraction) : 1.0f;
+		float fWeight_2 = 1.0f - fWeight_1;
+		
+		float fMaxSpeed_1 = GetMaxSpeedForDirection(newAnim_1);
+		float fMaxSpeed_2 = GetMaxSpeedForDirection(newAnim_2);
+		mfMaxSpeedForDir = fMaxSpeed_1*fWeight_1 + fMaxSpeed_2*fWeight_2;
+		
+		PlayWalkAnimation(aBody, newAnim_1, fWeight_1, fRelativeTime, bSetWeightsZero);
+		PlayWalkAnimation(aBody, newAnim_2, fWeight_2, fRelativeTime, bSetWeightsZero);
+	}
+	
+	void PlayWalkAnimation(cScrPlayerBodyHandler@ aBody, ePlayerBodyAnimation aBaseAnim, float afWeight, float afRelativeTimePos=0, bool abSetWeightZero = false)
+	{
+		if (aBaseAnim == -1) return;
+		
+		cDirMovementAnimation@ anim=null;
+		int lAnimWrongSetIndex = -1;
+		for (int i = 0; i < mvCurrentBaseAnims.length(); i++)
+		{
+			tString sSet = aBody.GetSetForAnimationIfExists(aBaseAnim);
+			if (mvCurrentBaseAnims[i].mBaseAnim != aBaseAnim)
+				continue;
+			
+			/////////////////
+			// if set has changed this will make old animation stop
+			if(mvCurrentBaseAnims[i].msSet != sSet)
+			{
+				lAnimWrongSetIndex = i;
+				continue;
+			}
+				
+			@anim = mvCurrentBaseAnims[i];
+			break;
+		}
+		if (anim is null)
+		{
+			mvCurrentBaseAnims.push_back(cDirMovementAnimation());
+			@anim = mvCurrentBaseAnims[mvCurrentBaseAnims.length()-1];
+			anim.mBaseAnim = aBaseAnim;
+			anim.msSet = aBody.GetSetForAnimationIfExists(aBaseAnim);
+		}
+		
+		///////////////////
+		// Stop prev set anims
+		if(lAnimWrongSetIndex != -1)
+		{
+			aBody.RemoveAnimationFromLayer(mvCurrentBaseAnims[lAnimWrongSetIndex].mBaseAnim, ePlayerBodyAnimationLayer_Body);
+			aBody.RemoveAnimationFromLayer(mvCurrentBaseAnims[lAnimWrongSetIndex].mBaseAnim, ePlayerBodyAnimationLayer_LeftArm);
+			aBody.RemoveAnimationFromLayer(mvCurrentBaseAnims[lAnimWrongSetIndex].mBaseAnim, ePlayerBodyAnimationLayer_RightArm);
+			
+			mvCurrentBaseAnims[lAnimWrongSetIndex].FadeWeight(0, 0.3);
+		}
+		
+		anim.FadeWeight(afWeight, 0.3f);
+		PlayWalkAnimationInLayer(aBody, aBaseAnim, ePlayerBodyAnimationLayer_Body, afRelativeTimePos);
+		PlayWalkAnimationInLayer(aBody, aBaseAnim, ePlayerBodyAnimationLayer_LeftArm, afRelativeTimePos);
+		PlayWalkAnimationInLayer(aBody, aBaseAnim, ePlayerBodyAnimationLayer_RightArm, afRelativeTimePos);
+
+		if(abSetWeightZero)
+		{
+			cAnimationState@ pAnim = aBody.GetAnimationState(aBody.GetAnimationForLayer(aBaseAnim, ePlayerBodyAnimationLayer_Body));
+			if(pAnim !is null)
+				pAnim.SetWeight(0);
+				
+			@pAnim = aBody.GetAnimationState(aBody.GetAnimationForLayer(aBaseAnim, ePlayerBodyAnimationLayer_LeftArm));
+			if(pAnim !is null)
+				pAnim.SetWeight(0);
+				
+			@pAnim = aBody.GetAnimationState(aBody.GetAnimationForLayer(aBaseAnim, ePlayerBodyAnimationLayer_RightArm));
+			if(pAnim !is null)
+				pAnim.SetWeight(0);
+		}
+	}
+	
+	
+	float GetRelativeTimeIfAny(cScrPlayerBodyHandler@ aBody, bool abGetSaved = false)
+	{
+		/////////////////////////////////////////////////////////////
+		// Get the relative time pos of an active animation, if any
+		float fRelativeTime = 0;
+		
+		if(mfSavedRelativeTime > 0.f && abGetSaved == true)
+		{
+			fRelativeTime = mfSavedRelativeTime;
+			mfSavedRelativeTime = 0.f;
+		}
+		else if (mvCurrentBaseAnims.length() > 0)
+		{
+			cAnimationState@ pAnim = aBody.GetAnimationState(mvCurrentBaseAnims[0].mBaseAnim);
+			if (pAnim !is null && pAnim.IsActive())
+			{
+				fRelativeTime = pAnim.GetRelativeTimePosition();
+			}
+		}
+		
+		return fRelativeTime;
+	}
+	
+	void PlayWalkAnimationInLayer(cScrPlayerBodyHandler@ aBody, ePlayerBodyAnimation aBaseAnim, ePlayerBodyAnimationLayer aLayer, float afRelativeTimePos=0)
+	{
+		cAnimationState@ pAnim = aBody.GetAnimationState(aBody.GetAnimationForLayer(aBaseAnim, aLayer));
+		if (pAnim is null) return;
+		
+		if (pAnim.IsActive()==false || pAnim.GetFadeStep() < 0)
+			aBody.PlayAnimationInLayer(aBaseAnim, aLayer, true, true, false, 0, 1, afRelativeTimePos, false);
+		else
+			pAnim.SetRelativeTimePosition(afRelativeTimePos);
+	}
+	
+	void UpdateWalkAnimWeightsAndSpeeds(cScrPlayerBodyHandler@ aBody, float afTimeStep, float afMovementSpeedMul)
+	{
+		float fWeightTotal = 0.0f;
+		for (int i = 0; i < mvCurrentBaseAnims.length(); i++)
+		{
+			cDirMovementAnimation@ anim = mvCurrentBaseAnims[i];
+			anim.UpdateWeight(afTimeStep);
+			fWeightTotal += anim.mfWeight;
+		}
+		
+		float fWeightMul = 0.f; 
+		if(mvCurrentBaseAnims.size() > 0 && fWeightTotal > 0.f)
+			fWeightMul = 1.0f/fWeightTotal;
+			
+		//fWeightMul *= cMath_Min(mfStateTime/mfFadeInTime, 1.0f);
+		fWeightMul *= mfWeight;
+		
+		// Saving this here to avoid nested loops since GetAnimationPlayingInLayer loops through mvCurrentBaseAnims
+		bool bAnimPlayingInBody = aBody.GetAnimationPlayingInLayer(ePlayerBodyAnimationLayer_Body, false, false);
+		bool bAnimPlayingInLeftArm = aBody.GetAnimationPlayingInLayer(ePlayerBodyAnimationLayer_LeftArm, false, false);
+		bool bAnimPlayingInRightArm = aBody.GetAnimationPlayingInLayer(ePlayerBodyAnimationLayer_RightArm, false, false);
+		
+		for (int i = 0; i < mvCurrentBaseAnims.length(); i++)
+		{
+			cDirMovementAnimation@ anim = mvCurrentBaseAnims[i];
+			tString sBaseAnim = aBody.GetAnimation(anim.mBaseAnim);
+			tString sSet = mvCurrentBaseAnims[i].msSet;
+
+			if (anim.mbFadingOut == false || anim.mfFadeT < 1.0f)
+			{
+				if (!bAnimPlayingInBody) SetWalkAnimationWeightAndSpeed(aBody, anim, sBaseAnim, ePlayerBodyAnimationLayer_Body, fWeightMul, afMovementSpeedMul);
+				if (!bAnimPlayingInLeftArm) SetWalkAnimationWeightAndSpeed(aBody, anim, sBaseAnim, ePlayerBodyAnimationLayer_LeftArm, fWeightMul, afMovementSpeedMul);
+				if (!bAnimPlayingInRightArm) SetWalkAnimationWeightAndSpeed(aBody, anim, sBaseAnim, ePlayerBodyAnimationLayer_RightArm, fWeightMul, afMovementSpeedMul);
+			}
+			else
+			{
+				aBody.StopAnimation(aBody.GetAnimationForLayer(sBaseAnim, ePlayerBodyAnimationLayer_Body	, true, sSet), 0);
+				aBody.StopAnimation(aBody.GetAnimationForLayer(sBaseAnim, ePlayerBodyAnimationLayer_LeftArm , true, sSet), 0);
+				aBody.StopAnimation(aBody.GetAnimationForLayer(sBaseAnim, ePlayerBodyAnimationLayer_RightArm, true, sSet), 0);
+				mvCurrentBaseAnims.removeAt(i);
+				i--;
+			}
+		}
+	}
+	
+	void SetWalkAnimationWeightAndSpeed(cScrPlayerBodyHandler@ aBody, const cDirMovementAnimation &in aMovementAnim, const tString &in asBaseAnim,
+								ePlayerBodyAnimationLayer aLayer, float afWeightMul, float afMovementSpeedMul)
+	{		
+		tString sAnim = aBody.GetAnimationForLayer(asBaseAnim, aLayer);
+		cAnimationState@ pAnim = aBody.GetAnimationState(sAnim);
+		if (pAnim is null) return;
+			
+		// Don't reset animation if it has been stopped
+		if (pAnim.IsActive()==false)
+			return;
+		
+		pAnim.SetFadeStep(0);
+		pAnim.SetSpeed(afMovementSpeedMul);
+		pAnim.SetWeight(aMovementAnim.mfWeight*afWeightMul);
+	}
+	
+	bool AnimationIsBaseAnimation(cScrPlayerBodyHandler@ aBody, const tString &in asAnim, ePlayerBodyAnimationLayer aLayer) override
+	{	
+		for (int i = 0; i < mvCurrentBaseAnims.length(); i++)
+		{
+			cDirMovementAnimation@ anim = mvCurrentBaseAnims[i];
+			if (anim.mbFadingOut==false && asAnim == aBody.GetAnimationForLayer(anim.mBaseAnim, aLayer))
+				return true;
+		}
+			
+		return false;
+	}
+	
+	tString GetBaseAnimation(cScrPlayerBodyHandler@ aBody, ePlayerBodyAnimationLayer aLayer) override
+	{	
+		ePlayerBodyAnimation base = GetFwdAnimation();
+		return aBody.GetAnimationForLayer(base, aLayer);
+	}
+	
+	void SetCrouch(cScrPlayerBodyHandler@ aBody, bool abCrouch, bool abInstant)
+	{
+		mbCrouching = abCrouch;
+		
+		int lPregStage = Pregnancy_GetStage();
+		float fTime = (lPregStage == ePregStage_Stage3 || lPregStage == ePregStage_Born) ? 5 : 2;
+		UpdateWalkAnimationDirection(aBody, fTime);
+	}
+	
+	float GetTargetFeetYaw(cScrPlayerBodyHandler@ aBody, float afTimeStep)
+	{
+		return GetTargetFeetYaw_Forward(aBody);
+	}	
+	
+	ePlayerBodyAnimation GetFwdAnimation()
+	{
+		Error("[PlayerBodyHandler] GetFwdAnimation not implemented in Directional Movement state "+GetName()+"!");
+		return ePlayerBodyAnimation(-1);
+	}
+	
+	float GetMaxSpeedForDirection(ePlayerBodyAnimation aDir)
+	{
+		switch (aDir)
+		{
+			case ePlayerBodyAnimation_WalkFwd: 				return 2.5f;
+			case ePlayerBodyAnimation_WalkFwdRight: 		return 2.38f;
+			case ePlayerBodyAnimation_WalkRight: 			return 2.25f;
+			case ePlayerBodyAnimation_WalkBackRight: 		return 2.13f;
+			case ePlayerBodyAnimation_WalkBack: 			return 2.0f;
+			case ePlayerBodyAnimation_WalkBackLeft: 		return 2.13f;
+			case ePlayerBodyAnimation_WalkLeft: 			return 2.25f;
+			case ePlayerBodyAnimation_WalkFwdLeft: 			return 2.38f;
+			
+			case ePlayerBodyAnimation_CrouchWalkFwd: 		return 1.875f;
+			case ePlayerBodyAnimation_CrouchWalkFwdRight: 	return 1.785f;
+			case ePlayerBodyAnimation_CrouchWalkRight: 		return 1.687f;
+			case ePlayerBodyAnimation_CrouchWalkBackRight: 	return 1.597f;
+			case ePlayerBodyAnimation_CrouchWalkBack:		return 1.5f;
+			case ePlayerBodyAnimation_CrouchWalkBackLeft: 	return 1.597f;
+			case ePlayerBodyAnimation_CrouchWalkLeft: 		return 1.687f;
+			case ePlayerBodyAnimation_CrouchWalkFwdLeft: 	return 1.785f;
+			
+			case ePlayerBodyAnimation_RunFwd: 				return 5.25f;
+			case ePlayerBodyAnimation_RunFwdRight: 			return 4.413f;
+			case ePlayerBodyAnimation_RunRight: 			return 3.375f;
+			case ePlayerBodyAnimation_RunLeft: 				return 3.375f;
+			case ePlayerBodyAnimation_RunFwdLeft: 			return 4.413f;
+			case ePlayerBodyAnimation_RunBack:				return 2.f;
+			case ePlayerBodyAnimation_RunBackLeft:			return 2.77f;
+			case ePlayerBodyAnimation_RunBackRight:			return 2.77f;
+		}
+		return 1.0f;
+	}
+	
+	void SetStateTime(float afStateTime)
+	{
+		mfStateTime = afStateTime;
+	}
+	
+	float mfSavedRelativeTime = 0.f;
+	float mfStateTime = 0;
+	cVector3f mvMovementDir = 0;
+	float mfMaxSpeedForDir = 1.0f;
+	
+	array<cDirMovementAnimation> mvCurrentBaseAnims;
+	
+	//uses its own crouch var so it can be set when needed in the SetCrouch function.
+	bool mbCrouching = false;
+}
+
+class cPlayerBodyAnimationState_Walk : cPlayerBodyAnimationState_DirectionalMovement
+{
+	cPlayerBodyAnimationState_Walk()
+	{
+	}
+	
+	bool HandleStateChanges(cScrPlayerBodyHandler@ aBody, const cVector3f &in avNewDir, float afSpeed) override
+	{
+		if (cLux_GetPlayer().GetCharacterBody().IsOnGround()==false)
+		{
+			aBody.ChangeAnimationState(ePlayerBodyAnimationState_InAir, false);
+			return true;
+		}
+		else if ((afSpeed <= 0.01 && aBody.mPrevAnimationState != ePlayerBodyAnimationState_Run) ||
+				 (afSpeed <= 0.01 && aBody.mPrevAnimationState == ePlayerBodyAnimationState_Run && mfWeight == 1.f))
+		{
+			aBody.ChangeAnimationState(ePlayerBodyAnimationState_Idle, false, 0.3f);
+			return true;
+		}
+		else if (avNewDir.z >= -0.01 && afSpeed > aBody.mfMinRunSpeed * aBody.mfMinRunSpeedMul)
+		{
+			aBody.ChangeAnimationState(ePlayerBodyAnimationState_Run, false);
+			
+			float fRelTime = GetRelativeTimeIfAny(aBody);
+			if(fRelTime > 0.f)
+				aBody.mAnimationState_Run.mfSavedRelativeTime = fRelTime;
+				
+			return true;
+		}
+		return false;
+	}
+	
+	ePlayerBodyAnimation GetFwdAnimation() override
+	{
+		return mbCrouching ? ePlayerBodyAnimation_CrouchWalkFwd : ePlayerBodyAnimation_WalkFwd;
+	}
+	
+	tString GetName() override
+	{
+		return "Walk";
+	}
+}
+	
+//------------------------------------------------------------
+
+class cPlayerBodyAnimationState_Run : cPlayerBodyAnimationState_DirectionalMovement
+{
+	cPlayerBodyAnimationState_Run()
+	{
+	}
+	
+	bool HandleStateChanges(cScrPlayerBodyHandler@ aBody, const cVector3f &in avNewDir, float afSpeed) override
+	{
+		if (cLux_GetPlayer().GetCharacterBody().IsOnGround()==false)
+		{
+			aBody.ChangeAnimationState(ePlayerBodyAnimationState_InAir, false);
+			return true;
+		}
+		else if (afSpeed<=0.1)
+		{
+			aBody.ChangeAnimationState(ePlayerBodyAnimationState_Idle, false);
+			return true;
+		}
+		else if (afSpeed <= aBody.mfMinRunSpeed || avNewDir.z < -0.01)
+		{
+			aBody.ChangeAnimationState(ePlayerBodyAnimationState_Walk, false);
+			aBody.mAnimationState_Walk.mfSavedRelativeTime = GetRelativeTimeIfAny(aBody);
+			return true;
+		}
+		return false;
+	}
+
+	ePlayerBodyAnimation GetFwdAnimation() override
+	{
+		return ePlayerBodyAnimation_RunFwd;
+	}
+	
+	tString GetName() override
+	{
+		return "Run";
+	}
+}
+	
+//------------------------------------------------------------
+
+class cPlayerBodyAnimationState_CrouchTransition : cPlayerBodyAnimationState
+{
+	cPlayerBodyAnimationState_CrouchTransition()
+	{
+	}
+	
+	void OnEnter(cScrPlayerBodyHandler@ aBody) override
+	{
+		aBody.PlayLayerIdleAnimation(ePlayerBodyAnimationLayer_FullBody, 0.3f, false);
+		tString sBaseAnim = GetBaseAnimation(aBody, ePlayerBodyAnimationLayer_Body);
+	}
+	
+	void OnLeave(cScrPlayerBodyHandler@ aBody) override
+	{
+		//aBody.StopAnimationLayer(ePlayerBodyAnimationLayer_FullBody, 0.3, false);
+	}
+	
+	void OnVariableUpdate(cScrPlayerBodyHandler@ aBody, float afTimeStep) override
+	{
+		cVector3f vVelocity = aBody.GetVelocity2D(true);
+		
+		float fSpeed = vVelocity.Length();
+		if(mfWeight < 1.f)
+			return;
+		if (cLux_GetPlayer().GetCharacterBody().IsOnGround()==false)
+		{
+			aBody.ChangeAnimationState(ePlayerBodyAnimationState_InAir, false);
+		}
+		else if (fSpeed>0.1)
+		{
+			aBody.ChangeAnimationState(ePlayerBodyAnimationState_Walk, false);
+		}
+		else
+		{
+			tString sAnimName = mbCrouching ? aBody.GetAnimation(ePlayerBodyAnimation_Crouch) : aBody.GetAnimation(ePlayerBodyAnimation_Stand);
+			cAnimationState@ pAnim = aBody.GetAnimationState(sAnimName);
+			if (pAnim is null || pAnim.IsOver())
+			{
+				aBody.ChangeAnimationState(ePlayerBodyAnimationState_Idle);
+			}
+		}
+	}
+	tString GetBaseAnimation(cScrPlayerBodyHandler@ aBody, ePlayerBodyAnimationLayer aLayer) override
+	{
+		tString sBase = mbCrouching ? aBody.GetAnimation(ePlayerBodyAnimation_Crouch) : aBody.GetAnimation(ePlayerBodyAnimation_Stand); 
+
+		return aBody.GetAnimationForLayer(sBase, aLayer);
+	}
+	
+	void SetCrouch(cScrPlayerBodyHandler@ aBody, bool abCrouch, bool abInstant)
+	{
+		bool bIsCrouching = mbCrouching;
+		if (abCrouch==bIsCrouching) return;
+		
+		mbCrouching = abCrouch;
+		
+		cAnimationState@ pAnim = aBody.GetAnimationState(bIsCrouching ? ePlayerBodyAnimation_Crouch : ePlayerBodyAnimation_Stand);
+		float fCurrentTimePos = pAnim.GetRelativeTimePosition();
+		
+		float fRelativeTime = abInstant ? 1.0 : 1.0f-fCurrentTimePos;
+		float fFadeTime = abInstant ? 0 : 0.3;
+		ePlayerBodyAnimation animation = abCrouch ? ePlayerBodyAnimation_Crouch : ePlayerBodyAnimation_Stand;
+
+		aBody.StopAnimationLayer(ePlayerBodyAnimationLayer_Arms, fFadeTime, false, true);
+		aBody.StopAnimationLayer(ePlayerBodyAnimationLayer_Body, fFadeTime, false, true);
+		
+		aBody.PlayAnimationInLayer(animation, ePlayerBodyAnimationLayer_Body, false, true, false, fFadeTime, 1, fRelativeTime);
+		aBody.PlayAnimationInLayer(animation, ePlayerBodyAnimationLayer_LeftArm, false, true, false, fFadeTime, 1, fRelativeTime);
+		aBody.PlayAnimationInLayer(animation, ePlayerBodyAnimationLayer_RightArm, false, true, false, fFadeTime, 1, fRelativeTime);
+	}
+	
+	float GetTargetFeetYaw(cScrPlayerBodyHandler@ aBody, float afTimeStep)
+	{
+		float fCharBodyYaw = cLux_GetPlayer().GetCharacterBody().GetYaw();
+		return fCharBodyYaw+cMath_GetAngleDistanceRad(fCharBodyYaw, aBody.mfYaw);
+		
+		return aBody.mfTargetYaw;
+	}
+	
+	tString GetName() override
+	{
+		return "CrouchTransition";
+	}
+	
+	float GetIdleRelativeTime(cScrPlayerBodyHandler@ aBody)
+	{
+		return 0;
+	}
+	
+	bool mbCrouching = false;
+}
+	
+//------------------------------------------------------------
+
+class cPlayerBodyAnimationState_InAir : cPlayerBodyAnimationState
+{
+	cPlayerBodyAnimationState_InAir()
+	{
+		
+	}
+	
+	void OnEnter(cScrPlayerBodyHandler@ aBody) override
+	{
+		FootPlacement_FadeOut(aBody.GetEntityName(), 0.3f);
+		mfAirTime = 0;
+	}
+	
+	void OnLeave(cScrPlayerBodyHandler@ aBody) override
+	{
+		FootPlacement_FadeIn(aBody.GetEntityName(), 0.3f);
+		aBody.mlFeetDirection = 1;
+		mlState = -1;
+		mbJumping = false;
+		mbLanding = false;
+	}
+	void OnVariableUpdate(cScrPlayerBodyHandler@ aBody, float afTimeStep) override
+	{
+		if (mlState <= 1) mfAirTime+=afTimeStep;
+		cVector3f vVel2D = aBody.GetVelocity2D(false);
+		vVel2D.y = 0;
+		
+		// Update feet direction
+		if (vVel2D.SqrLength() > 0.01)
+		{
+			cVector3f vCameraFwd2D = cLux_GetPlayer().GetCamera().GetForward();
+			vCameraFwd2D.y = 0;
+			vCameraFwd2D = cMath_Vector3Normalize(vCameraFwd2D);
+			
+			float fDot = cMath_Vector3Dot(vCameraFwd2D, vVel2D);
+			
+			bool bForward = fDot >= -0.01;
+			aBody.mlFeetDirection = bForward ? 1 : -1;
+		}
+		
+		// Start jump sequence
+		if (mlState == -1)
+		{
+/*			// TODO: Check if we can figure out a nice way to handle a quick launch animation
+			// 		 Currently the transition is either too sharp or it takes too long to get 
+			//       off the ground, so going straight into falling looks better.
+			if (mbJumping)
+			{
+				aBody.PlayAnimationInLayer(ePlayerBodyAnimation_JumpLaunch, ePlayerBodyAnimationLayer_Body, false, true, false, 0.05, 1, 0);
+				mlState = 0;
+				aBody.PlayLayerIdleAnimation(ePlayerBodyAnimationLayer_Arms, 0.05, false);
+				mbJumping = false;
+			}
+			else*/
+			{
+				aBody.PlayAnimationInLayer(ePlayerBodyAnimation_JumpFall, ePlayerBodyAnimationLayer_Body, true, true, false, 0.3, 1, 0);
+				mlState = 1;
+				aBody.PlayLayerIdleAnimation(ePlayerBodyAnimationLayer_Arms, 0.3f, true);
+				mbJumping = false;
+			}
+		}
+		
+		// Wait for launch animation to end
+		else if (mlState == 0)
+		{
+			cAnimationState@ pAnim = aBody.GetAnimationState((ePlayerBodyAnimation_JumpLaunch));
+			if (pAnim is null || pAnim.IsOver())
+			{
+				float fFadeTime = pAnim is null ? 0.3 : 0;
+				aBody.PlayAnimationInLayer((ePlayerBodyAnimation_JumpFall), ePlayerBodyAnimationLayer_Body, true, true, false, fFadeTime, 1, 0);
+				aBody.StopAnimationLayer(ePlayerBodyAnimationLayer_Arms, fFadeTime, false, true);
+				mlState = 1;
+				aBody.PlayLayerIdleAnimation(ePlayerBodyAnimationLayer_Arms, fFadeTime, true);
+			}
+		}
+		
+		// Handle landing
+		else if (mlState == 1)
+		{
+			/////////////////////////////////////////////////////////////////////////////
+			// Failsafe as the CharBody_HitGround will not always trigger when landing.
+			if (mfAirTime > 0.3f && cLux_GetPlayer().GetCharacterBody().IsOnGround())
+			{
+				mbLanding= true;
+				
+				cScript_SetGlobalArgInt(0, eFootSound_Landing);
+				cScript_SetGlobalArgFloat(1, 20);
+				cScript_RunGlobalFunc("MoveState_Normal","","_Global_FootSound");
+			}
+				
+			if (mbLanding)
+			{
+				if (vVel2D.Length()>0.1)
+				{
+					aBody.ChangeAnimationState(ePlayerBodyAnimationState_Walk, false);
+				}
+				else if (aBody.mbCrouching || mfAirTime <= 0.4f)
+				{
+					aBody.ChangeAnimationState(ePlayerBodyAnimationState_Idle, false);
+				}
+				else
+				{
+					aBody.StopAnimationLayer(ePlayerBodyAnimationLayer_Body, 0.3);
+					aBody.StopAnimationLayer(ePlayerBodyAnimationLayer_Arms, 0.3, false, true);
+				
+					mlState = 2;
+					aBody.PlayAnimationInLayer(ePlayerBodyAnimation_JumpLand, ePlayerBodyAnimationLayer_Body, false, true, false, 0.3, 1, 0);
+					aBody.PlayLayerIdleAnimation(ePlayerBodyAnimationLayer_Arms, 0.3f, false);
+					mbLanding = false;
+					FootPlacement_FadeIn(aBody.GetEntityName(), 0.3f);
+				}
+				
+				mfAirTime = 0;
+			}
+		}
+		
+		//Wait for landing animation to end or for the player to start walking
+		else if (mlState == 2)
+		{
+			cAnimationState@ pAnim = aBody.GetAnimationState((ePlayerBodyAnimation_JumpLand));
+			
+			if (vVel2D.Length()>0.1)
+			{
+				aBody.ChangeAnimationState(ePlayerBodyAnimationState_Walk, false);
+			}
+			else if (aBody.mbCrouching)
+			{
+				aBody.ChangeAnimationState(ePlayerBodyAnimationState_Idle, false);
+			}
+			else if (mbJumping)
+			{
+				aBody.StopAnimationLayer(ePlayerBodyAnimationLayer_Arms, 0.3, false, true);
+				aBody.StopAnimationLayer(ePlayerBodyAnimationLayer_Body, 0.3, false, true);
+				mlState = -1;
+			}
+			else if (pAnim is null || pAnim.IsOver() || aBody.mfTargetLeanAmount != 0)
+			{
+				aBody.ChangeAnimationState(ePlayerBodyAnimationState_Idle);
+			}
+		}
+	}
+	
+	tString GetBaseAnimation(cScrPlayerBodyHandler@ aBody, ePlayerBodyAnimationLayer aLayer) override
+	{
+		tString sBase = "";
+		if (mlState == 0)
+			sBase = aBody.GetAnimation(ePlayerBodyAnimation_JumpLaunch);
+		else if (mlState == 1)
+			sBase = aBody.GetAnimation(ePlayerBodyAnimation_JumpFall);
+		else if (mlState == 2)
+			sBase = aBody.GetAnimation(ePlayerBodyAnimation_JumpLand);
+		return aBody.GetAnimationForLayer(sBase, aLayer);
+	}
+	
+	float GetTargetFeetYaw(cScrPlayerBodyHandler@ aBody, float afTimeStep)
+	{		
+		cVector3f vVel2D = aBody.GetVelocity2D(false);
+		
+		if (vVel2D.SqrLength() > 0.125)
+		{
+			return GetTargetFeetYaw_InMovementDirection(aBody, afTimeStep, false);
+		}
+		return aBody.mfTargetYaw;
+	}
+	
+	tString GetName() override
+	{
+		return "InAir";
+	}
+	
+	float mfAirTime = 0;
+	
+	int mlState = -1;
+	bool mbJumping = false;
+	bool mbLanding = false;
+}
+	
+//------------------------------------------------------------
+
+class cPlayerBodyAnimationState_Ladder : cPlayerBodyAnimationState
+{
+	cPlayerBodyAnimationState_Ladder()
+	{
+		
+	}
+	
+	void OnEnter(cScrPlayerBodyHandler@ aBody) override
+	{
+		aBody.PlayAnimationInLayer(ePlayerBodyAnimation_Idle, ePlayerBodyAnimationLayer_Body, true, true, false, 0.3, 1, 0);
+		aBody.PlayAnimationInLayer(ePlayerBodyAnimation_Idle, ePlayerBodyAnimationLayer_LeftArm, true, true, false, 0.3, 1, 0);
+		aBody.PlayAnimationInLayer(ePlayerBodyAnimation_Idle, ePlayerBodyAnimationLayer_RightArm, true, true, false, 0.3, 1, 0);
+		
+		FootPlacement_FadeOut(aBody.GetEntityName(), 0.1);
+		
+		aBody.mbPosSmoothingActive = false;
+	}
+	
+	void OnLeave(cScrPlayerBodyHandler@ aBody) override
+	{
+		aBody.StopAnimationLayer(ePlayerBodyAnimationLayer_FullBody, 0.2, true);
+		
+		FootPlacement_FadeIn(aBody.GetEntityName(), 0.3);
+		
+		aBody.mbPosSmoothingActive = true;
+	}
+	void OnVariableUpdate(cScrPlayerBodyHandler@ aBody, float afTimeStep) override
+	{
+	}
+	tString GetBaseAnimation(cScrPlayerBodyHandler@ aBody, ePlayerBodyAnimationLayer aLayer) override
+	{
+		return "";
+	}
+	
+	float GetTargetFeetYaw(cScrPlayerBodyHandler@ aBody, float afTimeStep)
+	{	
+		float fCharBodyYaw = cLux_GetPlayer().GetCharacterBody().GetYaw();
+		return fCharBodyYaw+cMath_GetAngleDistanceRad(fCharBodyYaw, aBody.mAnimationState_Ladder.mfAngle);
+	}
+	
+	bool GetDisableLowerYawBones() override
+	{
+		return true;
+	}
+	
+	tString GetName() override
+	{
+		return "Ladder";
+	}
+	
+	float mfAngle = 0;
+}
+	
+//------------------------------------------------------------
+
+class cPlayerBodyAnimationState_Cutscene : cPlayerBodyAnimationState
+{
+	cPlayerBodyAnimationState_Cutscene()
+	{
+		
+	}
+	
+	void OnEnter(cScrPlayerBodyHandler@ aBody) override
+	{
+		cLux_GetPlayer().ChangeState(ePlayerState_Normal);
+		cLux_GetPlayer().ChangeState(ePlayerState_CutsceneAnimation);
+			
+		aBody.SetAnimationControlledCamera(true);
+		
+		cLuxProp@ pProp = cLux_ID_Prop(aBody.m_idBody);
+		if (pProp != null) pProp.SetRenderLayer(0);
+	}
+	
+	void OnLeave(cScrPlayerBodyHandler@ aBody) override
+	{
+		if (cLux_GetPlayer().GetCurrentStateId() == ePlayerState_CutsceneAnimation)
+			cScript_RunGlobalFunc("State_CutsceneAnimation","","_Global_LeaveState");
+		
+		if (aBody.mvAnimationStates[aBody.mNextAnimationState].IsCameraAnimation() == false)
+			aBody.SetAnimationControlledCamera(false);
+		//else
+		//{
+		//	aBody.mfCameraAnimation_Angle = aBody.mfCameraAnimation_StartAngle;
+		//	aBody.mfYaw = aBody.mfCameraAnimation_Angle;
+		//}
+		
+		cLuxProp@ pProp = cLux_ID_Prop(aBody.m_idBody);
+		if (pProp != null) pProp.SetRenderLayer(glBodyRenderLayer);
+	}
+	
+	void OnVariableUpdate(cScrPlayerBodyHandler@ aBody, float afTimeStep) override
+	{
+		cAnimationState@ pAnim = aBody.GetAnimationState(aBody.msCameraAnimation_Name);
+		if (pAnim is null || (pAnim.IsOver() && aBody.mbCutsceneAutoEnd))
+		{
+			aBody.StopAnimationInLayer(aBody.msCameraAnimation_Name, ePlayerBodyAnimationLayer_FullBody, 0.0f);
+			aBody.mAnimationState_Idle.mbSkipFadeIn = true;
+			aBody.ChangeAnimationState(ePlayerBodyAnimationState_Idle);
+		}
+	}
+	
+	float GetTargetFeetYaw(cScrPlayerBodyHandler@ aBody, float afTimeStep) override
+	{
+		return aBody.mfYaw;
+	}
+	
+	bool GetDisableLowerYawBones() override
+	{
+		return true;
+	}
+	
+	tString GetBaseAnimation(cScrPlayerBodyHandler@ aBody, ePlayerBodyAnimationLayer aLayer) override
+	{
+		return "";
+	}
+	
+	bool IsCameraAnimation() override
+	{
+		return true;
+	}
+	
+	tString GetName() override
+	{
+		return "Cutscene";
+	}
+}
+	
+//------------------------------------------------------------
+
+class cPlayerBodyAnimationState_Custom : cPlayerBodyAnimationState
+{
+	cPlayerBodyAnimationState_Custom()
+	{
+	}
+	
+	void OnEnter(cScrPlayerBodyHandler@ aBody) override
+	{
+	}
+	
+	void OnLeave(cScrPlayerBodyHandler@ aBody) override
+	{
+		
+	}
+	void OnVariableUpdate(cScrPlayerBodyHandler@ aBody, float afTimeStep) override
+	{
+	}
+	tString GetBaseAnimation(cScrPlayerBodyHandler@ aBody, ePlayerBodyAnimationLayer aLayer) override
+	{
+		tString sBase = aBody.mbCrouching ? aBody.GetAnimation(ePlayerBodyAnimation_Idle) : aBody.GetAnimation(ePlayerBodyAnimation_CrouchIdle); 
+		return aBody.GetAnimationForLayer(sBase, aLayer);
+	}
+	
+	tString GetName() override
+	{
+		return "Custom";
+	}
+}
+
+//------------------------------------------------------------
+
+class cPlayerBodyAnimationState_Interactive : cPlayerBodyAnimationState
+{
+	cPlayerBodyAnimationState_Interactive()
+	{
+	}
+	
+	void OnEnter(cScrPlayerBodyHandler@ aBody) override
+	{
+		cLux_GetPlayer().ChangeState(ePlayerState_Normal);
+		cLux_GetPlayer().ChangeState(ePlayerState_InteractiveCutsceneAnimation);
+		
+		aBody.SetAnimationControlledCamera(true);
+		
+		cLuxProp@ pProp = cLux_ID_Prop(aBody.m_idBody);
+		if (pProp != null) pProp.SetRenderLayer(0);
+	}
+	
+	void OnLeave(cScrPlayerBodyHandler@ aBody) override
+	{
+		if (cLux_GetPlayer().GetCurrentStateId() == ePlayerState_InteractiveCutsceneAnimation)
+			cScript_RunGlobalFunc("State_InteractiveCutsceneAnimation", "", "_Global_LeaveState");
+		
+		if (aBody.mvAnimationStates[aBody.mNextAnimationState].IsCameraAnimation()==false)
+			aBody.SetAnimationControlledCamera(false);
+		//else
+		//{
+		//	aBody.mfCameraAnimation_Angle = aBody.mfCameraAnimation_StartAngle;
+		//	aBody.mfYaw = aBody.mfCameraAnimation_Angle;
+		//}
+		
+		cLuxProp@ pProp = cLux_ID_Prop(aBody.m_idBody);
+		if (pProp != null) pProp.SetRenderLayer(glBodyRenderLayer);
+	}
+	
+	void OnVariableUpdate(cScrPlayerBodyHandler@ aBody, float afTimeStep) override
+	{
+		cAnimationState@ pAnim = aBody.GetAnimationState(aBody.msCameraAnimation_Name);
+		
+		cScript_RunGlobalFunc("State_InteractiveCutsceneAnimation", "", "_Global_GetAnimationOver");
+		bool bAnimationOver = cScript_GetGlobalReturnBool();
+		
+		if (pAnim is null || bAnimationOver)
+		{
+			///////////////////////////
+			// Anim end callback
+			if (bAnimationOver && msCallback != "")
+			{
+				tString sPrevAnim = aBody.msCameraAnimation_Name;
+				tString sMethod = "void " + msCallback + "(const tString &in asAnim, float afT)";
+				msCallback = "";
+				
+				cLuxMap@ pMap = cLux_GetCurrentMap();
+				if (pMap.ScriptPrepare(sMethod))
+				{
+					pMap.SetArgString(0, aBody.msCameraAnimation_Name);
+					pMap.SetArgFloat(1, pAnim.GetRelativeTimePosition());
+					pMap.ScriptExecute();
+				}			
+				
+				// New anim set? Don't change state!
+				if (aBody.msCameraAnimation_Name != sPrevAnim) return;
+			}
+			
+			if (aBody.mbCutsceneAutoEnd)
+			{
+				aBody.StopAnimationInLayer(aBody.msCameraAnimation_Name, ePlayerBodyAnimationLayer_FullBody, 0);
+				aBody.mAnimationState_Idle.mbSkipFadeIn = true;
+				aBody.ChangeAnimationState(ePlayerBodyAnimationState_Idle);
+			}
+		}
+	}
+	
+	float GetTargetFeetYaw(cScrPlayerBodyHandler@ aBody, float afTimeStep) override
+	{
+		return aBody.mfYaw;
+	}
+	
+	bool GetDisableLowerYawBones() override
+	{
+		return true;
+	}
+	
+	tString GetBaseAnimation(cScrPlayerBodyHandler@ aBody, ePlayerBodyAnimationLayer aLayer) override
+	{
+		return "";
+	}
+	
+	bool IsCameraAnimation() override
+	{
+		return true;
+	}
+	
+	tString GetName() override
+	{
+		return "Interactive";
+	}
+	
+	tString msCallback = "";
+}
+
+//------------------------------------------------------------
+
+class cPlayerBodyAnimationState_AnimatedMove : cPlayerBodyAnimationState
+{
+ 
+    cPlayerBodyAnimationState_AnimatedMove()
+	{
+	}
+	
+	void OnEnter(cScrPlayerBodyHandler@ aBody) override
+	{
+		////////////
+		// Play Anim
+		aBody.PlayAnimationInLayer(msAnimatedMoveAnimName, ePlayerBodyAnimationLayer_FullBody, mbAnimLoop, false, true, mfAnimFadeTime, mfAnimSpeed, 0.f, true);
+	}
+	
+	void OnLeave(cScrPlayerBodyHandler@ aBody) override
+	{
+		aBody.StopAnimationLayer(ePlayerBodyAnimationLayer_FullBody, 0.3f, true, false);
+		aBody.ChangeAnimationState(ePlayerBodyAnimationState_Idle, false);
+	}
+	
+	void OnVariableUpdate(cScrPlayerBodyHandler@ aBody, float afTimeStep) override
+	{
+		
+	}
+    
+	float GetTargetFeetYaw(cScrPlayerBodyHandler@ aBody, float afTimeStep)
+	{
+		return mfAngle;
+	}
+	
+	bool GetDisableLowerYawBones() override
+	{
+		return true;
+	}
+	
+	tString GetName() override
+	{
+		return "Animated Move State";
+	}
+    
+    float mfAnimFadeTime = 0.3f;
+    float mfAngle = 0;
+    tString msAnimatedMoveAnimName="";
+	bool mbAnimLoop = true;
+	float mfAnimSpeed = 1.f;
+}
+
+//------------------------------------------------------------
+
+class cPlayerBodyAnimationState_CustomAnimation : cPlayerBodyAnimationState
+{
+	cPlayerBodyAnimationState_CustomAnimation()
+	{
+	}
+	
+	void OnEnter(cScrPlayerBodyHandler@ aBody) override
+	{
+		aBody.SetAnimationControlledCamera(true);
+		
+		cLuxProp@ pProp = cLux_ID_Prop(aBody.m_idBody);
+		if (pProp !is null) pProp.SetRenderLayer(0);
+	}
+	
+	void OnLeave(cScrPlayerBodyHandler@ aBody) override
+	{	
+		if (aBody.mvAnimationStates[aBody.mNextAnimationState].IsCameraAnimation()==false)
+		{
+			aBody.SetAnimationControlledCamera(false);
+		}
+		
+		cLuxProp@ pProp = cLux_ID_Prop(aBody.m_idBody);
+		if (pProp !is null) pProp.SetRenderLayer(glBodyRenderLayer);
+	}
+	
+	void OnVariableUpdate(cScrPlayerBodyHandler@ aBody, float afTimeStep) override
+	{
+	}
+	
+	float GetTargetFeetYaw(cScrPlayerBodyHandler@ aBody, float afTimeStep) override
+	{
+		return aBody.mfTargetYaw;
+	}
+	
+	bool GetDisableLowerYawBones() override
+	{
+		return true;
+	}
+	
+	tString GetBaseAnimation(cScrPlayerBodyHandler@ aBody, ePlayerBodyAnimationLayer aLayer) override
+	{
+		return "";
+	}
+	
+	bool IsCameraAnimation() override
+	{
+		return true;
+	}
+	
+	tString GetName() override
+	{
+		return "CustomAnimation";
+	}
+}

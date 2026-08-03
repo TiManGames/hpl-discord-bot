@@ -1,0 +1,220 @@
+#include "interfaces/Area_Interface.hps"
+
+#include "helpers/helper_map.hps"
+#include "helpers/helper_game.hps"
+#include "custom/components/ComponentInterfaces_Custom.hps"
+#include "custom/player/PlayerTypes_Custom.hps"
+
+//------------------------------------------------------------
+
+const int glTotalBurnableFeedAreas = 12;
+
+//------------------------------------------------------------
+
+class cScrAreaRatFeed : iScrArea, iScrArea_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		mBaseObj.SetCheckCollision(false);
+		mBaseObj.SetAutoSleep(true);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld@ apWorld, cResourceVarsObject@ apVars)
+	{
+		///////////////////////////
+		// Setup rat food component
+		iScrRatFoodComponent_Interface@ pRatFood = UserComponent_RatFoodComponent_Create(mBaseObj);
+		if (pRatFood !is null)
+		{
+			pRatFood.SetAttractEnabled( apVars.GetVarBool("AttractEnabled", true) );
+			pRatFood.SetAttractDistance( apVars.GetVarFloat("AttractDistance", 5.0f) );
+			pRatFood.SetFeedingSlotsCount( apVars.GetVarInt("FeedingSlotsCount", 0) );
+			pRatFood.SetLifetime( apVars.GetVarFloat("Lifetime", -1.f) );
+			pRatFood.SetPriority( apVars.GetVarInt("Priority", 0) );
+			pRatFood.SetFoodEntity( apVars.GetVarString("AltFoodEntity", "") );
+			pRatFood.SetIsArea(true);
+		}
+		
+		msBurnableEntity = apVars.GetVarString("BurnableEntity", "");
+		msBurntEntity = apVars.GetVarString("BurntEntity", "");
+		
+		/////////////////////////////////////////
+		// Disable agent collision on burnt entity
+		DisableRatCollision(msBurnableEntity);
+		DisableRatCollision(msBurntEntity);
+
+		EnvironmentalDamage_AddEntityToCheck(mBaseObj.GetID());
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnAfterWorldLoad() {}
+	
+	//------------------------------------------------------------
+
+	void OnMapEnter()
+	{
+		EnvironmentalDamage_AddEntityToCheck(mBaseObj.GetID());
+	}
+
+	void OnMapLeave()
+	{
+		EnvironmentalDamage_RemoveEntityToCheck(mBaseObj.GetID());
+	}
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void ResetProperties() {}
+	void BeforeEntityDestruction()
+	{
+		EnvironmentalDamage_RemoveEntityToCheck(mBaseObj.GetID());
+	}
+
+	//-----------------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//-----------------------------------------------------------------------
+	
+	void GiveDamage(iPhysicsBody@ apBodyHit, const cVector3f&in avOrigin, const cVector3f&in avHitPos, cLuxDamageProperties@ apDamageProps)
+	{
+		if (apDamageProps.mDamageType != eDamageType_Fire) return;
+		
+		iScrRatFoodComponent_Interface@ pRatFood = UserComponent_RatFoodComponent_Get(mBaseObj);
+		if (pRatFood is null || pRatFood.GetIsDestroyed()) return;
+		
+		pRatFood.SetIsDestroyed(true);
+		
+		if (msBurnableEntity != "")
+		{
+			Prop_SetActiveAndFade(msBurnableEntity, false, 3.0f);
+			Prop_SetActiveAndFade(msBurntEntity, true, 0.2f);
+			GameStats_IncreaseEntryAmount(eHeroStats_CorpsesBurnt);
+		}
+		
+		//////////////////////////
+		// Achievements
+		Achievement_Unlock(eAchievement_PitMaster);
+		
+		int lTotalCorpsesBurnt = cScript_GetGlobalVarInt("BurntCorpses") + 1;
+		cLux_AddDebugMessage("BURNT CORPSES "+lTotalCorpsesBurnt);
+		if (lTotalCorpsesBurnt >= glTotalBurnableFeedAreas)
+			Achievement_Unlock(eAchievement_Roastmaster);
+			
+		cScript_SetGlobalVarInt("BurntCorpses", lTotalCorpsesBurnt);
+	}
+	
+	void OnSetActive(bool abX) {}	
+	void OnConnectionStateChange(iLuxEntity@ apEntity,int alState) {}
+	
+	//-----------------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL
+	/////////////////////////////////////////
+	
+	//-----------------------------------------------------------------------
+	
+	void _Global_GetMaxRatAmount()
+	{
+		cScript_SetGlobalReturnInt(mlMaxRatAmount);
+	}
+	
+	//-----------------------------------------------------------------------
+	
+	void _Global_GetFoodEntity()
+	{
+		cScript_SetGlobalReturnString(msFoodEntity);
+	}
+	
+	//-----------------------------------------------------------------------
+	
+	void _Global_GetBurnableEntity()
+	{
+		cScript_SetGlobalReturnString(msBurnableEntity);
+	}
+	
+	//-----------------------------------------------------------------------
+	
+	void _Global_GetBurntEntity()
+	{
+		cScript_SetGlobalReturnString(msBurntEntity);
+	}
+	
+	//-----------------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPERS
+	/////////////////////////////////////////
+	
+	//-----------------------------------------------------------------------
+	
+	void DisableRatCollision(const tString &in asEnt)
+	{
+		array<iLuxEntity@> vEnts;
+		Map_GetEntityArray(asEnt, vEnts, eLuxEntityType_Prop, "");
+		
+		for (int i = 0; i < vEnts.length(); ++i)
+		{
+			iLuxEntity@ pEnt = vEnts[i];
+			for (int j = 0; j < pEnt.GetBodyNum(); ++j)
+			{
+				iPhysicsBody@ pBody = pEnt.GetBody(j);
+				pBody.SetCollideCharacter(false);
+				pBody.SetCollideRagDoll(false);
+			}
+		}
+	}
+	
+	//-----------------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	int mlMaxRatAmount = 0;
+	tString msFoodEntity = "";
+	tString msBurnableEntity = "";
+	tString msBurntEntity = "";
+	
+	//------------------------------------------------------------
+}	

@@ -1,0 +1,743 @@
+#include "player/PlayerState_Interact.hps"
+#include "helpers/helper_player.hps"
+#include "helpers/helper_player_custom.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_map.hps"
+#include "helpers/helper_modules.hps"
+#include "player_types.hps"
+#include "base/InputHandler_Types.hps"
+#include "helpers/helper_props.hps"
+#include "helpers/helper_modules_custom.hps"
+#include "helpers/helper_menu.hps"
+
+/////////////////////////////////////////
+// SETTINGS
+/////////////////////////////////////////
+
+//------------------------------------------------------------
+
+const float gfHeadMoveAcc = 6.0f;
+const float gfHeadMoveSpeed = 1.5f;
+const float gfHeadMoveSlowdownDist = 0.3f;
+
+const float gfHeadRotateAcc = 6.0f;
+const float gfHeadRotateMaxSpeed = 1.5f;
+const float gfHeadRotateSpeedMul = 2;
+
+const float gfCheckMaxPushDist = 2.5f;
+const float gfCheckPushDistTolerance = 0.1f;
+const int glCheckMaxPushTries = 3;
+
+//------------------------------------------------------------
+
+class cScrPlayerState_Interact_CombinationLock : iScrPlayerState_Interact, iScrPlayerState_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// USER SETTINGS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void LoadUserConfig()
+	{
+	
+	}
+	void SaveUserConfig()
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ENTER MAP
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+	
+	}
+	void OnMapLeave(cLuxMap @apMap)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void CreateWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	void DestroyWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL FUNCTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_ExitState()
+	{
+		mBaseObj.mpPlayer.ChangeState(mlPreviousState);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupCombinationLock()
+	{
+		////////////////////////////////
+		// Get basic params & setup
+		SetupInteractVars();
+		mfCurrentCameraSpeed = 0;
+		
+		////////////////////////////////
+		// Get specific params
+		cVector3f vDirection = cMath_Vector3Normalize(cScript_GetGlobalArgVector3f(3));
+		cVector3f vCombinationLockPosition = cScript_GetGlobalArgVector3f(4);
+		float vCameraDistance = cScript_GetGlobalArgFloat(5);
+		msUnlockCallback = cScript_GetGlobalArgString(6);
+		tString sPlayerPosEntity = cScript_GetGlobalArgString(7);
+
+		///////////////////////////////////////////
+		// Get target camera and feet positions
+		iCharacterBody@ pCharBody = cLux_GetPlayer().GetCharacterBody();
+		
+		cVector3f vCurrentFeetPos = pCharBody.GetFeetPosition();
+		mvTargetCameraPosition = vCombinationLockPosition + vDirection * vCameraDistance;
+		cVector3f vFeetPosition = mvTargetCameraPosition;
+		vFeetPosition.y = vCurrentFeetPos.y;
+
+		///////////////////////////////////////////
+		// Get custom player position from instance
+		if (sPlayerPosEntity != "")
+		{
+			iLuxEntity@ pPosEntity = Map_GetEntity(sPlayerPosEntity);
+			if (pPosEntity !is null)
+			{
+				vFeetPosition = pPosEntity.GetPosition();
+				vFeetPosition.y -= gvBodySize.y*0.5f;
+			}
+			else
+			{
+				Error("Could not find entity with name "+sPlayerPosEntity+" to use as player position entity for combinationlock " + mBaseObj.GetName());
+			}
+		}
+	
+		////////////////////////////////////
+		//Try to find a position in front of combinationlock where the player fits
+		cVector3f vPushBack;
+		bool bFitting = false;
+		int lTries = 0;
+		while (lTries < glCheckMaxPushTries && vPushBack.y > -0.01 && vPushBack.Length() <= gfCheckMaxPushDist)
+		{
+			lTries++;
+			
+			bFitting = pCharBody.CheckCharacterFits(vFeetPosition, true,0, vPushBack);
+			if(bFitting) break;
+				
+			vFeetPosition += vPushBack;
+		}
+
+		//if (bFitting || vPushBack.Length() < gfCheckPushDistTolerance)
+		//	pCharBody.SetFeetPosition(vFeetPosition, false);
+		
+		////////////////////////////////
+		// Move camera back to initial position
+		cVector3f vPosAdd = cLux_GetPlayer().GetCameraPosAdd(eCameraAddType_CombinationLock);
+		cVector3f vPosDifference = vCurrentFeetPos - pCharBody.GetFeetPosition();
+
+		cMatrixf mtxCharBodyRotation = cMath_MatrixInverse(cMath_MatrixUnitVectors(pCharBody.GetRight(), pCharBody.GetUp(), pCharBody.GetForward(), cVector3f(0)));
+		cLux_GetPlayer().SetCameraPosAdd(eCameraAddType_CombinationLock, cMath_MatrixMul(mtxCharBodyRotation, vPosDifference));
+		
+		////////////////////////////////
+		//Stop character body
+		pCharBody.SetMoveSpeed(eCharDir_Forward, 0);
+		pCharBody.SetMoveSpeed(eCharDir_Right, 0);
+		pCharBody.SetForceVelocity(cVector3f(0));
+
+		///////////////////////////////////////////
+		// Rotate camera towards screen
+		cLux_GetPlayer().RotateCameraTowards(gfHeadRotateAcc, gfHeadRotateSpeedMul, gfHeadRotateMaxSpeed, vDirection * -1, true);
+
+
+		mlRollerIndex = 0;
+		mvRollerIds.resize(0);
+		mvRollerGlowAmounts.resize(0);
+
+		array<tString> vRollerNames;
+		cString_GetStringVec(cScript_GetGlobalArgString(8), vRollerNames, " ");
+
+		cLuxProp@ pProp = cLux_ID_Prop(mPropID);
+		cMeshEntity@ pMeshEntity = pProp.GetMeshEntity();
+		
+		for(int i =0; i < vRollerNames.size(); ++i)
+		{
+			cSubMeshEntity@ pSubMesh = pMeshEntity.GetSubMeshEntityName(vRollerNames[i]);
+			if(pSubMesh !is null)
+			{
+				//cLux_AddDebugMessage("sub mesh: " + pSubMesh.GetName());
+				mvRollerIds.push_back(pSubMesh.GetID());
+				mvRollerGlowAmounts.push_back(0.f);
+			}
+			else
+				Error("[PlayerState_Interact_CombinationLock::SetupCombinationLock]: " + vRollerNames[i] + " couldn't be found!");
+		}
+
+		mvCombination.resize(0);
+		msCombination = cScript_GetGlobalArgString(9);
+		cString_GetIntVec(msCombination, mvCombination, " ,;:");
+		msDoorEntity = cScript_GetGlobalArgString(10);
+		mbOpenDoorEntityOnUnlock = cScript_GetGlobalArgBool(11);
+	}
+	
+	//------------------------------------------------------------
+	
+	void Exit()
+	{
+		mbExit=true;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnEnterState(int alPrevStateId)
+	{
+		mbExit = false;
+		EnterInteractState(alPrevStateId);
+		
+		// Disable screen shakes etc.
+		Effect_Shake_EnableAll(false);
+		
+		Player_FadeCheckHealthLightBrightness(0.75f, 2.0);
+
+		PlayerBody_SetCoverageAmount(0);
+		cScript_SetGlobalArgBool(0, false);
+		cScript_RunGlobalFunc(PlayerBody_GetEntityName(), "cScrPropPlayerBody", "_Global_SetAttachmentPropsActive");
+		
+		PauseMenu_Enabled(false);
+		cLux_AddDebugMessage("Enter");
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnLeaveState(int alNextStateId)
+	{	
+		LeaveInteractState();
+		
+		//////////////
+		// Restore fov
+		Player_FadeFOVToDefault(4.0f);
+
+		// Enable screen shakes etc.
+		Effect_Shake_EnableAll(true);
+		
+		////////////////////////////////////////
+		// Reset prop
+		cLuxProp@ pProp = cLux_ID_Prop(mPropID);
+		if (pProp !is null)
+		{
+			pProp.SetGuiIsFocused(false);
+			ResetPropInteractVars();
+		}
+		
+		////////////////////////////////////////
+		// Reset camera
+		cLux_GetPlayer().MoveCameraPosAdd(eCameraAddType_CombinationLock, cVector3f(0), gfHeadMoveAcc, gfHeadMoveSpeed, gfHeadMoveSlowdownDist);
+		cLux_GetPlayer().StopCameraRotate(0);
+
+		mbForceFace = false;
+		
+		Player_FadeCheckHealthLightBrightness(0.f, 0.25);
+
+		PlayerBody_SetCoverageAmount(1);
+		cScript_SetGlobalArgBool(0, true);
+		cScript_RunGlobalFunc(PlayerBody_GetEntityName(), "cScrPropPlayerBody", "_Global_SetAttachmentPropsActive");
+		
+		PauseMenu_Enabled(true);
+		cLux_AddDebugMessage("Exit");
+	}
+		
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+
+	void UpdateHighLightEffect(float afTimeStep, int alIndex)
+	{
+		cLuxEffectHandler@ pEffectHandler = cLux_GetEffectHandler();
+		float fRollerFadeSpeed = 10.f;
+
+		for(int i =0; i < mvRollerGlowAmounts.size(); ++i)
+		{
+			mvRollerGlowAmounts[i] = cMath_IncreaseTo(mvRollerGlowAmounts[i], afTimeStep * fRollerFadeSpeed, i == alIndex ? 1.f : 0.f);
+			if(mvRollerGlowAmounts[i] > 0.f)
+			{
+				HighlightEffect_AddSubMeshEdgeHighlight(mvRollerIds[i], cColor_White*5.f, mvRollerGlowAmounts[i], 0.5f, 5.f);
+			}
+		}
+	}
+
+	//------------------------------------------------------------
+
+	int GetRollerFace(int alRollerIdx)
+	{
+		// Update rollers:
+		cSubMeshEntity@ pSubMesh = cLux_ID_SubMeshEntity(mvRollerIds[alRollerIdx]);
+
+		if(pSubMesh !is null)
+		{
+			float fTotalSteps = 10.f;
+			float fStep = cMath_PiMul2 / fTotalSteps;
+
+			float fRotation = cMath_MatrixToEulerAngles(pSubMesh.GetLocalMatrix()).x;
+			return int(cMath_Wrap(cMath_Floor((fRotation + fStep / 2) / fStep), 0, fTotalSteps));
+		}
+		return 0;
+	}
+
+	//------------------------------------------------------------
+
+	void Update(float afTimeStep)
+	{		
+		if(CheckShouldUpdate()==false) return;
+		
+		UpdateHints(afTimeStep);
+		
+		if(mbExit)
+		{
+			mBaseObj.mpPlayer.ChangeState(mlPreviousState);
+			return;
+		}
+				
+		iCharacterBody@ pCharBody = cLux_GetPlayer().GetCharacterBody();
+		
+		///////////////////////////////////////////
+		//Calculate direction to target position in the player's local space
+		cVector3f vPosAdd = cLux_GetPlayer().GetCameraPosAdd(eCameraAddType_CombinationLock);
+		cVector3f vToTarget = mvTargetCameraPosition - cLux_GetPlayer().GetCamera().GetPosition();
+		float fDist = vToTarget.Length();
+		cMatrixf mtxCharBodyRotation = cMath_MatrixUnitVectors(pCharBody.GetRight(), pCharBody.GetUp(), pCharBody.GetForward(), cVector3f(0));
+		cVector3f vLocalToTarget = cMath_MatrixMul(mtxCharBodyRotation, vToTarget);
+		vLocalToTarget.Normalize();
+		
+		///////////////////////////////////////////
+		//Move camera
+		vPosAdd += vLocalToTarget * cMath_Min(fDist, mfCurrentCameraSpeed*afTimeStep);
+		cLux_GetPlayer().SetCameraPosAdd(eCameraAddType_CombinationLock, vPosAdd);
+		
+		///////////////////////////////////////////
+		//Update camera speed
+		float fMaxSpeed = gfHeadMoveSpeed;
+		if (fDist < gfHeadMoveSlowdownDist)
+			fMaxSpeed *= fDist/gfHeadMoveSlowdownDist;
+		
+		mfCurrentCameraSpeed = cMath_Min(fMaxSpeed, mfCurrentCameraSpeed + gfHeadMoveAcc * afTimeStep);
+				
+		//Show no crosshair!
+		Player_SetCrossHairState(eCrossHairState_None);
+
+
+		// Check match
+		bool bMatch = true;
+		tString sReconstructedCode;
+		if(mvCombination.size() == mvRollerIds.size())
+		{
+			for(int i = 0; i < mvCombination.size(); ++i)
+			{
+				sReconstructedCode += mvCombination[i];
+				if(GetRollerFace(i) != mvCombination[i])
+				{
+					if(mbForceFace && i == mlRollerIndex)
+					{
+						if(mlForceFace == mvCombination[i])
+						{
+						}
+					}
+					
+					bMatch = false;
+					break;
+				}
+			}
+
+			if(bMatch)
+			{
+				///////////////////////
+				// Set code as used
+				// TODO: Ideally we should set a code as used by searching for its ID just in case we have a common code used by two different IDs. But we don't have a reference to the code owner here.
+				Sketchbook_SetCodeUsedByCode(sReconstructedCode, true);
+				cLux_AddDebugMessage("Code " + sReconstructedCode + " is now marked as used.");
+				
+				////////////////////////////////////////
+				// Callback
+				cLuxProp@ pProp = cLux_ID_Prop(mPropID);
+				if(pProp !is null && msUnlockCallback!="")
+				{
+					cLuxMap @pMap = cLux_GetCurrentMap();
+					if(pMap.ScriptPrepare("void " + msUnlockCallback + "(const tString &in asEntityName)" ) )
+					{
+						tString sName = pProp.GetName();
+						pMap.SetArgString(0, sName);
+						pMap.ScriptExecute();
+					}
+				}
+
+				// Play unlock sound
+				Sound_CreateAtEntity("Sound_CombinationLock_Unlock", "level_entity_shared/doors/combination_lock/unlock", pProp.GetName(), 0.0f, false);
+
+				//TODO: Fix so that the door type is taken into account.
+				if (mbOpenDoorEntityOnUnlock)
+				{
+					SwingDoor_SetBlocked(msDoorEntity, false, true);
+					SwingDoor_SetLocked(msDoorEntity, false, true);
+					SwingDoor_PushOpen(msDoorEntity, 0.15f, 3);
+				}
+				
+				mBaseObj.mpPlayer.ChangeState(mlPreviousState);
+			}
+		}
+
+
+		// Update rotation
+
+		float fTotalSteps = 10.f;
+		float fHalfTotalSteps = fTotalSteps * 0.5;
+		float fStep = cMath_PiMul2 / fTotalSteps;
+		float fSpeed = 5.f;
+		
+		for(int i = 0; i < mvRollerIds.size(); ++i)
+		{
+			// Update rollers:
+			cSubMeshEntity@ pSubMesh = cLux_ID_SubMeshEntity(mvRollerIds[i]);
+
+			if(pSubMesh !is null)
+			{
+				if(i == mlRollerIndex)
+					UpdateHighLightEffect(afTimeStep, mlRollerIndex);
+
+				if(i == mlRollerIndex && cMath_Abs(mfRotationSpeed) > 0.1f && mbForceFace == false)
+				{
+					pSubMesh.SetMatrix(cMath_MatrixMul(pSubMesh.GetLocalMatrix(), cMath_MatrixRotateX(fSpeed * mfRotationSpeed * afTimeStep)));
+				}
+				else
+				{
+					float fRotation = cMath_MatrixToEulerAngles(pSubMesh.GetLocalMatrix()).x;
+					float fFace = cMath_Wrap(cMath_Floor((fRotation + fStep / 2) / fStep), -fHalfTotalSteps, fHalfTotalSteps);
+
+					if(i == mlRollerIndex && mbForceFace)
+					{
+						fFace = cMath_Wrap(mlForceFace, -fHalfTotalSteps, fHalfTotalSteps);
+						//cLux_AddDebugMessage("mlForceFace: " + mlForceFace + " after wrap: " + fFace);
+					}
+
+					float fTarget = fStep * fFace;
+					float fDiff = cMath_GetAngleDistanceRad(fRotation, fTarget);
+					if(!bMatch && cMath_Abs(fDiff) > 0.001f)
+						pSubMesh.SetMatrix(cMath_MatrixMul(pSubMesh.GetLocalMatrix(), cMath_MatrixRotateX(fSpeed * fDiff * afTimeStep)));
+					else if(bMatch && i == mlRollerIndex) // Snap to target if we found a match
+						pSubMesh.SetMatrix(cMath_MatrixMul(pSubMesh.GetLocalMatrix(), cMath_MatrixRotateX(fDiff)));
+					else if(i == mlRollerIndex && mbForceFace)
+					{
+						mbForceFace = false;
+					}
+				}
+			}
+		}
+		
+		////////////////////////////
+		// Scroll numbers using mouse
+		bool bIsUsingGamepad = cLux_GetInputHandler().GetGamepadWasLastDeviceUsed();
+		if (bIsUsingGamepad==false)
+		{
+			const float fScrollFrequency = 1.0f/60.0f;
+			mfScrollUpdateTimer -= afTimeStep;
+			if (cInput_IsTriggered(eAction_MenuScrollDown) && mfScrollUpdateTimer < 0)
+			{
+				CombinationScroll(true);
+				mfScrollUpdateTimer = fScrollFrequency;
+			}
+			else if (cInput_IsTriggered(eAction_MenuScrollUp) && mfScrollUpdateTimer < 0)
+			{
+				CombinationScroll(false);
+				mfScrollUpdateTimer = fScrollFrequency;
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void PostUpdate(float afTimeStep)
+	{
+		if(CheckShouldUpdate()==false) return;
+		mfRotationSpeed = 0.f;
+		fRollerSwitchCooldown = cMath_IncreaseTo(fRollerSwitchCooldown, afTimeStep, 0.f);
+	}
+	
+	
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	//eAction_MenuUp,
+	//eAction_MenuDown,
+	//eAction_MenuLeft,
+	//eAction_MenuRight,
+	//eAction_Forward,
+	//eAction_Backward,
+	//eAction_Left,
+	//eAction_Right,
+
+	bool OnAction(int alAction, bool abPressed)
+	{		
+		if (alAction == eAction_Crouch || alAction == eAction_Jump)
+			return false;
+			
+		
+		if(alAction == eAction_InteractCancel || alAction == eAction_OpenMenu)
+		{
+			Exit();
+			return false;
+		}
+		if (!abPressed) return true;
+		
+		bool bIsUsingGamepad = cLux_GetInputHandler().GetGamepadWasLastDeviceUsed();
+			
+		if((bIsUsingGamepad && alAction == eAction_MenuLeft) || alAction == eAction_Left)
+		{
+			ChangeRollerIndex(-1);
+			return false;
+		}
+
+		else if((bIsUsingGamepad && alAction == eAction_MenuRight) || alAction == eAction_Right)
+		{
+			ChangeRollerIndex(1);
+
+			return false;
+		}
+		else if((bIsUsingGamepad && alAction == eAction_MenuUp) || alAction == eAction_Forward)
+		{
+			CombinationScroll(false);
+			
+			return false;
+		}
+		else if((bIsUsingGamepad && alAction == eAction_MenuDown) || alAction == eAction_Backward)
+		{
+			CombinationScroll(true);
+
+			return false;
+		}
+
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnAnalogInput(int alAnalogId, const cVector3f &in avAmount)
+	{
+		///////////////////////////////////
+		// Disable look and move
+		if(alAnalogId == eAnalogType_Look || alAnalogId == eAnalogType_GamepadMove || alAnalogId == eAnalogType_Move || alAnalogId == eAnalogType_Lean)
+		{
+			//if(alAnalogId == eAnalogType_Move || alAnalogId == eAnalogType_GamepadMove)
+			//{
+			//	if(fRollerSwitchCooldown == 0.f)
+			//	{
+			//		if(avAmount.x > 0.5)
+			//		{
+			//			mlRollerIndex++;
+			//			if(mlRollerIndex >= mvRollerIds.size())
+			//				mlRollerIndex = 0;
+			//			fRollerSwitchCooldown = 1.5;
+			//		}
+			//		else if(avAmount.x < -0.5)
+			//		{
+			//			mlRollerIndex--;
+			//			if(mlRollerIndex < 0)
+			//				mlRollerIndex = mvRollerIds.size() - 1;
+			//			fRollerSwitchCooldown = 1.5;
+			//		}
+			//	}
+			//	mfRotationSpeed = -avAmount.y;
+			//}
+
+			return false;
+		}
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnExitPressed()
+	{
+		mBaseObj.mpPlayer.ChangeState(mlPreviousState);
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// BODY CALLBACKS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool AllowBuoyancy(iPhysicsBody @apBody)
+	{
+		return false;
+	}
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// CHARACTER CALLBACK
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void CharBody_GravityCollide(iCharacterBody@ apCharBody, iPhysicsBody@ apBody, cCollideData @apCollideData)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void CharBody_HitGround(iCharacterBody@ apCharBody,const cVector3f &in avVel)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPER METHODS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void ChangeRollerIndex(int alInc)
+	{
+		mbForceFace = false;
+		mlRollerIndex += alInc;
+		if(mlRollerIndex < 0)
+			mlRollerIndex = mvRollerIds.size() - 1;
+		if(mlRollerIndex > mvRollerIds.size() - 1)
+			mlRollerIndex = 0;
+	}
+	
+	void CombinationScroll(bool abDown)
+	{
+		if(mbForceFace)
+			mlForceFace = abDown ? mlForceFace+1 : mlForceFace-1;
+		else
+			mlForceFace = abDown ? GetRollerFace(mlRollerIndex) + 1 : GetRollerFace(mlRollerIndex) - 1;
+			
+		mbForceFace = true;
+		cLuxProp@ pProp = cLux_ID_Prop(mPropID);
+		Sound_CreateAtEntity("Sound_CombinationLock_Turn", "level_entity_shared/doors/combination_lock/turn", pProp.GetName(), 1.f, false);
+	}
+	
+	//------------------------------------------------------------
+		
+	void SaveBodyProperties(iPhysicsBody @apBody)
+	{
+		
+	}
+
+	//-----------------------------------------------------------------------
+
+
+	bool BodyIsAdded(iPhysicsBody @apBody)
+	{
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		afStartY = cLux_DrawDebugText("Current: " + mlRollerIndex, afStartY);
+		afStartY = cLux_DrawDebugText("Force face: " + mbForceFace, afStartY);
+		afStartY = cLux_DrawDebugText("Force face: " + mlForceFace, afStartY);
+
+		for(int i = 0; i < mvRollerIds.size(); ++i)
+		{
+			afStartY = cLux_DrawDebugText("Roller " + i + " face: " + GetRollerFace(i), afStartY);
+		}
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	cVector3f mvTargetCameraPosition;
+	cVector3f mvOffset;
+	float mfCurrentCameraSpeed;
+	tString msUnlockCallback;
+	array<tID> mvRollerIds;
+
+	array<float> mvRollerGlowAmounts;
+
+	array<int> mvCombination;
+	tString msDoorEntity;
+	tString msCombination;
+	
+	int mlRollerIndex;
+	bool mbExit;
+	bool mbOpenDoorEntityOnUnlock;
+
+	float fRollerSwitchCooldown = 0;
+
+	float mfRotationSpeed;
+
+	bool mbForceFace = false;
+	int mlForceFace = 0;
+	
+	float mfScrollUpdateTimer = 0;
+	//------------------------------------------------------------
+		
+}

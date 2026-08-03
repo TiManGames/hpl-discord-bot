@@ -1,0 +1,1667 @@
+//----------------------------------------------------------------------
+//----------------------------------------------------------------------
+
+////////////////////////////////
+// PRISONER                   //
+////////////////////////////////
+
+//----------------------------------------------------------------------
+
+#include "agents/Agent_Humanoid.hps"
+#include "helper/helper_audio.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_player.hps"
+#include "custom/helpers/helper_player_custom.hps"
+#include "helpers/helper_effects.hps"
+#include "custom/player/PlayerTypes_Custom.hps"
+#include "base/Base_Types.hps"
+#include "custom/agents/agent_types_custom.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+
+//----------------------------------------------------------------------
+
+/////////////////////////////////////////
+// ANIMATION
+//{//////////////////////////////////////
+
+//----------------------------------------------------------------------
+
+const tString gsPrisoner_AnimIdle = "prisoner_seated_idle";
+const tString gsPrisoner_AnimAlert = "prisoner_alert_idle";
+const tString gsPrisoner_AnimScared = "prisoner_heavy_breathing";
+const tString gsPrisoner_AnimPanicked = "prisoner_struggling";
+const tString gsPrisoner_AnimDie = "prisoner_death";
+const tString gsPrisoner_AnimHurtL = "prisoner_take_damage_left";
+const tString gsPrisoner_AnimHurtR = "prisoner_take_damage_right";
+const tString gsPrisoner_AnimIdleToAlert = "prisoner_seated_to_alert";
+const tString gsPrisoner_AnimAlertToIdle = "prisoner_alert_to_idle";
+const tString gsPrisoner_AnimToPanicked = "prisoner_idle_to_struggle";
+const tString gsPrisoner_AnimFromPanicked = "prisoner_struggle_to_idle";
+const tString gsPrisoner_AnimKilledByStalker = "prisoner_german_death_stalker";
+
+//----------------------------------------------------------------------
+
+//} END ANIMATION
+
+//----------------------------------------------------------------------
+
+/////////////////////////////////////////
+// SOUNDS
+//{//////////////////////////////////////
+
+//----------------------------------------------------------------------
+
+const tString gsPrisoner_SoundDeathShot = "prison/prisoner/death_shot";
+const tString gsPrisoner_SoundDeathMonster = "prison/prisoner/death_creature";
+
+const tString gsPrisoner_IdleVoiceSubject = "Barks_Quiet";
+const tString gsPrisoner_AlertVoiceSubject = "Barks_Moans";
+const tString gsPrisoner_ScaredVoiceSubject = "Barks_Scared";
+const tString gsPrisoner_PanickedVoiceSubject = "Barks_Panicked";
+const tString gsPrisoner_GassedVoiceSubject = "Barks_Gas";
+const tString gsPrisoner_StalkerVoiceSubject = "Barks_MonsterAttack";
+
+//----------------------------------------------------------------------
+
+//} END SOUNDS
+
+/////////////////////////////////////////
+// SETTINGS
+//{//////////////////////////////////////
+
+//----------------------------------------------------------------------
+
+const float gfPrisoner_AlertMinTerror = 0.f;
+const float gfPrisoner_ScaredMinTerror = 20.f;
+const float gfPrisoner_PanickedMinTerror = 30.f;
+
+const int glPrisoner_StrongReactionSoundPrio = 4;
+const float gfPrisoner_ReactToStalkerPathMaxDist = 15.f;
+const float gfPrisoner_ReactToStalkerMinCount = 2.f;
+const float gfPrisoner_ReactToStalkerMaxCount = 3.f;
+const float gfPrisoner_MaxStrongReactDist = 6.f;
+
+const float gfPrisoner_VoiceMinDist = 1.f;
+const float gfPrisoner_VoiceIdleMaxDist = 20.f;
+const float gfPrisoner_VoiceAlertMaxDist = 20.f;
+const float gfPrisoner_VoiceScaredMaxDist = 25.f;
+const float gfPrisoner_VoicePanickedMaxDist = 30.f;
+const float gfPrisoner_VoiceGassedMaxDist = 25.f;
+const float gfPrisoner_VoiceStalkerMaxDist = 30.f;
+
+const tString gsPrisoner_VoiceCharacter = "KarlSpringer";
+
+//----------------------------------------------------------------------
+
+//} END SETTINGS
+
+//----------------------------------------------------------------------
+
+/////////////////////////////////////////
+// TYPES
+//{//////////////////////////////////////
+
+//----------------------------------------------------------------------
+
+enum ePrisonerState
+{
+	ePrisonerState_Idle,
+	ePrisonerState_Alert,
+	ePrisonerState_Scared,
+	ePrisonerState_Panicked,
+	ePrisonerState_Dead
+}
+
+//----------------------------------------------------------------------
+
+enum ePrisonerBarkState
+{
+	ePrisonerBarkState_Idle,
+	ePrisonerBarkState_Alert,
+	ePrisonerBarkState_Scared,
+	ePrisonerBarkState_Panicked,
+	ePrisonerBarkState_Gassed,
+	ePrisonerBarkState_Stalker,
+	ePrisonerBarkState_Silent,
+}
+
+//----------------------------------------------------------------------
+
+//} END TYPES
+
+//----------------------------------------------------------------------
+
+class cScrAgentPrisoner : cScrAgentHumanoid
+{
+	//===========================================================
+
+	/////////////////////////////////////////
+	//=======================================
+	// MAIN FUNCTIONS
+	//=======================================
+	//{//////////////////////////////////////
+	
+	//===========================================================
+
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// INIT
+	//{//////////////////////////////////////
+
+	//------------------------------------------------------------
+
+	void Init()
+	{
+		mBaseObj.SetUpdatePlayerDetection(false);
+		mBaseObj.SetCheckForDoors(false);
+	}
+	
+	//------------------------------------------------------------
+
+	//} END INIT
+
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// LOADING
+	//{//////////////////////////////////////
+
+	//------------------------------------------------------------
+
+	void SetupCharBody()
+	{
+		cScrAgentHumanoid::SetupCharBody();
+		iCharacterBody@ pCharBody = mBaseObj.GetCharBody();
+		pCharBody.SetMass(80.f);
+		pCharBody.SetTestCollision(false);
+	}
+
+	//------------------------------------------------------------
+
+	void SetupAfterLoad(cWorld@ apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		cScrAgentHumanoid::SetupAfterLoad(apWorld, apVars, apInstanceVars);
+		
+		//////////////////////
+		// General		
+		mBaseObj.SetAlignEntityWithGroundRay(true);
+		mBaseObj.SetFOV(cMath_ToRad(0.f));
+		mBaseObj.SetSightRange(0.f);
+		mBaseObj.SetSightRangeMul(0.f);
+		mBaseObj.SetRelativeEyeHeight(0.8f);
+		
+		EnvironmentalDamage_AddEntityToCheck(mBaseObj.GetID());
+		
+		//////////////////////
+		// State machine
+		@mpStateMachine = cLux_CreateEntityComponent_StateMachine(mBaseObj);
+		
+		mpStateMachine.AddState("Idle", ePrisonerState_Idle);
+		mpStateMachine.AddState("Alert", ePrisonerState_Alert);
+		mpStateMachine.AddState("Scared", ePrisonerState_Scared);
+		mpStateMachine.AddState("Panicked", ePrisonerState_Panicked);
+		mpStateMachine.AddState("Dead", ePrisonerState_Dead);
+		
+		//////////////////////
+		// Listener
+		@mpSoundListener = cLux_CreateEntityComponent_SoundListener(mBaseObj);
+		mpSoundListener.SetActive(true);
+		mpSoundListener.SetHearRadius(1.f);
+		mpSoundListener.SetSoundRadiusMul(1.5f);
+		mpSoundListener.SetIgnoreSoundRadius(0.f);
+		
+		//////////////////////
+		// Bark machine		
+		@mpBarkMachine = cLux_CreateEntityComponent_BarkMachine(mBaseObj);
+		
+		mpBarkMachine.SetupVoice(gsPrisoner_VoiceCharacter, true, gfPrisoner_VoiceMinDist, gfPrisoner_VoiceIdleMaxDist, gfPrisoner_VoiceIdleMaxDist);
+		
+		mpBarkMachine.AddState(ePrisonerBarkState_Idle);
+		mpBarkMachine.SetState_VoiceBark(gsPrisoner_IdleVoiceSubject, 2.5f, 3.5f, true);
+		
+		mpBarkMachine.AddState(ePrisonerBarkState_Alert);
+		mpBarkMachine.SetState_VoiceBark(gsPrisoner_AlertVoiceSubject, 2.f, 3.f, true, 0, gfPrisoner_VoiceMinDist, gfPrisoner_VoiceAlertMaxDist, gfPrisoner_VoiceAlertMaxDist);
+		
+		mpBarkMachine.AddState(ePrisonerBarkState_Scared);
+		mpBarkMachine.SetState_VoiceBark(gsPrisoner_ScaredVoiceSubject, 2.f, 3.f, false, 0, gfPrisoner_VoiceMinDist, gfPrisoner_VoiceScaredMaxDist, gfPrisoner_VoiceScaredMaxDist);
+		
+		mpBarkMachine.AddState(ePrisonerBarkState_Panicked);
+		mpBarkMachine.SetState_VoiceBark(gsPrisoner_PanickedVoiceSubject, 0.2f, 0.4f, false, 0, gfPrisoner_VoiceMinDist, gfPrisoner_VoicePanickedMaxDist, gfPrisoner_VoicePanickedMaxDist);
+		
+		mpBarkMachine.AddState(ePrisonerBarkState_Gassed);
+		mpBarkMachine.SetState_VoiceBark(gsPrisoner_GassedVoiceSubject, 0.f, 0.f, false, 0, gfPrisoner_VoiceMinDist, gfPrisoner_VoiceGassedMaxDist, gfPrisoner_VoiceGassedMaxDist);
+		
+		mpBarkMachine.AddState(ePrisonerBarkState_Stalker);
+		mpBarkMachine.SetState_VoiceBark(gsPrisoner_StalkerVoiceSubject, 0.f, 0.f, false, 0, gfPrisoner_VoiceMinDist, gfPrisoner_VoiceStalkerMaxDist, gfPrisoner_VoiceStalkerMaxDist);
+		
+		mpBarkMachine.AddState(ePrisonerBarkState_Silent);
+		
+		//////////////////////
+		// Setup state
+		mpStateMachine.ChangeState(ePrisonerState_Idle);
+	}
+
+	//------------------------------------------------------------
+
+	void OnAfterWorldLoad()
+	{
+		cScrAgentHumanoid::OnAfterWorldLoad();
+		
+		///////////////////
+		// Get stalker id
+		array<tID> vIds;
+		mBaseObj.GetMap().GetEntityArrayID("*", eLuxEntityType_Agent, "cScrAgentStalker", vIds);
+		m_idStalker = vIds.size() > 0 ? vIds[0] : tID_Invalid;
+	}
+
+	//------------------------------------------------------------
+	
+	void OnMapEnter()
+	{
+		EnvironmentalDamage_AddEntityToCheck(mBaseObj.GetID());
+	}
+	
+	//------------------------------------------------------------
+
+	void OnMapLeave()
+	{
+		EnvironmentalDamage_RemoveEntityToCheck(mBaseObj.GetID());
+	}
+
+	//------------------------------------------------------------
+	
+	void BeforeEntityDestruction()
+	{
+		EnvironmentalDamage_RemoveEntityToCheck(mBaseObj.GetID());
+	}
+	
+	//------------------------------------------------------------
+
+	//} END LOADING
+
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// GENERAL
+	//{///////////////////////////////////////
+
+	//------------------------------------------------------------
+	
+	void OnUpdate(float afTimeStep)
+	{
+		cScrAgentHumanoid::OnUpdate(afTimeStep);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnVariableUpdate(float afDeltaTime)
+	{	
+		///////////////
+		// Make sure voices play again when all has played
+		// (Skip for certain states)
+		cLuxVoiceHandler@ pVoice = cLux_GetVoiceHandler();
+		
+		if (pVoice !is null &&
+			mbPanicked_Gassed == false &&
+			mpBarkMachine.GetCurrentState() != ePrisonerBarkState_Stalker)
+		{
+			tString sSubject = GetVoiceSubjectForState(mpStateMachine.GetCurrentState());			
+			if (sSubject != "" && pVoice.DoesSubjectHaveUnplayedLines(sSubject) == false)
+			{
+				pVoice.ClearSubjectPlayedLines(sSubject);
+			}
+		}				
+		
+		////////////////
+		// Terror
+		mfTerror = cMath_IncreaseTo(mfTerror, afDeltaTime * mfTerrorDecreaseMul, 0.f);
+		
+		////////////////
+		// Stalker reaction
+		mfUpdateReactToStalkerCount -= afDeltaTime;		
+		if (mfUpdateReactToStalkerCount <= 0.f)
+		{
+			mfPathDistToStalker = 10000.f;
+			mfUpdateReactToStalkerCount = cMath_RandRectf(0.1f, 0.3f);
+			
+			cLuxAgent@ pStalker = cLux_ID_Agent(m_idStalker);
+			cLuxPathfinder@ pPathfinder = pStalker !is null ? cast<cLuxPathfinder@>(pStalker.GetComponentByType(eLuxEntityComponentType_Pathfinder)) : null;
+			
+			if (pStalker is null) return;
+			if (pPathfinder is null) return;
+			if (pStalker.IsActive() == false) return;
+			if (pStalker.GetMeshEntity().IsVisible() == false) return;
+			
+			if (pPathfinder.BuildPathNodeArrayToPos(mBaseObj.GetPosition()))
+			{
+				mfPathDistToStalker = pPathfinder.GetPathNodeArrayFullLength();
+			}
+			
+			tString sTimer = "Timer_ReactToMonsterCD";
+			bool bReact = mBaseObj.Timer_Exists(sTimer) == false &&
+						  mfPathDistToStalker <= gfPrisoner_ReactToStalkerPathMaxDist;
+				
+			if (bReact)
+			{
+				React(true, 5);
+				
+				float fTime = cMath_RandRectf(gfPrisoner_ReactToStalkerMinCount, gfPrisoner_ReactToStalkerMaxCount);
+				mBaseObj.Timer_Add(sTimer, fTime);
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+
+	void ResetProperties()
+	{
+		cScrAgentHumanoid::ResetProperties();
+	}
+
+	//------------------------------------------------------------
+
+	void OnSetActive(bool abX)
+	{
+		cScrAgentHumanoid::OnSetActive(abX);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnRecieveMessage(int alMessageId, cLuxEntityMessageData@ apData)
+	{		
+	}
+	
+	//------------------------------------------------------------
+
+	//} END GENERAL
+
+	//------------------------------------------------------------
+
+	//} END MAIN FUNCTIONS
+
+	//===========================================================
+
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// HELPERS
+	//{//////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	tString StateToString(int alState)
+	{
+		switch (alState)
+		{
+			case ePrisonerState_Idle: return "Idle";
+			case ePrisonerState_Alert: return "Alert";
+			case ePrisonerState_Scared: return "Scared";
+			case ePrisonerState_Panicked: return "Panicked";
+			case ePrisonerState_Dead: return "Dead";
+		}
+		
+		return "";
+	}
+
+	//------------------------------------------------------------
+
+	//} END HELPERS
+
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// GLOBAL FUNCS
+	//{//////////////////////////////////////
+
+	//------------------------------------------------------------
+	
+	void _Global_PlayKillByStalkerAnim()
+	{
+		msDead_Anim = gsPrisoner_AnimKilledByStalker;
+		mBaseObj.PlayAnimation(msDead_Anim, 0.3f, false);
+		
+		mbDead_KilledByMonster = true;
+		mpStateMachine.ChangeState(ePrisonerState_Dead);
+				
+		mBaseObj.PlaySound("Sound_KilledByMonster", gsPrisoner_SoundDeathMonster, true, false);
+	}
+		
+	//------------------------------------------------------------
+
+	//} END GLOBAL
+
+	//===========================================================
+
+	/////////////////////////////////////////
+	//=======================================
+	// PRISONER SPECIFIC CODE
+	//=======================================
+	//{//////////////////////////////////////
+
+	//===========================================================
+		
+	//------------------------------------------------------------
+	
+	void HitByProp(float afAmount, float afMass, iPhysicsBody@ apBody, cLuxProp@ apProp)
+	{		
+		//////////////////
+		// Is it a molotov?		
+		if (apProp.GetVarBool("IsMolotovCocktail"))
+		{			
+			cVector3f vPos = apBody.GetWorldPosition();
+			iPhysicsBody@ pCurrentBody = mBaseObj.GetCharBody().GetCurrentBody();
+			int lDamageId = mBaseObj.GetMap().GetNewAttackInstanceID();
+			
+			mBaseObj.GiveDamage(pCurrentBody, vPos, vPos, eDamageType_Fire, 0.3f, 1, 0.f, 0.f, apBody.GetID(), lDamageId);
+		}
+		
+		mbLastHitByPropWasGasGrenade = apProp.GetVarBool("IsGasGrenade");
+	}
+	
+	//------------------------------------------------------------
+	
+	void GiveDamage(iPhysicsBody@ apBody, const cVector3f &in avOrigin, const cVector3f &in avHitPos, cLuxDamageProperties@ apDamageProps)
+	{				
+		/////////////////
+		// State check
+		if (mpStateMachine.GetCurrentState() == ePrisonerState_Dead)
+			return;
+		
+		/////////////////
+		// Setup vars
+		int lHitboxBodyId = -1;
+		if (apBody !is null)
+		{
+			for (int i = 0; i < mBaseObj.GetHitboxBodyNum(); ++i)
+			{
+				if (apBody is mBaseObj.GetHitboxBody(i))
+				{
+					lHitboxBodyId = i;
+					break;
+				}
+			}
+		}
+		
+		mlDead_HitboxBodyId = lHitboxBodyId;
+		mfDead_HitForce = apDamageProps.mfForce;
+		mfDead_HitMaxImpulse = apDamageProps.mfMaxImpulse;
+		mvDead_HitPosition = avHitPos;
+		mvDead_HitOrigin = avOrigin;
+		msDead_Anim = "";
+		
+		tString sHitBody = "";		
+		if (mlDead_HitboxBodyId != -1)
+		{
+			iPhysicsBody@ pHitBody = mBaseObj.GetHitboxBody(mlDead_HitboxBodyId);
+			sHitBody = pHitBody !is null ? pHitBody.GetName() : "";
+			sHitBody = cString_ToLowerCase(sHitBody);
+		}
+		
+		bool bPlayHurtSound = true;
+		
+		/////////////////
+		// Gun
+		if (apDamageProps.mDamageType == eDamageType_Gun)
+		{			
+			float fDamageMul = 1.f;		
+			
+			if (cString_GetFirstStringPos(sHitBody, "foot") != -1 ||
+				cString_GetFirstStringPos(sHitBody, "leg") != -1 ||
+				cString_GetFirstStringPos(sHitBody, "arm") != -1 ||
+				cString_GetFirstStringPos(sHitBody, "hand") != -1)
+			{
+				fDamageMul = 0.35f;
+			}
+			
+			mfHealth -= apDamageProps.mfDamage * fDamageMul;
+			mfDead_HitForce = 1.5f;
+			
+			if (cString_GetFirstStringPos(sHitBody, "head") != -1)
+			{
+				bPlayHurtSound = false;
+			}
+			else
+			{
+				msDead_Anim = gsPrisoner_AnimDie;
+			}
+			
+			if (mbPanicked_Gassed)
+				mfHealth = 0.f;
+		}
+		
+		/////////////////
+		// Grenade
+		else if (apDamageProps.mDamageType == eDamageType_Grenade)
+		{
+			float fDist = (avOrigin - mBaseObj.GetPosition()).Length();
+			float fDamage = fDist < 3.f ? 1.f : 0.5f;			
+			
+			mfHealth -= fDamage;
+			mfDead_HitForce *= 2.f;
+		}
+		
+		/////////////////
+		// Fire
+		else if (apDamageProps.mDamageType == eDamageType_Fire)
+		{
+			mbTakingFireDamage = true;
+			mfHealth -= 0.2f;
+			msDead_Anim = gsPrisoner_AnimDie;
+			bPlayHurtSound = mfHealth <= 0.f;
+			
+			if (mbPanicked_Gassed)
+			{
+				bPlayHurtSound = true;
+				mfHealth = 0.f;
+			}
+			
+			mbPanicked_Gassed = false;
+		}
+		
+		/////////////////
+		// Gas
+		else if (apDamageProps.mDamageType == eDamageType_Gas)
+		{			
+			msDead_Anim = gsPrisoner_AnimDie;			
+			bPlayHurtSound = false;
+			
+			if (mbTakingFireDamage == false)
+			{
+				mbPanicked_Gassed = true;				
+				
+				cLuxVoiceHandler@ pVoice = cLux_GetVoiceHandler();
+				if (pVoice !is null &&
+					pVoice.GetCurrentSubjectLineIndex(gsPrisoner_GassedVoiceSubject) == 5)
+				{
+					mfHealth = 0.f;
+				}
+			}
+		}
+		
+		/////////////////
+		// Dead?
+		if (mfHealth <= 0.f)
+		{
+			mfHealth = 0.f;
+			mbDead_PlaySound = bPlayHurtSound;
+			mpStateMachine.ChangeState(ePrisonerState_Dead);
+		}
+			
+		/////////////////
+		// React!
+		else
+		{			
+			IncreaseTerror(50.f, 50.f);		
+			
+			tString sTimer = "Timer_HurtAnimCD";			
+			if (mBaseObj.Timer_Exists(sTimer) == false)
+			{
+				bool bLeft = cString_GetFirstStringPos(sHitBody, "_l") != -1;
+				tString sHurtAnim = bLeft ? gsPrisoner_AnimHurtL : gsPrisoner_AnimHurtR;
+				mpMover.PlayAnimation(sHurtAnim, 0.3f, false, true);
+				
+				mBaseObj.Timer_Add(sTimer, cMath_RandRectf(2.f, 3.f));
+			}
+						
+			if (bPlayHurtSound)
+			{
+				mpBarkMachine.ChangeState(ePrisonerBarkState_Silent, true, true);
+				mBaseObj.Timer_Add("Timer_PlayHurtSound", 0.1f, "OnTimer_PlayHurtSound", false, false);
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnTimer_PlayHurtSound(uint64 alId)
+	{		
+		//////////////////
+		// Play sound
+		mBaseObj.PlaySound("Sound_Hurt", gsPrisoner_SoundDeathShot, true, true);
+		
+		//////////////////
+		// Reset bark machine		
+		mBaseObj.Timer_Remove("Timer_ResetBarkMachine");
+		mBaseObj.Timer_Add("Timer_ResetBarkMachine", 1.f, "OnTimer_ResetBarkMachine", false, false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnTimer_ResetBarkMachine(uint64 alId)
+	{
+		mpBarkMachine.ChangeState(GetBarkStateForState(mpStateMachine.GetCurrentState()));
+	}
+	
+	//------------------------------------------------------------
+		
+	///////////////////////////////////
+	// PRISONER HELPERS
+	//{////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool UpdateAnimation(bool abCheckAnimOver)
+	{		
+		//////////////////
+		// Setup vars
+		cAnimationState@ pAnim = mBaseObj.GetCurrentAnimationState();
+		
+		bool bAnimOver = false;
+		bool bHurtAnimPlaying = false;
+		bool bIsTransition = false;
+		
+		if (pAnim !is null)
+		{
+			tString sAnim = cString_ToLowerCase(pAnim.GetName());
+			
+			bIsTransition = cString_GetFirstStringPos(sAnim, "_to_") != -1;
+			bHurtAnimPlaying = cString_GetFirstStringPos(sAnim, "take_damage") != -1;
+			bAnimOver = bHurtAnimPlaying ? pAnim.GetRelativeTimePosition() >= 0.7f : pAnim.IsOver();
+			
+			if (bAnimOver)
+			{
+				bHurtAnimPlaying = false;
+				bIsTransition = false;
+			}
+		}
+		
+		//////////////////
+		// Get new anim
+		bool bPlayTransition = false;
+		ePrisonerState currentState = ePrisonerState(mpStateMachine.GetCurrentState());
+		ePrisonerState prevState = ePrisonerState(mpStateMachine.GetPrevState());
+		
+		if (mCurrentState != currentState)
+		{
+			mCurrentState = currentState;
+			bPlayTransition = true;
+		}		
+		
+		tString sStateAnim;
+		float fFadeTime;
+		GetStateAnimation(currentState, prevState, bPlayTransition, sStateAnim, fFadeTime);
+		
+		//////////////////
+		// Play anim
+		if ((bHurtAnimPlaying == false && bIsTransition == false) &&
+			(pAnim is null || pAnim.GetName() != sStateAnim || bAnimOver))
+		{		
+			mBaseObj.PlayAnimation(sStateAnim, fFadeTime, false, true);
+		}
+		
+		return (abCheckAnimOver || bIsTransition) ? bAnimOver : true;
+	}
+	
+	//------------------------------------------------------------
+	
+	void GetStateAnimation(ePrisonerState aState, ePrisonerState aPrevState, bool abPlayTransition,
+						   tString &out asAnim, float &out fFadeTime)
+	{
+		asAnim = "";
+		fFadeTime = 0.3f;
+		
+		switch (aState)
+		{
+			case ePrisonerState_Idle:
+			{
+				asAnim = gsPrisoner_AnimIdle;
+				
+				if (abPlayTransition)
+				{
+					if (aPrevState == ePrisonerState_Alert) 	asAnim = gsPrisoner_AnimAlertToIdle;
+					if (aPrevState == ePrisonerState_Scared) 	asAnim = gsPrisoner_AnimAlertToIdle;
+					if (aPrevState == ePrisonerState_Panicked) 	asAnim = gsPrisoner_AnimFromPanicked;
+				}				
+				break;
+			}
+			
+			case ePrisonerState_Alert:
+			{
+				asAnim = gsPrisoner_AnimAlert;
+				
+				if (abPlayTransition)
+				{
+					if (aPrevState == ePrisonerState_Idle) 		asAnim = gsPrisoner_AnimIdleToAlert;
+					if (aPrevState == ePrisonerState_Panicked) 	asAnim = gsPrisoner_AnimFromPanicked;
+				}				
+				break;
+			}			
+			
+			case ePrisonerState_Scared:
+			{
+				asAnim = gsPrisoner_AnimScared;
+				
+				if (abPlayTransition)
+				{
+					if (aPrevState == ePrisonerState_Idle) 		asAnim = gsPrisoner_AnimIdleToAlert;
+					if (aPrevState == ePrisonerState_Panicked) 	asAnim = gsPrisoner_AnimFromPanicked;
+				}				
+				break;
+			}			
+			
+			case ePrisonerState_Panicked:
+			{
+				asAnim = gsPrisoner_AnimPanicked;
+				
+				if (abPlayTransition)
+				{
+					asAnim = gsPrisoner_AnimToPanicked;
+				}				
+				break;
+			}
+			
+			case ePrisonerState_Dead:
+			{
+				asAnim = gsPrisoner_AnimDie;
+				break;
+			}
+		}
+		
+		if (asAnim == gsPrisoner_AnimFromPanicked)
+		{
+			fFadeTime = 0.f;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void IncreaseTerror(float afAdd, float afMax)
+	{
+		if (mfTerror > afMax) return;
+		mfTerror = cMath_Clamp(mfTerror + afAdd, 0.f, afMax);
+	}
+	
+	//------------------------------------------------------------
+	
+	void React(bool abIsMonster, int alStrength, float afTerrorAddMul = 1.f, bool abCellDoorOpenEvent = false)
+	{		
+		////////////////////
+		// Cooldown
+		tString sCooldownTimer = "Timer_ReactCD";
+		if (mBaseObj.Timer_Exists(sCooldownTimer) && 
+			abCellDoorOpenEvent == false) 
+		{
+			return;
+		}
+		
+		mBaseObj.Timer_Add(sCooldownTimer, 0.1f);
+		
+		////////////////////
+		// Increase terror
+		bool bHighPrio = alStrength >= glPrisoner_StrongReactionSoundPrio;
+		float fReactTime = cMath_RandRectf(0.6f, 0.7f);
+		
+		if (abIsMonster)
+		{
+			IncreaseTerror(cMath_RandRectf(20.f, 30.f), 50.f);
+		}
+		else
+		{
+			float fAdd;
+			float fMax;
+			
+			if (bHighPrio)
+			{
+				float fAddMul = alStrength >= 6 ? 2.f : 1.f;
+				float fMinAdd = 25.f * fAddMul;
+				float fMaxAdd = 35.f * fAddMul;
+				
+				fAdd = cMath_RandRectf(fMinAdd, fMaxAdd);
+				fMax = alStrength > glPrisoner_StrongReactionSoundPrio ? 50.f : 35.f;
+			}
+			else
+			{
+				fAdd = cMath_RandRectf(10.f, 15.f);
+				fMax = 30.f;
+			}
+			
+			fAdd *= afTerrorAddMul;
+			IncreaseTerror(fAdd, fMax);
+		}
+		
+		////////////////////
+		// Cooldown
+		tString sCooldown = bHighPrio ? "Timer_HearHighPrioSoundCD" : "Timer_HearSoundCD";		
+		if (mBaseObj.Timer_Exists(sCooldown)) return;
+		
+		float fTime;
+		if (abIsMonster)
+		{
+			fTime = cMath_RandRectf(2.f, 3.f);
+		}
+		else
+		{
+			if (bHighPrio) 	fTime = cMath_RandRectf(2.f, 4.f);
+			else			fTime = cMath_RandRectf(6.f, 12.f);   
+		}		
+			
+		mBaseObj.Timer_Add(sCooldown, fTime, "", false, false);
+		
+		////////////////////
+		// Do reaction
+		// (Unless already in correct bark state)
+		int lGoalState = GetGoalState();
+		mlStateOnReaction = mpStateMachine.GetCurrentState();
+		
+		if (GetBarkStateForState(lGoalState) == mpBarkMachine.GetCurrentState())
+			return;
+		
+		Voice_StopAll();
+		
+		if (lGoalState == ePrisonerState_Panicked)
+			fReactTime = 0.4f;
+		
+		mBaseObj.Timer_Add("Timer_React", fReactTime, "OnTimer_React");	
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnTimer_React(uint64 alId)
+	{
+		if (mfHealth <= 0.f) return;
+		if (mpStateMachine.GetCurrentState() == ePrisonerState_Dead) return;
+		if (mpBarkMachine.GetCurrentState() == ePrisonerBarkState_Stalker) return;
+		
+		int lGoalState = GetGoalState();
+		
+		///////////////////
+		// Play a certain subject if was in idle
+		if (mlStateOnReaction == ePrisonerState_Idle && 
+			lGoalState != ePrisonerState_Panicked)
+		{
+			int lId = cMath_RandRectl(0, 1) == 0 ? 0 : 3;
+			
+			cLux_GetVoiceHandler().ClearSubjectPlayedLines(gsPrisoner_AlertVoiceSubject);
+			Voice_Play(gsPrisoner_AlertVoiceSubject, lId, "", 1);
+			return;
+		}
+		
+		///////////////////
+		// Play voice!
+		float fMinDist;
+		float fMaxDist;
+		GetVoiceDistancesForBarkState(GetBarkStateForState(lGoalState), fMinDist, fMaxDist);
+		
+		mpBarkMachine.PlayVoice(GetVoiceSubjectForState(lGoalState), 1, fMinDist, fMaxDist, fMaxDist);	
+	}
+	
+	//------------------------------------------------------------
+	
+	ePrisonerBarkState GetBarkStateForState(int alState)
+	{
+		switch (alState)
+		{
+			case ePrisonerState_Idle: return ePrisonerBarkState_Idle;
+			case ePrisonerState_Alert: return ePrisonerBarkState_Alert;
+			case ePrisonerState_Scared: return ePrisonerBarkState_Scared;
+			case ePrisonerState_Panicked:
+			{
+				if (mbPanicked_Gassed) 
+					return ePrisonerBarkState_Gassed;
+				else if (mfPathDistToStalker < 10.f && GetStalkerSubjectHasPlayed() == false)
+					return ePrisonerBarkState_Stalker;
+				else
+					return ePrisonerBarkState_Panicked;
+			}
+			case ePrisonerState_Dead: return ePrisonerBarkState_Silent;
+		}
+		
+		return ePrisonerBarkState_Idle;
+	}
+	
+	//------------------------------------------------------------
+	
+	tString GetVoiceSubjectForState(int alState)
+	{		
+		switch (alState)
+		{
+			case ePrisonerState_Idle: return gsPrisoner_IdleVoiceSubject;
+			case ePrisonerState_Alert: return gsPrisoner_AlertVoiceSubject;
+			case ePrisonerState_Scared: return gsPrisoner_ScaredVoiceSubject;
+			case ePrisonerState_Panicked:
+			{
+				if (mbPanicked_Gassed) 
+					return gsPrisoner_GassedVoiceSubject;
+				else if (mfPathDistToStalker < 10.f && GetStalkerSubjectHasPlayed() == false)
+					return gsPrisoner_StalkerVoiceSubject;
+				else
+					return gsPrisoner_PanickedVoiceSubject;				
+			}
+			case ePrisonerState_Dead: return "";
+		}
+		
+		return "";
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetStalkerSubjectHasPlayed()
+	{
+		cLuxVoiceHandler@ pVoice = cLux_GetVoiceHandler();
+		if (pVoice is null) return true;
+		if (pVoice.SubjectIsPlaying(gsPrisoner_StalkerVoiceSubject)) return false;
+		if (pVoice.DoesSubjectHaveUnplayedLines(gsPrisoner_StalkerVoiceSubject)) return false;
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	int GetGoalState()
+	{
+		if (mfTerror <= gfPrisoner_AlertMinTerror)		return ePrisonerState_Idle;
+		if (mfTerror < gfPrisoner_ScaredMinTerror)		return ePrisonerState_Alert;
+		if (mfTerror < gfPrisoner_PanickedMinTerror) 	return ePrisonerState_Scared;
+		else											return ePrisonerState_Panicked;
+	}
+	
+	//------------------------------------------------------------
+	
+	void GetVoiceDistancesForBarkState(int alState, float &out afMin, float &out afMax)
+	{
+		switch (alState)
+		{
+			case ePrisonerBarkState_Idle:
+			{
+				afMin = gfPrisoner_VoiceMinDist;
+				afMax = gfPrisoner_VoiceIdleMaxDist;
+				break;
+			}
+			case ePrisonerBarkState_Alert:
+			{
+				afMin = gfPrisoner_VoiceMinDist;
+				afMax = gfPrisoner_VoiceAlertMaxDist;
+				break;
+			}
+			case ePrisonerBarkState_Scared:
+			{
+				afMin = gfPrisoner_VoiceMinDist;
+				afMax = gfPrisoner_VoiceScaredMaxDist;
+				break;
+			}
+			case ePrisonerBarkState_Panicked:
+			{
+				afMin = gfPrisoner_VoiceMinDist;
+				afMax = gfPrisoner_VoicePanickedMaxDist;
+				break;
+			}
+			case ePrisonerBarkState_Gassed:
+			{
+				afMin = gfPrisoner_VoiceMinDist;
+				afMax = gfPrisoner_VoiceGassedMaxDist;
+				break;
+			}
+			case ePrisonerBarkState_Stalker:
+			{
+				afMin = gfPrisoner_VoiceMinDist;
+				afMax = gfPrisoner_VoiceStalkerMaxDist;
+				break;
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	//} END PRISONER HELPERS
+
+	//===========================================================
+
+	/////////////////////////////////////////
+	//=======================================
+	// STATES
+	//=======================================
+	/////////////////////////////////////////
+
+	//===========================================================
+
+	//------------------------------------------------------------
+
+	///////////////////////////////////
+	// STATE: DEFAULT
+	//{////////////////////////////////
+	
+	//------------------------------------------------------------
+
+	void State_Default_Enter()
+	{
+		cLux_AddAIDebugMessage("(" + mBaseObj.GetName() + ") ------ ENTER STATE: Default ------");
+	}
+	
+	//------------------------------------------------------------
+	
+	void State_Default_Leave()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void State_Default_Update(float afTimeStep) {}
+
+	//------------------------------------------------------------
+
+	bool State_Default_Message(int alMessageId)
+	{
+		///////////////////
+		// Sound heard
+		if (alMessageId == eLuxEntityMessage_SoundHeard)
+		{
+			int lPrio = mpStateMachine.GetCurrentMessageData().mlX;
+			tString sName = mpStateMachine.GetCurrentMessageData().msX;
+			cVector3f vPos = mpStateMachine.GetCurrentMessageData().mvX;
+			
+			///////////////////
+			// Occluded?
+			if (SoundOcclusion_GetIsPointOccluded(mBaseObj.GetPosition(), vPos))
+			{
+				return false;
+			}
+			
+			///////////////////
+			// Special cases
+			if (mbVulnerable && 
+				cString_GetFirstStringPos(sName, "Footstep") != -1)
+			{
+				lPrio = cMath_Clamp(lPrio * 3.f, 0, 5);
+			}
+			
+			bool bCellDoorOpenEvent = false;
+			
+			if (sName == "PrisonerCellDoorOpen")
+			{
+				lPrio = 6;
+				mbVulnerable = true;
+				bCellDoorOpenEvent = true;
+			}
+			else if (sName == "PrisonerCellDoorClosed")
+			{
+				lPrio = 3;	
+				mbVulnerable = false;
+			}
+			
+			///////////////////
+			// Dist check
+			float fTerrorAddMul = 1.f;
+			float fMaxDist = gfPrisoner_MaxStrongReactDist;
+			
+			if (mbVulnerable) 
+			{
+				fMaxDist *= 2.f;
+			}
+			else if (lPrio >= 5)
+			{
+				fMaxDist *= 1.75f;
+			}
+			
+			if (mBaseObj.GetDistanceToPos(vPos) > fMaxDist)
+			{
+				if (lPrio >= 5)
+					fTerrorAddMul = 2.f;
+					
+				lPrio = cMath_Min(lPrio, 3);				
+			}
+			
+			///////////////////
+			// React!
+			React(false, lPrio, fTerrorAddMul, bCellDoorOpenEvent);
+			
+			cLux_AddAIDebugMessage("(" + mBaseObj.GetName() + ") Sound heard: " + sName + ", Prio: " + lPrio);
+		}
+		
+		///////////////////
+		// Gunshot
+		else if (alMessageId == eCustomEntityMessage_PlayerShotGun)
+		{
+			mBaseObj.BroadcastMessage(eLuxEntityMessage_SoundHeard, null, mpStateMachine.GetCurrentMessageData().mvX, 6);
+		}
+	
+		//////////////////
+		// Molotov
+		else if (alMessageId == eCustomEntityMessage_MolotovImpact)
+		{
+			mBaseObj.BroadcastMessage(eLuxEntityMessage_SoundHeard, null, mpStateMachine.GetCurrentMessageData().mvX, 6);
+		}
+		
+		///////////////////
+		// Hit by prop
+		else if (alMessageId == eLuxEntityMessage_HitByProp)
+		{
+			mBaseObj.Timer_Remove("Timer_ReactCD");
+			
+			if (mbLastHitByPropWasGasGrenade)
+			{
+				React(false, 3);
+				mbLastHitByPropWasGasGrenade = false;
+				return true;
+			}
+			
+			React(false, 6);
+			cLux_AddAIDebugMessage("(" + mBaseObj.GetName() + ") Hit by prop!");
+		}
+		
+		return false;
+	}
+	
+	//------------------------------------------------------------
+
+	//} END DEFAULT
+
+	//------------------------------------------------------------
+	
+	///////////////////////////////////
+	// STATE: IDLE
+	//{////////////////////////////////
+	
+	//-----------------------------------------------------------
+	
+	void State_Idle_Enter()
+	{
+		cLux_AddAIDebugMessage("(" + mBaseObj.GetName() + ") ------ ENTER STATE: Idle ------");
+		
+		mfTerrorDecreaseMul = 1.f;
+		mpBarkMachine.ChangeState(GetBarkStateForState(ePrisonerState_Idle), false, false);
+	}
+
+	//------------------------------------------------------------
+
+	void State_Idle_Leave()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void State_Idle_Update(float afTimeStep)
+	{	
+		///////////////
+		// Change state?
+		int lNextState = -1;
+		if (mfTerror > gfPrisoner_AlertMinTerror) 
+			lNextState = ePrisonerState_Alert;
+			
+		if (UpdateAnimation(false) && lNextState != -1)
+		{
+			mpStateMachine.ChangeState(lNextState);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	bool State_Idle_Message(int alMessageId)
+	{
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	void State_Idle_TimerUp(uint64 alId)
+	{
+	}
+    
+	//------------------------------------------------------------
+
+	//} END STATE: IDLE
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////////
+	// STATE: ALERT
+	//{////////////////////////////////
+	
+	//-----------------------------------------------------------
+	
+	void State_Alert_Enter()
+	{
+		cLux_AddAIDebugMessage("(" + mBaseObj.GetName() + ") ------ ENTER STATE: Alert ------");
+		
+		mfTerrorDecreaseMul = 1.f;
+		mpBarkMachine.ChangeState(GetBarkStateForState(ePrisonerState_Alert), false, false);
+	}
+
+	//------------------------------------------------------------
+
+	void State_Alert_Leave()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void State_Alert_Update(float afTimeStep)
+	{
+		/////////////////
+		// Change state?
+		int lNextState = -1;
+		if (mfTerror > gfPrisoner_ScaredMinTerror) 			lNextState = ePrisonerState_Scared;
+		else if (mfTerror <= gfPrisoner_AlertMinTerror) 	lNextState = ePrisonerState_Idle;
+		
+		if (UpdateAnimation(false) && lNextState != -1)
+		{
+			mpStateMachine.ChangeState(lNextState);
+		}
+	}	
+	
+	//------------------------------------------------------------
+	
+	bool State_Alert_Message(int alMessageId)
+	{
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	void State_Alert_TimerUp(uint64 alId)
+	{
+	}
+    
+	//------------------------------------------------------------
+
+	//} END STATE: ALERT
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////////
+	// STATE: SCARED
+	//{////////////////////////////////
+	
+	//-----------------------------------------------------------
+	
+	void State_Scared_Enter()
+	{
+		cLux_AddAIDebugMessage("(" + mBaseObj.GetName() + ") ------ ENTER STATE: Scared ------");
+		
+		mfTerrorDecreaseMul = mpStateMachine.GetPrevState() == ePrisonerState_Panicked ? 0.25f : 0.5f;
+		mpBarkMachine.ChangeState(GetBarkStateForState(ePrisonerState_Scared), false, false);
+	}
+
+	//------------------------------------------------------------
+
+	void State_Scared_Leave()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void State_Scared_Update(float afTimeStep)
+	{	
+		/////////////////
+		// Change state?
+		int lNextState = -1;
+		if (mfTerror > gfPrisoner_PanickedMinTerror) 		lNextState = ePrisonerState_Panicked;
+		else if (mfTerror <= gfPrisoner_ScaredMinTerror) 	lNextState = ePrisonerState_Alert;
+		
+		if (UpdateAnimation(false) && lNextState != -1)
+		{
+			mpStateMachine.ChangeState(lNextState);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	bool State_Scared_Message(int alMessageId)
+	{
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	void State_Scared_TimerUp(uint64 alId)
+	{
+	}
+    
+	//------------------------------------------------------------
+
+	//} END STATE: SCARED
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////////
+	// STATE: PANICKED
+	//{////////////////////////////////
+	
+	//-----------------------------------------------------------
+	
+	bool mbPanicked_Gassed = false;
+	
+	//-----------------------------------------------------------
+	
+	void State_Panicked_Enter()
+	{
+		cLux_AddAIDebugMessage("(" + mBaseObj.GetName() + ") ------ ENTER STATE: Panicked ------");
+		
+		mfTerrorDecreaseMul = 1.125f;
+		
+		mpBarkMachine.ChangeState(GetBarkStateForState(ePrisonerState_Panicked), false, true);
+		
+		mpStateMachine.AddTimer("SoundEvent", 3.f);
+	}
+
+	//------------------------------------------------------------
+
+	void State_Panicked_Leave()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void State_Panicked_Update(float afTimeStep)
+	{
+		/////////////////
+		// Update bark state
+		int lNewBarkState = GetBarkStateForState(ePrisonerState_Panicked);
+		if (mpBarkMachine.GetCurrentState() != lNewBarkState)
+			mpBarkMachine.ChangeState(lNewBarkState, true, true);
+		
+		/////////////////
+		// Change state?
+		int lNextState = -1;
+		if (mfTerror <= gfPrisoner_PanickedMinTerror) 
+			lNextState = ePrisonerState_Scared;
+		
+		if (UpdateAnimation(true) && lNextState != -1)
+		{
+			mpStateMachine.ChangeState(lNextState);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	bool State_Panicked_Message(int alMessageId)
+	{
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	void State_Panicked_TimerUp(uint64 alId)
+	{
+		/////////////////////
+		// Sound event
+		if (H64("SoundEvent") == alId)
+		{
+			int lPrio;
+			float fDist;
+			
+			if (mbPanicked_Gassed)
+			{
+				lPrio = 3;
+				fDist = 15.f;
+			}
+			else if (mfTerror >= gfPrisoner_PanickedMinTerror + 10.f)
+			{
+				lPrio = 7;
+				fDist = 100.f;
+			}
+			else
+			{
+				lPrio = 5;
+				fDist = 40.f;
+			}
+				
+			tID idBody = mBaseObj.GetCharBody().GetCurrentBody().GetID();
+			mBaseObj.GetMap().BroadcastSoundHeardEvent("PrisonerScream", mBaseObj.GetPosition(), fDist, lPrio, false, false, idBody);
+			mpStateMachine.AddTimer("SoundEvent", 6.f);
+		}
+	}
+    
+	//------------------------------------------------------------
+
+	//} END STATE: PANICKED
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////////
+	// STATE: DEAD
+	//{////////////////////////////////
+	
+	//-----------------------------------------------------------
+	
+	int mlDead_HitboxBodyId = -1;
+	bool mbDead_PlaySound = true;
+	bool mbDead_KilledByMonster = false;
+	float mfDead_HitForce = 0.f;
+	float mfDead_HitMaxImpulse = 0.f;
+	tString msDead_Anim = "";
+	cVector3f mvDead_HitPosition = cVector3f(0.f);
+	cVector3f mvDead_HitOrigin = cVector3f(0.f);
+	
+	//-----------------------------------------------------------
+	
+	void State_Dead_Enter()
+	{
+		cLux_AddAIDebugMessage("(" + mBaseObj.GetName() + ") ------ ENTER STATE: Dead ------");
+		
+		/////////////////
+		// Setup state
+		mfTerrorDecreaseMul = 1.f;
+		
+		bool bStopVoice = true;		
+		if (mbPanicked_Gassed && mbTakingFireDamage == false)
+			bStopVoice = false;
+		if (mbDead_KilledByMonster)
+			bStopVoice = true;
+		if (mbDead_PlaySound)
+			bStopVoice = true;
+		
+		mpBarkMachine.ChangeState(GetBarkStateForState(ePrisonerState_Dead), bStopVoice, true);
+		
+		mBaseObj.SetVarBool("IsDead", true);
+		
+		/////////////////
+		// Die
+		if (msDead_Anim != "")
+		{
+			cAnimationState@ pAnim = mBaseObj.GetMeshEntity().GetAnimationStateFromName(msDead_Anim);
+			if (pAnim !is null && pAnim.IsActive() == false)
+				mBaseObj.PlayAnimation(msDead_Anim, 0.3f, false, true);
+		}		
+		else
+		{
+			Dead_ActivateRagdoll(false);
+		}
+		
+		if (mbDead_PlaySound)
+			mpStateMachine.AddTimer("Scream", 0.3f);
+	}
+
+	//------------------------------------------------------------
+
+	void State_Dead_Leave()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void State_Dead_Update(float afTimeStep)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	bool State_Dead_Message(int alMessageId)
+	{
+		/////////////////
+		// Animation over
+		if (alMessageId == eLuxEntityMessage_AnimationOver)
+		{
+			if (msDead_Anim == "") return true;
+						
+			mBaseObj.UpdateHitboxBodyTransforms();
+						
+			for (int i = 0; i < mBaseObj.GetHitboxBodyNum(); ++i)
+			{
+				iPhysicsBody@ pBody = mBaseObj.GetHitboxBody(i);			
+				pBody.SetCollide(true);
+				pBody.SetCollideCharacter(true);
+				pBody.SetCollideFlags(mBaseObj.GetMap().GetCollideFlag("-agent"));
+			}
+			
+			mBaseObj.GetCharBody().SetActive(false);
+			mBaseObj.GetCharBody().SetTestCollision(false);
+		}
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	void State_Dead_TimerUp(uint64 alId)
+	{
+		/////////////////
+		// Scream
+		if (H64("Scream") == alId)
+		{
+			mBaseObj.PlaySound("Sound_Die", gsPrisoner_SoundDeathShot, true, true);
+		}
+		
+		/////////////////
+		// Sleep
+		else if (H64("Sleep") == alId)
+		{
+			mBaseObj.Sleep();
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void Dead_ActivateRagdoll(bool abStatic)
+	{
+		mpMover.SetUseMoveStateAnimations(false);
+		mBaseObj.SetRagdollActive(true, 0.3f);
+		
+		//////////////////
+		// Add impulse to ragdoll
+		{
+			cVector3f vDir = cMath_Vector3Normalize(mvDead_HitPosition - mvDead_HitOrigin);
+			
+			if (mlDead_HitboxBodyId == -1)
+			{
+				for (int i = 0; i < mBaseObj.GetHitboxBodyNum(); ++i)
+					Dead_AddImpulseToRagdollBody(i, vDir);
+			}
+					
+			//////////////////
+			// Add impulse to specific ragdoll body
+			else
+			{
+				Dead_AddImpulseToRagdollBody(mlDead_HitboxBodyId, vDir);
+			}
+		}
+		
+		//////////////////
+		// Setup mass & collision
+		for (int i = 0; i < mBaseObj.GetHitboxBodyNum(); ++i)
+		{
+			iPhysicsBody@ pBody = Dead_GetRagdollBodyFromHitboxBodyId(i);
+			if (pBody is null) continue;
+			
+			if (abStatic)
+				pBody.SetMass(0.f);
+				
+			pBody.SetCollideFlags(mBaseObj.GetMap().GetCollideFlag("-agent"));
+		}
+		
+		//////////////////
+		// Sleep
+		mpStateMachine.AddTimer("Sleep", 3.f);
+	}
+	
+	//------------------------------------------------------------
+	
+	void Dead_AddImpulseToRagdollBody(int alBodyId, const cVector3f &in avDir)
+	{
+		iPhysicsBody@ pBody = Dead_GetRagdollBodyFromHitboxBodyId(alBodyId);
+		
+		if (pBody !is null)
+		{
+			cVector3f vImpulse = avDir * cMath_Min(mfDead_HitForce / cMath_Max(pBody.GetMass(), 0.001f), mfDead_HitMaxImpulse);			
+			pBody.AddImpulseAtPosition(vImpulse, mvDead_HitPosition);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	iPhysicsBody@ Dead_GetRagdollBodyFromHitboxBodyId(int alId)
+	{
+		iPhysicsBody@ pHitboxBody = mBaseObj.GetHitboxBody(alId);
+		return pHitboxBody !is null ? mBaseObj.GetRagdollBodyFromHitboxName(pHitboxBody.GetName()) : null;
+	}
+    
+	//------------------------------------------------------------
+
+	//} END STATE: DEAD
+	
+	//------------------------------------------------------------
+	
+	//} END PRISONER SPECIFIC CODE
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	//{//////////////////////////////////////
+
+	//------------------------------------------------------------
+	
+	cLuxStateMachine@ mpStateMachine;
+	cLuxSoundListener@ mpSoundListener;
+	cLuxBarkMachine@ mpBarkMachine;
+	
+	ePrisonerState mCurrentState = ePrisonerState_Idle;
+	
+	float mfTerror = 0.f;
+	float mfTerrorDecreaseMul = 1.f;
+	
+	float mfHealth = 1.f;
+	bool mbTakingFireDamage = false;
+	
+	bool mbVulnerable = false;
+	int mlStateOnReaction = ePrisonerState_Idle;
+	float mfPathDistToStalker = 10000.f;
+	
+	float mfUpdateReactToStalkerCount = 0.f;
+	
+	bool mbLastHitByPropWasGasGrenade = false;
+	
+	tID m_idStalker = tID_Invalid;
+	
+	//------------------------------------------------------------
+
+	//} END PROPERTIES
+
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// DEBUG
+	//{//////////////////////////////////////
+
+	//------------------------------------------------------------
+
+	float DrawDebugOutput(cGuiSet@ apSet, iFontData@ apFont, float afStartY)
+	{
+		cAnimationState@ pAnim = mBaseObj.GetCurrentAnimationState();
+		
+		afStartY = cLux_DrawDebugText("Terror: " + mfTerror, afStartY);		
+		afStartY = cLux_DrawDebugText("Vulnerable: " + mbVulnerable, afStartY);		
+		
+		cMeshEntity@ pMeshEnt = mBaseObj.GetMeshEntity();		
+		for (int i = 0; i < pMeshEnt.GetAnimationStateNum(); ++i)
+		{
+			cAnimationState@ pState = pMeshEnt.GetAnimationState(i);
+			if (pState.IsActive())
+			{
+				afStartY = cLux_DrawDebugText("   " + pState.GetName() + ", time: " + pState.GetRelativeTimePosition() + ", speed: " + pState.GetSpeed() + ", weight: " + pState.GetWeight(), afStartY);
+			}
+		}
+		
+		return afStartY;
+	}
+
+	//------------------------------------------------------------	
+	
+	void OnRenderSolid(cRendererCallbackFunctions@ apFunctions)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+
+	//} END DEBUG
+}

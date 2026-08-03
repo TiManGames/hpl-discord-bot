@@ -1,0 +1,687 @@
+#include "custom/props/Prop_Weapon_Base.hps"
+#include "custom/helpers/helper_items.hps"
+
+//------------------------------------------------------------
+
+const float gfGun_CylinderRotationStep = cMath_ToRad(60.f);
+const tString gsGun_ReloadBulletMesh = "Bullet_006";
+
+//------------------------------------------------------------
+
+enum eBulletChamberState
+{
+	eBulletChamberState_Empty,
+	eBulletChamberState_Unspent,
+	eBulletChamberState_Spent
+}
+
+//------------------------------------------------------------
+
+class cBulletChamber
+{
+	tString msMeshName = "";
+	tString msBoneName = "";
+	cMatrixf mtxDefaultLocalTransform = cMatrixf_Identity;
+	eBulletChamberState mState = eBulletChamberState_Empty;
+}
+
+//------------------------------------------------------------
+
+class cScrPropGun : cScrPropWeapon_Base
+{
+	
+	void Init()
+	{
+		cScrPropWeapon_Base::Init();
+		
+		mlCurrentChamberId = 2;
+		mlCylinderStepsToWantedChamber = 0;
+		mlCylinderRotationsQueued = 0;
+		mfExtraCylinderAngle = 0.f;
+		mfCylinderAngle = 0.f;
+	
+		//////////////////
+		// Setup chambers
+		mvBulletChambers.resize(0);
+		
+		for (int i = 0; i < 6; ++i)
+		{
+			cBulletChamber bulletChamber;
+			bulletChamber.msMeshName = "Bullet_00" + i;
+			bulletChamber.msBoneName = "j_Bullet_00" + i;
+			bulletChamber.mState = eBulletChamberState_Empty;
+			
+			cBoneState@ pBone = mBaseObj.GetMeshEntity().GetBoneStateFromName(bulletChamber.msBoneName);
+			if (pBone !is null)
+			{
+				cMatrixf mtxRot = cMath_MatrixRotateX(cMath_RandRectf(-cMath_Pi, cMath_Pi));
+				bulletChamber.mtxDefaultLocalTransform = pBone.GetLocalMatrix();
+				bulletChamber.mtxDefaultLocalTransform = cMath_MatrixMul(bulletChamber.mtxDefaultLocalTransform, mtxRot);
+			}
+				
+			mvBulletChambers.push_back(bulletChamber);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// SAVE/LOAD
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+
+	void Save()
+	{
+		array<int> vChamberStates;
+		vChamberStates.resize(6);
+
+		for (int i = 0; i < mvBulletChambers.size(); ++i)
+		{
+			vChamberStates[i] = int(mvBulletChambers[i].mState);
+		}
+		
+		MapTransfer_SaveState_Gun(mlCurrentChamberId, mfCylinderAngle, vChamberStates);
+	}
+	
+	//------------------------------------------------------------
+	
+	void Load()
+	{
+		array<int> vChamberStates;
+		int lTempChamber;
+		float fTempAngle;
+		MapTransfer_LoadState_Gun(lTempChamber, fTempAngle, vChamberStates);
+		
+		if(vChamberStates.size() == 0)
+			return;
+
+		mlCurrentChamberId = lTempChamber;
+		mfCylinderAngle = fTempAngle;
+
+		for (int i = 0; i < vChamberStates.size(); ++i)
+		{
+			mvBulletChambers[i].mState = eBulletChamberState(vChamberStates[i]);
+		}
+
+		UpdateBulletVisibility();
+	}
+
+
+	//------------------------------------------------------------
+
+	///////////////////////////////
+	// GLOBAL
+	///////////////////////////////
+
+	//------------------------------------------------------------
+	
+	void _Global_CopyFromItemEntity() override
+	{
+		cScrPropPickup::_Global_CopyFromItemEntity();
+		tString sSource = cScript_GetGlobalArgString(0);
+
+		cScript_SetGlobalArgInt(0, mlCurrentChamberId);
+		cScript_SetGlobalArgFloat(1, mfCylinderAngle);
+		
+		int lId = 2;
+		for (int i = 0; i < mvBulletChambers.size(); ++i)
+			cScript_SetGlobalArgInt(lId++, int(mvBulletChambers[i].mState));
+
+		cScript_RunGlobalFunc(sSource, "cScrPropWeapon_Base", "_Global_CopyValues");
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_CopyValues() override
+	{
+		mlCurrentChamberId = cScript_GetGlobalArgInt(0);
+		mfCylinderAngle = cScript_GetGlobalArgFloat(1);
+				
+		int lId = 2;
+		for (int i = 0; i < mvBulletChambers.size(); ++i)
+			mvBulletChambers[i].mState = eBulletChamberState(cScript_GetGlobalArgInt(lId++));
+		
+		cScrPropWeapon_Base::_Global_CopyValues();
+	}
+
+	//------------------------------------------------------------
+	
+	void _Global_OnItemTakenOut() override
+	{	
+		cScrPropWeapon_Base::_Global_OnItemTakenOut();
+		
+		ForceCylinderRotationToFirstBullet();
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetCanFire() override
+	{
+		int lCurrentId = GetCurrentChamberId();		
+		bool bCanFire = mvBulletChambers[lCurrentId].mState == eBulletChamberState_Unspent;
+		
+		cScript_SetGlobalReturnBool(bCanFire);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetHasSpentBullets() override
+	{
+		bool bSpent = false;		
+		for (int i = 0; i < mvBulletChambers.size(); ++i)
+		{
+			if (mvBulletChambers[i].mState == eBulletChamberState_Spent)
+			{
+				bSpent = true;
+				break;
+			}
+		}
+		
+		cScript_SetGlobalReturnBool(bSpent);
+	}
+	
+	//-----------------------------------------------------------
+	
+	void _Global_GetUnspentBulletCount()
+	{		
+		cScript_SetGlobalReturnInt(GetUnspentBulletCount());
+	}
+	
+	//-----------------------------------------------------------
+	
+	void _Global_LoadChamber()
+	{
+		int lChamber = cScript_GetGlobalArgInt(0);
+		if (lChamber == -1)
+			lChamber = GetCurrentChamberId();
+			
+		mvBulletChambers[lChamber].mState = eBulletChamberState_Unspent;
+		UpdateBulletVisibility();		
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetCurrentChamberEmpty()
+	{
+		bool bEmpty = mvBulletChambers[GetCurrentChamberId()].mState == eBulletChamberState_Empty;
+		cScript_SetGlobalReturnBool(bEmpty);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetAnimationName() override
+	{
+		cScript_SetGlobalReturnString("gun_relaxed");
+	}
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// GENERAL
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnPostUpdate(float afTimeStep) override
+	{		
+		cScrPropWeapon_Base::OnPostUpdate(afTimeStep);
+		
+		//////////////////
+		// Move to wanted chamber!
+		if (mlCylinderStepsToWantedChamber > 0)
+		{
+			mfExtraCylinderAngle = cMath_IncreaseTo(mfExtraCylinderAngle, afTimeStep * cMath_PiMul2, gfGun_CylinderRotationStep);
+			
+			//////////////////
+			// Rotated one step, update cylinder!
+			if (mfExtraCylinderAngle >= gfGun_CylinderRotationStep)
+			{
+				RotateCylinder(true, false);		
+				
+				mfExtraCylinderAngle = 0.f;
+				--mlCylinderStepsToWantedChamber;
+			}
+		}
+		
+		//////////////////
+		// Update rotation
+		float fAngleAdd = -mfExtraCylinderAngle;
+		UpdateCylinderRotation(fAngleAdd);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnAfterAnimationUpdate(cMeshEntity@ apFunctions, float afTimeStep) override
+	{
+		cScrPropWeapon_Base::OnAfterAnimationUpdate(apFunctions, afTimeStep);
+		
+		//////////////////
+		// Update empty bullets anim
+		cAnimationState@ pState = mBaseObj.GetMeshEntity().GetAnimationStateFromName(gsGun_RemoveBulletsAnim);
+		if (pState !is null)
+		{
+			for (int i = 0; i < mvBulletChambers.size(); ++i)
+			{
+				//////////////////
+				// Skip if bullet is spent!
+				cBoneState@ pBullet = apFunctions.GetBoneStateFromName(mvBulletChambers[i].msBoneName);
+				
+				if (pBullet is null) 
+					continue;
+				if (mvBulletChambers[i].mState == eBulletChamberState_Spent) 
+					continue;			
+				
+				//////////////////
+				// Unspent bullet -- it shoud stay in place!
+				pBullet.SetMatrix(mvBulletChambers[i].mtxDefaultLocalTransform);
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnRecieveMessage(int alMessageId, cLuxEntityMessageData @apData) override
+	{
+		cScrPropWeapon_Base::OnRecieveMessage(alMessageId, apData);
+		
+		/////////////////
+		// Animation over
+		if (alMessageId == eLuxEntityMessage_AnimationOver)
+		{
+			/////////////////
+			// Update rotation
+			if (mlCylinderRotationsQueued > 0)
+				RotateCylinder(true, false);
+			
+			mlCylinderRotationsQueued = 0;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void HandleEvent(eGunEvent aEvent) override
+	{
+		cScrPropWeapon_Base::HandleEvent(aEvent);
+		
+		//////////////////
+		// Fire anim started!
+		if (aEvent == eGunEvent_FireStart)
+		{
+			//////////////////
+			// Mark current bullet as spent
+			int lCurrentId = GetCurrentChamberId();
+			if (mvBulletChambers[lCurrentId].mState == eBulletChamberState_Unspent)
+				mvBulletChambers[lCurrentId].mState = eBulletChamberState_Spent;
+				
+			//////////////////
+			// Rotation hasn't had a chance to update since last fire, do it now!
+			if (mlCylinderRotationsQueued > 0)
+				RotateCylinder(true, false);
+			
+			++mlCylinderRotationsQueued;
+		}
+		
+		//////////////////
+		// Show reload bullet
+		else if (aEvent == eGunEvent_ShowReloadBullet)
+		{
+			SetReloadBulletVisible(true);
+		}
+			
+		//////////////////
+		// Bullets were emptied!
+		else if (aEvent == eGunEvent_EmptyBullets)
+		{
+			//////////////////
+			// Hide emptied bullets
+			for (int i = 0; i < mvBulletChambers.size(); ++i)
+			{
+				if (mvBulletChambers[i].mState == eBulletChamberState_Spent)
+					mvBulletChambers[i].mState = eBulletChamberState_Empty;
+			}
+				
+			UpdateBulletVisibility();
+		}
+		
+		//////////////////
+		// Hide reload bullet and enable real one
+		else if (aEvent == eGunEvent_HideReloadBullet)
+		{
+			mvBulletChambers[GetCurrentChamberId()].mState = eBulletChamberState_Unspent;
+			UpdateBulletVisibility();	
+			
+			//////////////////
+			// Remove from inventory
+			tString sItem = ItemType_GetFirstInInventory("Ammunition");	
+			if (sItem != "")
+				Item_RemoveFromInventory(sItem);
+		}
+			
+		//////////////////
+		// Bullet was inserted!
+		else if (aEvent == eGunEvent_ReloadEnd)
+		{	
+			RotateCylinder(true, false);
+		}
+			
+		//////////////////
+		// Cylinder spun!
+		else if (aEvent == eGunEvent_Spin)
+		{
+			RotateCylinder(true, false);
+		}
+		
+		//////////////////
+		// Cylinder opened!
+		else if (aEvent == eGunEvent_OpenCylinder)
+		{
+			//////////////////
+			// Rotate one step to the right to sync with the anims
+			if (mBaseObj.GetCurrentAnimationState() !is null)
+				RotateCylinder(false, true);
+		}
+		
+		//////////////////
+		// Cylinder needs to be rotated for reload
+		else if (aEvent == eGunEvent_AlignCylinderForReload)
+		{
+			// Rotate until the first empty or spent chamber is found
+			for (int i = 0; i < mvBulletChambers.length(); i++)
+			{
+				RotateCylinder(true, true);
+				cBulletChamber@ pCurrent = mvBulletChambers[GetCurrentChamberId()];
+				if (pCurrent.mState != eBulletChamberState_Unspent)
+					break;
+			}
+		}
+		
+		/////////////////
+		// Cylinder closed!
+		else if (aEvent == eGunEvent_CloseCylinder)
+		{
+			/////////////////
+			// Get steps to wanted chamber
+			// (So all unspent chambers line up)
+			int lSteps = 0;
+			int lUnspentCount = GetUnspentBulletCount();
+			int lMaxId = mvBulletChambers.size() - 1;
+			int lCurrentId = GetCurrentChamberId();
+			int lPrevId = (lCurrentId + 1) % mvBulletChambers.size();
+			
+			while (lSteps < mvBulletChambers.size())
+			{
+				if (lCurrentId < 0) lCurrentId = lMaxId;
+				if (lPrevId < 0) 	lPrevId = lMaxId;	
+
+				cBulletChamber@ pCurrent = mvBulletChambers[lCurrentId];
+				cBulletChamber@ pPrev = mvBulletChambers[lPrevId];		
+				
+				if (lUnspentCount >= 2)
+				{
+					if (pCurrent.mState == eBulletChamberState_Unspent &&
+						(pPrev.mState == eBulletChamberState_Spent ||
+						 pPrev.mState == eBulletChamberState_Empty))
+					{
+						break;	
+					}
+				}
+				else
+				{
+					if (mvBulletChambers[lCurrentId].mState == eBulletChamberState_Unspent)
+					{
+						break;	
+					}
+				}
+				
+				--lCurrentId;
+				--lPrevId;
+				++lSteps;
+			}			
+			
+			/////////////////
+			// If we found a bullet, set up extra angle!
+			if (lSteps < mvBulletChambers.size())
+			{
+				mfExtraCylinderAngle = 0.f;
+				mlCylinderStepsToWantedChamber = lSteps;
+			}
+		}
+	}	
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPERS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void RotateCylinder(bool abLeft, bool abUpdateRotationInstantly)
+	{
+		//////////////////
+		// Adjust current chamber so it stays on top
+		mlCurrentChamberId += (abLeft ? -1 : 1);
+		
+		if (mlCurrentChamberId < 0)	
+			mlCurrentChamberId = mvBulletChambers.size() - 1;
+		else if (mlCurrentChamberId > mvBulletChambers.size() - 1) 
+			mlCurrentChamberId = 0;
+		
+		//////////////////
+		// Adjust angle
+		mfCylinderAngle += gfGun_CylinderRotationStep * (abLeft ? -1.f : 1.f);
+		mfCylinderAngle = mfCylinderAngle % cMath_PiMul2;
+		
+		//////////////////
+		// Update rotation?
+		if (abUpdateRotationInstantly)
+			UpdateCylinderRotation(0.f);
+	}
+	
+	//------------------------------------------------------------
+	
+	int GetCurrentChamberId()
+	{
+		int lCurrentId = mlCurrentChamberId;
+		
+		//////////////////
+		// Make sure we get the right id if it rotation hasn't fully updated yet
+		if (mlCylinderRotationsQueued > 0)
+		{
+			--lCurrentId;
+			if (lCurrentId < 0)
+				lCurrentId = mvBulletChambers.size() - 1;
+		}
+		
+		return lCurrentId;
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateCylinderRotation(float afAngleAdd)
+	{
+		cBoneState@ pCylinder = mBaseObj.GetMeshEntity().GetBoneStateFromName("j_cylinder");
+		if (pCylinder !is null)
+		{
+			pCylinder.SetUsePreTransform(true);
+			pCylinder.SetPreTransform(cMath_MatrixRotateX(mfCylinderAngle + afAngleAdd));
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateBulletVisibility() override
+	{
+		//////////////////
+		// Only loaded bullets should be visible!
+		for (int i = 0; i < mvBulletChambers.size(); ++i)
+		{
+			cSubMeshEntity@ pMeshEnt = mBaseObj.GetMeshEntity().GetSubMeshEntityName(mvBulletChambers[i].msMeshName);
+			if (pMeshEnt !is null)
+				pMeshEnt.SetVisible(mvBulletChambers[i].mState != eBulletChamberState_Empty);
+		}
+		
+		SetReloadBulletVisible(false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetReloadBulletVisible(bool abX)
+	{
+		cSubMeshEntity@ pMeshEnt = mBaseObj.GetMeshEntity().GetSubMeshEntityName(gsGun_ReloadBulletMesh);
+		if (pMeshEnt !is null)
+			pMeshEnt.SetVisible(abX);
+	}
+	
+	//------------------------------------------------------------
+	
+	int GetUnspentBulletCount()
+	{
+		int lCount = 0;
+		for (int i = 0; i < mvBulletChambers.size(); ++i)
+		{
+			if (mvBulletChambers[i].mState == eBulletChamberState_Unspent)
+				++lCount;
+		}
+		
+		return lCount;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetFullyLoaded() override
+	{	
+		for (int i = 0; i < mvBulletChambers.size(); ++i)
+		{
+			if (mvBulletChambers[i].mState != eBulletChamberState_Unspent)
+			{
+				return false;
+			}
+		}
+		
+		return true;
+	}
+	
+	//-----------------------------------------------------------
+	
+	void ForceCylinderRotationToFirstBullet()
+	{
+		// Find the index of the last chamber with an unspent bullet before the gap
+		uint lLastChamberIndex = 0;
+		bool bFoundUnspentBullet = false;
+
+		for (uint i = 0; i < mvBulletChambers.length(); i++)
+		{
+			cBulletChamber@ pChamber = mvBulletChambers[i];
+
+			if (pChamber.mState != eBulletChamberState_Unspent)
+			{
+				if (bFoundUnspentBullet)
+				{
+					break;
+				}
+			}
+			else
+			{
+				lLastChamberIndex = i;
+				bFoundUnspentBullet = true;
+			}
+		}
+
+		// Rotate the cylinder to the last chamber with an unspent bullet
+		while (GetCurrentChamberId() != lLastChamberIndex)
+		{
+			RotateCylinder(true, true);
+		}
+		
+		mlCylinderStepsToWantedChamber = 0;
+	}
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// DEBUG
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+
+	tString GetChamberStateName(eBulletChamberState state)
+	{
+		switch(state)
+		{
+			case eBulletChamberState_Empty: 	return 	"Empty"; break;
+			case eBulletChamberState_Unspent:	return 	"Unspent"; break;
+			case eBulletChamberState_Spent:		return 	"Spent"; break;
+		}
+		return "Invalid";
+	}
+	
+	//------------------------------------------------------------
+	
+	float DrawDebugOutput(cGuiSet@ apSet, iFontData@ apFont,float afY)
+	{
+		cAnimationState@ pAnim = mBaseObj.GetCurrentAnimationState();
+		
+		afY = cLux_DrawDebugText("------------ Gun ------------", afY);
+		afY = cLux_DrawDebugText("Cylinder angle: " + cMath_ToDeg(mfCylinderAngle), afY);
+		afY = cLux_DrawDebugText("Current chamber: " + mlCurrentChamberId, afY);
+
+		for (int i = 0; i < mvBulletChambers.size(); ++i)
+		{
+			afY = cLux_DrawDebugText("chamber " + i + ": " + GetChamberStateName(mvBulletChambers[i].mState), afY);
+		}
+		
+		if (pAnim !is null)
+		{
+			afY = cLux_DrawDebugText("Anim: " + pAnim.GetName(), afY);
+			afY = cLux_DrawDebugText("Anim time: " + pAnim.GetTimePosition(), afY);
+		}
+		
+		return afY;
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnRenderSolid(cRendererCallbackFunctions@ apFunctions)
+	{
+		for (int i = 0; i < mvBulletChambers.size(); ++i)
+		{
+			cBoneState@ pBullet = mBaseObj.GetMeshEntity().GetBoneStateFromName(mvBulletChambers[i].msBoneName);
+			if (pBullet is null) continue;
+			
+			cColor color = cColor_Red;
+			cVector3f vPos = pBullet.GetWorldPosition();
+			
+			if (i == GetCurrentChamberId())
+				color = cColor_White;
+			 if (mvBulletChambers[i].mState == eBulletChamberState_Unspent)
+				color = cColor_Green;
+				
+			apFunctions.GetLowLevelGfx().DrawSphere(vPos, 0.01f, color);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// PROPERTIES
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	int mlCurrentChamberId;
+	int mlCylinderStepsToWantedChamber;
+	int mlCylinderRotationsQueued;
+	
+	float mfExtraCylinderAngle;
+	float mfCylinderAngle;
+	
+	array<cBulletChamber> mvBulletChambers;
+}

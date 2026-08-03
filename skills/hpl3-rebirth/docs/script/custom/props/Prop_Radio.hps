@@ -1,0 +1,393 @@
+#include "custom/props/Prop_Pickup.hps"
+#include "helpers/helper_audio.hps"
+#include "InputHandler_Types.hps"
+#include "helpers/helper_modules.hps"
+
+//------------------------------------------------------------
+
+const tString gsRadioSound_Ring = "player/tools/radio/radio_phone_ring";
+const tString gsRadioSound_TurnOn = "player/tools/radio/radio_phone_switch_on";
+const tString gsRadioSound_TurnOff = "player/tools/radio/radio_phone_switch_off";
+const tString gsRadioSound_StaticLoop = "player/tools/radio/radio_call/radio_static_loop";
+const tString gsRadioSound_IncomingLoop = "player/tools/radio/radio_call/doctor_talk_loop";
+const tString gsRadioSound_IncomingEnd = "player/tools/radio/radio_call/doctor_talk_end";
+const tString gsRadioSound_OutgoingStart = "player/tools/radio/radio_call/tasi_talk_start";
+const tString gsRadioSound_OutgoingEnd = "player/tools/radio/radio_call/tasi_talk_stop";
+
+//------------------------------------------------------------
+
+enum eRadioStage
+{
+	eRadioStage_None,
+	eRadioStage_TakeOut,
+	eRadioStage_Idle,
+	eRadioStage_IncomingMessage,
+	eRadioStage_OutgoingMessage,
+	eRadioStage_PutAway
+};
+
+//------------------------------------------------------------
+
+class cScrPropRadio : cScrPropPickup
+{
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// INIT
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+
+	void Init()
+	{
+		cScrPropPickup::Init();
+		
+		mlStage = eRadioStage_None;
+		mlPrevStage = eRadioStage_None;
+		mlNextStage = eRadioStage_None;
+		
+		mfTakeOutCount = 1.f;
+		mfPutAwayCount = 1.f;
+		mfPlaySubjectCount = 0.f;
+		
+		mbCallActive = false;
+		
+		msSubject = "";
+		msSubjectCallback = "";
+		msSpeakingCharacter = "";
+		mvSpeakingCharacters.resize(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// GLOBAL
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_CopyFromItemEntity() override
+	{
+		cScrPropPickup::_Global_CopyFromItemEntity();
+		
+		tString sSource = cScript_GetGlobalArgString(0);
+		
+		cScript_SetGlobalArgBool(0, mbCallActive);
+		cScript_SetGlobalArgString(1, msSubject);
+		cScript_SetGlobalArgString(2, msSubjectCallback);
+		cScript_SetGlobalArgString(3, msSpeakingCharacter);
+		cScript_RunGlobalFunc(sSource, "cScrPropRadio", "_Global_CopyValues");
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_CopyValues()
+	{
+		mbCallActive = cScript_GetGlobalArgBool(0);
+		msSubject = cScript_GetGlobalArgString(1);
+		msSubjectCallback = cScript_GetGlobalArgString(2);
+		msSpeakingCharacter = cScript_GetGlobalArgString(3);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_OnItemTakenOut()
+	{
+		cScrPropPickup::_Global_OnItemTakenOut();
+		
+		cMeshEntity@ pMeshEnt = mBaseObj.GetMeshEntity();
+		pMeshEnt.SetRenderFlagBit(eRenderableFlag_VisibleInReflection, false);
+		pMeshEnt.SetRenderFlagBit(eRenderableFlag_VisibleInNonReflection, true);
+		pMeshEnt.SetRenderFlagBit(eRenderableFlag_ShadowCaster, true);
+		
+		StartCall();
+		
+		float fPitchMin = -60.f;
+		float fPitchMax = 5.f;
+		
+		if (Pregnancy_GetStage() == ePregStage_Stage3)
+		{
+			fPitchMin = -15.f;
+			fPitchMax = 5.f;
+		}
+		
+		PlayerBody_SetArmAnimationPitchLimits(fPitchMin, fPitchMax);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_OnItemStartPutAway()
+	{
+		tString sItem = cScript_GetGlobalArgString(0);
+		mlStage = eRadioStage_PutAway;
+		
+		PlayerBody_ResetArmAnimationPitchLimits();
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_StartCall()
+	{		
+		mbCallActive = true;
+		msSubject = cScript_GetGlobalArgString(0);
+		msSubjectCallback = cScript_GetGlobalArgString(1);
+		msSpeakingCharacter = cScript_GetGlobalArgString(2);
+		
+		Sound_Stop("Sound_RadioStaticLoop", 0.2f);
+		Sound_PlayGui(gsRadioSound_Ring, 1.f, eSoundEntryType_GuiWorld);
+		
+		Voice_StopScenesWithCharacter("Player");
+		
+		if (Item_GetHeldType(eItemHandlerHand_Right) == "Radio")
+			StartCall();
+	}
+	
+	//------------------------------------------------------------
+	
+	void StartCall()
+	{		
+		mlStage = eRadioStage_None;
+		mlPrevStage = eRadioStage_None;
+		mlNextStage = eRadioStage_TakeOut;
+		
+		mfTakeOutCount = 1.f;
+		mfPutAwayCount = 1.f;
+		mfPlaySubjectCount = 0.f;
+		
+		mvSpeakingCharacters.resize(0);
+		cString_GetStringVec(msSpeakingCharacter, mvSpeakingCharacters, ";");
+		
+		if (mbCallActive)
+			cLux_GetPlayer().ChangeState(ePlayerState_Custom_UsingRadio);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_StopCall()
+	{
+		if (mbCallActive)
+			mlStage = eRadioStage_PutAway;
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetCallActive()
+	{
+		cScript_SetGlobalReturnBool(mbCallActive);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetAnimationName() override
+	{
+		tString sAnim = "radio";
+		
+		// Custom anims for radio in the Town when moving
+		iCharacterBody@ pBody = cLux_GetPlayer().GetCharacterBody();
+		if (pBody !is null && 
+			pBody.GetVelocity(cEngine_GetStepSize()).Length() > 0.f && 
+			Pregnancy_GetStage() == ePregStage_Stage3)
+		{
+			sAnim = "radio_walk";
+		}
+		
+		cScript_SetGlobalReturnString(sAnim);
+	}
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// GENERAL
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnVariableUpdate(float afDeltaTime)
+	{	
+		/////////////////
+		// Setup vars
+		cLuxMap@ pMap = mBaseObj.GetMap();
+		cLuxVoiceHandler@ pVoice = cLux_GetVoiceHandler();
+		
+		/////////////////
+		// Take out
+		if (mlStage == eRadioStage_TakeOut)
+		{
+			mfTakeOutCount -= afDeltaTime;
+			if (mfTakeOutCount > 0.f)
+				return;
+			
+			if (EnterStage())
+			{
+				mlNextStage = eRadioStage_Idle;
+				
+				Sound_StopGui(gsRadioSound_Ring, 0.2f);
+				Sound_CreateAtEntity("Sound_RadioTurnOn", gsRadioSound_TurnOn, mBaseObj.GetName());
+				Sound_CreateAtEntity("Sound_RadioStaticLoop", gsRadioSound_StaticLoop, mBaseObj.GetName());				
+									
+				/////////////////
+				// Queue voice
+				if (msSubject != "")
+					mfPlaySubjectCount = 1.5f;
+			}		
+		}
+		
+		/////////////////
+		// Play voice
+		if (mfPlaySubjectCount > 0.f)
+		{
+			mfPlaySubjectCount -= afDeltaTime;
+			if (mfPlaySubjectCount <= 0.f)
+			{				
+				for (int i = 0; i < mvSpeakingCharacters.size(); ++i)			
+					pMap.SetVoiceSource(mvSpeakingCharacters[i], mBaseObj.GetName(), 1.f, 3.f, true, 3.f);
+				
+				pVoice.StopAll();
+				pVoice.Play(msSubject, -1, msSubjectCallback, 0, false);
+			}
+		}
+		
+		/////////////////
+		// Determine state
+		if (mbCallActive &&
+			mlStage > eRadioStage_TakeOut && 
+			mlStage != eRadioStage_PutAway)
+		{
+			if (pVoice.CharacterIsSpeaking("Player"))
+			{
+				mlNextStage = eRadioStage_OutgoingMessage;
+			}
+			else if (CallerSpeaking())
+			{
+				mlNextStage = eRadioStage_IncomingMessage;	
+			}
+			else if (pVoice.DoesSubjectHaveUnplayedLines(msSubject) == false)
+			{
+				mfPutAwayCount -= afDeltaTime;
+				if (mfPutAwayCount <= 0.f)
+					mlNextStage = eRadioStage_PutAway;
+			}
+		}		
+		
+		/////////////////
+		// Incoming message
+		if (mlStage == eRadioStage_IncomingMessage)
+		{			
+			if (EnterStage())
+			{
+				Sound_Stop("Sound_RadioStaticLoop", 0.2f);
+				Sound_CreateAtEntity("Sound_RadioIncomingLoop", gsRadioSound_IncomingLoop, mBaseObj.GetName());
+			}
+			
+			if (LeaveStage())
+			{
+				Sound_Stop("Sound_RadioIncomingLoop", 0.2f);
+				Sound_CreateAtEntity("Sound_RadioIncomingEnd", gsRadioSound_IncomingEnd, mBaseObj.GetName());
+				Sound_CreateAtEntity("Sound_RadioStaticLoop", gsRadioSound_StaticLoop, mBaseObj.GetName());
+			}
+		}
+		
+		/////////////////
+		// Outgoing message
+		if (mlStage == eRadioStage_OutgoingMessage)
+		{
+			if (EnterStage())
+			{
+				Sound_Stop("Sound_RadioStaticLoop", 0.2f);
+				Sound_CreateAtEntity("Sound_RadioOutgoingStart", gsRadioSound_OutgoingStart, mBaseObj.GetName());
+			}
+			
+			if (LeaveStage())
+			{
+				Sound_CreateAtEntity("Sound_RadioOutgoingEnd", gsRadioSound_OutgoingEnd, mBaseObj.GetName());
+				Sound_CreateAtEntity("Sound_RadioStaticLoop", gsRadioSound_StaticLoop, mBaseObj.GetName());
+			}
+		}
+		
+		/////////////////
+		// Put away
+		if (mlStage == eRadioStage_PutAway)
+		{
+			if (EnterStage())
+			{
+				mbCallActive = false;
+				
+				Item_PutAway(eItemHandlerHand_Right);
+				
+				cLuxPlayer@ pPlayer = cLux_GetPlayer();
+				if (pPlayer.GetCurrentStateId() == ePlayerState_Custom_UsingRadio)
+					pPlayer.ChangeState(ePlayerState_Normal);
+				
+				Sound_Stop("Sound_RadioStaticLoop", 0.2f);
+				Sound_CreateAtEntity("Sound_RadioTurnOff", gsRadioSound_TurnOff, mBaseObj.GetName());
+			}
+		}
+		
+		/////////////////
+		// Update stage
+		mlPrevStage = mlStage;
+		mlStage = mlNextStage;	
+	}
+	
+	//------------------------------------------------------------
+	
+	bool EnterStage()
+	{
+		return mlPrevStage != mlStage;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool LeaveStage()
+	{
+		return mlStage != mlNextStage;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool CallerSpeaking()
+	{
+		for (int i = 0; i < mvSpeakingCharacters.size(); ++i)
+		{
+			if (cLux_GetVoiceHandler().CharacterIsSpeaking(mvSpeakingCharacters[i]))
+				return true;
+		}
+		
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// DEBUG
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afY)
+	{
+		return afY;
+	}
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// PROPERTIES
+	///////////////////////////////
+	
+	//------------------------------------------------------------	
+	
+	int mlStage;
+	int mlNextStage;
+	int mlPrevStage;
+	float mfTakeOutCount;
+	float mfPutAwayCount;
+	float mfPlaySubjectCount;
+	bool mbCallActive;
+	tString msSubject;
+	tString msSubjectCallback;
+	tString msSpeakingCharacter;
+	array<tString> mvSpeakingCharacters;
+	
+	//------------------------------------------------------------
+}

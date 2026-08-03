@@ -1,0 +1,576 @@
+#include "interfaces/UserModule_Interface.hps"
+#include "modules/ModuleInterfaces.hps"
+
+//---------------------------------------------------
+
+class cScrTerrainParticle
+{
+	cScrTerrainParticle()
+	{
+	}
+
+	////////////
+	// Properties
+	cVector3f mvPosition;
+	cVector3f mvVelocity;
+
+	float mfRadius;
+	float mfAlpha;
+	float mfInvMass;
+	cColor mColor;
+
+	//////////////
+	// Terrain cache
+	float mfTerrainHeight;
+	cVector3f mvTerrainNormal;
+
+	//////////////
+	// Rotation for fixed axis
+	cVector3f mvDirectionXZ;
+	cVector3f mvDirectionY;
+}
+
+//---------------------------------------------------
+
+class cScrTerrainParticleHandler : iScrUserModule, iScrUserModule_Interface, iScrTerrainParticleHandler_Interface
+{
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		mvLocalMin = cVector3f(-5);
+		mvLocalMax = cVector3f( 5);
+
+		mfRangeMaxStart = 4;
+		mfRangeMaxEnd = 5;
+		mfRangeMinStart = 0.1;
+		mfRangeMinEnd = 1;
+	}
+	
+	//------------------------------------------------------------
+	
+	void LoadUserConfig()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void SaveUserConfig()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	//MAP LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+		mlFrameNum = 0;
+		mfTime = 0;
+
+		mlFixedAxisNum = 0;
+		mlPointNum = 0;
+	}
+
+	void OnMapLeave(cLuxMap @apMap)
+	{
+		//////////
+		// No need to destory them, the destruction of cWorld takes care of it
+		mvBillboards.resize(0);
+		mvParticles.resize(0);
+		@mpGroup = null;
+
+		mlFixedAxisNum = 0;
+		mlPointNum = 0;
+	}
+	
+	//------------------------------------------------------------
+	
+	void PreloadData(cLuxMap @apMap)
+	{
+	}
+
+	void CreateWorldEntities(cLuxMap @apMap)
+	{
+		
+	}
+	void DestroyWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnEnterContainer(const tString&in asOldContainer)
+	{
+	
+	}
+	void OnLeaveContainer(const tString&in asNewContainer)
+	{
+	
+	}
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+	}
+
+	//------------------------------------------------------------
+
+	void Clear()
+	{
+		cLuxMap @pMap = cLux_GetCurrentMap();
+		cWorld @pWorld = pMap.GetWorld();
+
+		for(int i = 0; i < mvBillboards.length(); ++i)
+		{
+			mpGroup.RemoveBillboard(mvBillboards[i]);
+			pWorld.DestroyBillboard(mvBillboards[i]);
+		}
+
+		pWorld.DestroyBillboardGroup(mpGroup);
+		@mpGroup = null;
+
+		mvBillboards.resize(0);
+		mvParticles.resize(0);
+
+		mlFixedAxisNum = 0;
+		mlPointNum = 0;
+	}
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep)
+	{
+		if (mvParticles.length() == 0) return;
+		
+		/////////////
+		// Get the player position to wrap around
+		cVector3f vPlayerPosition = cLux_GetPlayer().GetCharacterBody().GetPosition();
+	//	cVector3f vPlayerPosition = cLux_GetPlayer().GetCamera().GetPosition(); //wrap around camera instead?
+
+		/////////////////////
+		// Collide with terrain and apply forces every third frame since it is expensive
+		if(mlFrameNum++ % 3 == 0)
+		{
+			IntersectTerrain();
+			ApplyForces(mvLocalMin + vPlayerPosition, mvLocalMax + vPlayerPosition, afTimeStep * 3.0f);
+		}
+
+		/////////////////
+		// Update position
+		WrapAndFadeParticles(mvLocalMin + vPlayerPosition, mvLocalMax + vPlayerPosition, afTimeStep);
+
+		///////////
+		// Apply changes to billboards
+		UpdateBillboards();
+	}
+
+	cVector3f GetForceAtPosition(cVector3f avPosition, float afTime, float afDeltaTime)
+	{
+		afTime *= mfRandomFrequency * 2;
+		cVector3f vForce;
+		cVector3f vOctaves = cVector3f(7.0, 3.0, 1.0) * (avPosition.z + avPosition.y) * mfRandomFrequency + cVector3f(13.0, 17.0, 103.0);
+		vForce.x = cMath_Sin(vOctaves.x + afTime * 1.13) * 0.125 +
+				   cMath_Sin(vOctaves.y + afTime * 1.17) * 0.25 +
+				   cMath_Sin(vOctaves.z + afTime);
+
+		vOctaves = cVector3f(7.0, 3.0, 1.0) * (vForce.x + avPosition.x + avPosition.y) * mfRandomFrequency + cVector3f(103.0, 13.0, 113.0);
+		vForce.z = cMath_Sin(vOctaves.x + afTime * 1.13) * 0.125 +
+				   cMath_Sin(vOctaves.y + afTime * 1.17) * 0.25 +
+				   cMath_Sin(vOctaves.z + afTime);
+
+		vForce.y = 0;
+
+		vForce = vForce * mfRandomForce;
+
+		return vForce * afDeltaTime;
+	}
+
+	//------------------------------------------------------------
+
+	void ApplyForces(cVector3f avMin, cVector3f avMax, float afDeltaTime)
+	{
+		////////////
+		// Get gravity
+		cLuxMap @pMap = cLux_GetCurrentMap();
+		iPhysicsWorld @pPhysicsWorld = pMap.GetPhysicsWorld();
+		cVector3f vGravity = pPhysicsWorld.GetGravity() * mfParticleGravityAmount * afDeltaTime;
+		float fAntiGravity = vGravity.Length() * 1.0f;
+
+		cVector3f vWind = mvWindForce * afDeltaTime;
+
+		cVector3f vVelocityMin = mvVelocityLimit * -1.0f;
+		cVector3f vVelocityMax = mvVelocityLimit;
+
+		///////////////
+		// Setup random force at 4 points that wrap around the whole area
+		cVector3f vForcePosition0;
+		cVector3f vForceAtPosition0, vForceAtPosition1, vForceAtPosition2, vForceAtPosition3;
+
+		cVector3f vMid = (avMin + avMax) * 0.5f;
+		cVector3f vDelta = (avMax - avMin) * 0.25f;
+
+		float fInvDelta = 0.5f / vDelta.x;
+
+		vForcePosition0 = vMid + vDelta * cVector3f(-1, 0,-1);
+
+		mfTime += afDeltaTime;
+
+		//////////
+		// Get force at 4 positions that cover the whole area, the distance to them is the same even when wraping around the edges
+		vForceAtPosition0 = GetForceAtPosition(vMid + vDelta * cVector3f(-1, 0,-1), mfTime, afDeltaTime);
+		vForceAtPosition1 = GetForceAtPosition(vMid + vDelta * cVector3f( 1, 0,-1), mfTime, afDeltaTime);
+		vForceAtPosition2 = GetForceAtPosition(vMid + vDelta * cVector3f(-1, 0, 1), mfTime, afDeltaTime);
+		vForceAtPosition3 = GetForceAtPosition(vMid + vDelta * cVector3f( 1, 0, 1), mfTime, afDeltaTime);
+
+		////////////////
+		// Apply forces to all particles
+		for(int i = 0; i < mvParticles.length(); ++i)
+		{
+			cVector3f vVelocity = mvParticles[i].mvVelocity;
+
+			float fDiff = mvParticles[i].mvPosition.y - mvParticles[i].mfTerrainHeight;
+
+			if(fDiff < 0)
+			{
+				 //mvParticles[i].mvPosition.y = mvParticles[i].mfTerrainHeight;
+
+				//////////
+				// Below terrain, apply force to get above
+				vVelocity = vVelocity - mvParticles[i].mvTerrainNormal * (cMath_Min(0.0f, cMath_Vector3Dot(mvParticles[i].mvTerrainNormal, vVelocity)) * 0.5);
+				vVelocity -= fDiff * afDeltaTime;
+				vVelocity += mvParticles[i].mvTerrainNormal * fAntiGravity - vGravity * 0.1;
+			}
+
+			///////////
+			// Get velocity from force field using bilinear filtering
+			cVector3f vFract = cMath_Vector3Abs(mvParticles[i].mvPosition - vForcePosition0) * fInvDelta; //use abs since the coordinates wrap around xz
+			vFract.y = (1.0 - vFract.x);
+
+			cVector3f vForceAtPosition = (vForceAtPosition0 * vFract.x + vForceAtPosition1 * vFract.y) * vFract.z + (vForceAtPosition2 * vFract.x + vForceAtPosition3 * vFract.y) * (1.0 - vFract.z);
+			vVelocity += (vForceAtPosition + vWind) * mvParticles[i].mfInvMass + vGravity;
+
+			////////////
+			// Limit velocity direction, should really limit using length but it is expensive
+			vVelocity = cMath_Vector3Min(vVelocity, vVelocityMax);
+			vVelocity = cMath_Vector3Max(vVelocity, vVelocityMin);
+
+			mvParticles[i].mvVelocity = vVelocity;
+		}
+	}
+
+	//------------------------------------------------------------
+
+	void WrapAndFadeParticles(cVector3f avMin, cVector3f avMax, float afDeltaTime)
+	{
+		//////////////
+		// Wrap particles around the x,z axis and limit y by heightmap
+		cVector3f vMid = (avMin + avMax) * 0.5f;
+
+		float fFadeFarLength = 1.0 / (mfRangeMaxEnd - mfRangeMaxStart);
+
+		float fFadeNearLength = 1.0 / (mfRangeMinEnd - mfRangeMinStart);
+		
+		for(int i = 0; i < mvParticles.length(); ++i)
+		{
+			cVector3f vPosition = mvParticles[i].mvPosition;
+			vPosition += mvParticles[i].mvVelocity * afDeltaTime;
+
+			////////////
+			// Wrap X and Z positions
+			vPosition.x = cMath_Wrap(vPosition.x, avMin.x, avMax.x);
+			vPosition.z = cMath_Wrap(vPosition.z, avMin.z, avMax.z);
+
+			//////////////
+			// Get distance from mid and fade alpha
+			float fDistance = cMath_Vector3Dist(vPosition, vMid);
+			
+			float fAlphaNear = cMath_Clamp((fDistance - mfRangeMinStart) * fFadeNearLength, 0.0f, 1.0f);
+			float fAlphaFar = cMath_Clamp((mfRangeMaxStart - fDistance) * fFadeFarLength, 0.0f, 1.0f);
+
+			//////////////
+			// Fade out if to far away from the terrain
+			float fAlphaTerrian = cMath_Clamp(1 - (mvParticles[i].mvPosition.y - mvParticles[i].mfTerrainHeight) * 0.5, 0.0, 1.0);
+
+			///////////
+			// Update rotation if fixed axis
+			if(i < mlFixedAxisNum) mvParticles[i].mvDirectionY = cMath_Vector3Normalize(mvParticles[i].mvDirectionY * (1.0f - afDeltaTime * 2.0) + mvParticles[i].mvTerrainNormal * afDeltaTime * 2.0);
+
+			mvParticles[i].mvPosition = vPosition;
+			mvParticles[i].mfAlpha = fAlphaNear * fAlphaFar * fAlphaTerrian;
+		}
+	}
+
+	//-----------------------------------------------------------
+
+	void IntersectTerrain()
+	{
+		// Heightmap
+		cTerrain @pTerrain = cLux_GetCurrentMap().GetWorld().GetTerrain();
+		if(pTerrain is null) return;
+
+		for(int i = 0; i < mvParticles.length(); ++i)
+		{
+			cVector3f vPosition = mvParticles[i].mvPosition;
+
+			//////////
+			// Get height and normal from terrain
+			float fHeight;
+			cVector3f vNormal;
+
+			/////////////
+			// Gets the height and normal at the world position
+			if(pTerrain.GetWorldPosHeightAndNormal(vPosition, fHeight, vNormal))
+			{
+				////////////
+				// Store the height position with radius added
+				mvParticles[i].mfTerrainHeight = fHeight + mvParticles[i].mfRadius;
+				mvParticles[i].mvTerrainNormal = vNormal;
+			}
+			else
+			{
+				////////////
+				// Outside of heightmap bounds
+				mvParticles[i].mfTerrainHeight = -10000;
+				mvParticles[i].mvTerrainNormal = cVector3f(0, 1, 0);
+			}
+		}
+	}
+
+	//-----------------------------------------------------------
+
+	void UpdateBillboards()
+	{
+		//////////////
+		// Update all the billboards with the position/alpha of the particles
+		for(int i = 0; i < mlFixedAxisNum; ++i)
+		{
+			//////////////
+			// Update rotation for fixed axis
+			cVector3f vLeft = mvParticles[i].mvDirectionXZ;
+			cVector3f vForward = cMath_Vector3Cross(mvParticles[i].mvDirectionY, vLeft);
+			vLeft = cMath_Vector3Cross(vForward, mvParticles[i].mvDirectionY);
+
+			//////////////
+			// Set position and rotation for fixed axis sprite
+			mvBillboards[i].SetMatrix(cMath_MatrixUnitVectors(vLeft, vForward, mvParticles[i].mvDirectionY, mvParticles[i].mvPosition));
+			mvBillboards[i].SetColor(mvParticles[i].mColor * cColor(1, 1, 1, mvParticles[i].mfAlpha));
+		}
+
+		for(int i = mlFixedAxisNum; i < mlPointNum + mlFixedAxisNum; ++i)
+		{
+			//////////
+			// Set position for point sprites
+			mvBillboards[i].SetPosition(mvParticles[i].mvPosition);
+			mvBillboards[i].SetColor(mvParticles[i].mColor * cColor(1, 1, 1, mvParticles[i].mfAlpha));
+		}
+	}
+
+	//------------------------------------------------------------
+	
+	void PostUpdate(float afTimeStep){}
+		
+	void VariableUpdate(float afDeltaTime)
+	{
+	}
+	//------------------------------------------------------------
+	
+	
+	void OnDraw(float afFrameTime)
+	{
+	}
+	
+	//------------------------------------------------------------
+		
+	void OnPostRender(float afFrameTime)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// SETUP
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+
+	void SetupParticles(tString asMaterial, int alFixedAxisCount, float afFixedAxisSizeMin, float afFixedAxisSizeMax, cColor avFixedColorMin, cColor avFixedColorMax, int alPointSpriteCount, float afPointSpriteSizeMin, float afPointSpriteSizeMax, cColor avPointColorMin, cColor avPointColorMax)
+	{
+		if(mpGroup is null == false) Clear();
+		
+		cLuxMap @pMap = cLux_GetCurrentMap();
+		cWorld @pWorld = pMap.GetWorld();
+		cVector3f vPlayerPosition = cLux_GetPlayer().GetCharacterBody().GetPosition();
+		vPlayerPosition.x = 0;
+		vPlayerPosition.z = 0;
+
+		mlFixedAxisNum = alFixedAxisCount;
+		mlPointNum = alPointSpriteCount;
+
+		@mpGroup = pWorld.CreateBillboardGroup("TerrainParticleGroup", asMaterial, false);
+
+		for(int x = 0; x < mlFixedAxisNum; ++x)
+		{
+			//////////////
+			// Create billboard and add to group
+			cScrTerrainParticle particle;
+
+			///////////////
+			// Setup rest of properties
+			float fSize = cMath_RandRectf(afFixedAxisSizeMin, afFixedAxisSizeMax);
+			particle.mfRadius = 0.3 * afFixedAxisSizeMin;
+			particle.mvPosition = cMath_RandRectVector3f(mvLocalMin, mvLocalMax) * cVector3f(1, 0, 1) + vPlayerPosition;
+			particle.mvVelocity = cVector3f(0);
+			particle.mfInvMass = 4.0f / (fSize * fSize);
+			particle.mfAlpha = 1;
+			float fRandColor = cMath_RandRectf(0.0, 1.0);
+			particle.mColor.r = avFixedColorMin.r +  fRandColor * (avFixedColorMax.r - avFixedColorMin.r);
+			particle.mColor.g = avFixedColorMin.g +  fRandColor * (avFixedColorMax.g - avFixedColorMin.g);
+			particle.mColor.b = avFixedColorMin.b +  fRandColor * (avFixedColorMax.b - avFixedColorMin.b);
+			particle.mColor.a = avFixedColorMin.a +  fRandColor * (avFixedColorMax.a - avFixedColorMin.a);
+
+			/////////////
+			// Get random xz rotation
+			float fRot = cMath_RandRectf(0, 6.4);
+			particle.mvDirectionY = cVector3f(0,1,0);
+			particle.mvDirectionXZ = cVector3f(cMath_Cos(fRot), 0, cMath_Sin(fRot));
+
+			cBillboard@ pBillboard = pWorld.CreateBillboard("Amience Particle", cVector2f(fSize), eBillboardType_FixedAxis, "", false);
+			mpGroup.AddBillboard(pBillboard);
+			mvParticles.push_back(particle);
+			mvBillboards.push_back(pBillboard);
+		}
+
+		for(int x = 0; x < mlPointNum; ++x)
+		{
+			//////////////
+			// Create billboard and add to group
+			cScrTerrainParticle particle;
+
+			/////////////
+			// Setup properties
+			float fSize = cMath_RandRectf(afPointSpriteSizeMin, afPointSpriteSizeMax);
+			particle.mfRadius = fSize * 0.4;
+			particle.mvPosition = cMath_RandRectVector3f(mvLocalMin, mvLocalMax) * cVector3f(1, 0, 1) + vPlayerPosition;
+			particle.mvVelocity = cVector3f(0);
+			particle.mfInvMass = 4.0f / (fSize * fSize * fSize);
+			particle.mfAlpha = 1;
+			float fRandColor = cMath_RandRectf(0.0, 1.0);
+			particle.mColor.r = avPointColorMin.r +  fRandColor * (avPointColorMax.r - avPointColorMin.r);
+			particle.mColor.g = avPointColorMin.g +  fRandColor * (avPointColorMax.g - avPointColorMin.g);
+			particle.mColor.b = avPointColorMin.b +  fRandColor * (avPointColorMax.b - avPointColorMin.b);
+			particle.mColor.a = avPointColorMin.a +  fRandColor * (avPointColorMax.a - avPointColorMin.a);
+
+			cBillboard@ pBillboard = pWorld.CreateBillboard("Amience Particle", cVector2f(fSize), eBillboardType_Point, "", false);
+			mpGroup.AddBillboard(pBillboard);
+			mvParticles.push_back(particle);
+			mvBillboards.push_back(pBillboard);
+		}
+
+		UpdateBillboards();
+	}
+
+	//------------------------------------------------------------
+
+	void SetupRange(float afRangeMinStart, float afRangeMinEnd, float afRangeMaxStart, float afRangeMaxEnd)
+	{
+		mfRangeMinStart = afRangeMinStart;
+		mfRangeMinEnd = afRangeMinEnd;
+
+		mfRangeMaxStart = afRangeMaxStart;
+		mfRangeMaxEnd = afRangeMaxEnd;
+
+		mvLocalMin = cVector3f(-mfRangeMaxEnd, 0,-mfRangeMaxEnd);
+		mvLocalMax = cVector3f( mfRangeMaxEnd, 0, mfRangeMaxEnd);
+	}
+
+	//------------------------------------------------------------
+
+	void SetupForces(cVector3f avVelocityLimit, float afGravityAmount, float afRandomDirectionForce, float afRandomDirectionFrequency)
+	{
+		mfParticleGravityAmount = afGravityAmount;
+	
+		mvVelocityLimit = cMath_Vector3Abs(avVelocityLimit);
+		mfRandomForce = afRandomDirectionForce;
+		mfRandomFrequency = afRandomDirectionFrequency;
+	}
+
+	void SetupWind(cVector3f avWindForce)
+	{
+		mvWindForce = avWindForce;
+	}
+	
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnAction(int alAction, bool abPressed){}
+	void OnAnalogInput(int alAnalogId, const cVector3f &in avAmount){}
+	void OnExitPressed(){}
+	void AppGotInputFocus(){}
+	void AppLostInputFocus(){}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPETIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	[nosave] cBillboardGroup@ mpGroup;
+	[nosave] array<cBillboard@> mvBillboards;
+	[nosave] array<cScrTerrainParticle> mvParticles;
+
+	float mfRangeMinStart;
+	float mfRangeMinEnd;
+
+	float mfRangeMaxStart;
+	float mfRangeMaxEnd;
+
+	float mfParticleGravityAmount;
+	
+	int mlFixedAxisNum;
+	int mlPointNum;
+
+	int mlFrameNum;
+
+	float mfTime;
+
+	cVector3f mvLocalMin;
+	cVector3f mvLocalMax;
+
+	cVector3f mvVelocityLimit;
+
+	cVector3f mvWindForce;
+
+	float mfRandomForce;
+	float mfRandomFrequency;
+
+	//------------------------------------------------------------
+	
+		
+}

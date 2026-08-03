@@ -1,0 +1,113 @@
+////////////////////////////////////////////////////////
+// Deferred G-Buffer Nightvision
+//
+////////////////////////////////////////////////////////
+
+//--------------------------------------------------------------
+
+/////////////////////
+//Uniform varaibles
+
+cBuffer cNightvisionArguments : 0
+{
+	float afFarPlane;
+	float afNearPlane;
+	float afNearByFarPlane;
+	float afInvFarPlane;
+	
+	cVector4f avLightColor;
+	cVector4f avScreenToFarPlane;
+	cVector2f avInvScreenSize;
+
+	float afFalloffPow;
+	float afMinDistance;
+	float afMaxDistance;
+	float afBuffer[3];
+};
+
+////////////////////
+//Textures
+uniform cTexture2D aDiffuseMap : 0;
+uniform cTexture2D aNormalMap : 1;
+uniform cTexture2D  aSpecMap : 2;
+uniform cTexture2D aDepthMap : 3;
+	
+cVector3f GetPos(in cVector2f avUV, float afDepth)
+{
+	return cVector3f(avUV.xy * avScreenToFarPlane.xy + avScreenToFarPlane.zw, -afFarPlane) * afDepth;
+}
+
+cVector3f Fresnel(in cVector3f avSpecColor, float afEoH)
+{
+	float fFresnel = pow(1.0 - afEoH, 5.0);
+	return avSpecColor * (1.0 - fFresnel) + fFresnel * min(avSpecColor.g * 50.0, 1.0);
+}
+
+float Blinn(float afGloss, float afHoN)
+{
+	float fSpecPow = exp2(afGloss * 10.0) + 1.0;
+	return pow(afHoN, fSpecPow) * (fSpecPow + 8.0) * (1.0 / (8.0 * 3.141592));
+}
+
+//--------------------------------------------------------------
+
+///////////////////////////////
+// Main program
+void main(in cVector4f px_vPosition,
+          out cVector4f out_vColor : 0)
+{
+	/////////////////////////////////
+	//Get values from samplers
+	cVector2l vMapCoords = cVector2l(px_vPosition.xy);
+	float fDepth = load(aDepthMap, vMapCoords, 0).x;
+
+	cVector4f vColorVal =  sample(aDiffuseMap, px_vPosition.xy * avInvScreenSize);
+	cVector4f vSpecVal = sample(aSpecMap, px_vPosition.xy * avInvScreenSize);
+	cVector4f vNormalDepthVal = load(aNormalMap, vMapCoords, 0);
+	vNormalDepthVal.w = fDepth;
+
+	/////////////////////////////////
+	// Get postion
+	cVector3f vPos = GetPos(px_vPosition.xy, fDepth);
+		
+	/////////////////////////////////
+	// Light direction and attenuation
+	cVector3f vLightDir = cVector3f(0, 0, 0) - vPos;
+	float fDistance = sqrt(dot(vLightDir,vLightDir));
+	float fAttenuation = pow(1.0 - min(1.0, fDistance / afMaxDistance), afFalloffPow * 2.0);
+	vLightDir /= fDistance;
+	
+	if(fDepth == 1.0)
+		fAttenuation = 0.0;
+
+	fAttenuation = max(0.0, fAttenuation);
+
+	/////////////////////////////////
+	//Unpack normal and normalize (if needed)
+	cVector3f vNormal = normalize(vNormalDepthVal.xyz);
+
+	/////////////////////////////////
+	//Calculate diffuse color
+	float fLDotN = dot(vLightDir, vNormal.xyz);
+	cVector3f vDiffuse = vColorVal.xyz * max(0.0, fLDotN) * fAttenuation * avLightColor.xyz;
+	
+	////////////////////////////////
+	// Specular color
+	cVector3f vEye = -normalize(vPos);
+		
+	cVector3f vHalfVec = normalize(vLightDir + vEye);
+	float fNoH = clamp(dot(vHalfVec, vNormal.xyz), 0.0, 0.99);
+	float fEoH = clamp(dot(vEye, vHalfVec.xyz), 0.0, 0.99);
+
+	float fSpec = Blinn(vSpecVal.w, fNoH);
+	cVector3f vSpecIntensity = Fresnel(vSpecVal.xyz, fEoH);
+
+	cVector3f vSpecular = avLightColor.rgb * abs(avLightColor.w) * min(vSpecIntensity * fSpec, cVector3f(1.0, 1.0, 1.0)) * min(fLDotN * 32.0, 1.0) * fAttenuation;
+
+	/////////////////////////////////
+	//Calculate Final color
+
+	// Multiply with 8.0 to increase precision
+	out_vColor.xyz = max(cVector3f(1e-5f), (vDiffuse + vSpecular) * 8.0);
+	out_vColor.w = 0.0;
+}

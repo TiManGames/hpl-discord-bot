@@ -1,0 +1,346 @@
+#include "interfaces/PlayerState_Interface.hps"
+#include "base/InputHandler_Types.hps"
+#include "player/Player_Types.hps"
+#include "custom/modules/ModuleInterfaces_Custom.hps"
+#include "helpers/helper_modules.hps"
+#include "custom/player/PlayerTypes_Custom.hps"
+#include "helpers/helper_player.hps"
+#include "helpers/helper_components.hps"
+
+/////////////////////////////////////////
+// SETTINGS
+/////////////////////////////////////////
+
+//------------------------------------------------------------
+
+const float gfSlideLookSpeedMul = 0.2f;
+
+//------------------------------------------------------------
+
+class cScrPlayerState_Slide : iScrPlayerState, iScrPlayerState_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+
+	void OnAttachBodyToStickyArea()
+	{
+	}
+	
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		mlSlideStage = -1;
+		mfSlideTime = 0.f;
+		mfSlideCount = 0.f;
+		mvSlideStart = 0.f;
+		mvSlideEnd = 0.f;
+		mfStartYaw = 0.f;
+		mfAngle = 0.f;
+		mbSlideOnBack = false;
+		m_idLeftPS = tID_Invalid;
+		m_idRightPS = tID_Invalid;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// USER SETTINGS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void LoadUserConfig() {}
+	void SaveUserConfig() {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ENTER MAP
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap) {}
+	void OnMapLeave(cLuxMap @apMap) {}
+	
+	//------------------------------------------------------------
+	
+	void CreateWorldEntities(cLuxMap @apMap) {}	
+	void DestroyWorldEntities(cLuxMap @apMap) {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetupSlide()
+	{
+		mlSlideStage = 0;
+		mvSlideStart = cScript_GetGlobalArgVector3f(0);
+		mvSlideEnd = cScript_GetGlobalArgVector3f(1);
+		mvSlideDir = cScript_GetGlobalArgVector3f(2);
+		mbSlideOnBack = cScript_GetGlobalArgBool(3);
+		mbUseParticles = cScript_GetGlobalArgBool(4);
+		
+		cLux_GetPlayer().ChangeState(ePlayerState_Custom_Slide);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnEnterState(int alPrevStateId)
+	{
+		/////////////////
+		// Get start rotation
+		iCharacterBody@ pBody = mBaseObj.mpPlayer.GetCharacterBody();
+		mfStartYaw = mBaseObj.mpPlayer.GetCharacterBody().GetYaw();
+		mfAngle = cMath_ATan2(mvSlideDir.x, mvSlideDir.z);
+		
+		if (mbSlideOnBack)
+			mfAngle += cMath_Pi;
+		
+		/////////////////
+		// Setup player body
+		PlayerBody_StartCustomAnimation("", true, 0.5f, true, pBody.GetFeetPosition(), mfAngle);		
+		FootPlacement_FadeOut(PlayerBody_GetEntityName(), 0.3f);
+		
+		/////////////////
+		// Pause dialogue
+		cLux_GetVoiceHandler().SetPausedAll(true);
+	}
+	
+	//------------------------------------------------------------
+
+	void OnLeaveState(int alNextStateId)
+	{
+		mlSlideStage = -1;			
+	
+		PlayerBody_StopCustomAnimation();		
+		FootPlacement_FadeIn(PlayerBody_GetEntityName(), 0.3f);
+		
+		/////////////////
+		// Resume dialogue
+		cLux_GetVoiceHandler().SetPausedAll(false);
+	}
+		
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep)
+	{		
+		/////////////////
+		// Time		
+		mfSlideCount = cMath_Min(mfSlideCount + afTimeStep, mfSlideTime);
+	
+		if (mlSlideStage == 0)
+		{					
+			/////////////////
+			// Play anim
+			tString sAnim = mbSlideOnBack ? "player_slide_back_loop" : "player_slide_loop";
+			PlayerBody_PlayAnimation(sAnim, ePlayerBodyAnimationLayer_FullBody, true, false, false, 0.5f);
+			
+			/////////////////
+			// Create particles
+			cWorld@ pWorld = cLux_GetCurrentMap().GetWorld();
+			if (mbUseParticles)
+			{
+				cParticleSystem@ pLeftPS = pWorld.CreateParticleSystem("PS_SlideSand_L", "sand_slide.ps", cVector3f(1.f), true, false);
+				cParticleSystem@ pRightPS = pWorld.CreateParticleSystem("PS_SlideSand_R", "sand_slide.ps", cVector3f(1.f), true, false);
+				
+				pLeftPS.SetFadeAtDistance(false);
+				pRightPS.SetFadeAtDistance(false);			
+				
+				m_idLeftPS = pLeftPS.GetID();
+				m_idRightPS = pRightPS.GetID();
+			}
+			
+			/////////////////
+			// Sounds
+			Sound_CreateAtEntity("Sound_SlideLoop", "player/foley/animations/2.6/sand_slide/sand_slide_loop", "player");
+			
+			/////////////////
+			// Set up stage
+			mfSlideCount = 0.f;
+			mfSlideTime = cMath_Min((mvSlideEnd - mvSlideStart).Length() / 2.5f, 2.f);
+			mlSlideStage = 1;
+		}
+		else if (mlSlideStage == 1)
+		{
+			/////////////////
+			// Slide down!
+			float fPosT = cMath_Easing(eEasing_SineIn, mfSlideCount / mfSlideTime);			
+			cVector3f vPos = mvSlideStart * (1.f - fPosT) + mvSlideEnd * fPosT;		
+			PlayerBody_SetCameraAnimationPositionAndYaw(true, vPos, mfAngle, 0.f);
+			
+			/////////////////
+			// Update particles
+			cParticleSystem@ pLeftPS = cLux_ID_ParticleSystem(m_idLeftPS);
+			cParticleSystem@ pRightPS = cLux_ID_ParticleSystem(m_idRightPS);
+			
+			cVector3f vOffset = cMath_Vector3Normalize(mvSlideEnd - mvSlideStart) * 1.f;
+			if (pLeftPS !is null) pLeftPS.SetWorldPosition(PlayerBody_GetSocket("L_Hand").GetWorldPosition() + vOffset);
+			if (pRightPS !is null) pRightPS.SetWorldPosition(PlayerBody_GetSocket("R_Hand").GetWorldPosition() + vOffset);
+			
+			/////////////////
+			// Stop sliding!	
+			if (fPosT >= 1.f)
+			{
+				tString sAnim = mbSlideOnBack ? "player_slide_back_end" : "player_slide_end";
+				PlayerBody_PlayAnimation(sAnim, ePlayerBodyAnimationLayer_FullBody, false, false, false, 0.3f);
+				
+				mlSlideStage = 2;
+				mfSlideCount = 0.f;
+				mfSlideTime = PlayerBody_GetAnimationState(sAnim).GetLength();
+				
+				/////////////////
+				// Kill particles						
+				if (pLeftPS !is null) pLeftPS.Kill();
+				if (pRightPS !is null) pRightPS.Kill();
+				
+				m_idLeftPS = tID_Invalid;
+				m_idRightPS = tID_Invalid;
+				
+				/////////////////
+				// Stop sounds
+				Sound_Stop("Sound_SlideLoop", 0.3f);
+				Sound_CreateAtEntity("Sound_SlideStop", "player/foley/animations/2.6/sand_slide/sand_slide_stop", "player");
+			}
+		}
+		else if (mlSlideStage == 2)
+		{						
+			/////////////////
+			// Leave state!
+			if (mfSlideCount >= mfSlideTime)
+			{		
+				mlSlideStage = -1;
+				
+				tString sAnim = mbSlideOnBack ? "player_slide_back_end" : "player_slide_end";
+				PlayerBody_StopAnimation(sAnim, 0.f);				
+				
+				mBaseObj.mpPlayer.ChangeState(ePlayerState_Normal);
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void PostUpdate(float afTimeStep) {}
+	void OnGui(float afTimeStep) {}
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool OnAction(int alAction, bool abPressed)
+	{
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnAnalogInput(int alAnalogId, const cVector3f &in avAmount)
+	{
+		/////////////////
+		// Look
+		if (alAnalogId == eAnalogType_Look)
+		{	
+			iScrPlayerBodyHandler_Interface@ pBody = cast<iScrPlayerBodyHandler_Interface>(cLux_GetUserModuleFromID(eModuleType_PlayerBodyHandler));	
+			float fMul = Player_GetLookSpeedMul() * gfSlideLookSpeedMul;
+			
+			pBody.Cutscene_AddPitch(avAmount.y * fMul);
+			pBody.Cutscene_AddYaw(avAmount.x * fMul);
+		}
+		
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnExitPressed()
+	{
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// BODY CALLBACKS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool AllowBuoyancy(iPhysicsBody @apBody)
+	{
+		return true;
+	}
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// CHARACTER CALLBACK
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void CharBody_GravityCollide(iCharacterBody@ apCharBody, iPhysicsBody@ apBody, cCollideData @apCollideData) {}
+	void CharBody_HitGround(iCharacterBody@ apCharBody,const cVector3f &in avVel) {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+
+	int mlSlideStage;
+	float mfSlideTime;	
+	float mfSlideCount;
+	float mfStartYaw;
+	float mfAngle;
+	bool mbSlideOnBack;
+	bool mbUseParticles;
+	cVector3f mvSlideStart;
+	cVector3f mvSlideEnd;
+	cVector3f mvSlideDir;
+	tID m_idLeftPS;
+	tID m_idRightPS;
+
+	//------------------------------------------------------------
+}

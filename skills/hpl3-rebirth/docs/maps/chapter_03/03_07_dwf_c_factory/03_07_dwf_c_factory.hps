@@ -1,0 +1,3255 @@
+#include "interfaces/Map_Interface.hps"
+#include "base/Inputhandler_Types.hps"
+
+#include "helpers/helper_map.hps"
+#include "helpers/helper_menu.hps"
+#include "helpers/helper_props.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_audio.hps"
+#include "helpers/helper_imgui.hps"
+#include "helpers/helper_sequences.hps"
+#include "helpers/helper_game.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_ai.hps"
+
+#include "helpers/helper_player.hps"
+#include "helpers/helper_player_custom.hps"
+#include "helpers/helper_items.hps"
+#include "helpers/helper_agent.hps"
+#include "helpers/helper_modules_custom.hps"
+#include "base/AchievementHandler_Types.hps"
+
+//--------------------------------------------------
+ 
+/*Place any global values here. These must be const variables as they will not be saved*/
+/*This is also the place for enums and classes, but these should be avoided whenever possible*/
+
+enum eFactoryCPerfmaFailStage
+{
+	eFactoryCPerfmaFailStage_ShuttleRide = 0,
+	eFactoryCPerfmaFailStage_TopFloor = 1,
+}
+ 
+//--------------------------------------------------
+ 
+class cScrMap : iScrMap
+{
+	//--------------------------------------------
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN CALLBACKS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+ 
+	////////////////////////////
+	// Set up map environment
+	void Setup()
+	{
+		// Put display name entry in english.lang / Levels
+		GetBase().SetDisplayNameEntry("03-07-dwf-c-factory");
+		
+		
+		Player_SetCameraFarPlane(8192.0f);
+
+		// Reset effects
+		Effect_Bloom_FadeBrightPass(0.3f, 3);
+        Effect_Bloom_FadeBloomWidth(128, 1);
+        Effect_Bloom_FadeBloomFalloff(1.5f, 2);
+        Effect_Bloom_FadeBloomTint(1, 1, 1, 2);
+		
+		// Set up color grading etc.
+		Pregnancy_SetStage(ePregStage_Stage2);
+		Pregnancy_SetBarksActive(true);
+	
+		// This is where the stage needs to be set depending on whether torture was done or not.
+		if (cScript_GetGlobalVarBool("DWF_RnD_UsedVitaeChair"))
+			Pregnancy_SetBabyTalkStage(eBabyTalkStage_DWF_Tortured);
+		else
+			Pregnancy_SetBabyTalkStage(eBabyTalkStage_DWF_NotTortured);
+			
+		FearHandler_SetWhisperStage(eFearWhisperStage_DWFCToTown);
+			
+		Pregnancy_SetBabyKicksEnabled(true);
+		GhoulProgression_SetBarkStage(eGhoulBarkStage_BecomingGhoul);
+		Player_SetAllowCheckBaby(true);
+		Pregnancy_SetBabyTalkSpecialSubject("BabyTalk_Initial");
+		FearHandler_FadeLevelTo(0, 0, true);
+		
+		StruggleFlashHandler_SetActive(true);
+		StruggleFlashHandler_PreloadFlashGroupTextures(2);
+		StruggleFlashHandler_SetProgression(2);
+	}
+	
+	//-------------------------------------------------------
+		
+	void PreloadData()
+	{
+		/////////////////
+		// Preload gui
+		//ImGui_PreloadImage("some_image");
+
+		///////////////
+		// Preload particles
+		//ParticleSystem_Preload("some_particle.ps");
+
+		//////////////
+		// Preload screen effects
+		//Material_Preload("some_material.mat");
+		
+		//////////////
+		// Preload sounds
+		Sound_PreloadGroup("03_07_dw_factory/shuttle", true);
+		Sound_PreloadGroup("level_entity_shared/portal", true);
+		Sound_PreloadEvent("level_entity_shared/fire/fire_ignite/wall_torch_ignite");
+	}
+	
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run first time starting map
+	void OnStart()
+	{					
+		/////////////////////////
+		// Debug
+		if(cLux_ScriptDebugOn())
+		{
+			
+		}
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when entering map
+	void OnEnter()
+	{
+		//sky rotation
+		cVector3f vRot = cVector3f(0, cMath_ToRad(143), 0);
+		cLux_GetCurrentMap().GetWorld().SetSkyboxRotation(vRot);
+
+		cLux_GetCurrentMap().GetPhysicsWorld().SetWorldSize(Map_GetEntity("Target_PhysicsMin").GetPosition(), Map_GetEntity("Target_PhysicsMax").GetPosition());
+		
+		if (cScript_GetGlobalVarBool("DWF_RnD_UsedVitaeChair"))
+			Achievement_Unlock(eAchievement_Torturer);
+		else
+			Achievement_Unlock(eAchievement_Altruist);
+		
+		cLux_ClearAllMapSaveData();
+		Game_AutoSave();
+		
+		//PlayerBody_SetModel("player.ent");
+		PlayerBody_SetActive(true);
+		FearHandler_SetPermaFailEnabled(true);
+        Heat_SetActive(false);
+		Player_SetAutoTeleportWhenBelowAltitude(9.2);
+		
+		if (cLux_ScriptDebugOn() == false)
+		{
+			Effect_Fade_Out(0);
+			Player_Teleport("Start_Begin", true);
+			Seq_ShuttleRide("");
+		}
+		
+		//Set GhoulProgresison limit
+		GhoulProgression_SetLimit(15);
+		
+		/////////////////////////
+		// Inventory
+		if (cLux_ScriptDebugOn())
+		{
+			Item_AddToInventory("ShadowFleshCanister");
+			
+			if (ItemType_IsInInventory("Lantern") == false)
+			{
+				Item_AddToInventory("Lantern");
+				Item_SetContent(ItemType_GetFirstInInventory("Lantern"), "Oil", 10);
+				Item_AddToInventory("HerbertOil");
+				Item_SetContent(ItemType_GetFirstInInventory("HerbertOil"), "Oil", 10);
+				Item_AddToInventory("Matchbook");
+				Item_SetContent(ItemType_GetFirstInInventory("Matchbook"), "Matches", 10);
+			}
+		}
+		
+		Light_SetVisible("DebugLight*", false);
+		Light_SetVisible("Light_Box_Debug*", false);
+		
+		/////////////////////////
+		// System setup
+		Amulet_StartTracking(true, "Rift_1");
+		Player_SetMapDeepShadow(1.0f);
+		FearHandler_SetPermaFailRespawnArea("PermaFail_TopFloor");
+		Blackboard_AddWraithBillboards("WraithBillboard");
+		FearHandler_SetDifficultyMul(0.6f);
+		FearHandler_SetLevelTo(0);
+		RiftHandler_SetAllowHint(false);
+		
+		Player_SetNightVisionBrightness(3.5);
+		
+		if (cLux_ScriptDebugOn() == false)
+		{
+			Visibility_SetAreaActive("VisibilityArea_TopFloor_1", false);
+			Visibility_SetAreaActive("VisibilityArea_TopFloor_2", false);
+			Visibility_SetAreaActive("VisibilityArea_TopFloor_3", false);
+			Visibility_SetAreaActive("VisibilityArea_MiddleBottomFloor_1", false);
+			Visibility_SetAreaActive("VisibilityArea_MiddleBottomFloor_2", false);
+		}
+		
+//		cLux_GetPlayer().SetCollideCallbacksActive(false);
+		
+//		FearHandler_SetActive(false);
+		
+		/////////////////////////
+		// Init scenes
+		InitShuttle();
+		InitDarkWorldLightning();
+		InitShuttleCorridor();
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when leaving map
+	void OnLeave()
+	{
+		Player_RestoreClipPlane();
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// The player has died.
+	void OnPlayerKilled(int alRecentDeaths, const tString&in asSource)
+	{
+	}
+	
+	//-------------------------------------------------------
+	
+	int mlWraithPermafailCount_TopFloor = 0;
+	bool OnPermaFail(const tString &in asSource)
+	{		
+		FearHandler_ClearPermaFailScenes();
+		SetupGenericPermaFail();
+		
+		if (mlPermaFailStage == eFactoryCPerfmaFailStage_TopFloor)
+		{
+			++mlWraithPermafailCount_TopFloor;
+			Wraith_CommandDash_Execute("Wraith_TopFloor", Map_GetEntity("Target_WraithDisappear_TopFloor_1").GetPosition(), true, true, true);
+		}
+		
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	array<int> mvUnplayedGenericPermaFails = { 1, 2 };
+	
+	void SetupGenericPermaFail()
+	{
+		if (mvUnplayedGenericPermaFails.size() == 0)
+		{
+			for (int i = 1; i < 3; i++)
+				mvUnplayedGenericPermaFails.push_back(i);
+		}
+			
+		int lId = cMath_RandRectl(0, mvUnplayedGenericPermaFails.size() - 1);
+		int lSceneId = mvUnplayedGenericPermaFails[lId];
+		mvUnplayedGenericPermaFails.removeAt(lId);
+			
+		tString sAreaBase = "Area_PermaFail_Generic";		
+		switch (lSceneId)
+		{
+			case 1:
+				FearHandler_AddPermaFailScene(sAreaBase + "_3_Start_3", sAreaBase + "_3_End_3", 4.f, 2.5);
+				FearHandler_AddPermaFailScene(sAreaBase + "_1_Start_1", sAreaBase + "_1_End_1", 4.f, 2.5f);
+				break;
+			case 2:
+				FearHandler_AddPermaFailScene(sAreaBase + "_2_Start_1", sAreaBase + "_2_End_1", 3.f, 3.0);
+				FearHandler_AddPermaFailScene(sAreaBase + "_2_Start_2", sAreaBase + "_2_End_2", 5.f, 4.f);
+				FearHandler_AddPermaFailScene(sAreaBase + "_2_Start_3", sAreaBase + "_2_End_3", 3.f, 2.5f);
+				break;
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnPermaFailRespawn()
+	{
+		if (mlPermaFailStage == eFactoryCPerfmaFailStage_TopFloor)
+		{
+			Wraith_CommandDash_Execute("Wraith_TopFloor", Map_GetEntity("Target_WraithDisappear_TopFloor_1").GetPosition(), true, true, true);
+			if ((mlWraithPermafailCount_TopFloor <= 1 && mlWraithAttackCount_TopFloor >= 3) || mlWraithPermafailCount_TopFloor >= 2)
+			{
+				Wraith_CommandDash_Execute("Wraith_TopFloorGrounded", Map_GetEntity("Target_WraithDisappear_TopFloor_1").GetPosition(), true, true, true);
+			}
+		}
+		return true;
+	}
+
+	//-------------------------------------------------------
+	
+	int mlWraithAttackCount_TopFloor = 0;
+	void OnDamageTaken(const tString&in asSource, int alType)
+	{
+		if (alType == eDamageType_Silent)
+		{
+			if (mlPermaFailStage == eFactoryCPerfmaFailStage_TopFloor)
+			{
+				++mlWraithAttackCount_TopFloor;
+			}
+		}
+	}
+	
+	//-------------------------------------------------------
+
+	bool mbTest = false;
+	int mlTest = 0;
+	int mlTest1 = 0;
+	int mlTest2 = 0;
+		
+	////////////////////////////
+	// To get when player makes input (mostly used for debug)
+	void OnAction(int alAction, bool abPressed) 
+	{
+		if(abPressed==false) return;
+		
+		if(alAction == eAction_TestPlus)
+		{
+			Pathfinder_MoveTo("Wraith_TopFloorGrounded", Player_GetFeetPosition(), "", 2, true);
+			return;
+			FearHandler_FadeLevelTo(0.9, 0.2, true);
+			return;
+			Pathfinder_MoveTo("Wraith_TopFloorGrounded", Player_GetFeetPosition(), "", 2, true);
+			
+			Wraith_ModeWraithPatrol_ClearNodes("Wraith_TopFloorGrounded");
+			Wraith_ModeWraithPatrol_AddNode("Wraith_TopFloorGrounded", "PathNode_Top_8");
+			Wraith_ModeWraithPatrol_AddNode("Wraith_TopFloorGrounded", "PathNode_Top_83");
+			Wraith_ModeWraithPatrol_AddNode("Wraith_TopFloorGrounded", "PathNode_Top_23");
+			Wraith_ModeWraithPatrol_AddNode("Wraith_TopFloorGrounded", "PathNode_Top_5");
+			Wraith_ModeWraithPatrol_AddNode("Wraith_TopFloorGrounded", "PathNode_Top_56");
+			Wraith_ModeWraithPatrol_AddNode("Wraith_TopFloorGrounded", "PathNode_Top_36");
+			Wraith_ModeWraithPatrol_AddNode("Wraith_TopFloorGrounded", "PathNode_Top_18");
+			Wraith_ModeWraithPatrol_AddNode("Wraith_TopFloorGrounded", "PathNode_Top_5");
+			Wraith_ModeWraithPatrol_AddNode("Wraith_TopFloorGrounded", "PathNode_Top_11");
+			
+			Wraith_ModeWraithPatrol_Setup("Wraith_TopFloorGrounded", false, false);
+			
+			Wraith_Mode_Set("Wraith_TopFloorGrounded", eWraithMode_WraithPatrol, true);
+			
+			return;
+			Entity_SetActive("Wraith_TopFloor", true);
+//			Agent_SetSensesActive("Wraith_TopFloor", true);
+//			Wraith_SetSpotlightSoundVolumeMul("Wraith_TopFloor", 1);
+//			
+//			Wraith_CommandFlyToNode_Execute("Wraith_TopFloor", "Target_TopFloorIntro_MoveTo_" + mlShuttle_StopPos + "_2", true, 1, true, "OnCommandComplete_SetTopFloorStress");
+			
+			Wraith_ModeFlyPatrol_SetPlayerGoalDirection("Wraith_TopFloor", "Target_GoalDirection_TopFloor_1");
+			Wraith_ModeFlyPatrol_ClearNodes("Wraith_TopFloor");
+			Wraith_ModeFlyPatrol_AddNode("Wraith_TopFloor", "Target_FlyingWraithNode_TopFloor*");
+			Wraith_ModeFlyPatrol_ClearLookAtFields("Wraith_TopFloor");
+			Wraith_ModeFlyPatrol_AddLookAtfield("Wraith_TopFloor", "Target_FlyingWraithLookAtField_TopFloor_1");
+			Wraith_Mode_Set("Wraith_TopFloor", eWraithMode_FlyPatrol, true);
+			
+			return;
+			mbTest = !mbTest;
+			Visibility_SetAreaActive("VisibilityArea_RnD", mbTest);
+			return;
+			mlTest++;
+			mlTest %= 6;
+			Visibility_SetAreaActive("VisibilityArea_TopFloor_1", true);
+			Visibility_SetAreaActive("VisibilityArea_TopFloor_2", true);
+			Visibility_SetAreaActive("VisibilityArea_TopFloor_3", true);
+			Visibility_SetAreaActive("VisibilityArea_MiddleBottomFloor_1", true);
+			Visibility_SetAreaActive("VisibilityArea_MiddleBottomFloor_2", true);
+			if (mlTest == 1) Visibility_SetAreaActive("VisibilityArea_TopFloor_1", false);
+			else if (mlTest == 2) Visibility_SetAreaActive("VisibilityArea_TopFloor_2", false);
+			else if (mlTest == 3) Visibility_SetAreaActive("VisibilityArea_TopFloor_3", false);
+			else if (mlTest == 4) Visibility_SetAreaActive("VisibilityArea_MiddleBottomFloor_1", false);
+			else if (mlTest == 5) Visibility_SetAreaActive("VisibilityArea_MiddleBottomFloor_2", false);
+			return;
+			FearHandler_FadeLevelTo(0.9, 0.1, true);
+			return;
+//			OnCollide_PrepareBottomFloorEncounter("", "", 0);
+//			return;
+//			Entity_SetActive("TestWraith", true);
+//			Wraith_SetFly("TestWraith", true);
+//			Wraith_SetSight("TestWraith", false);
+//			Sound_CreateAtEntity("TestingGhoulEat", "creatures/vocalisations/creature/ghoul/ghoul_eating", "Ghoul_MiddleFloor", 0, true, 1, 5, 15);
+//
+//			Wraith_ModeFlyPatrol_ClearNodes("TestWraith");
+//			Wraith_ModeFlyPatrol_AddNodeRange("TestWraith", "Target_FlyingWraithNode_BottomFloor*", 1, 60);
+//			Wraith_ModeFlyPatrol_SetUseRandomNodes("TestWraith", true);
+//			Wraith_ModeFlyPatrol_ClearLookAtFields("TestWraith");
+//			Wraith_ModeFlyPatrol_AddLookAtfield("TestWraith", "Target_LookAtField_BottomFloorWraith_1");
+//			Wraith_Mode_Set("TestWraith", eWraithMode_FlyPatrol, true);
+//			
+//			return;
+//			Pathfinder_MoveTo("Wraith_Shuttle_1", cVector3f_Zero, "", 1.0f, true);
+//			return;
+			Entity_SetActive("Wraith_TestUnderwaterBeam", true);
+//			Wraith_SetStealth("TestWraith", true, false);
+			Wraith_SetFly("Wraith_TestUnderwaterBeam", true);
+			
+			iLight@ pLight = cLux_GetCurrentMap().GetWorld().GetLight("Light_LightBoxReference");
+			cLightMaskBox@ pBox = pLight.GetMask();
+			Map_GetEntity("Wraith_TestUnderwaterBeam_crystal").GetLightFromName("Light_Spot_1").SetMask(pBox);
+			
+			return;
+			for (int i = 0; i < cLux_GetCurrentMap().GetWorld().GetEnvironmentParticleNum(); ++i)
+			{
+				cEnvironmentParticles@ pParticle = cLux_GetCurrentMap().GetWorld().GetEnvironmentParticles(i);
+				pParticle.SetWindVelocity(cVector3f_Zero);
+			}
+			
+			return;
+			Wraith_StartFacingEntity("TestWraith", "player");
+			return;
+			cScript_RunGlobalFunc("TestWraith", "", "_Global_WraithDebug");
+			return;
+			cLux_AddDebugMessage("A " + Player_GetFeetPosition());
+			return;
+			FearHandler_FadeLevelTo(0.6, 0.5, false);
+			return;
+			Map_AddTimer("OnTimer_CheckRemindGoal", 0, "OnTimer_CheckRemindGoal");
+			return;
+			Voice_Play("Scene_TasiFalls");
+			
+			
+			
+			return;
+			cVector3f vDiam = cLux_GetCurrentMap().GetPhysicsWorld().GetWorldSizeMax() - cLux_GetCurrentMap().GetPhysicsWorld().GetWorldSizeMin();
+			cLux_AddDebugMessage("A " + vDiam.Length());
+			return;
+//			array<iPhysicsBody@> vBodies; 
+//			cLux_GetCurrentMap().GetPhysicsWorld().GetBodiesInAABB(cLux_GetCurrentMap().GetPhysicsWorld().GetWorldSizeMin(), cLux_GetCurrentMap().GetPhysicsWorld().GetWorldSizeMax(), vBodies);
+//			
+//			float fMax = -1;
+//			iPhysicsBody@ pMaxBody = null;
+//			for (int i = 0; i < vBodies.size(); ++i)
+//			{
+//				iPhysicsBody@ pBody = vBodies[i];
+//				float fDist = pBody.GetWorldPosition().Length();
+//				if (fDist > fMax || fMax < 0)
+//				{
+//					fMax = fDist;
+//					@pMaxBody = pBody;
+//				}
+//			}
+//			
+//			
+//			cVector3f vDiam = cLux_GetCurrentMap().GetPhysicsWorld().GetWorldSizeMax() - cLux_GetCurrentMap().GetPhysicsWorld().GetWorldSizeMin();
+//			cLux_AddDebugMessage("A " + vDiam.Length() + " " + pMaxBody.GetName() + " " + pMaxBody.GetWorldPosition().Length());
+
+			return;
+			Entity_SetActive("VitaePuzzle_Before_7", false);
+			return;
+			FearHandler_FadeLevelTo(0.0f, 0.5);
+			return;
+			//Music_Play("A2_3_6_SafeArea", 0.4f, true, eMusicPrio_SceneAmb);
+			return;
+			TurnOnElevatorRailingLightSegment("dwf_elevator_2_light_", 1, 6);
+			return;
+			Sound_CreateAtEntity("aaaaaaaaaaaaaaaaa", "03_07_dw_factory/shuttle/shuttle_rail", "player");
+			return;
+			TurnOnRailingLightSegment("Lamp_Railing_StationToLift_", 1, 3);
+		}
+		
+		if(alAction == eAction_TestMinus)
+		{
+			FearHandler_SetForcedAddFearRate(0.9, 10, false);
+			return;
+			Wraith_SetSpotlightOn("Wraith_TestUnderwaterBeam", true);
+			Wraith_TurnSpotlightToPos("Wraith_TestUnderwaterBeam", Map_GetEntity("Trigger_1").GetPosition(), true, true);
+			return;
+//			if (mlTest == 0) Wraith_StopFacingEntity("TestWraith", 2);
+//			else Wraith_StartFacingEntity("TestWraith", "Player", 1, 1.5, 2);
+//			
+//			++mlTest;
+//			mlTest %= 2;
+//			
+//			return;
+			Pathfinder_MoveTo("TestWraith", cLux_GetViewport().GetCamera().GetPosition(), "", 2, true);
+			return;
+			Wraith_SetStealth("TestWraith", false, true);
+			return;
+			Wraith_StopFacingEntity("TestWraith");
+			return;
+			Entity_PlayAnimation("Shuttle", "dwf_shuttle_open_trapdoors", 0);
+		}
+		
+		if(alAction == eAction_Test0)
+		{
+//			mbTest = !mbTest;
+//			Visibility_SetAreaActive("VisibilityArea_ShuttleRift", mbTest);
+//			
+//			return;
+//			mbTest = !mbTest;
+//			Prop_SetActiveAndFade("clouds_first_area", mbTest, 2);
+//			return;
+//			Map_AddTimer("Timer_CheckTopFloorEncounter", 0.0f, "OnTimer_CheckTopFloorEncounter");
+//			return;
+//			Seq_ShuttleEncounter_Wraith2("");
+//			return;
+//			cLux_SetHideDebugOutputOn(true);
+
+			FearHandler_FadeLevelTo(0.75, 0);
+			
+			Player_Teleport("Start_TopFloor");
+			mlShuttle_StopPos = 1;
+			mfTopFloorRiftDistance = Player_GetDistanceToEntity("Rift_2");
+//			StartTopFloorEncounter();
+			OnAnimEnd_ShuttleFall("");
+		}
+		
+		if(alAction == eAction_Test2)
+		{
+			cLux_SetHideDebugOutputOn(true);
+			
+			Player_Teleport("Start_SafeRoom");
+//			FearHandler_SetPermaFailEnabled(false);
+		}
+		
+		if(alAction == eAction_Test3)
+		{
+			Player_Teleport("Start_BeforeBottomFloorEncounter");
+//			FearHandler_SetPermaFailEnabled(false);
+		}
+		
+		if (alAction == eAction_Test4)
+		{
+			Wraith_SetSpotlightOn("Wraith_TestUnderwaterBeam", true, true, 0);
+			OnTimer_Underwater("");
+			return;
+//			cLux_SetScriptDebugOn(false);
+			cLux_SetHideDebugOutputOn(true);
+			Player_Teleport("Start_VitaePuzzle");
+			
+			return;
+			iLuxEntity@ pShuttleAnim = Map_GetEntity("shuttle_animated_socket");
+			pShuttleAnim.GetMeshEntity().GetAnimationStateFromName("shuttle_ride_tunnelstart_to_factoryend").SetPaused(false);
+			pShuttleAnim.GetMeshEntity().GetAnimationStateFromName("shuttle_ride_tunnelstart_to_factoryend").SetRelativeTimePosition(0.0f);
+			cLux_GetPlayer().GetCharacterBody().SetPosition(Map_GetEntity("Target_ShuttlePlayer").GetPosition(), false);
+			return;
+			++mlTest2;
+			if (mlTest2 == 1)
+			{
+				Entity_SetActive("Wraith_BeamTest", true);
+				Map_AddTimer("OnTimer_BeamTest", 0.2f, "OnTimer_BeamTest");
+				Player_Teleport("Start_BeamTest");
+			}
+			else if (mlTest2 == 2)
+			{
+				Entity_SetActive("Wraith_BeamTest_2", true);
+			}
+			else if (mlTest2 == 3)
+			{
+				Entity_SetActive("Wraith_BeamTest_3", true);
+			}
+//			Wraith_SetFly("Wraith_BeamTest", true);
+			return;
+			Entity_SetActive("wraith_alexander_1", true);
+//			Map_SetEnvironmentParticlesSpotLight("*", cast<cLightSpot>(Map_GetEntity("wraith_alexander_1_crystal").GetLightFromName("Light_Spot_1")), 5.0f);
+			return;
+			Player_Teleport("Start_Begin");
+			mbShuttleMoving = true;
+			PlayerBody_SetActive(false);
+			Player_SetHeadBobMul(0.0f);
+		}
+		
+		if(alAction == eAction_Test5)
+		{
+//			iLuxEntity@ pEnt = Map_GetEntity("LanternBroken_Animnation");
+//			cBoneState@ pBone = pEnt.GetMeshEntity().GetBoneStateFromName("j_Lantern_root");
+//			
+//			
+//			DrawTestPoint(pBone.GetWorldPosition(), 2, cColor_Green * 4, 0.2);
+//			DrawTestRay(pBone.GetWorldPosition(), pBone.GetWorldPosition() + cMath_Vector3Normalize(pBone.GetWorldMatrix().GetTranspose().GetForward()), 2, cColor(0,0,1) * 4);
+//			DrawTestRay(pBone.GetWorldPosition(), pBone.GetWorldPosition() + cMath_Vector3Normalize(pBone.GetWorldMatrix().GetTranspose().GetRight()), 2, cColor(1,0,0) * 4);
+//			DrawTestRay(pBone.GetWorldPosition(), pBone.GetWorldPosition() + cMath_Vector3Normalize(pBone.GetWorldMatrix().GetTranspose().GetUp()), 2, cColor(0,1,0) * 4);
+//			
+//			return;
+
+			Entity_SetActive("Wraith_TestUnderwaterBeam", true);
+			Wraith_SetFly("Wraith_TestUnderwaterBeam", true);
+			iLight@ pLight = cLux_GetCurrentMap().GetWorld().GetLight("Light_LightBoxReference");
+			cLightMaskBox@ pBox = pLight.GetMask();
+			Map_GetEntity("Wraith_TestUnderwaterBeam_crystal").GetLightFromName("Light_Spot_1").SetMask(pBox);
+			
+			return;
+			if (mlTest == 0) Wraith_SetSpotlightBeamQuality("Wraith_BeamTest", 1);
+			else if (mlTest == 1) Wraith_SetSpotlightBeamQuality("Wraith_BeamTest", 2);
+			else if (mlTest == 2) Wraith_SetSpotlightBeamQuality("Wraith_BeamTest", 3);
+			++mlTest;
+			mlTest %= 3;
+		}
+		
+		if(alAction == eAction_Test6)
+		{
+			OnCollide_Shuttle_SetupShuttleEncounter("", "", -1);
+			
+			iLuxEntity@ pShuttle = Map_GetEntity("Shuttle");
+			pShuttle.SetMatrix(cLux_ID_Entity(mvShuttleMovementPoints[5]).GetMatrix());
+			m_idShuttleMovement_Current = mvShuttleMovementPoints[5];
+			mlShuttle_SkipSequence = 13;
+			
+			Seq_ShuttleRide("");
+			Map_AddTimer("Timer_PlayerToShuttle", 0.1f, "OnTimer_PlayerToShuttle");
+			
+			return;
+//			cScript_SetGlobalArgInt(0, mlTest1 + 1);
+//			cScript_RunGlobalFunc("Wraith_BeamTest", "cScrAgentWraith", "_Global_SetSpotlightColor");
+//			++mlTest1;
+//			mlTest1 %= 4;
+//			
+//			
+//			return;
+//			PlayerBody_SetActive(false);
+//			Player_SetHeadBobMul(0.0f);
+
+			cLux_SetScriptDebugOn(false);
+			cLux_SetHideDebugOutputOn(true);
+			
+			
+//			iLuxEntity@ pShuttleAnim = Map_GetEntity("shuttle_animated_socket");
+//			pShuttleAnim.PlayAnimation("shuttle_ride_tunnelstart_to_factoryend", 0.0f, false, false, "");
+//			pShuttleAnim.GetMeshEntity().GetAnimationStateFromName("shuttle_ride_tunnelstart_to_factoryend").SetRelativeTimePosition(0.7f);
+//			pShuttleAnim.GetMeshEntity().GetAnimationStateFromName("shuttle_ride_tunnelstart_to_factoryend").SetPaused(false);
+//			pShuttleAnim.GetMeshEntity().GetAnimationStateFromName("shuttle_ride_tunnelstart_to_factoryend").SetSpeed(1.5f);
+//			Map_AddTimer("Timer_PlayerToShuttle", 0.2f, "OnTimer_PlayerToShuttle");
+			
+//			return;
+		}
+		
+		if(alAction == eAction_Test7)
+		{
+//			cLux_SetHideDebugOutputOn(true);
+			
+			OnCollide_Shuttle_SetupShuttleEncounter("", "", -1);
+			
+			iLuxEntity@ pShuttle = Map_GetEntity("Shuttle");
+			pShuttle.SetMatrix(cLux_ID_Entity(mvShuttleMovementPoints[12]).GetMatrix());
+			m_idShuttleMovement_Current = mvShuttleMovementPoints[12];
+			mlShuttle_SkipSequence = 23;
+			
+			Seq_ShuttleRide("");
+			Map_AddTimer("Timer_PlayerToShuttle", 0.1f, "OnTimer_PlayerToShuttle");
+			return;
+			iLuxEntity@ pShuttleAnim = Map_GetEntity("shuttle_animated_socket");
+			pShuttleAnim.PlayAnimation("shuttle_ride_tunnelstart_to_factoryend", 0.0f, false, false, "");
+			pShuttleAnim.GetMeshEntity().GetAnimationStateFromName("shuttle_ride_tunnelstart_to_factoryend").SetRelativeTimePosition(0.91f);
+			pShuttleAnim.GetMeshEntity().GetAnimationStateFromName("shuttle_ride_tunnelstart_to_factoryend").SetPaused(true);
+			Map_AddTimer("Timer_PlayerToShuttle", 0.2f, "OnTimer_PlayerToShuttle");
+			return;
+			OnCollide_Shuttle_SetupShuttleEncounter("", "", 0);
+		}
+		
+		if(alAction == eAction_Test8)
+		{
+			iLuxEntity@ pShuttle = Map_GetEntity("Shuttle");
+			iLuxEntity@ pTarget = Map_GetEntity("Target_ShuttleRide_16");
+			pShuttle.SetMatrix(pTarget.GetMatrix());
+			
+			Map_AddTimer("OnTimer_FallTest2", 0.2, "OnTimer_FallTest2");
+			return;
+			mbShuttleMoving = true;
+			Entity_SetActive("Shuttle", false);
+			return;
+//			iLuxEntity@ pShuttle = Map_GetEntity("Shuttle");
+//			pShuttle.SetMatrix(cLux_ID_Entity(mvShuttleMovementPoints[5]).GetMatrix());
+//			m_idShuttleMovement_Current = mvShuttleMovementPoints[5];
+//			mlShuttle_SkipSequence = 8;
+//			
+//			Seq_ShuttleRide("");
+//			Map_AddTimer("Timer_PlayerToShuttle", 0.1f, "OnTimer_PlayerToShuttle");
+			
+			return;
+//			OnCollide_Shuttle_SetupShuttleEncounter("", "", 1);
+//			return;
+			Seq_ShuttleFall("");
+		}
+		
+		if(alAction == eAction_Test9)
+		{
+//			return;
+//			Entity_PlaceAtEntity("LanternBroken_Animnation", "Target_Test", cVector3f_Zero, true);
+//			Entity_SetActive("LanternBroken_Animnation", true);
+//			Entity_PlayAnimation("LanternBroken_Animnation", "lantern_shuttle_fall_trapdoorback");
+//			
+//			iLuxEntity@ pEnt =  Map_GetEntity("LanternBroken_Animnation");
+//			pEnt.GetMeshEntity().GetAnimationStateFromName("lantern_shuttle_fall_trapdoorback").SetRelativeTimePosition(1);
+//			
+//			return;
+			iLuxEntity@ pShuttle = Map_GetEntity("Shuttle");
+			iLuxEntity@ pTarget = Map_GetEntity("Target_ShuttleRide_16");
+			pShuttle.SetMatrix(pTarget.GetMatrix());
+			
+			Map_AddTimer("OnTimer_FallTest", 0.2, "OnTimer_FallTest");
+			
+			return;
+			FearHandler_SetPermaFailEnabled(false);
+			return;
+//			cLux_SetScriptDebugOn(false);
+//			cLux_SetHideDebugOutputOn(true);
+			
+//			iLuxEntity@ pShuttle = Map_GetEntity("Shuttle");
+//			pShuttle.SetMatrix(cLux_ID_Entity(mvShuttleMovementPoints[11]).GetMatrix());
+//			m_idShuttleMovement_Current = mvShuttleMovementPoints[11];
+//			mlShuttle_SkipSequence = 16;
+//			
+//			Seq_ShuttleRide("");
+//			Map_AddTimer("Timer_PlayerToShuttle", 0.1f, "OnTimer_PlayerToShuttle");
+//			Sequence_SkipNextSteps(5);
+			return;
+			cLux_GetPlayer().GetCharacterBody().SetPosition(Map_GetEntity("Target_ShuttlePlayer").GetPosition(), false);
+			cLux_GetPlayer().GetCharacterBody().StopMovement();
+			return;
+			cScript_RunGlobalFunc("Wraith_BeamTest", "cScrAgentWraith", "_Global_WraithDebug");
+		}
+		
+		if(alAction == eAction_Test0)
+		{
+			return;
+			FearHandler_FadeLevelTo(0, 0.5);
+			return;
+//			Entity_PlayAnimation("Ghoul_MiddleFloor", "eat_lizard", 0, true);
+//Sound_CreateAtEntity("PodTortureMachine", "03_07_dw_factory/human_pods/human_pod_loop", "Ghoul_MiddleFloor", 1, false, 0.5, 4, 16);
+			Sound_CreateAtEntity("GhoulEating", "creatures/vocalisations/creature/ghoul/ghoul_eat", "player", 1, false, 1, 4, 15);
+			return;
+			Wraith_SetVolumeMul("Wraith_Balcony", 1);
+			return;
+			FearHandler_TriggerPermaFail();
+			return;
+			
+//			Map_GetEntity("LanternBroken_Animnation").GetMeshEntity().GetBoneStateFromName("")
+			
+//			return;
+			Entity_AttachToSocket("LanternBroken_Lid", "LanternBroken_Animnation", "lantern_lid", true, true);
+			
+			return;
+			cScript_RunGlobalFunc("TestWraith", "", "_Global_WraithDebug");
+			return;
+			Entity_SetActive("Trigger_SeeNewRiftDialogue", false);
+			return;
+			iLuxEntity@ pLanternGrab = Map_GetEntity("LanternBroken_Grab");
+			
+			iLuxEntity@ pLanternAnim = Map_GetEntity("LanternBroken_Animnation");
+			cBoneState@ pBone = pLanternAnim.GetMeshEntity().GetBoneStateFromName("j_Lantern_root");
+			cVector3f vBoneRight = cMath_Vector3Normalize(pBone.GetWorldMatrix().GetTranspose().GetRight());
+			cVector3f vBoneUp = cMath_Vector3Normalize(pBone.GetWorldMatrix().GetTranspose().GetUp());
+			cVector3f vBoneForward = cMath_Vector3Normalize(pBone.GetWorldMatrix().GetTranspose().GetForward());
+			cMatrixf mtxNew = cMath_MatrixUnitVectors(vBoneRight, vBoneUp, vBoneForward, pBone.GetWorldPosition());
+			pLanternGrab.SetMatrix(mtxNew);
+			
+//			pLanternAnim.SetActive(false);
+			return;
+			Player_Teleport("Start_TopFloorEnd");
+			return;
+		}
+	}
+	
+	void OnTimer_Underwater(const tString &in asTimer)
+	{
+		Wraith_TurnSpotlightToPos("Wraith_TestUnderwaterBeam", Map_GetEntity("Trigger_1").GetPosition(), true, false);
+	}
+	
+	void OnTimer_BeamTest(const tString &in asTimer)
+	{
+		Wraith_StopSpotlightMovement("Wraith_BeamTest");
+	}
+	
+	void OnTimer_PlayerToShuttle(const tString &in asTimer)
+	{
+		cLux_GetPlayer().GetCharacterBody().SetPosition(Map_GetEntity("Target_ShuttlePlayer").GetPosition(), false);
+		cLux_GetPlayer().GetCharacterBody().StopMovement();
+	}
+	
+	void OnTimer_FallTest(const tString &in asTimer)
+	{
+		Player_PlaceAtEntity("Target_ShuttleFallAnim_Front", true, true);
+		Seq_ShuttleFall("");
+	}
+	
+	void OnTimer_FallTest2(const tString &in asTimer)
+	{
+		Player_PlaceAtEntity("Target_ShuttlePlayer_2", true, true);
+		Seq_ShuttleFall("");
+	}
+
+	//-------------------------------------------------------
+	
+	void Update(float afTimeStep)
+	{	
+//		Debug_DrawAABB(Map_GetEntity("Target_PhysicsMin").GetPosition(), Map_GetEntity("Target_PhysicsMax").GetPosition(), cColor_Green * 2);
+		
+//		cLux_AddDebugMessage("PLAYER " + FearHandler_GetIsPermaFailing());
+		UpdateShuttle(afTimeStep);
+		UpdateShuttleEncounter(afTimeStep);
+		UpdateLandDetection(afTimeStep);
+
+		UpdateTestPoints(afTimeStep);
+		UpdateTestRays(afTimeStep);
+		
+//		cLux_AddDebugMessage("A " + cLux_GetPlayer().GetCurrentStateName());
+	}
+	
+	//-------------------------------------------------------
+	
+		
+	array<cVector3f> mvTestPoints;
+	array<cColor> mvTestPointColors;
+	array<float> mvTestPointRadiuses;
+	array<cVector3f> mvTestRaysA;
+	array<cVector3f> mvTestRaysB;
+	array<cColor> mvTestRayColors;
+	array<float> mvTestPointTimes;
+	array<float> mvTestRayTimes;
+		
+	void DrawTestPoint(const cVector3f &in avPoint, float afTime = 2, cColor aColor = cColor(5,5,20), float afRadius = 0.5f)
+	{
+		for (int i = 0; i < mvTestPoints.size(); ++i)
+		{
+			if (avPoint == mvTestPoints[i] && afRadius == mvTestPointRadiuses[i])
+			{
+				mvTestPointTimes[i] = afTime;
+				mvTestPointColors[i] = aColor;
+				return;
+			}
+		}
+		
+		mvTestPoints.push_back(avPoint);
+		mvTestPointTimes.push_back(afTime);
+		mvTestPointColors.push_back(aColor);
+		mvTestPointRadiuses.push_back(afRadius);
+	}
+		
+	void DrawTestRay(const cVector3f &in avFrom, const cVector3f &in avTo, float afTime = 2, cColor aColor = cColor(5,5,20))
+	{
+		mvTestRaysA.push_back(avFrom);
+		mvTestRaysB.push_back(avTo);
+		mvTestRayTimes.push_back(afTime);
+		mvTestRayColors.push_back(aColor);
+	}
+		
+	void UpdateTestPoints(float afTimeStep)
+	{
+		for (int i = 0; i < mvTestPointTimes.size(); ++i)
+		{
+			mvTestPointTimes[i] -= afTimeStep;
+			if (mvTestPointTimes[i] <= 0)
+			{
+				mvTestPoints.removeAt(i);
+				mvTestPointTimes.removeAt(i);
+				mvTestPointColors.removeAt(i);
+				mvTestPointRadiuses.removeAt(i);
+				--i;
+			}
+		}
+	}
+		
+	void UpdateTestRays(float afTimeStep)
+	{
+		for (int i = 0; i < mvTestRayTimes.size(); ++i)
+		{
+			mvTestRayTimes[i] -= afTimeStep;
+			if (mvTestRayTimes[i] <= 0)
+			{
+				mvTestRaysA.removeAt(i);
+				mvTestRaysB.removeAt(i);
+				mvTestRayTimes.removeAt(i);
+				mvTestRayColors.removeAt(i);
+				--i;
+			}
+		}
+	}
+	
+	void OnRenderSolid(cRendererCallbackFunctions@ apFunctions)
+	{
+		for (int i = 0; i < mvTestPoints.size(); ++i)
+		{
+			apFunctions.GetLowLevelGfx().DrawSphere(mvTestPoints[i], mvTestPointRadiuses[i], mvTestPointColors[i]);
+		}
+		
+		for (int i = 0; i < mvTestRaysA.size(); ++i)
+		{
+			apFunctions.GetLowLevelGfx().DrawLine(mvTestRaysA[i], mvTestRaysB[i], mvTestRayColors[i]);
+		}
+		
+		
+//		apFunctions.GetLowLevelGfx().DrawBoxMinMax(cLux_GetCurrentMap().GetPhysicsWorld().GetWorldSizeMin(), cLux_GetCurrentMap().GetPhysicsWorld().GetWorldSizeMax(), cColor_Green * 10);
+	}
+	
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// This only used for pure debug purposes when info needs to printed.
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afY)
+	{
+		//afY = cLux_DrawDebugText("My Debug value:"+..., afY);
+		return afY;
+	}
+ 
+	//-------------------------------------------------------
+
+	
+	void OnGui(float afTimeStep)
+	{
+		if (mfMessageTimer > 0.0f)
+		{
+			mfMessageTimer -= afTimeStep;
+			
+			cImGuiTextFrameData textData;
+			textData.mColorBase = cColor(0.0f, 0.0f, 0.0f, 0.0f);
+			textData.mFont.mvSize = ImGui_NrmSizeKeepRatio(0.04f);
+			textData.mFontAlign = eFontAlign_Center;
+			
+			ImGui_DoTextFrameExt(msMessageText, cVector2f(0.0f, 0.0f), 0.0f, 0.0f, textData, cVector3f(0.0f, ImGui_GetSize().y / 2.0f, 1.0f), cVector2f(ImGui_GetSize().x - 450.0f, 500.0f));
+		}
+	}
+	
+	//-------------------------------------------------------
+ 
+	//} END MAIN CALLBACKS
+ 
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN FUNCTIONS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+		
+	tString msMessageText = "";
+	float mfMessageTimer = 0.0f;
+	int mlPermaFailStage = eFactoryCPerfmaFailStage_ShuttleRide;
+	
+	//-------------------------------------------------------
+	
+	void DrawText(const tString asString, float afTime = 2.0f)
+	{
+		msMessageText = asString;
+		mfMessageTimer = afTime;
+	}
+
+	//-------------------------------------------------------
+	
+	void OnPlayerSubmerge()
+	{
+		array<iLuxEntity@> vPlants;
+		Map_GetEntityArray("FloatingPlant*", vPlants);
+		for (int i = 0; i < vPlants.size(); ++i)
+		{
+			iPhysicsBody@ pBody = vPlants[i].GetMainBody();
+			pBody.SetCollideCharacter(false);
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnPlayerEmerge()
+	{
+		array<iLuxEntity@> vPlants;
+		Map_GetEntityArray("FloatingPlant*", vPlants);
+		for (int i = 0; i < vPlants.size(); ++i)
+		{
+			iPhysicsBody@ pBody = vPlants[i].GetMainBody();
+			pBody.SetCollideCharacter(true);
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	tString msLightSegment_Name;
+	int mlLightSegment_CurrentIndex = 0;
+	int mlLightSegment_FromIndex;
+	int mlLightSegment_ToIndex;
+	
+	void TurnOnRailingLightSegment(const tString &in asSegmentName, int alFromIndex, int alToIndex)
+	{
+		msLightSegment_Name = asSegmentName;
+		mlLightSegment_CurrentIndex = alFromIndex;
+		mlLightSegment_FromIndex = alFromIndex;
+		mlLightSegment_ToIndex = alToIndex;
+		Map_AddTimer("Timer_TurnOnRailingLight", 0.0f, "OnTimer_TurnOnRailingLight");
+	}
+	
+	void OnTimer_TurnOnRailingLight(const tString &in asTimer)
+	{
+		tString sLight = msLightSegment_Name + mlLightSegment_CurrentIndex;
+		iLuxEntity@ pEnt = Map_GetEntity(sLight);
+		if (pEnt !is null)
+		{
+			Lamp_SetLit(sLight, true, true);
+			
+			Sound_CreateAtEntity("LightOn_" + mlLightSegment_CurrentIndex, "03_07_dw_factory/spotlight/on", sLight);
+//			cSoundEntity@ pSound = cLux_GetCurrentMap().GetWorld().GetSoundEntity("LightOn_" + mlLightSegment_CurrentIndex);
+//			pSound.SetCustomMaxDistance(100.0f);
+//			pSound.SetCustomMinDistance(20.0f);
+//			pSound.SetUseCustomProperties(true);
+		}
+		
+		++mlLightSegment_CurrentIndex;
+		if (mlLightSegment_CurrentIndex <= mlLightSegment_ToIndex) Map_AddTimer("Timer_TurnOnRailingLight", 0.4f, "OnTimer_TurnOnRailingLight");
+	}
+	
+	//-------------------------------------------------------
+	
+	tString msElevatorLightSegment_Name;
+	int mlElevatorLightSegment_CurrentIndex = 0;
+	int mlElevatorLightSegment_FromIndex;
+	int mlElevatorLightSegment_ToIndex;
+	
+	void TurnOnElevatorRailingLightSegment(const tString &in asSegmentName, int alFromIndex, int alToIndex)
+	{
+		msElevatorLightSegment_Name = asSegmentName;
+		mlElevatorLightSegment_CurrentIndex = alFromIndex;
+		mlElevatorLightSegment_FromIndex = alFromIndex;
+		mlElevatorLightSegment_ToIndex = alToIndex;
+		Map_AddTimer("Timer_TurnOnElevatorRailingLight", 0.0f, "OnTimer_TurnOnElevatorRailingLight");
+	}
+	
+	void OnTimer_TurnOnElevatorRailingLight(const tString &in asTimer)
+	{
+		tString sLight1 = msElevatorLightSegment_Name + mlElevatorLightSegment_CurrentIndex + "_1";
+		tString sLight2 = msElevatorLightSegment_Name + mlElevatorLightSegment_CurrentIndex + "_2";
+		iLuxEntity@ pEnt1 = Map_GetEntity(sLight1);
+		iLuxEntity@ pEnt2 = Map_GetEntity(sLight2);
+		if (pEnt1 !is null && pEnt2 !is null)
+		{
+			Lamp_SetLit(sLight1, true, true);
+			Lamp_SetLit(sLight2, true, true);
+			
+			Sound_CreateAtEntity("LightOn_" + mlLightSegment_CurrentIndex, "03_07_dw_factory/spotlight/on", sLight1);
+			cSoundEntity@ pSound = cLux_GetCurrentMap().GetWorld().GetSoundEntity("LightOn_" + mlLightSegment_CurrentIndex);
+			pSound.SetCustomMaxDistance(100.0f);
+			pSound.SetCustomMinDistance(20.0f);
+			pSound.SetUseCustomProperties(true);
+		}
+		
+		++mlElevatorLightSegment_CurrentIndex;
+		if (mlElevatorLightSegment_CurrentIndex <= mlElevatorLightSegment_ToIndex) Map_AddTimer("Timer_TurnOnElevatorRailingLight", 0.4f, "OnTimer_TurnOnElevatorRailingLight");
+	}
+	
+	//-------------------------------------------------------
+	
+	void SetWraithSpotlightMask(const tString &in asAgent, const tString &in asReferenceLight)
+	{
+		iLight@ pLight = cLux_GetCurrentMap().GetWorld().GetLight(asReferenceLight);
+		if (pLight is null) return;
+		
+		cLightMaskBox@ pBox = pLight.GetMask();
+		if (pBox is null) return;
+		
+		Wraith_GetSpotlightEntity(asAgent).GetLightFromName("Light_Spot_1").SetMask(pBox);
+	}
+	
+	//-------------------------------------------------------
+			
+	/////////////////////////////////////////
+	// Button controls
+	/////////////////////////////////////////
+	
+	//-------------------------------------------------------
+	
+	cColor mButtonColor_Red = cColor(1.0f, 0.2f, 0.2f);
+	cColor mButtonColor_White = cColor(1, 1, 1);
+	cColor mButtonColor_Green = cColor(0.3, 1.0, 0.3);
+	cColor mButtonColor_Purple = cColor(0.9, 0.2, 1.0);
+	cColor mButtonColor_RedExtreme = cColor(1.0, 0.15, 0.15);
+	
+	//-------------------------------------------------------
+	
+	void SetButtonActive(const tString &in asButton, bool abActive)
+	{
+		Entity_SetEffectsActive(asButton, abActive, false);
+		Entity_SetVarBool(asButton, "ButtonActive", abActive);
+	}
+	
+	//-------------------------------------------------------
+	
+	void SetButtonColor(const tString &in asButton, cColor aColor, bool abFade = false)
+	{
+		if (abFade) Entity_FadeEffectBaseColor(asButton, aColor, 0.2f);
+		else Entity_SetEffectBaseColor(asButton, aColor);
+	}
+	
+	//-------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// Button flash
+	/////////////////////////////////////////
+	
+	//-------------------------------------------------------
+	
+	[nosave] array<tID> mvFlashTimers;
+	[nosave] array<cColor> mvFlashOrigColors;
+	[nosave] array<cColor> mvFlashColors;
+	[nosave] array<float> mvFlashTimes;
+	[nosave] array<bool> mvFlashRepeat;
+	
+	//-------------------------------------------------------
+	
+	void BlinkButton(const tString &in asButton)
+	{
+		iLuxEntity@ pEnt = Map_GetEntity(asButton);
+		FlashButton(asButton, pEnt.GetEffectBaseColor(), 1.4f, 0.5f, true);
+	}
+	
+	//-------------------------------------------------------
+	
+	void StopBlinkButton(const tString &in asButton, bool abReturnColor = false)
+	{
+		iLuxEntity@ pEnt = Map_GetEntity(asButton);
+		for (int i = 0; i < mvFlashTimers.size(); ++i)
+		{
+			if (mvFlashTimers[i] == pEnt.GetID())
+			{
+				mvFlashRepeat[i] = false;
+				Map_RemoveTimer(asButton);
+				if (abReturnColor) OnTimer_StopFlash(asButton);
+				else OnTimer_UnblockFlash(asButton);
+			}
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void FlashButton(const tString &in asButton, float afBrightness = 1.4f)
+	{
+		iLuxEntity@ pEnt = Map_GetEntity(asButton);
+		FlashButton(asButton, pEnt.GetEffectBaseColor(), afBrightness);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_FlashButton(const tString &in asTimer)
+	{
+		FlashButton(asTimer);
+	}
+	
+	//-------------------------------------------------------
+	
+	void FlashButton(const tString &in asButton, cColor aColor, float afBrightness = 1.4f, float afTime = 0.5f, bool abRepeat = false)
+	{
+		iLuxEntity@ pEnt = Map_GetEntity(asButton);
+		for (int i = 0; i < mvFlashTimers.size(); ++i)
+		{
+			if (mvFlashTimers[i] == pEnt.GetID()) return;
+		}
+								
+		mvFlashTimers.push_back(pEnt.GetID());
+		mvFlashOrigColors.push_back(pEnt.GetEffectBaseColor());
+		mvFlashRepeat.push_back(abRepeat);
+		mvFlashTimes.push_back(afTime);
+		
+		cColor newCol = aColor * afBrightness;
+		mvFlashColors.push_back(newCol);
+		
+		Entity_FadeEffectBaseColor(asButton, newCol, afTime);
+		Map_AddTimer(asButton, afTime, "OnTimer_StopFlash");
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_StopFlash(const tString &in asTimer)
+	{
+		iLuxEntity@ pEnt = Map_GetEntity(asTimer);
+		for (int i = 0; i < mvFlashTimers.size(); ++i)
+		{
+			if (mvFlashTimers[i] == pEnt.GetID())
+			{
+				Entity_FadeEffectBaseColor(asTimer, mvFlashOrigColors[i], mvFlashTimes[i]);
+				Map_AddTimer(asTimer, mvFlashTimes[i] + 0.05f, "OnTimer_UnblockFlash");
+				return;
+			}
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_UnblockFlash(const tString &in asTimer)
+	{
+		iLuxEntity@ pEnt = Map_GetEntity(asTimer);
+		for (int i = 0; i < mvFlashTimers.size(); ++i)
+		{
+			if (mvFlashTimers[i] == pEnt.GetID())
+			{
+				bool bRepeat = mvFlashRepeat[i];
+				cColor repeatColor = mvFlashColors[i];
+				float fTime = mvFlashTimes[i];
+				pEnt.StopEffectBaseColorFade();
+				pEnt.SetEffectBaseColor(mvFlashOrigColors[i]);
+				
+				mvFlashTimers.removeAt(i);
+				mvFlashOrigColors.removeAt(i);
+				mvFlashColors.removeAt(i);
+				mvFlashRepeat.removeAt(i);
+				mvFlashTimes.removeAt(i);
+				if (bRepeat) FlashButton(asTimer, repeatColor, 1.0f, fTime, true);
+				return;
+			}
+		}
+	}
+			
+	//-------------------------------------------------------
+	
+	bool OnCollide_Player_SetPermafailArea(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		tString sArea = Entity_GetVarString(asParent, "");
+		FearHandler_SetPermaFailRespawnArea(sArea);
+		Entity_SetActive(asParent, false);
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	bool mbPreviouslyGrounded = false;
+	tString msLandDetectionState = "";
+	void UpdateLandDetection(float afTimeStep)
+	{
+		if (msLandDetectionState == "") return;
+		
+		bool bGrounded = cLux_GetPlayer().GetCharacterBody().IsOnGround();
+		if (bGrounded && mbPreviouslyGrounded == false)
+		{
+			if (msLandDetectionState == "BalconyJump")
+			{
+				Player_GiveDamage(1, 1, eDamageType_Fall, "");
+			}
+			msLandDetectionState = "";
+		}
+		mbPreviouslyGrounded = bGrounded;
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnCollide_Player_Visibility(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		int lAreaIndex = cString_GetNumericSuffixInt(asParent, -1);
+		if (lAreaIndex == 1)
+		{
+			Visibility_SetAreaActive("VisibilityArea_TopFloor_1", true);
+		}
+		else if (lAreaIndex == 2)
+		{
+			Visibility_SetAreaActive("VisibilityArea_TopFloor_2", true);
+		}
+		else if (lAreaIndex == 3)
+		{
+			Visibility_SetAreaActive("VisibilityArea_TopFloor_3", true);
+		}
+		else if (lAreaIndex == 4)
+		{
+			Visibility_SetAreaActive("VisibilityArea_MiddleBottomFloor_1", true);
+		}
+		else if (lAreaIndex == 5)
+		{
+			Visibility_SetAreaActive("VisibilityArea_MiddleBottomFloor_2", true);
+		}
+		else if (lAreaIndex == 6)
+		{
+			Visibility_SetAreaActive("VisibilityArea_RnD", false);
+			Visibility_SetAreaActive("VisibilityArea_ShuttleRift", false);
+			Visibility_SetAreaActive("VisibilityArea_Rails_1", false);
+			Visibility_SetAreaActive("VisibilityArea_Elevator_1", false);
+		}
+		return true;
+	}
+	
+	//-------------------------------------------------------
+ 
+	//} END MAIN FUNCTIONS
+	 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 10 *Ride the shuttle to the Factory*
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+ 
+		/////////////////////////////////////////
+		// General
+		//{//////////////////////////////////////
+		 
+		//-------------------------------------------------------
+
+		/*Put any variables that are used by many events in Scene X here.*/
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are used in more than one event in Scene X here.*/
+
+		//-------------------------------------------------------
+
+		//} END General	
+
+		/////////////////////////////////////////
+		// Event A *The SHUTTLE starts moving*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		int mlRailPointCount = 19;
+		int mlRailMovementIndex = 1;
+		float mfShuttleMovementProgress = 0;
+		tString msRailPointName = "Target_Rail_";
+		tString msShuttleName = "Shuttle";
+		
+		tID m_idShuttle = tID_Invalid;
+		array<tID> mvShuttleMovementPoints;
+		
+		bool mbShuttleMoving = false;
+		tID m_idShuttleMovement_Current = tID_Invalid;
+		tID m_idShuttleMovement_From = tID_Invalid;
+		tID m_idShuttleMovement_To = tID_Invalid;
+		cVector3f mvShuttle_PrevMoveDir;
+		float mfShuttle_TargetSpeed = 5.0f;
+		float mfShuttle_CurrentSpeed = 5.0f;
+		float mfShuttle_MoveAcceleration = 5.0f;
+		tString msShuttle_MoveCallback = "";
+		cVector3f mvShuttle_MoveOffset = cVector3f_Zero;
+		
+		bool mbShuttleRotating = false;
+		tID m_idShuttleRotate_From = tID_Invalid;
+		tID m_idShuttleRotate_To = tID_Invalid;
+		cVector3f mvShuttleRotate_PrevDelta;
+		float mfShuttle_CurrentRotateSpeed = 1.0f;
+		float mfShuttle_TargetRotateSpeed = 1.0f;
+		tString msShuttle_RotateCallback = "";
+		
+		tID m_idShuttle_MovementLoop = tID_Invalid;
+		tID m_idShuttle_MovementEngineLoop = tID_Invalid;
+		
+		float mfShuttle_MoveDist = 0;
+		float mfShuttle_MoveSlowDownDist = 0.7f;
+		float mfShuttle_RotateDist = 0;
+		float mfShuttle_RotateSlowDownDist = 0.1f;
+		
+		//-------------------------------------------------------
+		
+		void InitShuttle()
+		{
+			Entity_SetActive("Target_ShuttleRide*", false);
+			Entity_StopAnimation("Target_ShuttleRide*");
+			
+			iLuxEntity@ pShuttle = Map_GetEntity("Shuttle");
+			pShuttle.StopAllAnimations(0);
+			m_idShuttle = pShuttle.GetID();
+			
+			for (int i = 1; true; ++i)
+			{
+				iLuxEntity@ pEnt = Map_GetEntity("Target_ShuttleRide_" + i);
+				if (pEnt is null) break;
+				mvShuttleMovementPoints.push_back(pEnt.GetID());
+			}
+			
+			pShuttle.SetMatrix(cLux_ID_Entity(mvShuttleMovementPoints[0]).GetMatrix());
+			m_idShuttleMovement_Current = mvShuttleMovementPoints[0];
+			
+			Lamp_SetLit("Lamp_Railing_Lift", false, false);
+			Lamp_SetLit("Lamp_Railing_StationToLift*", false, false);
+			Lamp_SetLit("Lamp_Railing_LiftToFactory*", false, false);
+			Lamp_SetLit("dwf_elevator_2_light*", false, false);
+		}
+		
+		//-------------------------------------------------------
+		
+		void InitShuttleCorridor()
+		{
+			Light_SetBrightness("Light_ShuttleCorridor*", 0);
+		}
+		
+		//-------------------------------------------------------
+		
+		void MoveShuttle(int alIdTo, int alIdFrom = -1, const tString &in asCallback = "", float afSpeed = 5.0f)
+		{
+			mbShuttleMoving = true;
+			mvShuttle_PrevMoveDir = cVector3f_Zero;
+			
+			m_idShuttleMovement_To = mvShuttleMovementPoints[alIdTo - 1];
+			if (alIdFrom < 0) m_idShuttleMovement_From = m_idShuttleMovement_Current;
+			else m_idShuttleMovement_From = mvShuttleMovementPoints[alIdFrom - 1];
+			iLuxEntity@ pTo = cLux_ID_Entity(m_idShuttleMovement_To);
+			iLuxEntity@ pFrom = cLux_ID_Entity(m_idShuttleMovement_From);
+			
+			mfShuttle_MoveDist = cMath_Vector3Dist(pTo.GetPosition(), pFrom.GetPosition());
+			mfShuttle_CurrentSpeed = mfShuttle_TargetSpeed = afSpeed;
+			mfShuttle_MoveAcceleration = 5.0f;
+			msShuttle_MoveCallback = asCallback;
+			
+			cSoundEntity@ pShuttleLoop = cLux_GetCurrentMap().GetWorld().CreateSoundEntity("ShuttleLoop", "03_07_dw_factory/shuttle/shuttle_rail", true);
+			pShuttleLoop.SetVolume(1.0f);
+			pShuttleLoop.FadeIn(2.0f);
+			m_idShuttle_MovementLoop = pShuttleLoop.GetID();
+			
+			cSoundEntity@ pShuttleEngineLoop = cLux_GetCurrentMap().GetWorld().CreateSoundEntity("ShuttleEngineLoop", "03_07_dw_factory/shuttle/engine/shuttle_engine", true);
+			m_idShuttle_MovementEngineLoop = pShuttleEngineLoop.GetID();
+			
+			//Sound_CreateAtEntity("Sound_ShuttleStart", "03_07_dw_factory/shuttle/shuttle_start", "Target_ShuttleCenterTop");
+//			Sound_CreateAtEntity("Sound_ShuttleEngine_1", "03_07_dw_factory/shuttle/engine/shuttle_engine", "Sound_ShuttleEngine", 1.0f, true, 0.6f);
+			
+			
+			Effect_Shake_Start(0.02, 0.4, 0, 0.3);
+		}
+		
+		void RotateShuttle(int alIdTo, int alIdFrom = -1, const tString &in asCallback = "", float afSpeed = 1.0f)
+		{
+			mbShuttleRotating = true;
+			mvShuttleRotate_PrevDelta = cVector3f_Zero;
+			
+			m_idShuttleRotate_To = mvShuttleMovementPoints[alIdTo - 1];
+			if (alIdFrom < 0) m_idShuttleRotate_From = m_idShuttleMovement_Current;
+			else m_idShuttleRotate_From = mvShuttleMovementPoints[alIdFrom - 1];
+			iLuxEntity@ pTo = cLux_ID_Entity(m_idShuttleRotate_To);
+			iLuxEntity@ pFrom = cLux_ID_Entity(m_idShuttleRotate_From);
+			
+			mfShuttle_RotateDist = cMath_MatrixEulerAngleDistance(pFrom.GetMatrix(), pTo.GetMatrix()).Length();
+			mfShuttle_CurrentRotateSpeed = mfShuttle_TargetRotateSpeed = afSpeed;
+			msShuttle_RotateCallback = asCallback;
+			Effect_Shake_Start(0.02, 0.4, 0, 0.3);
+		}
+		
+		void UpdateShuttle(float afTimeStep)
+		{	
+			if (mbShuttleMoving)
+			{
+				mfShuttle_CurrentSpeed = cMath_IncreaseTo(mfShuttle_CurrentSpeed, mfShuttle_MoveAcceleration * afTimeStep, mfShuttle_TargetSpeed);
+				
+				iLuxEntity@ pShuttle = cLux_ID_Entity(m_idShuttle);
+				iLuxEntity@ pTo = cLux_ID_Entity(m_idShuttleMovement_To);
+				iLuxEntity@ pFrom = cLux_ID_Entity(m_idShuttleMovement_From);
+				
+				cVector3f vToPos = pTo.GetPosition() + mvShuttle_MoveOffset;
+				cVector3f vDelta = vToPos - pShuttle.GetPosition();
+				
+				float fDist = vDelta.Length();
+				float fDistMul = 1;
+				if (fDist <= mfShuttle_MoveSlowDownDist) fDistMul = cMath_Clamp(fDist / mfShuttle_MoveSlowDownDist, 0.05f, 1.0f);
+				else if (fDist >= mfShuttle_MoveDist - mfShuttle_MoveSlowDownDist) fDistMul = cMath_Clamp((mfShuttle_MoveDist - fDist) / mfShuttle_MoveSlowDownDist, 0.05f, 1.0f);
+								
+				cVector3f vMoveDir = cMath_Vector3Normalize(vDelta);				
+				cVector3f vMove = vMoveDir * mfShuttle_CurrentSpeed * fDistMul;
+				
+				cSoundEntity@ pShuttleLoop = cLux_ID_SoundEntity(m_idShuttle_MovementLoop);
+				if (pShuttleLoop !is null)
+				{
+					pShuttleLoop.SetPosition(Map_GetEntity("Target_ShuttleCenterTop").GetPosition());
+					
+					cSoundEntity@ pShuttleEngineLoop = cLux_ID_SoundEntity(m_idShuttle_MovementEngineLoop);
+					if (pShuttleEngineLoop !is null) pShuttleEngineLoop.SetPosition(Map_GetEntity("Sound_ShuttleEngine").GetPosition());
+					
+					if (fDist <= mfShuttle_MoveSlowDownDist || mfShuttle_CurrentSpeed == 0.0f)
+					{
+						Sound_CreateAtEntity("ShuttleStop", "03_07_dw_factory/shuttle/shuttle_stop", "Target_ShuttleCenterTop");
+//						Sound_Stop("Sound_ShuttleEngine_1", 1.5f);
+						Sound_CreateAtEntity("Sound_ShuttleEngineStop", "03_07_dw_factory/shuttle/engine/shuttle_engine_stop", "Sound_ShuttleEngine");
+						Effect_Shake_Start(0.02, 0.4, 0, 0.3);
+						pShuttleLoop.FadeOut(2.0f);
+						m_idShuttle_MovementLoop = tID_Invalid;
+						
+						if (pShuttleEngineLoop !is null) pShuttleEngineLoop.FadeOut(2);
+						m_idShuttle_MovementEngineLoop = tID_Invalid;
+					}
+				}
+												
+				float fDot = cMath_Vector3Dot(vMoveDir, mvShuttle_PrevMoveDir);
+				if (mvShuttle_PrevMoveDir.Length() > 0 && fDot <= 0)
+				{
+					vMove = (vToPos - pShuttle.GetPosition()) / afTimeStep;
+					m_idShuttleMovement_Current = m_idShuttleMovement_To;
+					mbShuttleMoving = false;
+					ShuttleCallback(msShuttle_MoveCallback);
+				}
+								
+				pShuttle.GetMainBody().StaticLinearMove(vMove);
+				mvShuttle_PrevMoveDir = vMoveDir;
+				
+//				DrawTestPoint(pShuttle.GetPosition(), cEngine_GetStepSize() + 0.01f, cColor_Green * 2, 0.2f);
+//				DrawTestPoint(pTo.GetPosition(), cEngine_GetStepSize() + 0.01f, cColor_Red * 2, 0.2f);
+//				DrawTestPoint(pFrom.GetPosition(), cEngine_GetStepSize() + 0.01f, cColor_Red * 2, 0.2f);
+			}
+			
+			if (mbShuttleRotating)
+			{
+				iLuxEntity@ pShuttle = cLux_ID_Entity(m_idShuttle);
+				iLuxEntity@ pTo = cLux_ID_Entity(m_idShuttleRotate_To);
+				iLuxEntity@ pFrom = cLux_ID_Entity(m_idShuttleRotate_From);
+				
+				cVector3f vDelta = cMath_MatrixEulerAngleDistance(pShuttle.GetMatrix(), pTo.GetMatrix());
+								
+				float fDist = vDelta.Length();
+				float fDistMul = 1;
+				if (fDist <= mfShuttle_RotateSlowDownDist) fDistMul = cMath_Clamp(fDist / mfShuttle_RotateSlowDownDist, 0.02f, 1.0f);
+				else if (fDist >= mfShuttle_RotateDist - mfShuttle_RotateSlowDownDist) fDistMul = cMath_Clamp((mfShuttle_RotateDist - fDist) / mfShuttle_RotateSlowDownDist, 0.02f, 1.0f);
+
+				cVector3f vRot = cMath_Vector3Normalize(vDelta) * mfShuttle_CurrentRotateSpeed * fDistMul;
+				float fDot = cMath_Vector3Dot(vDelta, mvShuttleRotate_PrevDelta);
+				if (mvShuttleRotate_PrevDelta.Length() > 0 && fDot <= 0)
+				{
+					vRot = vDelta / afTimeStep;
+					mbShuttleRotating = false;
+					ShuttleCallback(msShuttle_RotateCallback);
+					Effect_Shake_Start(0.02, 0.4, 0, 0.3);
+				}
+				
+				float fT = 1.0f - cMath_Clamp(fDist / mfShuttle_RotateDist, 0.0f, 1.0f);
+				cVector3f vTargetPos = pFrom.GetPosition() * (1.0f - fT) + pTo.GetPosition() * (fT);
+				cVector3f vMove = (vTargetPos - pShuttle.GetPosition()) / afTimeStep;
+				
+				pShuttle.GetMainBody().StaticAngularMove(vRot);
+				pShuttle.GetMainBody().StaticLinearMove(vMove);
+				mvShuttleRotate_PrevDelta = vDelta;
+				
+//				DrawTestPoint(pTo.GetPosition(), cEngine_GetStepSize() + 0.01f, cColor_Red * 2, 0.2f);
+//				DrawTestPoint(pFrom.GetPosition(), cEngine_GetStepSize() + 0.01f, cColor_Red * 2, 0.2f);
+			}
+			
+			if (mbShuttle_FallMove)
+			{
+				cVector3f vTarget = Map_GetEntity(msShuttle_FallAnimEnt).GetPosition();
+				cVector3f vMoveDir = vTarget - cLux_GetPlayer().GetCharacterBody().GetFeetPosition();
+				vMoveDir.y = 0;
+				cVector3f vMove = cMath_Vector3Normalize(vMoveDir) * 3.0f * afTimeStep;
+								
+				if (vMove.Length() < vMoveDir.Length())
+				{
+					cVector3f vNewPos = cLux_GetPlayer().GetCharacterBody().GetFeetPosition() + vMove;
+					cLux_GetPlayer().GetCharacterBody().SetFeetPosition(vNewPos, false);
+				}
+				else
+				{
+					mbShuttle_FallMove = false;
+					cLux_GetPlayer().GetCharacterBody().SetFeetPosition(vTarget, false);
+				}
+			}
+			
+		}
+		
+		
+		void ShuttleCallback(const tString &in asCallback)
+		{
+			if (asCallback == "ShuttleRide")
+			{
+				SequenceStates_Resume("Seq_ShuttleRide");
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		int mlShuttle_SkipSequence = 0;
+		cSequenceStatesData mSequenceShuttleRide;
+		void Seq_ShuttleRide(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_ShuttleRide", mSequenceShuttleRide);
+			if (Sequence_DoStepAndWait(0.1f))
+			{
+				Player_SetPregnancyExertionActive(false);
+				
+				FearHandler_SetDifficultyMul(0.35f);
+				FearHandler_SetPermaFailEnabled(false);
+				FearHandler_SetDarknessFactorActive(false);
+				
+				Sequence_SkipNextSteps(mlShuttle_SkipSequence);
+			}
+			else if (Sequence_DoStepAndWait(0.2))
+			{
+				Player_Teleport("Start_Begin", false);
+			}
+			else if (Sequence_DoStepAndWait(3.0))
+			{
+				Effect_Fade_In(2);
+			}
+			else if (Sequence_DoStepAndWait(0.5))
+			{
+				Sound_CreateAtEntity("Sound_DoorOpen_1", "03_07_DW_theatre/events/shuttle_door/door_1", "Door_ShuttleTunnel_2");
+				SlideDoor_SetOpenAmount("Door_ShuttleTunnel_2", 1);
+				Light_FadeBrightnessToDefault("Light_ShuttleCorridor*", 2);
+			}
+			else if (Sequence_DoStepAndWait(0.5))
+			{
+				Lamp_SetLit("dwf_railing_light_20", true, true);
+				Lamp_SetLit("dwf_railing_light_1", true, true);
+				Lamp_SetLit("dwf_railing_light_4", true, true);
+			}
+			else if (Sequence_DoStepAndPause(0.0))
+			{
+				if (cScript_GetGlobalVarBool("DWF_RnD_UsedVitaeChair")) Voice_PlayDelayed("Dialogue_Reflections_Tortured", 6);
+				else Voice_PlayDelayed("Dialogue_Reflections_NotTortured", 6);
+				MoveShuttle(2, -1, "ShuttleRide", 0.8f);
+				Sound_CreateAtEntity("Sound_ShuttleStart", "03_07_dw_factory/shuttle/shuttle_ride_begin_2", "Target_ShuttleCenterTop");
+			}
+			else if (Sequence_DoStepAndWait(1.0))
+			{
+				SlideDoor_SetOpenAmount("Door_RnD_2", 1);
+				Sound_CreateAtEntity("Sound_DoorOpen_1", "03_07_DW_theatre/events/shuttle_door/door_2", "Door_RnD_2");
+				Map_AddTimer("OnTimer_DarkWorldLightningLoop", 5, "OnTimer_DarkWorldLightningLoop");
+			}
+			else if (Sequence_DoStepAndWait(3.0))
+			{
+				Music_PlayExt("A2_3_8_Factory_Reveal.ogg", false, 0.3f, 1.0f, 3.0f, 0.0f, eMusicPrio_BigEvent, false);
+				Music_Play("A2_3_8_Factory_Ambience.ogg", 0.19f, false, eMusicPrio_SceneAmb);
+			}
+			else if (Sequence_DoStepAndPause(0.0)) MoveShuttle(3, -1, "ShuttleRide", 2);
+			else if (Sequence_DoStepAndWait(1.0))
+			{
+				Entity_AttachToEntity("ShuttleLift_1", "Shuttle", "", true, false, false);
+				Lamp_SetFlickerActive("Lamp_Railing_Lift_1", true);
+			}
+			else if (Sequence_DoStepAndPause(0.0)) MoveShuttle(4, -1, "ShuttleRide", 4);
+			else if (Sequence_DoStepAndWait(1.0))
+			{
+				Entity_RemoveEntityAttachment("ShuttleLift_1");
+				Lamp_SetFlickerActive("Lamp_Railing_Lift_1", false);
+			}
+			else if (Sequence_DoStepAndPause(0.5)) MoveShuttle(5, -1, "ShuttleRide", 3);
+			else if (Sequence_DoStepAndPause(0.5)) RotateShuttle(6, -1, "ShuttleRide");
+			else if (Sequence_DoStepAndPause(0)) MoveShuttle(17, -1, "ShuttleRide", 7.5);
+			else if (Sequence_DoStepAndWait(7.0))
+			{
+				Map_AddTimer("Timer_ArriveAtStation", 2.5, "OnTimer_ArriveAtStation");
+				Map_AddTimer("Timer_PullOutOfStation", 6.5, "OnTimer_PullOutOfStation");
+			}
+			else if (Sequence_DoStepAndPause(0.5))
+			{
+				MoveShuttle(7, 17, "ShuttleRide", 7.5);
+			}
+			else if (Sequence_DoStepAndPause(0.5)) RotateShuttle(8, -1, "ShuttleRide");
+			else if (Sequence_DoStepAndPause(0.0)) MoveShuttle(9, -1, "ShuttleRide");
+			else if (Sequence_DoStepAndWait(1.0))
+			{
+				Entity_AttachToEntity("ShuttleLift_2", "Shuttle", "", true, false, false);
+			}
+			else if (Sequence_DoStepAndPause(0.0)) MoveShuttle(10, -1, "ShuttleRide", 6);
+			else if (Sequence_DoStepAndWait(1.5))
+			{
+				Lamp_SetLit("Lamp_Railing_Lift", false, true);
+				TurnOnRailingLightSegment("Lamp_Railing_LiftToFactory_", 1, 4);
+				Entity_RemoveEntityAttachment("ShuttleLift_2");
+			}
+			else if (Sequence_DoStepAndPause(0.5)) MoveShuttle(11, -1, "ShuttleRide");
+			else if (Sequence_DoStepAndPause(0.5)) RotateShuttle(12, -1, "ShuttleRide");
+			else if (Sequence_DoStepAndPause(0.5)) MoveShuttle(13, -1, "ShuttleRide");
+			else if (Sequence_DoStepAndWait(2.5))
+			{
+				TurnOnRailingLightSegment("Lamp_Railing_LiftToFactory_", 5, 11);
+			}
+			else if (Sequence_DoStepAndPause(0.0)) RotateShuttle(14, -1, "ShuttleRide");
+			else if (Sequence_DoStepAndPause(0.0)) MoveShuttle(15, -1, "ShuttleRide", 7.5);
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PullOutOfStation(const tString &in asTimer)
+		{
+			mfShuttle_TargetSpeed = 7.5;
+			mfShuttle_MoveAcceleration = 4;
+			
+			TurnOnRailingLightSegment("Lamp_Railing_StationToLift_", 1, 3);
+			FearHandler_SetForcedAddFearRate(0.3f, 4.0f, false, 1.0f, 0.2f, 0.75f);
+			Map_AddTimer("Timer_TurnOnElevator2Lights", 2.0f, "OnTimer_TurnOnElevator2Lights");
+			
+			SlideDoor_SetOpenAmount("Door_ShuttleStation", 1, false);
+			Sound_CreateAtEntity("Sound_DoorOpen_1", "03_07_DW_theatre/events/shuttle_door/door_1", "Door_ShuttleStation");
+			
+			Sound_Stop("Sound_ShuttleEngineSlower", 1.5f);
+			Sound_CreateAtEntity("Sound_ShuttleEngine", "03_07_dw_factory/shuttle/engine/shuttle_engine", "Sound_ShuttleEngine");
+			Sound_CreateAtEntity("Sound_ShuttleSpeedUp", "03_07_dw_factory/shuttle/shuttle_speed_up", "Sound_ShuttleEngine");
+			
+			Voice_PlayDelayed("Dialogue_PullingOutOfStation", 1.0f);
+			Music_Play("A2_3_8_Shuttle_Speedup.ogg", 0.3f, false, eMusicPrio_MinorEvent);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ArriveAtStation(const tString &in asTimer)
+		{
+			Voice_PlayDelayed("Dialogue_PullingThroughStation", 0.0f);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Shuttle_SpeedArea_1(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			mfShuttle_TargetSpeed = 3.0;
+			mfShuttle_MoveAcceleration = 2;
+			
+			Sound_Stop("Sound_ShuttleEngine", 1.5f);
+			Sound_CreateAtEntity("Sound_ShuttleEngineSlow", "03_07_dw_factory/shuttle/engine/shuttle_engine_slowdown", "Sound_ShuttleEngine");
+			Sound_CreateAtEntity("Sound_ShuttleSlow", "03_07_dw_factory/shuttle/shuttle_slow_down", "Sound_ShuttleEngine");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Shuttle_SpeedArea_2(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			mfShuttle_TargetSpeed = 7.5;
+			mfShuttle_MoveAcceleration = 4;
+			TurnOnRailingLightSegment("Lamp_Railing_StationToLift_", 1, 3);
+			FearHandler_SetForcedAddFearRate(0.3f, 4.0f, false, 1.0f, 0.2f, 0.75f);
+			Map_AddTimer("Timer_TurnOnElevator2Lights", 2.0f, "OnTimer_TurnOnElevator2Lights");
+			
+			SlideDoor_SetOpenAmount("Door_ShuttleStation", 1, false);
+			
+			Sound_Stop("Sound_ShuttleEngineSlower", 1.5f);
+			Sound_CreateAtEntity("Sound_ShuttleEngine", "03_07_dw_factory/shuttle/engine/shuttle_engine", "Sound_ShuttleEngine");
+			Sound_CreateAtEntity("Sound_ShuttleSpeedUp", "03_07_dw_factory/shuttle/shuttle_speed_up", "Sound_ShuttleEngine");
+			
+			Voice_PlayDelayed("Dialogue_PullingOutOfStation", 1.0f);
+			Music_Play("A2_3_8_Shuttle_Speedup.ogg", 0.3f, false, eMusicPrio_MinorEvent);
+			return false;
+		}
+		
+		void OnTimer_TurnOnElevator2Lights(const tString &in asTimer)
+		{
+			TurnOnElevatorRailingLightSegment("dwf_elevator_2_light_", 1, 6);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Shuttle_SpeedArea_3(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			mfShuttle_TargetSpeed = 1.1;
+			mfShuttle_MoveAcceleration = 3;
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Shuttle_SpeedArea_4(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			mfShuttle_TargetSpeed = 0.3;
+			mfShuttle_MoveAcceleration = 1;
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Shuttle_SpeedArea_5(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			mfShuttle_TargetSpeed = 1.5;
+			mfShuttle_MoveAcceleration = 2;
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Shuttle_SpeedArea_6(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			mfShuttle_TargetSpeed = 5.0;
+			mfShuttle_MoveAcceleration = 4;
+			
+			Effect_Shake_Start(0.02, 0.4, 0, 0.3);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Shuttle_SpeedArea_7(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			mfShuttle_TargetSpeed = 5.0;
+			mfShuttle_MoveAcceleration = 2;
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Shuttle_SpeedArea_8(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			mfShuttle_TargetSpeed = 2.0;
+			mfShuttle_MoveAcceleration = 0.5;
+			
+			Sound_Stop("Sound_ShuttleEngineSlow", 1.5f);
+			Sound_CreateAtEntity("Sound_ShuttleEngineSlower", "03_07_dw_factory/shuttle/engine/shuttle_engine_slowdown_2", "Sound_ShuttleEngine");
+			
+			Prop_SetActiveAndFade("clouds_first_area", false, 2);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Shuttle_Trigger_PullingIntoStationDialogue(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Voice_Play("Dialogue_PullingIntoStation");
+			Map_AddTimer("Timer_AmuletHint", 8, "OnTimer_AmuletHint");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_AmuletHint(const tString &in asTimer)
+		{
+			if (Amulet_IsHeld() == false) Hint_ShowHint_Hold("Hints", "HintAmulet", true, 2, false);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Shuttle_Trigger_PullingThroughStationDialogue(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Voice_Play("Dialogue_PullingThroughStation");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Shuttle_LowerLift(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Lamp_SetLit("Lamp_Railing_Lift", true, true);
+			Lamp_SetFlickerActive("Lamp_Railing_Lift", true);
+			Prop_MoveLinearTo("ShuttleLift_2", "Target_ShuttleLift_2_1", 3, 3, 0, true);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_PlayShuttleRaise(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Sound_CreateAtEntity("Sound_ShuttleTurns", "03_07_dw_factory/shuttle/shuttle_turns_2", "Target_ShuttleCenterTop");
+			return false;
+		}
+
+		//-------------------------------------------------------
+		
+		void OnRiftStage_Station(const tString &in asRift, int alStage, bool abOpening, float afOpenAmount)
+		{
+			cLux_AddDebugMessage("TEST " + alStage + " " + abOpening);
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event A *The SHUTTLE starts moving*
+		
+		/////////////////////////////////////////
+		// Event A *See lightning strikes*
+		//{//////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		tID m_idDarkWorldLightning_FlashLight;
+		tString msDWLightning_SoundName = "";
+		float mfDWLightning_Volume = 1;
+		cVector3f mvDir;
+		int mlDWLightning_Bolts = 3;
+		int mlDWLightning_Index = -1;
+		cVector3f mvDWLightning_Dir;
+		float mfDWLightning_LoopAngleOffset = 0;
+		cVector3f mvDWLightning_LoopDir;
+		int mlDWLightning_AreaCount = 0;
+		
+		//-------------------------------------------------------
+		
+		void InitDarkWorldLightning()
+		{
+			cLightPoint@ pFlashLight = cLux_GetCurrentMap().GetWorld().CreateLightPoint("DWFlash", "", false);
+			pFlashLight.SetBrightness(0);
+			pFlashLight.SetRadius(200);
+			m_idDarkWorldLightning_FlashLight = pFlashLight.GetID();
+			
+			mvDWLightning_LoopDir = Map_GetEntity("Widget_LightningDir").GetMatrix().GetTranspose().GetForward();
+			mfDWLightning_LoopAngleOffset = 90;
+			
+			if (cLux_ScriptDebugOn()) Map_AddTimer("OnTimer_DarkWorldLightningLoop", 2, "OnTimer_DarkWorldLightningLoop");
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_DWNoLightningArea(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			mlDWLightning_AreaCount += alState;
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void RandomDarkWorldLightning(cVector3f &in avDir, float afMaxAngleOffset = 0, float afDelay = 0, const tString&in asSound = "", float afVolume = 1)
+		{
+			msDWLightning_SoundName = asSound;
+			mfDWLightning_Volume = afVolume;
+			
+			array<int> vIndexCandidates;
+			for (int i = 1; i <= mlDWLightning_Bolts; ++i)
+			{
+				if (mlDWLightning_Index > 0 && i == mlDWLightning_Index) continue;
+				vIndexCandidates.push_back(i);
+			}
+			
+			int lIndex = vIndexCandidates[cMath_RandRectl(0, vIndexCandidates.size() - 1)];
+			
+			cVector3f vDir = avDir;
+			vDir.y = 0;
+			vDir = cMath_MatrixMul(cMath_MatrixRotateY(cMath_ToRad(cMath_RandRectf(-afMaxAngleOffset, afMaxAngleOffset))), vDir);
+			DarkWorldLightning(lIndex, vDir);
+		}
+		
+		//-------------------------------------------------------
+		
+		void DarkWorldLightning(int alIndex, cVector3f &in avDir, float afDelay = 0, const tString&in asSound = "", float afVolume = 1)
+		{
+			msDWLightning_SoundName = asSound;
+			mfDWLightning_Volume = afVolume;
+			
+			mlDWLightning_Index = alIndex;
+			mvDWLightning_Dir = avDir;
+			Map_AddTimer("Timer_DoDarkWorldLightning", afDelay, "OnTimer_DoDarkWorldLightning");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_DoDarkWorldLightning(const tString &in asTimer)
+		{
+			Seq_DarkWorldLightning("");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_DarkWorldLightningLoop(const tString &in asTimer)
+		{
+			bool bFront = false;
+			if (Map_TimerExists("LightningInFrontCooldown") == false)
+			{
+				float fFrontToLoopAngleDiff = cMath_Vector3Angle(mvDWLightning_LoopDir, cVector3f(Player_GetForward().x, 0, Player_GetForward().z));
+				if (fFrontToLoopAngleDiff <= mfDWLightning_LoopAngleOffset)
+				{
+					bFront = true;
+					RandomDarkWorldLightning(Player_GetForward(), 20);
+					Map_AddTimer("LightningInFrontCooldown", cMath_RandRectf(30, 120), "");
+					cLux_AddDebugMessage("[Map] Lightning in front");
+				}
+			}
+			if (bFront == false)
+			{
+				RandomDarkWorldLightning(mvDWLightning_LoopDir, mfDWLightning_LoopAngleOffset);
+				cLux_AddDebugMessage("[Map] Lightning random");
+			}
+			Map_RestartCurrentTimer(cMath_RandRectf(15, 45));
+		}
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSeqDataDarkWorldLightning;	
+		void Seq_DarkWorldLightning(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_DarkWorldLightning", mSeqDataDarkWorldLightning);
+			if (Sequence_DoStepAndWait(0.1f))
+			{
+//				Map_AddTimer("Timer_DarkWorldThunder", cMath_RandRectf(0.3, 1.0), "OnTimer_DarkWorldThunder");
+				Map_AddTimer("Timer_DarkWorldThunder", 0, "OnTimer_DarkWorldThunder");
+				
+				// only do visuals oustide thunder areas
+				if (mlDWLightning_AreaCount == 0)
+				{
+					cVector3f vLightningDir = mvDWLightning_Dir;
+					
+					cVector3f vLightningBolt = Player_GetPosition() + vLightningDir * cMath_RandRectf(1500, 2500);
+					vLightningBolt += cVector3f_Up * cMath_RandRectf(400, 800);
+					
+					iLight@ pLight = Map_GetLight("Light_Lightning_Point_" + mlDWLightning_Index);
+					pLight.SetPosition(vLightningBolt);
+					pLight.FadeTo(cColor(0.617,0.951,1,1), pLight.GetRadius(), 0.05f);
+					
+					cBillboard@ pBillboardBolt = cLux_GetCurrentMap().GetWorld().GetBillboard("Billboard_Lightning_Bolt_" + mlDWLightning_Index);
+					pBillboardBolt.SetPosition(vLightningBolt);
+					
+					cBillboard@ pBillboardGlow = cLux_GetCurrentMap().GetWorld().GetBillboard("Billboard_Lightning_Glow_" + mlDWLightning_Index);
+					pBillboardGlow.SetPosition(vLightningBolt);
+				
+					cVector3f vFlashPos = Player_GetPosition() + vLightningDir * 100 + cVector3f_Up * 75;
+					
+					iLight@ pFlashLight = cLux_ID_Light(m_idDarkWorldLightning_FlashLight);
+					pFlashLight.SetPosition(vFlashPos);
+					pFlashLight.SetDiffuseColor(cColor(0.617,0.951,1,1));
+					pFlashLight.FadeBrightnessTo(80, 0.05);	
+				}
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{
+				iLight@ pLight = Map_GetLight("Light_Lightning_Point_" + mlDWLightning_Index);
+				pLight.FadeTo(cColor(0,0,0,1), pLight.GetRadius(), 0.2f);
+				
+				iLight@ pFlashLight = cLux_ID_Light(m_idDarkWorldLightning_FlashLight);
+				pFlashLight.FadeBrightnessTo(0, 0.3f);
+			}
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_DarkWorldThunder(const tString &in asTimer)
+		{
+			cVector3f vPos = Player_GetPosition() + mvDWLightning_Dir * cMath_RandRectf(60, 120);
+			vPos += cVector3f_Up * cMath_RandRectf(30, 50);
+			
+			tString sSound = "level_amb_shared/amb/sweeteners/thunder/thunder_strike";
+			if (msDWLightning_SoundName != "") sSound = msDWLightning_SoundName;
+			
+			cSoundEntity@ pThunder = cLux_GetCurrentMap().GetWorld().CreateSoundEntity("Thunder", sSound, true);
+			pThunder.SetPosition(vPos);
+			float fVolume = 1.0f;
+			pThunder.SetVolume(fVolume);
+		}
+		
+		//-------------------------------------------------------
+				
+		//} END Event A *See lightning strikes*
+
+		/////////////////////////////////////////
+		// Event B *See the old and abandoned hunting grounds below you*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		//-------------------------------------------------------
+
+		//} END Event B *See the old and abandoned hunting grounds below you*
+
+		/////////////////////////////////////////
+		// Event C *See countless factories*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		//-------------------------------------------------------
+
+		//} END Event C *See countless factories*
+
+		/////////////////////////////////////////
+		// Event D *Have a moment of reflection*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		//-------------------------------------------------------
+
+		//} END Event D *Have a moment of reflection*
+
+		/////////////////////////////////////////
+		// Event E *See the CORPSE SHUTTLE blocking the way to the RIFT*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+		
+		void OnLookAt_PassOtherShuttleDialogue(const tString &in asEntity, int alState)
+		{
+			Voice_Play("Dialogue_PassOtherShuttle");
+			Music_Play("A2_3_8_Corpses_Spot.ogg", 0.2f, false, eMusicPrio_MinorEvent);
+		}
+
+		//-------------------------------------------------------
+
+		//} END Event E *See the CORPSE SHUTTLE blocking the way to the RIFT*
+
+		/////////////////////////////////////////
+		// Event F *Notice the FINAL RIFT and the FIELD OF PODS below*
+		//{//////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Shuttle_StartFactoryStartDialogue(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			cLux_AddDebugMessage("[Map] Start factory start dialogue");
+			Entity_SetActive("Trigger_SeeNewRiftDialogue", true);
+			Entity_SetActive("Trigger_SeePodsDialogue*", true);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Shuttle_StopFactoryStartDialogue(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			cLux_AddDebugMessage("[Map] Stop factory start dialogue");
+			Entity_SetActive("Trigger_SeeNewRiftDialogue", false);
+			Voice_StopCheckTimer("Dialogue_SeesNewRift");
+			Entity_SetActive("Trigger_SeePodsDialogue*", false);
+			Voice_StopCheckTimer("Dialogue_SeePods");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnLookAt_SeeNewRiftDialogue(const tString &in asEntity, int alState)
+		{
+			if (alState == 1)
+			{
+				Sketchbook_AddIdea("cross_factoryrift");
+				Voice_PlayWhenPossible("Dialogue_SeesNewRift", "", -1, 2);
+			}
+			else
+			{
+				Voice_StopCheckTimer("Dialogue_SeesNewRift");
+			}
+		}
+		//-------------------------------------------------------
+		
+		void OnLookAt_SeePodsDialogue(const tString &in asEntity, int alState)
+		{
+			if (alState == 1)
+			{
+				Voice_PlayWhenPossible("Dialogue_SeePods", "", -1, 2);
+				Music_Play("A2_3_8_Pods_Discover.ogg", 0.3f, false, eMusicPrio_MinorEvent);
+			}
+			else
+			{
+				Voice_StopCheckTimer("Dialogue_SeePods");
+			}
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event F *Notice the FINAL RIFT and the FIELD OF PODS below*
+	 
+	//} END SCENE 10
+	 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 11 *Hide from flying wraiths on the shuttle and gets caught*
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+ 
+		/////////////////////////////////////////
+		// General
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are used by many events in Scene X here.*/
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are used in more than one event in Scene X here.*/
+
+		//-------------------------------------------------------
+
+		//} END General	
+
+		/////////////////////////////////////////
+		// Event A *Enter the Factory and see the FLYING WRAITH appear*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+		
+		bool mbShuttleEncounter_LookingAtIntroWraith = false;
+		bool mbShuttleEncounterMusicStarted = false;
+		
+		float mfEnvParticleFadeOut = -1;
+		float mfEnv_BigOrigBrightness = 0;
+		array<cVector3f> mvEnv_OrigWinds;
+		
+		//-------------------------------------------------------
+		
+		void UpdateShuttleEncounter(float afTimeStep)
+		{
+			if (mfEnvParticleFadeOut > 0)
+			{
+				mfEnvParticleFadeOut -= afTimeStep;
+				float fT = cMath_Clamp(mfEnvParticleFadeOut / 2.0f, 0.0f, 1.0f);
+				
+				cEnvironmentParticles@ pBigParticle = cLux_GetCurrentMap().GetWorld().GetEnvironmentParticles(2);
+				if (pBigParticle !is null)
+				{
+					pBigParticle.SetBrightness(mfEnv_BigOrigBrightness * fT);
+					if (fT <= 0) pBigParticle.SetVisible(false);
+				}
+				
+				for (int i = 0; i < cLux_GetCurrentMap().GetWorld().GetEnvironmentParticleNum(); ++i)
+				{
+					if (i == 2) continue;
+					cEnvironmentParticles@ pParticle = cLux_GetCurrentMap().GetWorld().GetEnvironmentParticles(i);
+					cVector3f vNewWind = mvEnv_OrigWinds[i] * fT;
+					pParticle.SetWindVelocity(vNewWind);
+				}
+				
+			}
+		}
+
+		//-------------------------------------------------------
+		
+		bool OnCollide_Shuttle_EnterFactory(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			
+			mfEnvParticleFadeOut = 2.0f;
+			
+			cEnvironmentParticles@ pBigParticle = cLux_GetCurrentMap().GetWorld().GetEnvironmentParticles(2);
+			if (pBigParticle !is null)
+			{
+				mfEnv_BigOrigBrightness = pBigParticle.GetBrightness();
+			}
+			
+			for (int i = 0; i < cLux_GetCurrentMap().GetWorld().GetEnvironmentParticleNum(); ++i)
+			{
+				cEnvironmentParticles@ pParticle = cLux_GetCurrentMap().GetWorld().GetEnvironmentParticles(i);
+				mvEnv_OrigWinds.push_back(pParticle.GetWindVelocity());
+			}
+			
+			Prop_SetActiveAndFade("clouds_first_area", true, 2);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_TrackFinalRift(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Amulet_StartTracking(true, "Rift_2");
+			Voice_PlayDelayed("Dialogue_AmuletTrackingRift", 1.0);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Shuttle_SetupShuttleEncounter(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			cLux_AddDebugMessage("[Map] Setup shuttle encounter");
+			
+			//////////////
+			// Setup first wraith
+			Entity_SetActive("Wraith_Shuttle_1", true);
+			Wraith_SetStruggleWinnable("Wraith_Shuttle_1", false);
+			Wraith_SetInfiniteStruggle("Wraith_Shuttle_1", true);
+			Wraith_SetGazeDetection("Wraith_Shuttle_1", false);
+			Wraith_SetPlayStruggleOutroAnim("Wraith_Shuttle_1", false);
+			Wraith_SetStruggleDashActive("Wraith_Shuttle_1", false);
+			Wraith_SetFly("Wraith_Shuttle_1", true);
+			Wraith_SetHearing("Wraith_Shuttle_1", false);
+			Wraith_SetCallback_Struggle("Wraith_Shuttle_1", "OnStruggle_EndShuttleEncounter");
+			Wraith_CommandCustom_Execute("Wraith_Shuttle_1", true, "");
+			
+//			Wraith_SetSight("Wraith_Shuttle_1", false);
+			
+			Map_AddTimer("Timer_SetupShuttleEncounterWraith1", 0.1f, "OnTimer_SetupShuttleEncounterWraith1");
+			
+			//////////////
+			// Setup second wraith
+			Wraith_SetStruggleWinnable("Wraith_Shuttle_2", false);
+			Wraith_SetInfiniteStruggle("Wraith_Shuttle_2", true);
+			Wraith_SetGazeDetection("Wraith_Shuttle_2", false);
+			Wraith_SetPlayStruggleOutroAnim("Wraith_Shuttle_2", false);
+			Wraith_SetStruggleDashActive("Wraith_Shuttle_2", false);
+			Wraith_SetFly("Wraith_Shuttle_2", true);
+			Wraith_SetHearing("Wraith_Shuttle_2", false);
+			Wraith_SetCallback_Struggle("Wraith_Shuttle_2", "OnStruggle_EndShuttleEncounter");
+			
+//			Wraith_SetSight("Wraith_Shuttle_2", false);
+			
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_SetupShuttleEncounterWraith1(const tString &in asTimer)
+		{
+			CharMover_TurnToEntity("Wraith_Shuttle_1", "Target_ShuttleEncounter_LookAt_1", "");
+//			Wraith_SetSpotlightMovement_SidewaysEightAtEntity("Wraith_Shuttle_1", 0.75, 0.4, 0.05, "Target_ShuttleEncounter_LookAt_1", true, true);
+			Wraith_TurnSpotlightToPos("Wraith_Shuttle_1", Map_GetEntity("Target_ShuttleEncounter_LookAt_1").GetPosition(), true, false);
+			Wraith_SetSpotlightOn("Wraith_Shuttle_1", false);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Shuttle_StartShuttleEncounter(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			cLux_AddDebugMessage("[Map] Start shuttle encounter");
+			Seq_ShuttleEncounterIntro("");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSequenceShuttleEncounterIntro;
+		void Seq_ShuttleEncounterIntro(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_ShuttleEncounterIntro", mSequenceShuttleEncounterIntro);
+			if (Sequence_DoStepAndWait(2.0f))
+			{
+				Pregnancy_SetWhispering(true);
+				
+				Wraith_SetSpotlightOn("Wraith_Shuttle_1", true);
+				Wraith_TurnSpotlightToPos("Wraith_Shuttle_1", Map_GetEntity("Target_ShuttleEncounter_LookAt_2").GetPosition(), true, true);
+				Wraith_SetCallback_BeamSeen("Wraith_Shuttle_1", "OnBeamSeen_SeesWraithDialogue", 1.25, true);
+			}
+			else if (Sequence_DoStepAndWait(5.0f))
+			{
+				// show bream
+				Wraith_SetSpotlightMovement_SidewaysEightAtEntity("Wraith_Shuttle_1", 0.75, 0.4, 0.05, "Target_ShuttleEncounter_LookAt_2", true, true);
+			}
+			else if (Sequence_DoStepAndPause(0.5f))
+			{
+				// move out
+				Map_AddTimer("Timer_StartShuttleEncounterMusic", 2, "OnTimer_StartShuttleEncounterMusic");
+				Map_RemoveTimer("Timer_CheckSeeWraith");
+				Wraith_CommandFlyToNode_Execute("Wraith_Shuttle_1", "Target_ShuttleEncounter_MoveTo_1", true, 1, false, "OnCommandEnd_ResumeShuttleEncounterIntro");
+			}
+			else if (Sequence_DoStepAndWait(5.0f))
+			{
+				// look at random pods
+				Wraith_SetSpotlightOn("Wraith_Shuttle_1", true);
+				CharMover_TurnToEntity("Wraith_Shuttle_1", "Target_ShuttleEncounter_LookAt_3", "");
+				Wraith_SetSpotlightMovement_SidewaysEightAtEntity("Wraith_Shuttle_1", 0.75, 0.4, 0.05, "Target_ShuttleEncounter_LookAt_3", true, true);
+			}
+			else if (Sequence_DoStepAndWait(1.5f))
+			{
+				// notice shuttle
+				Wraith_CommandCustom_Execute("Wraith_Shuttle_1", true, "");
+				Wraith_SetSpotlightMovement_ForwardOffset("Wraith_Shuttle_1", 0, 0, true);
+				Wraith_SetSpotlightColor("Wraith_Shuttle_1", "alert");
+				
+				Sound_CreateAtEntity("WraithSpotPlayer", "creatures/vocalisations/creature/wraith/wraith_short_alert", "Wraith_Shuttle_1", 0, false, 1, 40, 100);
+				
+			}
+			else if (Sequence_DoStepAndWait(5.0f))
+			{
+				// look at the back
+				CharMover_TurnToEntity("Wraith_Shuttle_1", "Target_ShuttleWraithBack", "");
+				Wraith_TurnSpotlightToPos("Wraith_Shuttle_1", Map_GetEntity("Target_ShuttleWraithBack").GetPosition(), true, true, 0.7f);
+			}
+			else if (Sequence_DoStepAndWait(10.0f))
+			{
+				// start scanning whole shuttle
+				Wraith_SetSpotlightMovement_SidewaysEightAtEntity("Wraith_Shuttle_1", 0.4f, 0.4f, 0.01f, "Target_ShuttleRightSide", true, true);
+			}
+			else if (Sequence_DoStepAndWait(2.0f))
+			{
+				// follow shuttle front right, look at front
+				Wraith_Command_Remove("Wraith_Shuttle_1");
+				Wraith_ModeFlyFollowEntity_Setup("Wraith_Shuttle_1", "Target_ShuttleWraithFrontRight", 0.75);
+				Wraith_Mode_Set("Wraith_Shuttle_1", eWraithMode_FlyFollowEntity, true);
+				Wraith_SetSpotlightMovement_FollowEntity("Wraith_Shuttle_1", "Target_ShuttleCenterFront", true);
+				Wraith_StartFacingEntity("Wraith_Shuttle_1", "Target_ShuttleCenterFront");
+			}
+			else if (Sequence_DoStepAndWait(5.0f))
+			{
+				// move to front, scan
+				Wraith_SetSpotlightMovement_SidewaysEightAtEntity("Wraith_Shuttle_1", 0.5f, 0.2f, 0.01f, "Target_ShuttleCenterFront", true, true);
+				Wraith_ModeFlyFollowEntity_SetEntity("Wraith_Shuttle_1", "Target_ShuttleWraithFront", 0.75);
+			}
+			else if (Sequence_DoStepAndWait(2.0f))
+			{
+				//move to front left
+				Wraith_ModeFlyFollowEntity_SetEntity("Wraith_Shuttle_1", "Target_ShuttleWraithFrontLeft", 0.75f);
+			}
+			else if (Sequence_DoStepAndWait(4.0f))
+			{
+				// scan shuttle
+				Wraith_SetSpotlightMovement_SidewaysEightAtEntity("Wraith_Shuttle_1", 0.4f, 0.25f, 0.01f, "Target_ShuttleCenterFront", true, true);
+				Wraith_StartFacingEntity("Wraith_Shuttle_1", "Target_ShuttleCenterFront");
+			}
+			else if (Sequence_DoStepAndWait(5.0f))
+			{
+				// start second wraith
+				Seq_ShuttleEncounter_Wraith2("");
+			}
+			else if (Sequence_DoStepAndWait(3.0f))
+			{
+				// move left, look back
+//				Wraith_SetSpotlightMovement_SidewaysEightAtEntity("Wraith_Shuttle_1", 0.4f, 0.4f, 0.01f, "Target_ShuttleLeftSide", true, true);
+				Wraith_SetSpotlightMovement_FollowEntity("Wraith_Shuttle_1", "Target_ShuttleCenterBack", true);
+				Wraith_ModeFlyFollowEntity_SetEntity("Wraith_Shuttle_1", "Target_ShuttleWraithLeft");
+				Wraith_StartFacingEntity("Wraith_Shuttle_1", "Target_ShuttleCenterBack");
+			}
+			else if (Sequence_DoStepAndWait(0))
+			{
+				Seq_ShuttleEncounterFinale("");
+			}
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnBeamSeen_SeesWraithDialogue(const tString &in asEntityName, int alState)
+		{
+			Voice_PlayDelayed("Dialogue_SeesWraith", 0.5f);
+			Map_AddTimer("Timer_StartShuttleEncounterMusic", 0, "OnTimer_StartShuttleEncounterMusic");
+			Music_Play("A2_1_4_ErskinesCorpse_2.ogg", 0.6f, false, eMusicPrio_MinorEvent);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_StartShuttleEncounterMusic(const tString &in asTimer)
+		{
+			if (mbShuttleEncounterMusicStarted) return;
+			mbShuttleEncounterMusicStarted = true;
+			Music_PlayExt("A2_1_4_DarkWorld_Scary.ogg", true, 0.6f, 1.0f, 5.0f, 1.0f, eMusicPrio_SceneAmb, false);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnCommandEnd_ResumeShuttleEncounterIntro(const tString &in asEntity)
+		{
+			SequenceStates_Resume("Seq_ShuttleEncounterIntro");
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_PodAreaSound(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Sound_CreateAtEntity("Sound_ShuttleSlow", "03_07_dw_factory/shuttle/shuttle_slow_loop", "Target_ShuttleCenterTop");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event A *Enter the Factory and see the FLYING WRAITH appear*
+		
+		/////////////////////////////////////////
+		// Event B *Hide from the wraith that is inspecting the SHUTTLE*
+		//{//////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		bool mbShuttleEncounter_PastStruggle = false;
+		bool mbShuttle_Stop = false;
+		bool mbShuttle_Stopped = false;
+		
+		//-------------------------------------------------------
+		
+		void OnStruggle_EndShuttleEncounter(const tString &in asEntityName)
+		{
+			if (mbShuttleEncounter_PastStruggle) return;
+			SequenceStates_Stop("Seq_ShuttleEncounterIntro");
+			SequenceStates_Stop("Seq_ShuttleEncounter_Wraith2");
+			SequenceStates_Stop("Seq_ShuttleEncounterFinale");
+			Seq_ShuttleEncounterPastStruggle("");
+			
+			mfShuttle_TargetSpeed = 1.75;
+			mfShuttle_MoveAcceleration = 2;
+		}
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSequenceShuttleEncounterFinale;
+		void Seq_ShuttleEncounterFinale(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_ShuttleEncounterFinale", mSequenceShuttleEncounterFinale);
+			if (Sequence_DoStepAndWait(2.0f))
+			{
+				// w1 scan shuttle
+				Wraith_StartFacingEntity("Wraith_Shuttle_1", "Target_ShuttleCenter");
+				Wraith_SetSpotlightMovement_SidewaysEightAtEntity("Wraith_Shuttle_1", 0.5f, 0.4f, 0.01f, "Target_ShuttleLeftSide", true, true);
+			}
+			else if (Sequence_DoStepAndWait(6.0f))
+			{
+				// w2 scan shuttle
+				Wraith_StartFacingEntity("Wraith_Shuttle_2", "Target_ShuttleCenter");
+				Wraith_SetSpotlightMovement_SidewaysEightAtEntity("Wraith_Shuttle_2", 0.5f, 0.4f, 0.01f, "Target_ShuttleRightSide", true, true);
+			}
+			else if (Sequence_DoStepAndWait(2.5f))
+			{
+				// w2 move back right, scan
+				Wraith_ModeFlyFollowEntity_SetEntity("Wraith_Shuttle_2", "Target_ShuttleWraithBackRight", 0.6);
+				Wraith_SetSpotlightMovement_SidewaysEightAtEntity("Wraith_Shuttle_2", 0.5f, 0.1f, 0.01f, "Target_ShuttleLeftSide", true, true);
+			}
+			else if (Sequence_DoStepAndWait(3.0f))
+			{
+				// w2 move final
+				Wraith_ModeFlyFollowEntity_SetEntity("Wraith_Shuttle_2", "Target_ShuttleWraithBackRightFinal");
+				
+				// w1 look to left
+				Wraith_ModeFlyFollowEntity_SetEntity("Wraith_Shuttle_1", "Target_ShuttleWraithFrontLeft", 0.6);
+				Wraith_SetSpotlightMovement_Forward("Wraith_Shuttle_1", true);
+//				Wraith_SetSpotlightMovement_FollowEntity("Wraith_Shuttle_1", "Target_ShuttleLeftSide", true);
+//				Wraith_SetSpotlightMovement_SidewaysEightAtEntity("Wraith_Shuttle_1", 0.5f, 0.1f, 0.01f, "Target_ShuttleCenterFront", true, true);
+			}
+			else if (Sequence_DoStepAndWait(8.0f))
+			{
+				// w1 move final
+				Wraith_SetSpotlightMovement_FollowEntity("Wraith_Shuttle_1", "Target_ShuttleCenterFront_2", true);
+			}
+			else if (Sequence_DoStepAndWait(0.0f))
+			{
+				Map_AddTimer("Timer_CheckPastStruggle", 0, "OnTimer_CheckPastStruggle");
+				Map_AddTimer("EncounterTooLong", 6, "");
+			}
+			Sequence_End();
+		}
+
+		//-------------------------------------------------------
+		
+		void OnTimer_CheckPastStruggle(const tString &in asTimer)
+		{
+			if (mbShuttleEncounter_PastStruggle) return;
+			if (Wraith_GetAlertState("Wraith_Shuttle_1") == 0 && Wraith_GetAlertState("Wraith_Shuttle_2") == 0 && (mbShuttleEncounter_PastStruggle == false || Map_TimerExists("EncounterTooLong") == false))
+			{
+				if (Map_TimerExists("EncounterTooLong") == false) cLux_AddDebugMessage("[Map] Encounter took too long");
+				Seq_ShuttleEncounterPastStruggle("");
+				return;
+			}
+			Map_RestartCurrentTimer(cMath_RandRectf(0.2, 0.4));
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event B *Hide from the wraith that is inspecting the SHUTTLE*
+		
+		/////////////////////////////////////////
+		// Event C *A second wraith appears*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSequenceShuttleEncounter_Wraith2;
+		void Seq_ShuttleEncounter_Wraith2(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_ShuttleEncounter_Wraith2", mSequenceShuttleEncounter_Wraith2);
+			if (Sequence_DoStepAndWait(0.2f))
+			{
+				// activate in stealth
+				Entity_SetActive("Wraith_Shuttle_2", true);
+				Wraith_SetCoverage("Wraith_Shuttle_2", 0);
+				Wraith_SetFly("Wraith_Shuttle_2", true);
+			}
+			else if (Sequence_DoStepAndWait(3.0f))
+			{
+				Wraith_CommandDash_Execute("Wraith_Shuttle_2", Map_GetEntity("Target_ShuttleWraith_PassBy_1").GetPosition(), false, true);
+			}
+			else if (Sequence_DoStepAndWait(1.0f))
+			{
+				// start following shuttle
+				Wraith_ModeFlyFollowEntity_Setup("Wraith_Shuttle_2", "Target_ShuttleWraith_PassBy_1");
+				Wraith_Mode_Set("Wraith_Shuttle_2", eWraithMode_FlyFollowEntity, true);
+			}
+			else if (Sequence_DoStepAndWait(2.0f))
+			{
+				// look forward
+				Wraith_SetSpotlightMovement_ForwardOffset("Wraith_Shuttle_2", cMath_ToRad(0), cMath_ToRad(5), true);
+			}
+			else if (Sequence_DoStepAndWait(4.0f))
+			{
+				// make sound and move ahead
+				Sound_CreateAtEntity("WraithSound", "creatures/vocalisations/creature/wraith/wraith_ search", "Wraith_Shuttle_2", 0, false, 1, 40, 100);
+				Wraith_ModeFlyFollowEntity_SetEntity("Wraith_Shuttle_2", "Target_ShuttleWraith_PassBy_2", 0.75f);
+			}
+			else if (Sequence_DoStepAndWait(4.0f))
+			{
+				// look at at front and make sound
+				Wraith_SetSpotlightMovement_FollowEntity("Wraith_Shuttle_2", "Target_ShuttleCenterFront", true);
+				Wraith_StartFacingEntity("Wraith_Shuttle_2", "Target_ShuttleCenterFront");
+				Sound_CreateAtEntity("WraithSound", "creatures/vocalisations/creature/wraith/wraith_ search", "Wraith_Shuttle_2", 0, false, 1, 40, 100);
+			}
+			Sequence_End();
+		}
+
+		//-------------------------------------------------------
+
+		//} END Event C *A second wraith appears*
+		
+		/////////////////////////////////////////
+		// Event D *Get spotted by one of the wraiths and fall into the Factory*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+		
+		tString msShuttle_FallAnimEnt;
+		tString msShuttle_FallLanternAnimEnt;
+		tString msShuttle_FallAnim;
+		bool mbShuttle_FallMove = false;
+		int mlShuttle_StopPos = 0;
+		bool mbShuttle_FallFront = true;
+		
+		//-------------------------------------------------------
+		
+		void ShakeShuttle(bool abAnim = true)
+		{
+			Sound_CreateAtEntity("RattleFloor", "03_07_dw_factory/shuttle/shuttle_shake", "Target_ShuttleCenter");
+			cSoundEntity@ pSound = cLux_GetCurrentMap().GetWorld().GetSoundEntity("RattleFloor");
+			pSound.SetCustomMaxDistance(40.0f);
+			pSound.SetCustomMinDistance(20.0f);
+			pSound.SetUseCustomProperties(true);
+			
+			Effect_Shake_Start(0.06f, 0.8f, 0.2f, 0.2f);
+			FearHandler_SetForcedAddFearRate(0.5f, 2.0f, true, 4.0f, 0.2f, 0.25f);
+			
+			if (abAnim) Entity_PlayAnimation("Shuttle", "dwf_shuttle_sway", 0.25f);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Shuttle_SetStopSpot(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState != 1) return true;
+			cLux_AddDebugMessage("[Map] Pass by stop: " + asParent);
+			if (mbShuttle_Stop == false && Entity_GetVarString(asParent, "") != "final") return true;
+			if (mbShuttle_Stopped) return true;
+			
+			SequenceStates_Resume("Seq_ShuttleEncounterPastStruggle");
+			
+			mbShuttle_Stopped = true;
+			mfShuttle_TargetSpeed = 0;
+			mfShuttle_MoveAcceleration = 1;
+			
+			mlShuttle_StopPos = 1;
+			
+			cLux_AddDebugMessage("[Map] Stop shuttle " + asParent + " " + mlShuttle_StopPos);
+			
+			return true;
+		}
+
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSequenceShuttleEncounterPastStruggle;
+		void Seq_ShuttleEncounterPastStruggle(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_ShuttleEncounterPastStruggle", mSequenceShuttleEncounterPastStruggle);
+			if (Sequence_DoStepAndWait(4.0f))
+			{
+				cLux_AddDebugMessage("[Map] Past struggle");
+				mbShuttleEncounter_PastStruggle = true;
+				
+				Wraith_SetStruggleFollowEnt("Wraith_Shuttle_1", "Shuttle", Map_GetEntity("Wraith_Shuttle_1").GetPosition() - Map_GetEntity("Shuttle").GetPosition());
+				Wraith_SetStruggleFollowEnt("Wraith_Shuttle_2", "Shuttle", Map_GetEntity("Wraith_Shuttle_2").GetPosition() - Map_GetEntity("Shuttle").GetPosition());
+			}	
+			else if (Sequence_DoStepAndWait(1.0f))
+			{
+				// stop struggle
+				Wraith_StopStruggle("Wraith_Shuttle_1");
+				Wraith_StopStruggle("Wraith_Shuttle_2");
+				
+				// senses off
+				Agent_SetSensesActive("Wraith_Shuttle_1", false);
+				Agent_SetSensesActive("Wraith_Shuttle_2", false);
+			}
+			else if (Sequence_DoStepAndWait(0.5f))
+			{
+				Wraith_ModeIdle_SetResetSpotlight("Wraith_Shuttle_1", false, true);
+				Wraith_Mode_Set("Wraith_Shuttle_1", eWraithMode_Idle, true);
+				Wraith_ModeIdle_SetResetSpotlight("Wraith_Shuttle_2", false, true);
+				Wraith_Mode_Set("Wraith_Shuttle_2", eWraithMode_Idle, true);
+				
+				Wraith_SetSpotlightColor("Wraith_Shuttle_1", "idle");
+				Wraith_SetSpotlightColor("Wraith_Shuttle_2", "idle");
+				
+				Wraith_StopSpotlightMovement("Wraith_Shuttle_1");
+				Wraith_StopSpotlightMovement("Wraith_Shuttle_2");
+				
+				Wraith_StopFacingEntity("Wraith_Shuttle_1");
+				Wraith_StopFacingEntity("Wraith_Shuttle_2");
+			}
+			else if (Sequence_DoStepAndWait(1.5))
+			{
+				Wraith_CommandDash_Execute("Wraith_Shuttle_1", Map_GetEntity("Target_WraithShuttleDisappear_1").GetPosition(), false, true, true);
+			}
+			else if (Sequence_DoStepAndWait(1.0))
+			{
+				Wraith_CommandDash_Execute("Wraith_Shuttle_2", Map_GetEntity("Target_WraithShuttleDisappear_2").GetPosition(), false, true, true);
+			}
+			else if (Sequence_DoStepAndWait(5.0))
+			{
+				mbShuttle_Stop = true;
+				if (mbShuttle_Stopped) SequenceStates_Resume("Seq_ShuttleEncounterPastStruggle");
+				Sound_Stop("Sound_ShuttleSlow", 2.0f);
+				Sound_CreateAtEntity("ShuttleStop", "03_07_dw_factory/shuttle/shuttle_stop", "Target_ShuttleCenterTop");
+			}
+			else if (Sequence_DoStepAndWait(4.0f))
+			{
+				ShakeShuttle();
+			}
+			else if (Sequence_DoStepAndWait(2.0f))
+			{
+				ShakeShuttle();
+			}
+			else if (Sequence_DoStepAndWait(2.0f))
+			{
+				Seq_ShuttleFall("");
+			}
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		cVector3f SelectShuttleEncounterDisengageArea(const tString &in asAgent)
+		{
+			array<iLuxEntity@> vEnts;
+			Map_GetEntityArray("Target_ShuttleEncounterDisengage*", vEnts);
+			
+			cVector3f vAgentPos = Map_GetEntity(asAgent).GetPosition();
+			
+			int fMinDist = -1;
+			cVector3f vPos;
+			for (int i = 0; i < vEnts.size(); ++i)
+			{
+				iLuxEntity@ pEnt = vEnts[i];
+				if (pEnt.GetVarBool("disengage_selected")) continue;
+				cVector3f vNode = pEnt.GetPosition();
+				float fDist = cMath_Vector3DistSqr(vAgentPos, vNode);
+				if (fMinDist < 0 || fDist < fMinDist)
+				{
+					fMinDist = fDist;
+					vPos = vNode;
+					pEnt.SetVarBool("disengage_selected", true);
+				}
+			}
+			
+			return vPos;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnCommandEnd_ShuttleWraithDisappear(const tString &in asEntity)
+		{
+			Wraith_CommandDisappear_Execute(asEntity, true, true);
+		}
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSequenceShuttleFall;
+		void Seq_ShuttleFall(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_ShuttleFall", mSequenceShuttleFall);
+			if (Sequence_DoStepAndPause(0))
+			{
+				msShuttle_FallAnimEnt = "";
+				msShuttle_FallAnim = "";
+				msShuttle_FallLanternAnimEnt = "";
+				iLuxEntity@ pShuttle = Map_GetEntity("Shuttle");
+				float fBackwardsDot = cMath_Vector3Dot(cLux_GetPlayer().GetCamera().GetForward(), pShuttle.GetMatrix().GetTranspose().GetForward());
+				if (fBackwardsDot <= 0)
+				{
+					mbShuttle_FallFront = false;
+					cLux_AddDebugMessage("[Map] Back fall");
+					Voice_Play("Scene_TasiFalls_Back");
+					Sound_CreateAtEntity("Sound_ShuttleOpenBack", "03_07_dw_factory/shuttle/shuttle_open_back", "player");
+					Sound_CreateAtEntity("Sound_PlayerFront", "03_07_dw_factory/shuttle/animation/player_fall_back", "player");
+					Map_AddTimer("Timer_SoundLanternBreakRear", 6.5f, "OnTimer_LanternBreak");
+					Music_Stop(0.4f, eMusicPrio_SceneAmb);
+					Music_Play("A2_3_8_Shuttle_Fall.ogg", 0.4f, false, eMusicPrio_MinorEvent);
+					msShuttle_FallAnimEnt = "Target_ShuttleFallAnim_Back";
+					msShuttle_FallAnim = "hang_from_shuttle_then_fall_trapdoor_back";
+					msShuttle_FallLanternAnimEnt = "lantern_shuttle_fall_trapdoorback";
+				}
+				else
+				{
+					mbShuttle_FallFront = true;
+					cLux_AddDebugMessage("[Map] Front fall");
+					Voice_Play("Scene_TasiFalls_Front");
+					Sound_CreateAtEntity("Sound_ShuttleOpenFront", "03_07_dw_factory/shuttle/shuttle_open_front", "player");
+					Sound_CreateAtEntity("Sound_PlayerFront", "03_07_dw_factory/shuttle/animation/player_fall_front", "player");
+					Map_AddTimer("Timer_SoundLanternBreakFront", 5.7f, "OnTimer_LanternBreak");
+					Music_Play("A2_3_8_Shuttle_Fall_Front.ogg", 0.4f, false, eMusicPrio_MinorEvent);
+					msShuttle_FallAnimEnt = "Target_ShuttleFallAnim_Front";
+					msShuttle_FallAnim = "hang_from_shuttle_then_fall_trapdoor_front";
+					msShuttle_FallLanternAnimEnt = "lantern_shuttle_fall_trapdoorfront";
+				}
+				
+				ShakeShuttle(true);
+				PlayerBody_PlayCutsceneAnimation("regain_balance_dwf_shuttle_sway", false, 0.25f, "OnAnimEnd_PlayerSway");
+				FearHandler_SetForcedAddFearRate(1.0f, 999.0f, true, 4.0f, 0.2f, 0.25f);
+				
+				Item_PutAway(eItemHandlerHand_Right);
+				Item_PutAway(eItemHandlerHand_Left);
+				
+				Player_SetMoveSpeedMul(0);
+				mbShuttle_FallMove = true;
+			}
+			else if (Sequence_DoStepAndPause(0.0f))
+			{
+				PlayerBody_SetCutsceneMaxPitch(20);
+				PlayerBody_PlayCutsceneAtEntity(msShuttle_FallAnim, msShuttle_FallAnimEnt, false, 0.25f, "OnAnimEnd_ShuttleFall", 1, 0, 0, mbShuttle_FallFront ? 0 : 180);				
+				Entity_PlayAnimation("Shuttle", "dwf_shuttle_open_trapdoors", 0);
+				Entity_SetAnimationMessageEventCallback(PlayerBody_GetEntityName(), "OnAnimationMessage_PlayerFall", false);
+				
+				Entity_PlaceAtEntity("LanternBroken_Animnation", msShuttle_FallAnimEnt, cVector3f_Zero, true);
+				Entity_SetActive("LanternBroken_Animnation", true);				
+				Entity_PlayAnimation("LanternBroken_Animnation", msShuttle_FallLanternAnimEnt);
+				Entity_SetAnimationMessageEventCallback("LanternBroken_Animnation", "OnAnimationMessage_LanternFall", false);
+			}
+			else if (Sequence_DoStepAndWait(2.0f))
+			{
+//				Pregnancy_SetBarksActive(false);
+//				Player_GiveDamage(1.0f, 0.8f, 0, "");
+//				Effect_Fade_Out(0.1f);
+			}
+			else if (Sequence_DoStepAndWait(2.0f))
+			{
+//				Pregnancy_SetBarksActive(true);
+			}
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_LanternBreak(const tString &in asTimer)
+		{
+			Sound_Play("Sound_LanternBreak", 0.0f);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnAnimationMessage_PlayerFall(const tString &in asEntityName, const tString &in asAnimName, int alMessageEventID)
+		{
+			// landing
+			if (alMessageEventID == 0)
+			{
+				Player_GiveDamage(0.2, 0.9, eDamageType_Fall, "");
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnAnimEnd_PlayerSway(const tString &in asAnimName)
+		{
+			SequenceStates_Resume("Seq_ShuttleFall");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnAnimEnd_ShuttleFall(const tString &in asAnimName)
+		{
+			mfTopFloorRiftDistance = Player_GetDistanceToEntity("Rift_2");
+			if (mlShuttle_StopPos == 1)
+			{
+				Entity_SetActive("Trigger_StartWraithTopEncounterStart_1", true);
+				mfTopFloorLookAtStartTime = 8;
+				mfTopFloorStartTime = 16;
+				mfTopFloorEncounter_MoveForwardDist = 4;
+			}
+			else if (mlShuttle_StopPos == 2)
+			{
+				Entity_SetActive("Trigger_StartWraithTopEncounterStart_2", true);
+				mfTopFloorLookAtStartTime = 5;
+				mfTopFloorStartTime = 10;
+				mfTopFloorEncounter_MoveForwardDist = 4;
+			}
+			else if (mlShuttle_StopPos == 3)
+			{
+				Entity_SetActive("Trigger_StartWraithTopEncounterStart_3", true);
+				mfTopFloorLookAtStartTime = 4;
+				mfTopFloorStartTime = 8;
+				mfTopFloorEncounter_MoveForwardDist = 2;
+			}
+			
+			Player_SetPregnancyExertionActive(true);
+			Player_SetMoveSpeedMul(1);
+			ItemType_RemoveFromInventory("Lantern", -1);
+			
+			FearHandler_SetDarknessFactorActive(true);
+			FearHandler_SetForcedAddFearRate(0.0f, -1.0f, true, 4.0f, 0.075f, 0.0f);
+			if (FearHandler_GetLevel() > 0.4) FearHandler_FadeLevelTo(0.4, 4, true);
+			
+			cScript_SetGlobalVarBool("Global_LanternLost", true);
+			
+			Visibility_SetAreaActive("VisibilityArea_Elevator_2", false);
+			
+			Map_GetEntity("Shuttle").StopAllAnimations(1.0f);
+			Entity_SetActive("Trigger_RemindGoalDialogue", true);
+			
+			mlPermaFailStage = eFactoryCPerfmaFailStage_TopFloor;
+			
+			Map_AddTimer("Timer_CheckTopFloorEncounter", 0.0f, "OnTimer_CheckTopFloorEncounter");
+			
+			Music_PlayExt("A2_3_8_Pod_Ambience.ogg", true, 0.2f, 1.0f, 2.0f, 0.0f, eMusicPrio_SceneAmb, false);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnAnimationMessage_LanternFall(const tString &in asEntityName, const tString &in asAnimName, int alMessageEventID)
+		{
+			// break
+			if (alMessageEventID == 0)
+			{
+				Entity_SetEffectsActive("LanternBroken_Animnation", false, false);
+			}
+			
+			// switch with grab
+			else if (alMessageEventID == 1)
+			{
+				Entity_SetActive("LanternBroken_Animnation", false);
+				Entity_SetActive("LanternBroken_Lid", true);
+				Entity_SetActive("LanternBroken_Grab", true);
+			}
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event D *Get spotted by one of the wraiths and fall into the Factory*
+
+	//} END SCENE 11
+	 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 12 *Avoid wraiths on the first level of the factory*
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+ 
+		/////////////////////////////////////////
+		// General
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are used by many events in Scene X here.*/
+
+		//-------------------------------------------------------
+
+		//-------------------------------------------------------
+
+		//} END General	
+		
+		/////////////////////////////////////////
+		// Event A *Examine the BROKEN LANTERN*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+		
+		void OnInteract_BrokenLantern(const tString &in asEntity)
+		{
+			Map_AddTimer("Timer_BrokenLanternDialogue", 0.5, "OnTimer_BrokenLanternDialogue");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnInteractLeave_BrokenLantern(const tString &in asEntity)
+		{
+			Map_RemoveTimer("Timer_BrokenLanternDialogue");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_BrokenLanternDialogue(const tString &in asTimer)
+		{
+			Voice_Play("Dialogue_BrokenLantern");
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event A *Examine the BROKEN LANTERN*
+
+		/////////////////////////////////////////
+		// Event A *See the RIFT and the ELEVATOR SHAFT*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+		
+		void OnLookAt_RemindGoalDialogue(const tString &in asEntity, int alState)
+		{
+			Sketchbook_AddIdea("cross_factoryrift");
+			Voice_Play("Dialogue_RemindGoal");
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event A *See the RIFT and the ELEVATOR SHAFT*
+		
+		/////////////////////////////////////////
+		// Event A *See working TORTURE PODS throughout the factory*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+		
+		void OnLookAt_ExaminePodsDialogue(const tString &in asEntity, int alState)
+		{
+			Voice_Play("Dialogue_ExaminePods", -1, "OnVoiceEnd_ExaminePodsDialogue");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnVoiceEnd_ExaminePodsDialogue(const tString&in asScene, const tString&in asSubject)
+		{
+			if (Voice_SubjectHasUnplayedLines("Dialogue_ExaminePods") == false)
+			{
+				Entity_SetActive("Trigger_ExaminePodsDialogue_Pod_Working*", false);
+			}
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event A *See working TORTURE PODS throughout the factory*
+		
+		/////////////////////////////////////////
+		// Event B *Avoid the FLYING WRAITH on the top floor*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+		
+		float mfTopFloorRiftDistance = 0;
+		float mfTopFloorEncounter_MoveForwardDist = 0;
+		float mfTopFloorStartTimer = 0;
+		float mfTopFloorStartTime = 0;
+		float mfTopFloorLookAtStartTime = 0;
+		bool mbTopFloorStartLookAt = false;
+		int mlTopFloorAboveScareIndex = 0;
+		
+		//-------------------------------------------------------
+		
+		void OnLookAt_StartWraithTopEncounter(const tString &in asEntity, int alState)
+		{
+			mbTopFloorStartLookAt = alState == 1;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_CheckTopFloorEncounter(const tString &in asTimer)
+		{
+			float fNext = cMath_RandRectf(0.2, 0.4);
+			mfTopFloorStartTimer += fNext;
+			if (CanStartTopFloorEncounter())
+			{
+				StartTopFloorEncounter();
+				return;
+			}
+			Map_RestartCurrentTimer(fNext);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool CanStartTopFloorEncounter()
+		{
+			if (mfTopFloorStartTimer >= mfTopFloorLookAtStartTime && mbTopFloorStartLookAt) return true;
+			if (mfTopFloorStartTimer >= mfTopFloorStartTime) return true;
+			float fRiftDist = Player_GetDistanceToEntity("Rift_2");
+			if (fRiftDist <= mfTopFloorRiftDistance - mfTopFloorEncounter_MoveForwardDist) return true;
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void StartTopFloorEncounter()
+		{
+			cLux_AddDebugMessage("[Map] Top floor encounter: " + mfTopFloorStartTimer + "/" + mfTopFloorLookAtStartTime + "/" + mfTopFloorStartTime
+										+ " " + Player_GetDistanceToEntity("Rift_2") + "/" + (mfTopFloorRiftDistance + mfTopFloorEncounter_MoveForwardDist) + " stop: " + mlShuttle_StopPos);
+			
+			Entity_SetActive("Trigger_StartWraithTopEncounterStart_" + mlShuttle_StopPos, false);
+			
+			FearHandler_SetDifficultyMul(0.6f);
+			FearHandler_SetPermaFailEnabled(true);
+			
+			Entity_SetActive("Wraith_TopFloor", true);
+			
+			Entity_PlaceAtEntity("Wraith_TopFloor", "Target_Wraith_TopFloor_" + mlShuttle_StopPos, cVector3f_Zero, true);
+			iLuxEntity@ pStartEnt = Map_GetEntity("Target_Wraith_TopFloor_" + mlShuttle_StopPos);
+			CharMover_TurnInstantlyToPos("Wraith_TopFloor", pStartEnt.GetPosition() - pStartEnt.GetMatrix().GetTranspose().GetForward());
+			
+			Wraith_SetFly("Wraith_TopFloor", true);
+			Wraith_SetSpotlightSoundVolumeMul("Wraith_TopFloor", 0);
+			Agent_SetSensesActive("Wraith_TopFloor", false);
+			
+			Wraith_CommandFlyToNode_Execute("Wraith_TopFloor", "Target_TopFloorIntro_MoveTo_" + mlShuttle_StopPos + "_2", true, 0, false, "OnCommandComplete_LookAt");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnCommandComplete_LookAt(const tString &in asEntity)
+		{
+			Agent_SetSensesActive("Wraith_TopFloor", true);
+			Wraith_SetSpotlightSoundVolumeMul("Wraith_TopFloor", 1);
+			Wraith_CommandLookAtPosition_Execute("Wraith_TopFloor", Map_GetEntity("Target_TopFloorIntro_LookAt_1").GetPosition(), true, false, true, "OnCommandComplete_SetTopFloorStress");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnCommandComplete_SetTopFloorStress(const tString &in asEntity)
+		{
+//			if (mlShuttle_StopPos == 2) Wraith_SetPlayerStress("Wraith_TopFloor", -0.35f);
+//			else if (mlShuttle_StopPos == 3) Wraith_SetPlayerStress("Wraith_TopFloor", -1.0f);
+			Wraith_CommandFlyToNode_Execute("Wraith_TopFloor", "Target_FlyingWraithNode_TopFloor_19", false, 1, false, "OnCommandComplete_TopFloorStartPatrol");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnCommandComplete_TopFloorStartPatrol(const tString &in asEntity)
+		{
+			Wraith_SetHearing("Wraith_TopFloor", false);
+			
+//			Wraith_SetSpotlightSoundVolumeMul("Wraith_TopFloor", 0.2f);
+//			Wraith_SetVolumeMul("Wraith_TopFloor", 0.2f);
+			Agent_SetSoundVolume("Wraith_TopFloor", 0.1f);
+			
+			Wraith_ModeFlyPatrol_SetPlayerGoalDirection("Wraith_TopFloor", "Target_GoalDirection_TopFloor_1");
+			Wraith_ModeFlyPatrol_ClearNodes("Wraith_TopFloor");
+			Wraith_ModeFlyPatrol_AddNodeRange("Wraith_TopFloor", "Target_FlyingWraithNode_TopFloor*", 1, 9);
+			Wraith_ModeFlyPatrol_AddNodeRange("Wraith_TopFloor", "Target_FlyingWraithNode_TopFloor*", 28, 30);
+			Wraith_ModeFlyPatrol_AddNodeRange("Wraith_TopFloor", "Target_FlyingWraithNode_TopFloor*", 19, 26);
+			Wraith_ModeFlyPatrol_ClearLookAtFields("Wraith_TopFloor");
+			Wraith_ModeFlyPatrol_AddLookAtfield("Wraith_TopFloor", "Target_FlyingWraithLookAtField_TopFloor_1");
+			Wraith_ModeFlyPatrol_AddLookAtfield("Wraith_TopFloor", "Target_FlyingWraithLookAtField_TopFloor_2");
+			Wraith_ModeFlyPatrol_AddLookAtfield("Wraith_TopFloor", "Target_FlyingWraithLookAtField_TopFloor_3");
+			Wraith_ModeFlyPatrol_AddLookAtfield("Wraith_TopFloor", "Target_FlyingWraithLookAtField_TopFloor_4");
+			Wraith_ModeFlyPatrol_AddLookAtfield("Wraith_TopFloor", "Target_FlyingWraithLookAtField_TopFloor_5");
+			Wraith_ModeFlyPatrol_AddLookAtfield("Wraith_TopFloor", "Target_FlyingWraithLookAtField_TopFloor_6");
+			Wraith_ModeFlyPatrol_SetUseRandomNodes("Wraith_TopFloor", true);
+			Wraith_ModeFlyPatrol_Setup("Wraith_TopFloor", false);
+			Wraith_Mode_Set("Wraith_TopFloor", eWraithMode_FlyPatrol, false);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_StartTopFloorGrounded(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Entity_SetActive("Trigger_StartTopFloorGrounded*", false);
+			
+			Agent_SetSensesActive("Wraith_TopFloor", false);
+			
+			Entity_SetActive("Wraith_TopFloorGrounded", true);
+			Wraith_SetHearing("Wraith_TopFloorGrounded", false);
+			
+			Wraith_ModeWraithPatrol_ClearNodes("Wraith_TopFloorGrounded");
+			Wraith_ModeWraithPatrol_AddNode("Wraith_TopFloorGrounded", "PathNode_Top_56");
+			Wraith_ModeWraithPatrol_AddNode("Wraith_TopFloorGrounded", "PathNode_Top_36");
+			Wraith_ModeWraithPatrol_AddNode("Wraith_TopFloorGrounded", "PathNode_Top_18");
+			Wraith_ModeWraithPatrol_AddNode("Wraith_TopFloorGrounded", "PathNode_Top_5");
+			Wraith_ModeWraithPatrol_AddNode("Wraith_TopFloorGrounded", "PathNode_Top_11");
+			Wraith_ModeWraithPatrol_AddNode("Wraith_TopFloorGrounded", "PathNode_Top_8");
+			Wraith_ModeWraithPatrol_AddNode("Wraith_TopFloorGrounded", "PathNode_Top_83");
+			Wraith_ModeWraithPatrol_AddNode("Wraith_TopFloorGrounded", "PathNode_Top_23");
+			Wraith_ModeWraithPatrol_AddNode("Wraith_TopFloorGrounded", "PathNode_Top_5");
+			Wraith_ModeWraithPatrol_Setup("Wraith_TopFloorGrounded", false, false);
+			Wraith_Mode_Set("Wraith_TopFloorGrounded", eWraithMode_WraithPatrol, false);
+			
+			Wraith_CommandLookAtPosition_Execute("Wraith_TopFloorGrounded", Map_GetEntity("Target_TopFloorGrounded_LookAt_1").GetPosition(), true, false, true);
+			
+			Map_AddTimer("Timer_EnableTopFloorGroundedHearing", 3, "OnTimer_EnableTopFloorGroundedHearing");
+			
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_EnableTopFloorGroundedHearing(const tString &in asTimer)
+		{
+			Wraith_SetHearing("Wraith_TopFloorGrounded", true);	
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_DisengageTopFloor(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			iLuxEntity@ pTrigger = Map_GetEntity(asParent);
+			if (alState == 1)
+			{
+				pTrigger.SetVarVector3f("PlayerPos", Player_GetPosition());
+			}
+			else
+			{
+				cVector3f vOldPos = pTrigger.GetVarVector3f("PlayerPos");
+				cVector3f vDir = Player_GetPosition() - vOldPos;
+				vDir.Normalize();
+				float fDot = cMath_Vector3Dot(vDir, pTrigger.GetMatrix().GetTranspose().GetForward());
+				if (fDot > 0)
+				{
+					cLux_AddDebugMessage("[Map] Disengage top floor");
+					Wraith_SetHearing("Wraith_TopFloorGrounded", false);
+					FearHandler_SetPermaFailRespawnArea("PermaFail_TopFloor_2");
+				}
+				else
+				{
+					cLux_AddDebugMessage("[Map] Engage top floor");
+					Wraith_SetHearing("Wraith_TopFloorGrounded", true);
+				}
+			}
+			return true;
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event B *Avoid the FLYING WRAITH on the top floor*
+		
+		/////////////////////////////////////////
+		// Event B *Look at at the wraiths on the middle floor before descending*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+		
+		bool OnCollide_PrepareMiddleFloorEncounterVista(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			cLux_AddDebugMessage("[Map] Prepare middle floor encounter vista");
+			
+			Wraith_CommandDash_Execute("Wraith_TopFloor", Map_GetEntity("Target_WraithDisappear_TopFloor_1").GetPosition(), true, true, true);
+			
+			// Set up flying wraith on middle floor
+			Entity_SetActive("Wraith_Balcony", true);
+			Wraith_SetFly("Wraith_Balcony", true);
+			Agent_SetSensesActive("Wraith_Balcony", false);
+			
+			SetBalconyWraithDefault();
+			return false;
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event B *Look at at the wraiths on the middle floor before descending*
+		
+		/////////////////////////////////////////
+		// Event C *Sneak past the FLYING WRAITH between the top and middle floors*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+		
+		void SetBalconyWraithDefault()
+		{
+			Wraith_ModeFlyPatrol_SetPlayerGoalDirection("Wraith_Balcony", "Target_GoalDirection_MiddleFloor_1");
+			Wraith_ModeFlyPatrol_ClearNodes("Wraith_Balcony");
+			Wraith_ModeFlyPatrol_AddNodeRange("Wraith_Balcony", "Target_FlyingWraithNode_MiddleFloor*", 43, 46);
+			Wraith_ModeFlyPatrol_AddNodeRange("Wraith_Balcony", "Target_FlyingWraithNode_MiddleFloor*", 37, 40);
+			Wraith_ModeFlyPatrol_AddNodeRange("Wraith_Balcony", "Target_FlyingWraithNode_MiddleFloor*", 49, 52);
+			Wraith_ModeFlyPatrol_AddNodeRange("Wraith_Balcony", "Target_FlyingWraithNode_MiddleFloor*", 25, 28);
+			Wraith_ModeFlyPatrol_SetUseRandomNodes("Wraith_Balcony", true);
+			Wraith_ModeFlyPatrol_ClearLookAtFields("Wraith_Balcony");
+			Wraith_ModeFlyPatrol_AddLookAtfield("Wraith_Balcony", "Target_FlyingWraithLookAtField_MiddleFloor_");
+			Wraith_Mode_Set("Wraith_Balcony", eWraithMode_FlyPatrol, true);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_StartSafeRoomEncounter(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Seq_StartSafeRoomEncounter("");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSequenceStartSafeRoomEncounter;
+		void Seq_StartSafeRoomEncounter(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_StartSafeRoomEncounter", mSequenceStartSafeRoomEncounter);
+			if (Sequence_DoStepAndWait(0.2))
+			{
+				Wraith_CommandDash_Execute("Wraith_TopFloorGrounded", Map_GetEntity("Target_WraithDisappear_TopFloor_1").GetPosition(), true, true, true);
+			}
+			else if (Sequence_DoStepAndPause(0))
+			{
+				Wraith_CommandDash_Execute("Wraith_Balcony", Map_GetEntity("Target_SafeRoomEncounter_MoveTo_1").GetPosition(), true, false, true, "OnCommandEnd_ResumeSafeRoomEncounter");
+				Sound_CreateAtEntity("WaterEncounterIntro", "creatures/vocalisations/creature/wraith/start_search", "Wraith_Balcony", 0, false, 1, 30, 80);
+			}
+			else if (Sequence_DoStepAndPause(0))
+			{
+				Agent_SetSensesActive("Wraith_Balcony", true);
+				Wraith_SetSpotlightColor("Wraith_Balcony", "alert");
+				Wraith_CommandLookAtPosition_Execute("Wraith_Balcony", Map_GetEntity("Target_SafeRoomEncounter_LookAt_1").GetPosition(), true, true, true, "OnCommandEnd_ResumeSafeRoomEncounter");
+				Wraith_SetCallback_CalmedDown("Wraith_Balcony", "OnWraithCalmedDown_ResumeSafeRoomEncounter");
+			}
+			else if (Sequence_DoStepAndPause(0))
+			{
+				Agent_SetSensesActive("Wraith_Balcony", false);
+				Wraith_CommandDash_Execute("Wraith_Balcony", Map_GetEntity("Target_SafeRoomEncounter_MoveTo_2").GetPosition(), false, true, true);
+			}
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnCommandEnd_ResumeSafeRoomEncounter(const tString &in asEntity)
+		{
+			SequenceStates_Resume("Seq_StartSafeRoomEncounter");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnWraithCalmedDown_ResumeSafeRoomEncounter(const tString &in asEntity)
+		{
+			SequenceStates_Resume("Seq_StartSafeRoomEncounter");
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_BalconyJump(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			msLandDetectionState = "BalconyJump";
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event C *Sneak past the FLYING WRAITH between the top and middle floors*
+		
+	//} END SCENE 12
+ 
+}

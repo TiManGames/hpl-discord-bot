@@ -1,0 +1,1269 @@
+#include "interfaces/Map_Interface.hps"
+#include "base/Inputhandler_Types.hps"
+
+#include "helpers/helper_map.hps"
+#include "helpers/helper_menu.hps"
+#include "helpers/helper_props.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_audio.hps"
+#include "helpers/helper_imgui.hps"
+#include "helpers/helper_sequences.hps"
+#include "helpers/helper_game.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_ai.hps"
+#include "helpers/helper_player.hps"
+#include "custom/helpers/helper_player_custom.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+#include "helpers/helper_effects_custom.hps"
+#include "helpers/helper_agent.hps"
+#include "base/AchievementHandler_Types.hps"
+
+//--------------------------------------------------
+ 
+/*Place any global values here. These must be const variables as they will not be saved*/
+/*This is also the place for enums and classes, but these should be avoided whenever possible*/
+ 
+//--------------------------------------------------
+
+enum ePathPermaFailStage
+{
+	ePathPermaFailStage_Start,
+	ePathPermaFailStage_Middle,
+	ePathPermaFailStage_PostDrop,
+	ePathPermaFailStage_End,
+};
+
+//--------------------------------------------------
+ 
+class cScrMap : iScrMap
+{
+	//--------------------------------------------
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN CALLBACKS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+ 
+	////////////////////////////
+	// Set up map environment
+	void Setup()
+	{
+		// Put display name entry in english.lang / Levels
+		GetBase().SetDisplayNameEntry("02-01-path-to-outpost");
+		
+		Pregnancy_SetStage(ePregStage_Stage1);
+		Pregnancy_SetBarksActive(true);
+		Pregnancy_SetBabyTalkStage(eBabyTalkStage_Unknown);
+		Pregnancy_SetBabyKicksEnabled(false);
+		GhoulProgression_SetBarkStage(eGhoulBarkStage_Ill);
+		Player_SetAllowCheckBaby(false);
+		FearHandler_SetWhisperStage(eFearWhisperStage_SalimToRadio);
+		
+		StruggleFlashHandler_SetActive(true);
+		StruggleFlashHandler_PreloadFlashGroupTextures(0);
+		StruggleFlashHandler_SetProgression(0);
+		
+		Player_SetAutoTeleportWhenBelowAltitude(-5.f);
+		
+		// Set up color grading etc.
+	}
+	
+	//-------------------------------------------------------
+		
+	void PreloadData()
+	{
+		/////////////////
+		// Preload gui
+		//ImGui_PreloadImage("some_image");
+
+		///////////////
+		// Preload particles
+		//ParticleSystem_Preload("some_particle.ps");
+
+		//////////////
+		// Preload screen effects
+		Material_Preload("temp_nausea_screen_less.mat");
+		
+		Sound_PreloadGhost();
+	}
+	
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run first time starting map
+	void OnStart()
+	{
+		// Any general setup of script / entities
+		GhoulProgression_SetLimit(2);
+				
+		/////////////////////////
+		// Debug
+		if(cLux_ScriptDebugOn())
+		{
+			if (ItemType_GetCountInInventory("Lantern") < 1)
+			{
+				Item_AddToInventory("Lantern");
+				Item_SetContent(ItemType_GetFirstInInventory("Lantern"), "Oil", 10);
+			}	
+			
+			Item_AddToInventory("Matchbook");
+		}
+		
+		//////////////////////
+		// Mark for story progress
+		cScript_SetGlobalVarBool("PathToOutpost_Entered", true);
+		
+		Music_PlayExt("A2_2_1_Wake_Amb.ogg", true, 0.12f, 1.0f, 45.0f, 1.0f, eMusicPrio_BgAmb, false);
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when entering map
+	void OnEnter()
+	{	
+		
+		cLux_ClearAllMapSaveData();
+		Game_AutoSave();
+		
+		Achievement_Unlock(eAchievement_Widow);
+		
+		PlayerBody_SetActive(true);
+		
+		Player_SetVertigoActive(false);
+		Player_SetMapDeepShadow(0.f);
+		FearHandler_SetPermaFailEnabled(false);
+		
+		FearHandler_SetAllowLanternOveruseHint(true);
+		Hint_RemoveFromGiven("Hints", "HintWheel");
+		
+		Player_FadeRunSpeedMulTo(0.8f, 1.f);
+		Player_SetLandSofterOnSand(false);
+		
+		cVector3f vRot = cVector3f(0, cMath_ToRad(175), 0);
+		cLux_GetCurrentMap().GetWorld().SetSkyboxRotation(vRot);
+		
+		Visibility_SetAreaActive("*", false);
+		
+		//////////////////////
+		// Set up turbine
+		OnTimer_UpdateTurbine("");
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when leaving map
+	void OnLeave()
+	{
+		// Safety reset
+		Player_SetJumpDisabled(false);
+		Player_SetRunSpeedMul(1.f);
+		Player_SetMoveSpeedMul(1.f);
+		Player_SetLookSpeedMul(1.f);
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// To get when player makes input (mostly used for debug)
+	void OnAction(int alAction, bool abPressed) 
+	{
+		if (abPressed==false) return;
+				
+		if (alAction == eAction_Test0)
+		{
+			Player_Teleport("Start_Begin");
+		}
+		else if (alAction == eAction_Test1)
+		{
+			Player_Teleport("Start_Drop");
+		}
+		else if (alAction == eAction_Test2)
+		{
+			Player_Teleport("Start_Gate");
+		}
+		else if (alAction == eAction_Test3)
+		{
+			Player_Teleport("Start_TinHinanPass");
+		}
+		else if (alAction == eAction_Test4)
+		{
+			Player_Teleport("Start_FrontGate");
+		}
+		else if (alAction == eAction_Test5)
+		{
+			Player_Teleport("Start_SidePath");
+		}
+		else if (alAction == eAction_Test6)
+		{
+			Player_Teleport("Start_Camp");
+		}
+		else if (alAction == eAction_TestPlus)
+		{
+			//FearHandler_SetForcedAddFearRate(1.f, 10.f, false);
+			//FearHandler_FadeLevelTo(1.f, 1.f, true);
+			
+			//Voice_Play("Dialogue_BabyTalkTutorial");
+			
+			//Visibility_SetAreaActive("VisibilityArea_Start", !Entity_IsActive("VisibilityArea_Start"));
+			//Visibility_SetAreaActive("VisibilityArea_Middle", !Entity_IsActive("VisibilityArea_Middle"));
+			
+			//mBaseObj.GetWorld().GetDirectionalLight().SetCastShadows(!mBaseObj.GetWorld().GetDirectionalLight().GetCastShadows());
+			mBaseObj.GetWorld().GetDirectionalLight().SetShadowDistance(90.f);
+		}
+		else if (alAction == eAction_TestMinus)
+		{
+			Wheel_SetAngle("GuardPostWheel", cMath_ToRad(90.f), true);
+		}
+	}
+
+	//-------------------------------------------------------
+	
+	bool OnPermaFail(const tString &in asSource)
+	{		
+		Hint_StopHint();
+		
+		Voice_StopAll();
+		Voice_AbortIfQueued("Dialogue_Tasi_WalkAndTalk");
+		Voice_AbortIfQueued("Dialogue_Tasi_WalkAndTalk_UnreadNote");
+		
+		FearHandler_ClearPermaFailScenes();
+		SetupGenericPermaFail();
+		
+		switch (mlPermaFailStage)
+		{
+			case ePathPermaFailStage_Start:			return OnPermaFail_Start();
+			case ePathPermaFailStage_Middle:		return OnPermaFail_Middle();
+			case ePathPermaFailStage_PostDrop:		return OnPermaFail_PostDrop();
+			case ePathPermaFailStage_End:			return OnPermaFail_End();
+		}		
+		
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	array<int> mvUnplayedGenericPermaFails = { 1, 2 };	
+	void SetupGenericPermaFail()
+	{
+		if (mvUnplayedGenericPermaFails.size() == 0)
+		{
+			for (int i = 1; i < 3; i++)
+				mvUnplayedGenericPermaFails.push_back(i);
+		}
+			
+		int lId = cMath_RandRectl(0, mvUnplayedGenericPermaFails.size() - 1);
+		int lSceneId = mvUnplayedGenericPermaFails[lId];
+		mvUnplayedGenericPermaFails.removeAt(lId);
+		
+		tString sAreaBase = "Area_PermaFail_Generic";		
+		switch (lSceneId)
+		{
+			case 1:
+				FearHandler_AddPermaFailScene(sAreaBase + "_1_Start_1", sAreaBase + "_1_End_1", 3.5f, 2.25f, true);
+				FearHandler_AddPermaFailScene(sAreaBase + "_1_Start_2", sAreaBase + "_1_End_2", 3.5f, 2.25f, true);
+				FearHandler_AddPermaFailScene(sAreaBase + "_1_Start_3", sAreaBase + "_1_End_3", 3.5f, 2.25f, true);
+				break;
+			case 2:
+				FearHandler_AddPermaFailScene(sAreaBase + "_2_Start_1", sAreaBase + "_2_End_1", 3.5f, 2.25f, true);
+				FearHandler_AddPermaFailScene(sAreaBase + "_2_Start_2", sAreaBase + "_2_End_2", 3.5f, 2.25f, true);
+				FearHandler_AddPermaFailScene(sAreaBase + "_2_Start_3", sAreaBase + "_2_End_3", 3.5f, 2.25f, true);
+				break;
+		}
+	}
+	
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// This only used for pure debug purposes when info needs to printed.
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afY)
+	{
+		//afY = cLux_DrawDebugText("My Debug value:"+..., afY);
+		return afY;
+	}
+ 
+	//-------------------------------------------------------
+ 
+	//} END MAIN CALLBACKS
+ 
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN FUNCTIONS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+ 
+	/*Put any variables that are used in more than one scene here.*/
+	
+	int mlPermaFailStage = 0;
+	float mfPrevTurbineSpeed = 0.f;
+	float mfShadowDistanceGoal = 90.f;
+ 
+	//-------------------------------------------------------
+ 
+	/*Put any functions that are used in more than one scene here.*/
+	
+	bool OnTrigger_Player_SetVisibilityAreaActive(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		int lId = cString_GetNumericSuffixInt(asParent);
+		if (lId == 1)
+			Visibility_SetAreaActive("VisibilityArea_Start", alState == 1);
+		else if (lId == 2)
+			Visibility_SetAreaActive("VisibilityArea_Middle", alState == 1);
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnTrigger_Player_FadeShadowDistance(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		mfShadowDistanceGoal = alState == 1 ? 250.f : 90.f;
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	void VariableUpdate(float afDeltaTime)
+	{
+		cLightDirectional@ pLight = mBaseObj.GetWorld().GetDirectionalLight();
+		if (pLight is null)
+			return;
+		
+		float fShadowDist = pLight.GetShadowDistance();
+		if (fShadowDist != mfShadowDistanceGoal)
+		{
+			fShadowDist = cMath_IncreaseTo(fShadowDist, afDeltaTime * 50.f, mfShadowDistanceGoal);
+			pLight.SetShadowDistance(fShadowDist);
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnTrigger_Player_Teleport(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		if (alState == -1)
+			return true;
+		
+		Player_Teleport("Start_Gate");
+		return true;
+	}
+ 
+	//-------------------------------------------------------
+ 
+	//} END MAIN FUNCTIONS
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 1 *THE PLAYER SPOTS THE OUTPOST IN THE DISTANCE AND HEADS TOWARDS IT*
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+ 
+		/////////////////////////////////////////
+		// General
+		//{//////////////////////////////////////
+		 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are used by many events in Scene 1 here.*/
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are used in more than one event in Scene 1 here.*/
+		
+		bool OnTrigger_Player_FallPermaFail(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (FearHandler_GetIsPermaFailing() || alState==-1)
+				return true;
+				
+			mlPermaFailStage = ePathPermaFailStage(Entity_GetVarInt(asParent, ""));
+			if (mlPermaFailStage == ePathPermaFailStage_Middle && mbFallAnimPlayed)
+				mlPermaFailStage = ePathPermaFailStage_PostDrop;
+			
+			Voice_StopAll();
+			Music_StopAll(1.f);
+		
+			FearHandler_TriggerPermaFail_Fall();
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_PlayCavesSound(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Sound_Play("Sound_CavesRumble", 0.0f);
+			return false;
+		}
+	 
+		//-------------------------------------------------------
+		
+		//} END General	
+		
+		/////////////////////////////////////////
+		// Event A *Tasi contemplates the loss of Salim*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 1, Event A here.*/
+		
+		bool mbCheckBabyTutorialActive = false;
+		bool mbVertigoEnabled = false;
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 1, Event A here.*/
+		
+		bool OnTrigger_Player_SpotSunset(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Map_AddTimer("Timer_PlaySunsetDialogue", 1.5f, "OnTimer_PlaySunsetDialogue");
+			Player_SetJumpDisabled(true);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PlaySunsetDialogue(const tString &in asTimer)
+		{
+			Voice_StopAll();
+			Voice_Play("Dialogue_Tasi_SeeDesert", -1, "OnVoiceEnd_Intro");
+			
+			Player_FadeRunSpeedMulTo(0.f, 1.f);
+			Player_SetCrouching(false);
+			Player_SetCrouchDisabled(true);
+			Player_SetLeanDisabled(true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnVoiceEnd_Intro(const tString &in asScene, const tString &in asSubject)
+		{
+			Voice_PlayDelayed("Dialogue_BabyTalkTutorial_Start", 0.1f);
+			
+			OnTimer_PlaceBabyTalkTutorialLookAt("");		
+			
+			Player_FadeLookSpeedMulTo(0.05f, 1.f);
+			Player_SetMoveSpeedMul(0.f);
+			
+			Item_PutAway(eItemHandlerHand_Left);
+			Item_PutAway(eItemHandlerHand_Right);
+			
+			Player_StartLookAt("Area_BabyTalkTutorialLookAt", 0.035f, 2.f, 1.5f, true);
+							
+			Map_AddTimer("Timer_ShowCheckBabyHint", 1.f, "OnTimer_ShowCheckBabyHint");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PlaceBabyTalkTutorialLookAt(const tString &in asTimer)
+		{
+			cVector3f vOffset = cLux_GetPlayer().GetCharacterBody().GetForward() + cVector3f(0.f, -10.f, 0.f);
+			Entity_PlaceAtEntity("Area_BabyTalkTutorialLookAt", "player", vOffset, false, false);
+			
+			PlayerBody_AlignLowerBodyToCameraYaw();
+			
+			Map_AddTimer("Timer_PlaceBabyTalkTutorialLookAt", 0.33f, "OnTimer_PlaceBabyTalkTutorialLookAt");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ShowCheckBabyHint(const tString &in asTimer)
+		{
+			mbCheckBabyTutorialActive = true;
+			
+			Map_RemoveTimer("Timer_PlaceBabyTalkTutorialLookAt");
+			
+			Player_SetAllowCheckBaby(true);
+			Player_SetAllowCheckBabyInAnyState(true);
+			PlayerBody_AlignLowerBodyToCameraYaw();
+			
+			Player_ChangeStateToCustomControls("", "", ""); // So you can't open sketchbook etc. during tutorial
+			
+			Pregnancy_SetBabyTalkStage(eBabyTalkStage_CavesToCisternStart);	
+			Pregnancy_SetBabyTalkSpecialSubject("Dialogue_BabyTalkTutorial");
+			
+			iScrHintHandler_Interface@ pHintHandler = cast<iScrHintHandler_Interface>(cLux_GetUserModuleFromID(eModuleType_HintHandler));
+			if (pHintHandler.GetEnabled())
+			{
+				Hint_ShowHint("Hints", "HintCheckBabyTutorial", true, 3.f);
+			}
+			else
+			{
+				/////////////////
+				// Force hint even if hints are disabled
+				Map_AddTimer("Timer_ForceCheckBabyHint", 4, "OnTimer_ForceCheckBabyHint");
+			}
+	
+		}
+				
+		//-------------------------------------------------------
+		
+		void OnTimer_ForceCheckBabyHint(const tString &in asTimer)
+		{
+			iScrHintHandler_Interface@ pHintHandler = cast<iScrHintHandler_Interface>(cLux_GetUserModuleFromID(eModuleType_HintHandler));
+			pHintHandler.ForceEnabled(true);
+			Hint_ShowHint("Hints", "HintCheckBabyTutorial", true, 2.0f);
+			
+			Map_AddTimer("Timer_ReEnableHints", 10, "OnTimer_ReEnableHints");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ReEnableHints(const tString &in asTimer)
+		{
+			iScrHintHandler_Interface@ pHintHandler = cast<iScrHintHandler_Interface>(cLux_GetUserModuleFromID(eModuleType_HintHandler));
+			bool bConfigEnabled = cLux_GetUserConfig().GetBool("Gameplay", "ShowHints", true);
+			pHintHandler.ForceEnabled(bConfigEnabled);			
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnCheckBaby(int alState)
+		{
+			if (mbCheckBabyTutorialActive && alState == 1)
+			{
+				mbCheckBabyTutorialActive = false;
+				Hint_StopHint();
+				
+				Player_FadeLookSpeedMulTo(1.f, 1.f);
+				Player_FadeMoveSpeedMulTo(1.f, 1.f);
+				Player_FadeRunSpeedMulTo(1.f, 1.f);
+				Player_SetJumpDisabled(false);
+				Player_SetCrouchDisabled(false);
+				Player_SetLeanDisabled(false);
+				
+				Player_StopLookAt(0.f);
+				Player_SetAllowCheckBabyInAnyState(false);
+			}
+			
+			if (alState == -1)
+			{
+				Map_AddTimer("Timer_PlayWalkAndTalkDialogue", 5.f, "OnTimer_PlayWalkAndTalkDialogue");
+				Map_AddTimer("Timer_ShowSecondCheckBabyHint", 2.5f, "OnTimer_ShowSecondCheckBabyHint");				
+				
+				if (mbVertigoEnabled == false)
+					Map_AddTimer("Timer_EnableVertigo", 1.f, "OnTimer_EnableVertigo");
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PlayWalkAndTalkDialogue(const tString &in asTimer)
+		{
+			if (cScript_GetGlobalVarBool("Caves_ReadSalimsLastNote"))
+			{
+				Voice_PlayWhenPossible("Dialogue_Tasi_WalkAndTalk", "OnVoiceCondition_WalkAndTalk", -1.f, 3.f);
+			}
+			else
+			{
+				Voice_PlayWhenPossible("Dialogue_Tasi_WalkAndTalk_UnreadNote", "OnVoiceCondition_WalkAndTalk", -1.f, 3.f);
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ShowSecondCheckBabyHint(const tString &in asTimer)
+		{
+			Hint_ShowHint("Hints", "HintCheckBaby", true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_EnableVertigo(const tString &in asTimer)
+		{
+			mbVertigoEnabled = true;
+			Player_SetVertigoActive(true);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnVoiceCondition_WalkAndTalk(const tString &in asSubject)
+		{
+			return cLux_GetPlayer().GetCurrentStateId() != ePlayerState_Custom_CheckBaby;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnBabyTalkEnd(const tString &in asScene, const tString &in asSubject)
+		{
+			if (mbSpottedOutpost == false &&
+				asSubject == "Dialogue_BabyTalkTutorial" && 
+				Voice_SubjectHasUnplayedLines(asSubject) == false)
+			{
+				Pregnancy_SetBabyTalkSpecialSubject("BabyTalk_Initial");
+			}
+		}
+				
+		//-------------------------------------------------------
+
+		//} END Event A *Tasi contemplates the loss of Salim*
+	 
+		/////////////////////////////////////////
+		// Event B *Spot the Outpost*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 1, Event B here.*/
+		
+		bool mbSpottedOutpost = false;
+		float mfPrevTurbineMul = 0.f;
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 1, Event B here.*/
+		
+		bool OnTrigger_Player_ActivateVultures(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Entity_SetActive("vulture_*", true);
+			
+			// TODO: Implement loop when we have it
+			for (int i = 1; i < 5; ++i)
+			{
+				tString sEnt = "vulture_" + i;
+				tString sAnim = "circle_and_fly_way";
+				Entity_PlayAnimation(sEnt, sAnim, 0.f, false, false, "OnAnimOver_Vulture");
+				Map_GetEntity(sEnt).GetMeshEntity().GetAnimationStateFromName(sAnim).SetTimePosition(2.f);
+			}
+			
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnAnimOver_Vulture(const tString &in asEntity, const tString &in asAnimation)
+		{
+			Entity_SetActive(asEntity, false);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnLookAt_SpotTheFort(const tString &in asEntity, int alState)
+		{
+			
+			if (Entity_PlayerIsInFront(asEntity) == false || 
+				Entity_GetCollide("player", asEntity) ||
+				Entity_GetDeltaToEntity("player", asEntity).Length() < 40.f)
+				return;
+			
+			Player_FadeRunSpeedMulTo(1.f, 1.f);
+			
+			Voice_StopAll();
+			Voice_Play("Dialogue_SeeTheFort", 0);
+			Music_Stop(10.0f, eMusicPrio_BgAmb);
+			Music_Play("A2_2_1_Outpost_Sighting.ogg", 0.16f, false, eMusicPrio_MinorEvent);
+			
+			Map_AddTimer("Timer_SpottedFort", 2.f, "OnTimer_SpottedFort");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_SpottedFort(const tString &in asTimer)
+		{
+			mbSpottedOutpost = true;
+			Sketchbook_AddIdea("reach_outpost");
+			Pregnancy_SetBabyTalkSpecialSubject("BabyTalk_SeenFort");
+			
+			Hint_StopHint();
+			Map_AddTimer("Timer_ShowRemindersHint", 4.f, "OnTimer_ShowRemindersHint");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ShowRemindersHint(const tString &in asTimer)
+		{
+			if (Player_GetCurrentStateName() != "State_Normal" || FearHandler_GetIsPermaFailing())
+			{
+				Map_RestartCurrentTimer();
+				return;
+			}
+			
+			Hint_ShowHint_Hold("Hints", "HintReminders", true, 1.5f, false, 10.f);
+			Sketchbook_SetIdeaHintEnabled(true);
+		}
+		
+		//-------------------------------------------------------
+				
+		void OnTimer_UpdateTurbine(const tString &in asTimer)
+		{
+			float fMul = cMath_RandRectf(0.05f, 1.f);
+			if (fMul > 0.6f && mfPrevTurbineMul > 0.6f)
+				fMul -= 0.5f;
+			
+			mfPrevTurbineMul = fMul;
+			
+			float fTime = cMath_RandRectf(2.f, 4.f);			
+			float fSpeed = fMul * 9.f;
+			Map_GetEntity("WindTurbine").GetMeshEntity().GetAnimationStateFromName("wind_turbine_animated_spin").FadeSpeed(fSpeed, fTime);
+			
+			Light_FadeBrightnessTo("Light_Flicker_1", cMath_Easing(eEasing_QuadIn, fMul / 1.f) * 8.f, fTime);		
+			Light_FadeBrightnessTo("Light_Flicker_4", cMath_Easing(eEasing_QuadIn, fMul / 1.f) * 8.f, fTime);
+			
+			Map_AddTimer("Timer_UpdateTurbine", fTime + cMath_RandRectf(1.f, 4.f), "OnTimer_UpdateTurbine");
+		}
+				
+		//-------------------------------------------------------
+
+		//} END Event B *Spot the Outpost*
+				
+		/////////////////////////////////////////
+		// Event C *Tasi stumbles*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 1, Event C here.*/
+		
+		bool mbFallAnimPlayed = false;
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 1, Event C here.*/
+		
+		bool OnTrigger_Player_StopRemindersHint(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Hint_StopHint();
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_ShowLedgeCrouchHint(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Hint_ShowHint_Hold("Hints", "HintCrouchFall", true, 1.5f, false);
+			Player_AllowFallDamageHints(true);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_TasiFall(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Entity_SetActive("Trigger_TasiFall_*", false);
+			
+			if (Player_WasCrouchedBeforeFall())
+				return false;			
+			if (mbFallAnimPlayed)
+				return false;
+				
+			mbFallAnimPlayed = true;
+			
+			Entity_SetActive("Trigger_SpotTheFort", false);
+			
+			Player_GiveDamage(0.01f, 1.f, eDamageType_FallBig, "fall");
+			Sound_CreateAtEntity("Sound_Land", "player/foley/damage/player_fall_damage", "player");
+			
+			Item_PutAway(eItemHandlerHand_Left);
+			Item_PutAway(eItemHandlerHand_Right);			
+			
+			float fDist = 0.f;
+			cVector3f vNrm = 0.f;
+			cVector3f vPos = cLux_GetPlayer().GetCharacterBody().GetFeetPosition();
+			 
+			cLux_GetClosestBody(vPos, cVector3f_Down, 1.f, fDist, vNrm);
+			vPos -= cVector3f(0.f, fDist, 0.f);
+			
+			float fTerrainHeight = 0;
+			cVector3f vNormal;
+			mBaseObj.GetWorld().GetTerrain().GetWorldPosHeightAndNormal(vPos, fTerrainHeight, vNormal);
+			
+			if (fTerrainHeight > vPos.y)
+				vPos.y = fTerrainHeight;
+				
+			tString sAnim = "fall_and_get_up_slow";
+			 
+			if (fDist > 5.f)
+				PlayerBody_PlayCutsceneAnimation(sAnim, false, 0.3f, "");
+			else
+				PlayerBody_PlayCutsceneAnimation(sAnim, false, 0.3f, "", 1.f, 0.f, true, vPos, cLux_GetPlayer().GetCharacterBody().GetYaw());
+			
+			Voice_StopAll();
+			Voice_Play("Dialogue_Fall");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_DeactivateFall(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Entity_SetActive("Trigger_TasiFall_*", false);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_DeactivateFortFog(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			ParticleSystem_Destroy("PS_Cloud_*");			
+			return false;
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event C *Tasi stumbles*
+		
+		/////////////////////////////////////////
+		// Event D *The player falls to their death (PERMAFAIL)*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 1, Event D here.*/
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 1, Event D here.*/
+		
+		bool OnPermaFail_Start()
+		{
+			FearHandler_SetPermaFailRespawnArea("PermaFail_Start_*");
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnPermaFail_Middle()
+		{
+			FearHandler_SetPermaFailRespawnArea("PermaFail_Middle_*");
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnPermaFail_PostDrop()
+		{
+			FearHandler_SetPermaFailRespawnArea("PermaFail_PostDrop_*");
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnPermaFail_End()
+		{
+			Player_FadeRunSpeedMulTo(1.f, 1.f);
+			FearHandler_SetPermaFailRespawnArea("PermaFail_End_*");
+			return true;
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event D *The player falls to their death (PERMAFAIL)*
+	 
+	//} END SCENE 1
+	
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 2 *TASI SINGS THE LULLABY AND YOUNG TIN HINAN APPEARS*
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+ 
+		/////////////////////////////////////////
+		// General
+		//{//////////////////////////////////////
+		 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are used by many events in Scene 2 here.*/
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are used in more than one event in Scene 2 here.*/
+	 
+		//-------------------------------------------------------
+		
+		//} END General	
+		
+		/////////////////////////////////////////
+		// Event A *Spot the CHECKPOINT GATE*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 1, Event A here.*/
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 1, Event A here.*/
+		
+		void OnLookAt_StartOutpostGateMemory(const tString &in asEntity, int alState)
+		{
+			Voice_StopAll();
+			Sketchbook_UnlockMemory("TheOutpostGate");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTear_GuardPostPlank(const tString &in asEntity)
+		{
+			Sound_CreateAtEntity("Sound_PlankTear", "03_06_ghouls_nest/wood_pile/wood_pile_remove_plank", asEntity);
+			
+			int lId = cString_GetNumericSuffixInt(asEntity);
+			ParticleSystem_CreateAtEntity("PS_PlankTear", "wooden_brace_damage.ps", "Area_PlankTear_" + lId, false).SetBrightness(0.2f);
+			
+			Map_GetEntity(asEntity, eLuxEntityType_Prop).GetMainBody().SetCollideFlags(mBaseObj.GetCollideFlag("+plank"));
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_UnblockGuardPostDoor(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			SwingDoor_SetBlocked("GuardPostDoor", false, false);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event A *Spot the CHECKPOINT GATE*
+		
+		/////////////////////////////////////////
+		// Event B *Tasi sings the lullaby*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 2, Event B here.*/
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 2, Event B here.*/
+		
+		bool OnTrigger_Player_StartSeqTinHinanAppear(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Seq_TinHinanAppear("");
+			return false;
+		}
+
+		//-------------------------------------------------------
+
+		//} END Event B *Tasi sings the lullaby*
+		
+		/////////////////////////////////////////
+		// Event C *YOUNG TIN HINAN APPEARS*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 2, Event C here.*/
+		
+		bool mbSpottedTH = false;
+		bool mbTHAtSecondPos = false;
+		int mlLookAtTHCount = 0;
+		
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 2, Event C here.*/
+		
+		cSequenceStatesData mSeqDataTinHinanAppear;
+		void Seq_TinHinanAppear(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_TinHinanAppear", mSeqDataTinHinanAppear);
+			if (Sequence_DoStepAndWait(5.f))
+			{
+				Voice_StopAll();
+				Voice_Play("Dialogue_Quiet_Lullaby");
+				
+				Map_AddTimer("Timer_FadePlayerRunSpeed", 0.01f, "OnTimer_FadePlayerRunSpeed");
+				
+				Light_FadeBrightnessTo("light_fort_1", 0, 1);
+			}
+			else if (Sequence_DoStepAndPause(0.f))
+			{
+				Sound_CreateAtEntity("Sound_TinHinanNoise_1", "creatures/foley/creature/tin_hinan/appear", "Area_TinHinanNoise_1");
+				mBaseObj.GetWorld().GetSoundEntity("Sound_TinHinanNoise_1").FadeVolumeMul(0.3f, 0.f);
+			}
+			else if (Sequence_DoStepAndWait(0.5f))
+			{
+				Light_FadeBrightnessTo("Light_TH_Hint", 2.f, 0.35f);
+				Sound_CreateAtEntity("Sound_TinHinanNoise_2", "creatures/foley/creature/tin_hinan/appear", "Area_TinHinanNoise_2");
+				Music_Play("A2_2_1_Tin_Hinan_Appear.ogg", 0.16f, false, eMusicPrio_MinorEvent);
+			}
+			else if (Sequence_DoStepAndWait(0.5f))
+			{
+				Light_FadeBrightnessTo("Light_TH_Hint", 0.f, 0.5f);
+			}
+			else if (Sequence_DoStepAndPause(0.f))
+			{
+				Voice_StopAll();
+				Voice_Play("Dialogue_LullabyInterrupted");			
+	
+				Map_AddTimer("Timer_SpawnTH", 0.f, "OnTimer_SpawnTH");
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{		
+				YoungTinHinan_Activate("TH_Ghost_Path", 1.f);
+			}
+			else if (Sequence_DoStepAndPause(4.f))
+			{
+				Entity_SetActive("Trigger_LookAtTH", true);
+				
+				if (mbTHAtSecondPos == false)
+					Map_AddTimer("Timer_ForceLookAtTH", 0.5f, "OnTimer_ForceLookAtTH");
+			}
+			else if (Sequence_DoStepAndWait(1.5f))
+			{				
+				YoungTinHinan_Deactivate("TH_Ghost_Path", 1.f);
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{
+				Map_RemoveTimer("Timer_FadePlayerRunSpeed");
+				
+				Player_SetJumpDisabled(false);
+				Player_FadeRunSpeedMulTo(1.f, 1.f);
+				Player_FadeMoveSpeedMulTo(1.f, 1.f);
+			}
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_FadePlayerRunSpeed(const tString &in asTimer)
+		{
+			if (FearHandler_GetIsPermaFailing())
+			{
+				Map_RestartCurrentTimer(1.f);
+				return;
+			}
+			
+			if (Entity_PlayerIsInFront("Trigger_StartSeqTinHinanAppear") == false)
+			{
+				Player_SetJumpDisabled(true);
+				Player_FadeRunSpeedMulTo(0.f, 2.f);
+			}
+			else
+			{
+				Player_SetJumpDisabled(false);
+				Player_FadeRunSpeedMulTo(1.f, 1.f);
+			}
+			
+			Map_RestartCurrentTimer(1.f);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_DoLightFlash(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			SequenceStates_Resume("Seq_TinHinanAppear");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_SpawnTH(const tString &in asTimer)
+		{
+			cCamera@ pCam = cLux_GetPlayer().GetCamera();
+			iLuxEntity@ pEnt = Map_GetEntity("Area_SpawnTH_1");
+			
+			cVector3f vDir = pEnt.GetPosition() - pCam.GetPosition();
+			float fDistSqr = vDir.SqrLength();
+			float fDot = cMath_Vector3Dot(pCam.GetForward(), cMath_Vector3Normalize(vDir));
+			
+			if (fDistSqr < 11.f * 11.f)
+			{
+				mbTHAtSecondPos = true;
+				
+				SequenceStates_Resume("Seq_TinHinanAppear");
+				Agent_TeleportFeetToEntity("TH_Ghost_Path", "Area_SpawnTH_2");
+				
+				LookAtTH(true);
+				return;
+			}
+			
+			if (fDot < 0.75f || cLux_CheckLineOfSight(pCam.GetPosition(), pEnt.GetPosition(), false, false) == false)
+				mlLookAtTHCount = -1;
+			
+			if (fDistSqr > 20.f * 20.f)
+				mlLookAtTHCount = -1;
+			
+			++mlLookAtTHCount;
+			if (mlLookAtTHCount < 2)
+			{
+				Map_RestartCurrentTimer(0.1f);
+				return;
+			}			
+			
+			SequenceStates_Resume("Seq_TinHinanAppear");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnLookAt_PathTH(const tString &in asEntity, int alState)
+		{
+			mbSpottedTH = true;
+			
+			Voice_PlayDelayed("Scene_TinHinan", 0.3f);
+			
+			Player_FadeRunSpeedMulTo(0.f, 1.f);
+			Player_FadeMoveSpeedMulTo(0.5f, 1.f);
+				
+			FearHandler_SetForcedAddFearRate(0.25f, 5.f, true, -1.f, 0.05f, 0.5f);
+			
+			LookAtTH(false);
+			
+			SequenceStates_Resume("Seq_TinHinanAppear");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ForceLookAtTH(const tString &in asTimer)
+		{
+			cCamera@ pCam = cLux_GetPlayer().GetCamera();
+			iLuxEntity@ pEnt = Map_GetEntity("Area_SpawnTH_1");
+			
+			cVector3f vDir = pEnt.GetPosition() - pCam.GetPosition();
+			float fDot = cMath_Vector3Dot(pCam.GetForward(), cMath_Vector3Normalize(vDir));
+			
+			if (mbSpottedTH == false && fDot < 0.9f)
+				LookAtTH(true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void LookAtTH(bool abX)
+		{
+			if (abX)
+			{
+				Player_FadeLookSpeedMulTo(0.05f, 1.f);
+				Player_StartLookAt("TH_Ghost_Path", 0.01f, 1.f, 1.f, false);
+			}
+			else
+			{
+				Player_StopLookAt(0.f);
+				Player_FadeLookSpeedMulTo(1.f, 1.f);
+			}			
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event C *YOUNG TIN HINAN APPEARS*
+		
+		/////////////////////////////////////////
+		// Event D *Spot the TIN HINAN SHRINE*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 4, Event D here.*/
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 4, Event D here.*/
+		
+		void OnLookAt_SpotShrine(const tString &in asEntity, int alState)
+		{
+			Voice_StopAll();
+			Sketchbook_UnlockMemory("TinHinanShrine");
+		}
+
+		//-------------------------------------------------------
+
+		//} END Event D *Spot the TIN HINAN SHRINE*
+	 
+	//} END SCENE 2
+	
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 3 *THE PLAYER APPROACHES THE FRONT GATE*
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+ 
+		/////////////////////////////////////////
+		// General
+		//{//////////////////////////////////////
+		 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are used by many events in Scene 3 here.*/
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are used in more than one event in Scene 3 here.*/
+	 
+		//-------------------------------------------------------
+		
+		//} END General	
+	 
+		/////////////////////////////////////////
+		// Event A *Spot the FRENCH FLAG*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 3, Event A here.*/
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 3, Event A here.*/
+		
+		void OnLookAt_SpotTheFlag(const tString &in asEntity, int alState)
+		{
+			if (Voice_AnySceneIsActive() || alState == -1)
+				return;
+				
+			//Voice_Play("Dialogue_FrenchFlag");
+			Entity_SetActive(asEntity, false);
+		}
+
+		//-------------------------------------------------------
+
+		//} END Event A *Spot the FRENCH FLAG*
+		
+		/////////////////////////////////////////
+		// Event B *Spot the FRENCH SIGN*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 3, Event B here.*/
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 3, Event B here.*/
+		
+		void OnLookAt_SpotTheSign(const tString &in asEntity, int alState)
+		{
+			Voice_StopAll();
+			Sketchbook_UnlockMemory("TheSign");
+		}
+
+		//-------------------------------------------------------
+
+		//} END Event B *Spot the FRENCH SIGN*
+		
+		/////////////////////////////////////////
+		// Event C *Find HANK'S DOSSIER*
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 3, Event C here.*/
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 3, Event C here.*/
+		
+		void OnInteractLeave_HankDossier(const tString &in asEntity)
+		{			
+			Map_AddTimer("Timer_PlayDossierMicroflash", 1.f, "OnTimer_PlayDossierMicroflash");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PlayDossierMicroflash(const tString &in asTimer)
+		{
+			if (Voice_SceneInvolvingCharacterIsActive("Player"))
+				return;
+			
+			Sketchbook_Microflash("Microflash_HankNote_Webber");
+		}
+
+		//-------------------------------------------------------
+
+		//} END Event C *Find HANK'S DOSSIER*
+	 
+	//} END SCENE 3
+}

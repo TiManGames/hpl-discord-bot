@@ -1,0 +1,753 @@
+#include "interfaces/Map_Interface.hps"
+#include "base/Inputhandler_Types.hps"
+
+#include "helpers/helper_map.hps"
+#include "helpers/helper_props.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_audio.hps"
+#include "helpers/helper_imgui.hps"
+#include "helpers/helper_sequences.hps"
+#include "helpers/helper_game.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_ai.hps"
+
+#include "helpers/helper_player.hps"
+#include "helpers/helper_player_custom.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+#include "custom/helpers/helper_menu.hps"
+#include "helpers/helper_effects_custom.hps"
+#include "base/AchievementHandler_Types.hps"
+ 
+class cScrMap : iScrMap
+{
+	//--------------------------------------------
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN CALLBACKS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+ 
+	////////////////////////////
+	// Set up map environment
+	void Setup()
+	{
+		// Put display name entry in english.lang / Levels
+		GetBase().SetDisplayNameEntry("04-04-paris");
+        
+        Pregnancy_SetStage(ePregStage_BornRecovered);
+		
+		Pregnancy_SetBarksActive(true);
+        Pregnancy_SetBabyTalkStage(eBabyTalkStage_Carried);
+		
+		GhoulProgression_SetBarkStage(eGhoulBarkStage_BecomingGhoul);
+		Player_SetAllowCheckBaby(true);
+		
+		Map_Preset_SetupDirLight("Interior_Lighting", false, cColor(0.392,0.435,0.471,1), 0.5f, cVector3f(0.387, -0.852, 0.352), cColor(0), cColor(0));
+		Map_Preset_SetupDirLight("Exterior_Lighting", true, cColor(0.392,0.435,0.471,1), 0.5f, cVector3f(0.387, -0.852, 0.352), cColor(0), cColor(0));
+		
+		StruggleFlashHandler_SetActive(false);
+		
+		Player_SetAutoTeleportWhenBelowAltitude(-10);
+	}
+	
+	//-------------------------------------------------------
+		
+	void PreloadData()
+	{
+		/////////////////
+		// Preload gui
+		//ImGui_PreloadImage("some_image");
+
+		///////////////
+		// Preload particles
+		//ParticleSystem_Preload("some_particle.ps");
+
+		//////////////
+		// Preload screen effects
+		//Material_Preload("some_material.mat");
+		
+		Sound_PreloadEvent("04_05_paris/wall/wall_shift");
+		Sound_PreloadEvent("04_05_paris/wall/wall_collapse");
+		Sound_PreloadEvent("04_05_paris/animation/wall_ghoul_end");
+		Sound_PreloadEvent("04_05_paris/animation/wall_end");
+	}
+	
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run first time starting map
+	void OnStart()
+	{
+		// Any general setup of script / entities
+		Map_Preset_Fade("Interior_Lighting", 0.01f);
+		
+		Item_RemoveFromInventory(ItemType_GetFirstInInventory("CurseMedallion"));
+		
+		GhoulProgression_SetLimit(20);
+
+        mbHighGhoulLevel = GhoulProgression_GetProgression()>=GHOUL_PROGRESSION_PARIS_HIGH;
+		
+		///////////////////////
+		// Setup pushable wall
+		tString sAnim = "wall_break";
+		iLuxEntity@ pWallEntity = Map_GetEntity("CollapsingWall", eLuxEntityType_Prop);
+		cMeshEntity@ pMeshEntity = pWallEntity.GetMeshEntity();
+		cAnimationState@ pAnim = pMeshEntity.GetAnimationStateFromName(sAnim);
+		pMeshEntity.PlayName(sAnim, false, false);
+		pAnim.SetPaused(true);
+        
+        /////////////////////////
+		// Debug
+		if (cLux_ScriptDebugOn())
+		{
+			Item_AddToInventory("Laudanum");
+			Item_AddToInventory("VitaeCanister");
+			Item_AddToInventory("Orb");
+		}
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when entering map
+	void OnEnter()
+	{
+        PlayerBody_SetModel("player6.ent");
+		PlayerBody_SetActive(true);
+        
+        Pregnancy_SetBabyKicksEnabled(false);
+        FearHandler_SetActive(false);
+		FearHandler_SetPermaFailEnabled(false);
+        
+        Heat_SetActive(false);
+		
+        Player_SetMoveSpeedMul(0.6f);
+        Player_SetRunSpeedMul(0.6f);
+		Player_SetLookSpeedMul(1.f);
+		
+		Player_SetAllowHideMode(false);
+		Player_SetCrouchActionDisabled(true);
+		
+		Player_SetJumpDisabled(true);
+        SetBabyHeld(true, false);
+		
+		Entity_StopAnimation("EndingAmari");
+        
+		cLux_ClearAllMapSaveData();
+		
+		OnTimer_FadeInAfterFlash("");
+		
+		// Reset volume since it was lowered when going through the portal
+		Sound_SetGlobalVolume(1.f, eSoundEntryType_AllExceptGui);
+	}
+	
+	//-------------------------------------------------------
+	
+	void Update(float afDeltaTime)
+	{
+		UpdateWallCollapse(afDeltaTime);
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when leaving map
+	void OnLeave()
+	{
+	}
+    
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// The player has died.
+	void OnPlayerKilled(int alRecentDeaths, const tString&in asSource)
+	{
+	}
+	
+	//-------------------------------------------------------
+	
+	////////////////////////////////////
+	// Called when player HP reaches 0
+	bool OnDeath(const tString &in asSource)
+	{
+		cLux_AddTodoMessage("DEAD : SOURCE = " + asSource);
+		
+		if (asSource == "SomeReason")
+		{
+			Effect_Fade_Out(1.0f);
+			return true; // return true to completely override base behaviour
+		}
+		
+		// return false for default behaviour
+		return false;
+	}
+	
+	//-------------------------------------------------------
+	
+	////////////////////////////////////
+	// Called when player should respawn (after death)
+	bool OnRespawn(const tString &in asSource)
+	{		
+		// return false for default behaviour (fadeout and death area)
+		return false;
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// To get when player makes input (mostly used for debug)
+	void OnAction(int alAction, bool abPressed) 
+	{
+		if(abPressed==false) return;
+		
+		if(alAction == eAction_Test1)
+		{	
+            mbHighGhoulLevel=false;
+		}
+        
+        if(alAction == eAction_Test2)
+		{	
+            mbHighGhoulLevel=true;
+		}
+        
+        if(alAction == eAction_Test3)
+		{	
+			BrickWaves();
+            OnTimer_StartEndingSeq("");
+		}
+		
+		if (alAction == eAction_Test4)
+		{
+			mbHighGhoulLevel = true;
+			Seq_Ending("");
+		}
+		
+		if (alAction == eAction_Test5)
+		{
+			mbHighGhoulLevel = false;
+			Seq_Ending("");
+		}
+	}	
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// This only used for pure debug purposes when info needs to printed.
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afY)
+	{
+		//afY = cLux_DrawDebugText("My Debug value:"+..., afY);
+		return afY;
+	}
+ 
+	//-------------------------------------------------------
+ 
+	//} END MAIN CALLBACKS
+ 
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN FUNCTIONS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+	
+	//-------------------------------------------------------
+ 
+	//} END MAIN FUNCTIONS
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ======================
+	// SCENE 1 - PARIS ENDING
+	// ======================
+	//{//////////////////////////////////////////////////////////////////////////////////////
+ 
+		/////////////////////////////////////////
+		// General
+		//{//////////////////////////////////////
+		 
+		//-------------------------------------------------------
+		
+		void SetBabyHeld(bool abHeld, bool abPlayIdleAnim=false)
+		{
+			if (abHeld)
+			{
+				Player_SetHoldingBaby(true, "BabyCarried");
+				
+				PlayerBody_SetAnimationSet("baby");
+				PlayerBody_AttachProp("Baby", "L_Hand", true);
+				
+				if (abPlayIdleAnim==false) return;
+				Entity_PlayAnimation("Baby", "baby_idle_stand", 0.1, true);
+				PlayerHands_PlayAnimation("idle_stand_larm_baby_test", true, false, 0.f, "Baby", false, 1.f, -1.f, false, true);
+			}
+			else
+			{
+				Player_SetHoldingBaby(false, "BabyCarried");
+				Entity_StopAnimation("Baby");
+				PlayerBody_SetAnimationSet("");
+				PlayerBody_DetachProp("Baby");
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END General	
+	 
+		/////////////////////////////////////////
+		// Event A - Player breaks out
+		//{//////////////////////////////////////
+		
+		//-------------------------------------------------------
+
+		bool mbInteractingWithWall = false;
+		int mlWallCollapseProgress = 0;
+		float mfTimeToAutoPushWall = 0;
+
+		//-------------------------------------------------------
+        
+        void OnTimer_FadeInAfterFlash(const tString&in asTimer)
+        {
+			if (cLux_ScriptDebugOn()) return;
+			
+			Effect_Flash_Start(0, 1, 1.0f, 1);
+			
+			PlayerBody_PlayCutsceneAtEntity("player_end_portal_collapse_to_idle", "Area_PortalAnimPosEnt", false, 0.25f, "OnAnimEnd_SetBabyHeld");
+			Sound_CreateAtEntity("Sound_Player_wake", "04_05_paris/animation/tasi_wake", "player");
+			Sound_CreateAtEntity("Sound_Teleport", "04_05_paris/animation/wake_teleport", "player");
+			Entity_PlayAnimation("Baby", "baby_idle_stand", 0.0, true);
+			
+			Map_AddTimer("Timer_IntroPlayerComments", 0.5f, "OnTimer_IntroPlayerComments");
+        }
+
+		//-------------------------------------------------------
+		
+		void OnTimer_IntroPlayerComments(const tString&in asTimer)
+		{
+			Voice_Play("Dialogue_ParisIntro", -1, "OnIntroPlayed");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnIntroPlayed(const tString&in asScene, const tString&in asSubject)
+		{
+			Voice_PlayDelayed("Dialogue_WhereAreWe", 0.1f, -1, "OnWhereAreWePlayed");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnWhereAreWePlayed(const tString&in asScene, const tString&in asSubject)
+		{
+			if (mbHighGhoulLevel)
+				Sequence_GhoulBreathing();
+		}
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSeqGhoulBreathing;
+		int m_idAudio_Breathing=-1;
+		
+		void Sequence_GhoulBreathing(const tString& in asTimer="")
+		{
+			Sequence_Begin("Sequence_GhoulBreathing", mSeqGhoulBreathing);
+			if (Sequence_DoStepAndWait(2.0f))
+			{
+				m_idAudio_Breathing = PlayerEmotion_PlaySound(eEmotionPlaylistType_Breathing, eEmotionSoundType_Loop, 0, "player/emotes/breath_ghoul", -1, 3.0f, 2.0f);
+				PlayerEmotion_SetSoundVolume(eEmotionPlaylistType_Breathing, m_idAudio_Breathing, 0.0f);
+			}
+			else if (Sequence_DoStepAndWait(0.75f))
+			{
+				PlayerEmotion_SetSoundVolume(eEmotionPlaylistType_Breathing, m_idAudio_Breathing, 0.2f);
+			}
+			else if (Sequence_DoStepAndWait(0.75f))
+			{
+				PlayerEmotion_SetSoundVolume(eEmotionPlaylistType_Breathing, m_idAudio_Breathing, 0.4f);
+			}
+			else if (Sequence_DoStepAndWait(0.75f))
+			{
+				PlayerEmotion_SetSoundVolume(eEmotionPlaylistType_Breathing, m_idAudio_Breathing, 0.6f);
+			}
+			else if (Sequence_DoStepAndWait(0.75f))
+			{
+				PlayerEmotion_SetSoundVolume(eEmotionPlaylistType_Breathing, m_idAudio_Breathing, 0.8f);
+			}
+			else if (Sequence_DoStepAndWait(0.75f))
+			{
+				PlayerEmotion_SetSoundVolume(eEmotionPlaylistType_Breathing, m_idAudio_Breathing, 1.0f);
+			}
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		void StopBreathing()
+		{
+			if (m_idAudio_Breathing!=-1)
+			{
+				PlayerEmotion_StopSound(eEmotionPlaylistType_Breathing, m_idAudio_Breathing, 1.0f);
+				m_idAudio_Breathing=-1;
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnAnimEnd_SetBabyHeld(const tString&in asAnim)
+		{
+			SetBabyHeld(true, true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnInteractLeave_StopUpdatePushPropMinDistance(const tString &in asEntity)
+		{
+			mbInteractingWithWall = false;
+			mfTimeToAutoPushWall = 0;
+			
+			Map_RemoveTimer("Timer_UpdatePushPropMinDistance");
+			UpdatePushPropMinDistance();
+			
+			Player_StopLookAt(1.f);
+			//Player_SetYawLimits(0, 0);
+			//Player_SetPitchLimits(0, 0);
+			
+			
+			/////////////////////
+			// Stop prop movement
+			iPhysicsBody@ pBody = Map_GetEntity("wall_push_dummy_entity", eLuxEntityType_Prop).GetMainBody();
+			if (pBody==null) return;
+			pBody.SetLinearVelocity(cVector3f(0));
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_StartUpdatePushPropMinDistance(const tString &in asEntity)
+		{
+			mbInteractingWithWall = true;
+			OnTimer_UpdatePushPropMinDistance("");
+			Player_StartLookAt("wall_push_dummy_entity", 1, 4, 8);
+			PlayerEmotion_PlaySound(eEmotionPlaylistType_Breathing, eEmotionSoundType_OneShotEvent, 10, "player/emotes/tasi_paris_wall");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_UpdatePushPropMinDistance(const tString&in asTimer)
+		{
+			UpdatePushPropMinDistance();
+			Map_AddTimer("Timer_UpdatePushPropMinDistance", 0.5, "OnTimer_UpdatePushPropMinDistance");
+		}
+		
+		//-------------------------------------------------------
+		
+		void UpdatePushPropMinDistance()
+		{
+			// Make sure that the "push-prop" can't be pulled back
+			iLuxEntity@ pWallPushEnt = Map_GetEntity("wall_push_dummy_entity", eLuxEntityType_Prop);
+			if (pWallPushEnt==null) return;
+			
+			iPhysicsJointSlider@ pSlider = cPhysics_ToJointSlider(pWallPushEnt.GetMainBody().GetJoint(0));
+			if (pSlider==null) return;
+			
+			pSlider.SetMinDistance(pSlider.GetDistance());
+		}
+		
+		//-------------------------------------------------------
+		
+		void PlayCollapseEffects()
+		{
+			Sound_CreateAtEntity("Sound_WallShift", "04_05_paris/wall/wall_shift", "Area_Wall_PS_Effects", 1.f);
+			ParticleSystem_CreateAtEntity("WallDustPS_2", "tunnel_wall_dust_1.ps", "Area_Wall_PS_Effects", false);
+			ParticleSystem_CreateAtEntity("CeilingDustPS_1", "tunnel_ceiling_dust_fall_1.ps", "Area_Ceiling_Dust_Fall_Source_1", false);
+			Effect_Shake_Start(0.01f, 0.f, 0.1f, 0.5f);
+		}
+		
+		//-------------------------------------------------------
+	
+		void UpdateWallCollapse(const float afDeltaTime)
+		{
+			if (mlWallCollapseProgress>=3 || mbInteractingWithWall==false) return;
+			
+			iLuxEntity@ pWallEntity = Map_GetEntity("CollapsingWall", eLuxEntityType_Prop);
+			cMeshEntity@ pMeshEntity = pWallEntity.GetMeshEntity();
+			cAnimationState@ pAnim = pMeshEntity.GetAnimationStateFromName("wall_break");
+			iLuxEntity@ pWallPushEnt = Map_GetEntity("wall_push_dummy_entity", eLuxEntityType_Prop);
+			iPhysicsJointSlider@ pSlider = cPhysics_ToJointSlider(pWallPushEnt.GetMainBody().GetJoint(0));
+			float fRelTimePos = pSlider.GetDistance() * 6.f;
+			
+			mfTimeToAutoPushWall += afDeltaTime;
+			//cLux_AddDebugMessage("mfTimeToAutoPushWall: " + mfTimeToAutoPushWall);
+			if (mfTimeToAutoPushWall > 5)
+			{
+				pSlider.SetMinDistance(pSlider.GetDistance() + 0.001);
+				mfTimeToAutoPushWall = 0;
+				cLux_AddDebugMessage("Pushing wall automatically!");
+			}
+			
+			//////////////////
+			// Pre collapse fx
+			if (fRelTimePos >= 0.05 && mlWallCollapseProgress < 1)
+			{
+				PlayCollapseEffects();
+				mlWallCollapseProgress = 1;
+				return;
+			}
+			
+			if (fRelTimePos >= 0.5 && mlWallCollapseProgress < 2)
+			{
+				PlayCollapseEffects();
+				mlWallCollapseProgress = 2;
+				return;
+			}
+			
+			///////////////////
+			// Start ending seq
+			if (fRelTimePos >= 0.83 && mlWallCollapseProgress < 3)
+			{
+				pAnim.SetPaused(false);
+				
+				BrickWaves();
+				
+				Entity_SetActive("wall_push_dummy_entity", false);
+				
+				ParticleSystem_CreateAtEntity("WallDustPS_2", "tunnel_wall_dust_1.ps", "Area_Wall_PS_Effects", false);
+				ParticleSystem_CreateAtEntity("WallDustPS_2", "dust_impact_large_oneshot.ps", "Area_Wall_PS_Effects_Break", false);
+				ParticleSystem_CreateAtEntity("CeilingDustPS_2", "tunnel_ceiling_dust_fall_1.ps", "Area_Ceiling_Dust_Fall_Source_1", false);
+				Seq_SoundParisSweet("");
+				Effect_Shake_Start(0.025f, 0.1f, 0.1f, 0.6f);
+				
+				FogArea_SetVisible("exterior_light_box_1", false);
+				Billboard_SetVisible("Billboard_Wall_*", false);
+				Light_FadeBrightnessTo("Interior_Light_Spot_1", 0.f, 1.f);
+				Effect_ImageTrail_Start(0.8,0.8,-1,1);
+				
+				Player_SetActive(false);
+				Map_AddTimer("OnTimer_StartEndingSeq", 0.4f, "OnTimer_StartEndingSeq");
+				Map_AddTimer("Timer_DisableCollapsingWall", 0.6f, "OnTimer_DisableCollapsingWall");
+				
+				Sound_CreateAtEntity("Sound_WallCollapse", "04_05_paris/wall/wall_collapse", "player");
+				
+				mlWallCollapseProgress = 3;
+				
+				return;
+			}
+			
+			////////////////////////
+			// Set wall anim rel pos
+			fRelTimePos = cMath_Min(1.f, fRelTimePos);
+			pAnim.SetRelativeTimePosition(fRelTimePos);
+			
+			//cLux_AddDebugMessage("Joint Distance = " + pSlider.GetDistance());
+		}
+		
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_DisableCollapsingWall(const tString&in asTimer)
+		{
+			Entity_SetActive("CollapsingWall",false);
+		}
+		
+		//-------------------------------------------------------
+		
+		void BrickWaves()
+		{
+			Entity_SetActive("clay_brick_wave*", true);
+			Entity_AddImpulse("clay_brick_wave1*", cVector3f(2,1,1.0f), false, true);
+			Entity_AddImpulse("clay_brick_wave2*", cVector3f(2,1,2.5f), false, true);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_DisableBricks(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState!=1) return true;
+			Prop_SetActiveAndFade(asChild, false, 1.f);
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSequenceSoundParisSweet;
+			
+		void Seq_SoundParisSweet(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_SoundParisSweet", mSequenceSoundParisSweet);
+			if (Sequence_DoStepAndWait(2.5f))
+			{
+				Sound_Play("Sound_Bells", 0.0f);
+				Sound_Play("Sound_BirdsDistant", 0.0f);
+			}
+			if (Sequence_DoStepAndWait(2.0f))
+			{
+				Sound_Play("Sound_traffic", 0.0f);	
+			}
+	
+			if (Sequence_DoStepAndWait(0.5f))
+			{
+				Sound_Play("Sound_Birds", 0.0f);
+			}
+
+			if (Sequence_DoStepAndWait(2.0f))
+			{
+				Sound_Play("Sound_Dog", 0.0f);
+			}
+
+			if (Sequence_DoStepAndWait(3.0f))
+			{
+				Sound_Play("Sound_Bike", 0.0f);
+			}
+
+			if (Sequence_DoStepAndWait(0.0f))
+			{
+				Sound_Play("Sound_traffic_2", 0.0f);
+			}
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+
+		//} END Event A - Player breaks out
+        
+        /////////////////////////////////////////
+		// Event B - Ending
+		//{//////////////////////////////////////
+
+		//-------------------------------------------------------
+
+        cSequenceStatesData mSeq_Ending;
+        bool mbHighGhoulLevel=false;
+
+		//-------------------------------------------------------
+        
+        void OnTimer_StartEndingSeq(const tString&in asTimer)
+        {
+            if (SequenceStates_IsActive("Seq_Ending")==false)
+				Seq_Ending("");
+				
+			Pregnancy_SetBarksActive(false);
+			Pregnancy_SetWhispering(false);
+			Player_SetAllowCheckBaby(false);
+			Voice_StopAll();
+				
+			SetBabyHeld(false);
+			
+			Entity_SetActive("Baby", false);
+			
+			Entity_SetActive("EndingAmari", true);
+			Map_GetEntity("EndingAmari", eLuxEntityType_Prop).GetMeshEntity().SetVisible(false);
+            
+			Player_SetActive(true);
+			
+            Item_PutAway(eItemHandlerHand_Left);
+            Item_PutAway(eItemHandlerHand_Right);
+            
+			tString sAnimName = mbHighGhoulLevel ? "player_high_ghoul_paris_ending" : "player_low_ghoul_paris_ending";
+			Entity_SetAnimationMessageEventCallback(PlayerBody_GetEntityName(),"OnAnimMessage_Player",false);
+			PlayerBody_PlayCutsceneAtEntity(sAnimName, "Area_Fall_Point", false, 0.3,"OnFinalAnimDone");
+			
+			PlayerBody_SetCutsceneMaxPitch(15);
+			PlayerBody_SetCutsceneMaxYaw(15);
+			
+			tString sBabyAnimName = mbHighGhoulLevel ? "baby_high_ghoul_paris_ending" : "baby_low_ghoul_paris_ending";
+			Entity_PlayAnimation("EndingAmari", sBabyAnimName);
+			
+			tString sBricksAnimName = mbHighGhoulLevel ? "bricks_high_ghoul_paris_ending" : "bricks_low_ghoul_paris_ending";
+			Entity_PlayAnimation("broken_wall_bricks", sBricksAnimName);
+			
+			tString sMusicName = mbHighGhoulLevel ? "A2_4_5_GhoulishEnd.ogg" : "A2_4_5_NonGhoulEnd.ogg";
+			Music_Play(sMusicName, 0.1f, false, eMusicPrio_BigEvent);
+			
+			tString sSoundAnim = mbHighGhoulLevel ? "04_05_paris/animation/wall_ghoul_end" : "04_05_paris/animation/wall_end";
+			Sound_CreateAtEntity("Sound_PlayerAnim", sSoundAnim, "player");
+			
+        }
+		
+		void OnAnimMessage_Player(const tString &in asEntityName, const tString &in asAnimName, int alMessageEventID)
+		{
+			if (alMessageEventID == 10)
+			{
+				tString sAnimName = mbHighGhoulLevel ? "player_high_ghoul_paris_ending" : "player_low_ghoul_paris_ending";
+				PlayerBody_GetAnimationState(sAnimName).SetSpeed(0.1f);
+			}
+		}
+	
+		//-------------------------------------------------------
+        
+        void Seq_Ending(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_Ending", mSeq_Ending);
+			
+            if (Sequence_DoStepAndWait(0.3f))
+            {
+				// Sync
+            }
+			else if (Sequence_DoStepAndWait(4.7f))
+			{
+				Map_GetEntity("EndingAmari", eLuxEntityType_Prop).GetMeshEntity().SetVisible(true);
+			}
+			else if (Sequence_DoStepAndPause(1.0f))
+            {
+				StopBreathing();
+                tString sVoiceToPlay = mbHighGhoulLevel ? "Dialogue_ParisIntroHeavyGhoul" : "Dialogue_ParisIntroLightGhoul";
+				Voice_Play(sVoiceToPlay, -1, "OnIntroVoiceComplete");
+            }
+			else if (Sequence_DoStepAndWait(3.f))
+			{
+                Effect_Fade_Out(3.f);
+				Sound_Stop("Sound_Bells", 4.0f);
+				Sound_Stop("Sound_BirdsDistant", 4.0f);
+				Sound_Stop("Sound_traffic", 4.0f);	
+				Sound_Stop("Sound_Birds", 4.0f);
+				Sound_Stop("Sound_Dog", 4.0f);
+				Sound_Stop("Sound_Bike", 4.0f);
+				Sound_Stop("Sound_traffic_2", 4.0f);
+				Sound_FadeGlobalVolume(0.f, 5.f, eSoundEntryType_All);
+				Music_FadeVolumeMul(0.0f,5.0f);
+			}
+			else if (Sequence_DoStepAndContinue())
+			{
+				if (Game_BeatenDevPlaytime())
+					Achievement_Unlock(eAchievement_Speedster);
+				
+				if (mbHighGhoulLevel)
+				{
+					Credits_Start("Credits.cfg","OnEndOfCredits", "ending_4", cVector3f(-0.15,-0.1,1.75f), "A2_Ending,A2_AlternativeEnding");
+					MainMenu_Sketchbook_SetSketch("ending_4");
+				}
+				else
+				{
+					Achievement_Unlock(eAchievement_Stoic);
+					Credits_Start("Credits.cfg","OnEndOfCredits", "ending_3", cVector3f(-0.15,-0.1,1.75f), "A2_Ending,A2_AlternativeEnding");
+					MainMenu_Sketchbook_SetSketch("ending_3");
+				}
+					
+				Achievement_Unlock(eAchievement_Provider);
+				Achievement_Unlock(eAchievement_Tasi);
+			}
+
+			Sequence_End();
+		}
+        
+		//-------------------------------------------------------
+		
+		void OnIntroVoiceComplete(const tString& in aScene, const tString& in aSubject)
+		{
+			SequenceStates_Resume("Seq_Ending");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnEndOfCredits()
+		{
+			Map_ChangeMap("main_menu.hpm","PlayerStartArea_1","","",false);
+		}
+        
+		//} END Event B - Light ghoulish ending
+				
+		//-------------------------------------------------------		
+	 
+	//} END SCENE X
+ 
+}

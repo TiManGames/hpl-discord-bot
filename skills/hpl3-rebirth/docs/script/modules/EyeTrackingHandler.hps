@@ -1,0 +1,352 @@
+#include "interfaces/UserModule_Interface.hps"
+#include "modules/ModuleInterfaces.hps"
+
+//---------------------------------------------------
+
+class cScrEyeTrackingHandler : iScrUserModule, iScrUserModule_Interface, iScrEyeTrackingHandler_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// USER SETTINGS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void LoadUserConfig()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void SaveUserConfig()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// MAP LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnMapLeave(cLuxMap @apMap)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void PreloadData(cLuxMap @apMap)
+	{
+	}
+	
+	//------------------------------------------------------------
+
+	void CreateWorldEntities(cLuxMap @apMap)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void DestroyWorldEntities(cLuxMap @apMap)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnEnterContainer(const tString&in){}
+	void OnLeaveContainer(const tString&in){}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetActive(bool abActive)
+	{
+		if (abActive == mbActive) return;
+		if (cInput_GetEyeTracker() is null)
+		{
+			mbActive = false;
+			return;
+		}
+		
+		mbActive = abActive;
+	}
+	
+	//------------------------------------------------------------
+	
+	void RegisterEntity(const tString &in asName)
+	{
+		if (mbActive == false) return;
+		
+		iLuxEntity@ pEnt = cLux_GetCurrentMap().GetEntityByName(asName);
+		if (pEnt is null) return;
+		
+		mvTrackedObjects.push_back(pEnt.GetID());
+		mvTrackedObjectCounter.push_back(mfCounterMin);
+	}
+	
+	//------------------------------------------------------------
+	
+	bool IsEntityBeingLookedAt(const tString &in asName)
+	{
+		if (mbActive == false) return false;
+		
+		for (int i = 0; i < mvTrackedObjects.size(); ++i)
+		{
+			iLuxEntity@ pEnt = cLux_ID_Entity(mvTrackedObjects[i]);
+			
+			if (pEnt is null)
+			{
+				mvTrackedObjects.removeAt(i);
+				mvTrackedObjectCounter.removeAt(i);
+				--i;
+				continue;
+			}
+			
+			if (pEnt.GetName() == asName)
+			{
+				return mvTrackedObjectCounter[i] > mfTrackThreshold;
+			}
+		}
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool IsAreaBeingLookedAt(cRect2f aArea, const tString &in asId)
+	{
+		if (mbActive == false) return false;
+		
+		int lAreaIndex = mvTrackedGuiAreaIds.find(asId);
+		if (lAreaIndex < 0)
+		{
+			mvTrackedGuiAreaIds.push_back(asId);
+			mvTrackedGuiAreas.push_back(aArea);
+			mvTrackedGuiAreaCounter.push_back(mfCounterMin);
+		}
+		else
+		{
+			mvTrackedGuiAreas[lAreaIndex] = aArea;
+			return mvTrackedGuiAreaCounter[lAreaIndex] > mfTrackThreshold;
+		}
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool IsGuiAreaBeingLookedAt(cRect2f aArea, const tString &in asId)
+	{
+		if (mbActive == false) return false;
+		
+		////////////////////////////
+		// Multiply all distances by virtual ratio and add offset to get raw coordinates
+		cVector2f vVirtualRatio;
+		vVirtualRatio.x = cGraphics_GetLowLevel().GetScreenSizeFloat().x / cLux_GetGameHudSet().GetVirtualSize().x;
+		vVirtualRatio.y = cGraphics_GetLowLevel().GetScreenSizeFloat().y / cLux_GetGameHudSet().GetVirtualSize().y;
+		
+		aArea.x *= vVirtualRatio.x;
+		aArea.y *= vVirtualRatio.y;
+		
+		aArea.x += cLux_GetGameHudSet().GetVirtualSizeOffset().x * vVirtualRatio.x;
+		aArea.y += cLux_GetGameHudSet().GetVirtualSizeOffset().y * vVirtualRatio.y;
+		
+		aArea.w *= vVirtualRatio.x;
+		aArea.h *= vVirtualRatio.y;
+		
+		return IsAreaBeingLookedAt(aArea, asId);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PER-FRAME
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+
+	void Update(float afTimeStep)
+	{
+		if (mbActive == false) return;
+		
+		// Get gaze
+		cVector2f vGaze = cInput_GetEyeTracker().GetGazePosition();
+		cVector2f vWindowGaze = vGaze;
+		vWindowGaze.x -= cGraphics_GetLowLevel().GetWindowPosition().x;
+		vWindowGaze.y -= cGraphics_GetLowLevel().GetWindowPosition().y;
+		cVector2l vScreenSize = cGraphics_GetLowLevel().GetScreenSizeInt();
+		cVector2f vScreenSizeFloat(vScreenSize.x, vScreenSize.y);
+		
+		bool bGazeInWindow = cMath_CheckPointInRectIntersection(vWindowGaze, cRect2f(0, 0, vScreenSize.x, vScreenSize.y));
+		if (bGazeInWindow == true)
+		{
+			/////////////
+			// Get gaze direction
+			cCamera@ pCamera = cLux_GetPlayer().GetCamera();
+			cVector3f vGazeDir;
+			cVector3f vGazeWorldPos;
+			pCamera.UnProject(vGazeWorldPos, vGazeDir, vWindowGaze, vScreenSizeFloat);
+			
+			/////////////
+			// Check which object is being looked at
+			for (int i = 0; i < mvTrackedObjects.size(); ++i)
+			{
+				iLuxEntity@ pEnt = cLux_ID_Entity(mvTrackedObjects[i]);
+				
+				/////////////
+				// Get a clip rect from the bounding volume of the object
+				cRect2l rectBounds;
+				cMath_GetClipRectFromBV(rectBounds, pEnt.GetMeshEntity().GetBoundingVolume(), cLux_GetPlayer().GetCamera().GetFrustum(), vScreenSize);
+				cRect2f rectBoundsFloat(rectBounds.x, rectBounds.y, rectBounds.w, rectBounds.h);
+				
+				/////////////
+				// Increase the tracking counter if the gaze is in the clip rect
+				if (cMath_CheckPointInRectIntersection(vWindowGaze, rectBoundsFloat) == true)
+				{
+					mvTrackedObjectCounter[i] += mfIncreaseSpeed;
+				}
+			}
+			
+			/////////////
+			// Check which gui area is being looked at
+			for (int i = 0; i < mvTrackedGuiAreaIds.size(); ++i)
+			{
+				cRect2f guiArea = mvTrackedGuiAreas[i];
+				if (cMath_CheckPointInRectIntersection(vWindowGaze, guiArea) == true)
+				{
+					mvTrackedGuiAreaCounter[i] = cMath_Clamp(mvTrackedGuiAreaCounter[i], mfCounterMin, mfCounterMax);
+					mvTrackedGuiAreaCounter[i] += mfIncreaseSpeed;
+				}
+			}
+		}
+		
+		/////////////
+		// Decay the object tracking counter
+		for (int i = 0; i < mvTrackedObjects.size(); ++i)
+		{
+			mvTrackedObjectCounter[i] = cMath_Clamp(mvTrackedObjectCounter[i] - mfDecreaseSpeed, mfCounterMin, mfCounterMax);
+		}
+		
+		/////////////
+		// Decay the gui area tracking counter
+		for (int i = 0; i < mvTrackedGuiAreaIds.size(); ++i)
+		{
+			mvTrackedGuiAreaCounter[i] -= mfDecreaseSpeed;
+			if (mvTrackedGuiAreaCounter[i] <= mfStopTrackingGuiAreaThreshold)
+			{
+				mvTrackedGuiAreaIds.removeAt(i);
+				mvTrackedGuiAreas.removeAt(i);
+				mvTrackedGuiAreaCounter.removeAt(i);
+				--i;
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void PostUpdate(float afTimeStep)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void VariableUpdate(float afDeltaTime)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnDraw(float){}
+	void OnPostRender(float){}	
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnAction(int alAction, bool abPressed)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnGui(float afTimeStep)
+	{	
+	}	
+	
+	//------------------------------------------------------------
+	
+	void AppGotInputFocus(){}
+	void AppLostInputFocus(){}	
+	void OnAnalogInput(int alAnalogId, const cVector3f &in avAmount){}
+	void OnExitPressed(){}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPER METHODS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	bool mbActive = false;
+	
+	array<tID> mvTrackedObjects;
+	array<tString> mvTrackedGuiAreaIds;
+	array<cRect2f> mvTrackedGuiAreas;
+	
+	////////////////////////////
+	// because the tracking signal is quite noisy, we only want to detect a gaze when it's hit the object or area a couple of times
+	array<float> mvTrackedObjectCounter;
+	array<float> mvTrackedGuiAreaCounter;
+	
+	////////////////////////////
+	// Tracking counter properties
+	float mfIncreaseSpeed = 1.2f;
+	float mfDecreaseSpeed = 0.2f;
+	float mfTrackThreshold = 4.0f;
+	float mfCounterMax = 6.0f;
+	float mfCounterMin = 0.0f;
+	float mfStopTrackingGuiAreaThreshold = -30.0f;
+	
+	//------------------------------------------------------------
+}

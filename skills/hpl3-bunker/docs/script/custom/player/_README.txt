@@ -1,0 +1,1 @@
+Game-specific player stuff goes here - new player states etc. Make sure they are registered in Player.cfg and their IDs match up in PlayerTypes_Custom.hps

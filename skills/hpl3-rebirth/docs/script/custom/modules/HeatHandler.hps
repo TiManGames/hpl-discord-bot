@@ -1,0 +1,652 @@
+#include "interfaces/UserModule_Interface.hps"
+#include "custom/player/PlayerTypes_Custom.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_player.hps"
+#include "helpers/helper_props.hps"
+#include "custom/modules/ModuleInterfaces_Custom.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+#include "custom/helpers/helper_player_custom.hps"
+#include "helpers/helper_audio.hps"
+#include "helpers/helper_modules.hps"
+
+//---------------------------------------------------
+
+const float gfHeatExposureChangeTime = 5.f;
+const float gfShadowCheckDistAboveCamera = 0.4f;
+const float gfTemperatureIncreaseTime = 10.f;
+const float gfTemperatureDecreaseTime = 2.f;
+const float gfMaxFearRateFromHeat = 0.1f;
+const float gfTimeBetweenReliefReactions = 8.f;
+const float gfMinTimeBetweenEvents = 40.f;
+const float gfMaxTimeBetweenEvents = 50.f;
+const float gfTimeBeforeProtectingEyes = 0.5f;
+
+//---------------------------------------------------
+
+class cScrHeatHandler : iScrUserModule, iScrUserModule_Interface, iScrHeatHandler_Interface
+{
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+        mbIsActive = false;
+	}
+
+	//------------------------------------------------------------
+
+	void LoadUserConfig(){}
+	void SaveUserConfig(){}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	//MAP LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+		mfExposureBase = apMap.GetWorld().GetToneMappingExposure();
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnMapLeave(cLuxMap @apMap)
+	{
+		StopHeatBreathingLoop();
+	}
+	
+	//------------------------------------------------------------
+	
+	void PreloadData(cLuxMap @apMap)
+	{
+		apMap.PreloadEntity("heat_effect_sun.ent");
+		apMap.PreloadEntity("heat_effect_refraction.ent");
+	}
+	
+	//------------------------------------------------------------
+	
+	void CreateWorldEntities(cLuxMap @apMap){}
+	
+	//------------------------------------------------------------
+	
+	void DestroyWorldEntities(cLuxMap @apMap)
+	{
+		if (mbEntitiesCreated)
+		{
+			Entity_Destroy("Heat_Sun");
+			Entity_Destroy("Heat_Refraction");
+			mbEntitiesAttached = false;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnEnterContainer(const tString&in asOldContainer){}
+	void OnLeaveContainer(const tString&in asNewContainer){}
+	
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+        mlCurrentHeatLevel=eHeatLevel_None;
+        mbInShadow=true;
+        mfShadowCheck=0.f;
+        mfTimeUnderTheSun = 0.f;
+        mfTimeInShadow = 0.f;
+        mbSetExtremeHeatEffectsActive=false;
+        mfTimeSinceLastBark = 0.f;
+        mfTimeSinceLastReliefSound = 0.f;
+        mfTimeSinceLastEvent = 0.f;
+        mbShouldPerformEvents = true;
+        mfTimeSinceLastStop = 0.f;
+		mbAnimationEventsActive = true;
+	}
+    
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// PER-FRAME
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep)
+    {
+		if (mbIsActive==false || 
+        cLux_GetPlayer().IsActive()==false || 
+        cLux_GetGodModeActivated())
+			return;
+        
+        if (mbInShadow==false)
+        {
+            ///////////////////////////////////////
+            // Rising heat level when under the sun
+            mfTimeInShadow = 0.f;
+            mfTimeUnderTheSun += afTimeStep;
+            
+            if (mlCurrentHeatLevel < eHeatLevel_Scorching && mfTimeUnderTheSun >= gfTemperatureIncreaseTime)
+            {
+                mlCurrentHeatLevel += 1;
+                mfTimeUnderTheSun = 0.f;
+            }
+        }
+        else
+        {
+            /////////////////////////////////////
+            // Dropping heat level when in shadow
+            mfTimeUnderTheSun = 0.f;
+            mfTimeInShadow += afTimeStep;
+            
+            if (mlCurrentHeatLevel > eHeatLevel_None && mfTimeInShadow >= gfTemperatureDecreaseTime)
+            {
+                mlCurrentHeatLevel -= 1;
+                mfTimeInShadow = 0.f;
+            }
+        }
+		
+		/////////////////////////
+		// Map callback!
+		if (mlCurrentHeatLevel != mlPrevHeatLevel)
+		{
+			cLuxMap@ pMap = cLux_GetCurrentMap();
+			tString sMethod = "void OnHeatLevelChange(int alLevel)";
+			if (pMap.ScriptMethodExists(sMethod) && pMap.ScriptPrepare(sMethod))
+			{
+				pMap.SetArgInt(0, mlCurrentHeatLevel);
+				pMap.ScriptExecute();
+			}
+		}
+
+		////////////////
+		// Reattach entities after load
+		if(mbEntitiesCreated && mbEntitiesAttached == false)
+		{
+			Entity_AttachToEntity("Heat_Sun", "Player", "", false, false, false);
+			Entity_AttachToEntity("Heat_Refraction", "Player", "", false, false, false);
+			mbEntitiesAttached = true;
+		}
+		
+		mlPrevHeatLevel = mlCurrentHeatLevel;
+        
+        //////////////////////////
+        // Temperature based values
+        float fExposureToAdd = 0.f;
+        float fMoveSpeedMul = 1.f;
+        float fFearRateToAdd = 0.f;
+        float fTimeBetweenBarlksMul = 1.f;
+        tString sHeatEventAnim = "player_exhausted";
+        tString sHeatBark = "player/vocalisations/hurt/player_pain_small";
+        
+        switch (mlCurrentHeatLevel)
+        {
+            case eHeatLevel_None:
+                break;
+            case eHeatLevel_Warm:
+                fExposureToAdd = mfLevelMaxExposureFromHeat * 0.25f;
+                break;
+            case eHeatLevel_Hot:
+                fExposureToAdd = mfLevelMaxExposureFromHeat * 0.5f;
+                fMoveSpeedMul = 0.9f;
+                fFearRateToAdd = gfMaxFearRateFromHeat * 0.5f;
+                break;
+            case eHeatLevel_VeryHot:
+                fExposureToAdd = mfLevelMaxExposureFromHeat * 0.75f;
+                fMoveSpeedMul = 0.7f;
+                fFearRateToAdd = gfMaxFearRateFromHeat * 0.75f;
+                fTimeBetweenBarlksMul = 0.75f;
+                break;
+            case eHeatLevel_Scorching:
+                fExposureToAdd = mfLevelMaxExposureFromHeat;
+                fMoveSpeedMul = 0.6f;
+                fFearRateToAdd = gfMaxFearRateFromHeat;
+                fTimeBetweenBarlksMul = 0.5f;
+                sHeatEventAnim = "fall_and_get_up_slow";
+                sHeatBark = "player/vocalisations/hurt/player_pain_med";
+                break;
+        }
+        
+        ////////////
+        // Heat Fear
+        if (mbInShadow == false && mlCurrentHeatLevel >= eHeatLevel_Hot)
+            FearHandler_SetForcedAddFearRate(eFearForcedRateType_Heat, fFearRateToAdd, 1.f, false, 0.01f, -1.f);
+        else
+            FearHandler_SetForcedAddFearRate(eFearForcedRateType_Heat, 0.f, 1.f, false, -1.f, 0.05f);
+        
+        ////////////////
+        // Warm Exposure
+        if (mlCurrentHeatLevel >= eHeatLevel_Warm)
+            Effect_ToneMapping_FadeExposure(mfExposureBase + fExposureToAdd, gfHeatExposureChangeTime);
+        else
+            Effect_ToneMapping_FadeExposure(mfExposureBase, gfHeatExposureChangeTime);
+                
+        //////////////////////////////////
+        // Very Hot Sun flare & Refraction
+        bool bIsVeryHot = mlCurrentHeatLevel >= eHeatLevel_VeryHot;
+        SetExtremeHeatEffectsActive(bIsVeryHot);
+        
+        ////////////////
+        // Scorching DOF
+        SetHeatDOFActive(mlCurrentHeatLevel >= eHeatLevel_Scorching);
+        
+        /////////////////
+        // Current States
+        cLuxPlayer@ pPlayer = cLux_GetPlayer();
+        int lPlayerState = pPlayer.GetCurrentStateId();
+        bool bPlayerStateOK = lPlayerState != ePlayerState_InteractiveCutsceneAnimation &&
+                        lPlayerState != ePlayerState_InteractiveCameraAnimation &&
+                        lPlayerState != ePlayerState_Custom_ReadMemoryCylinder &&
+                        lPlayerState != ePlayerState_CutsceneAnimation &&
+                        lPlayerState != ePlayerState_Custom_Inventory &&
+                        lPlayerState != ePlayerState_Custom_PermaFail &&
+                        lPlayerState != ePlayerState_Custom_Struggle &&
+                        lPlayerState != ePlayerState_CustomControls &&
+                        lPlayerState != ePlayerState_Conversation && 
+                        lPlayerState != ePlayerState_ClimbLedge && 
+                        lPlayerState != ePlayerState_Custom_CheckBaby && 
+                        lPlayerState != ePlayerState_Custom_Drinking && 
+                        lPlayerState != ePlayerState_Custom_UsingItem && 
+                        lPlayerState != ePlayerState_Custom_UsingRadio && 
+                        lPlayerState != ePlayerState_Read &&
+                        lPlayerState != ePlayerState_Dead;
+
+        bool bGlobalStateOK = bPlayerStateOK && 
+                        pPlayer.GetCurrentMoveStateId() == eMoveState_Normal && 
+                        Voice_AnySceneIsActive()==false && 
+                        pPlayer.GetCharacterBody().IsOnGround();
+        
+        //////////////
+        // Heat Events
+        if (mbShouldPerformEvents)
+        {
+            bool bShouldPerformEvents = Sketchbook_IsFlashbackActive()==false && bGlobalStateOK;
+                                        
+            /////////////
+            // Move speed
+            if (mbShouldAffectMoveSpeed && bShouldPerformEvents)
+			{
+				Player_SetMoveSpeedMul(fMoveSpeedMul, ePlayerMoveSpeedMulType_Heat);
+			}
+            
+            ////////////////////
+            // Breathing & Barks
+            // TEMP & TODO: All breathing and barking should be moved to the EmotionHandler
+            mfTimeSinceLastBark += afTimeStep;
+            cVector3f vVelocity = pPlayer.GetCharacterBody().GetVelocity(afTimeStep);
+            vVelocity.y=0.f;
+            bool bPlayerIsMoving = vVelocity.Length()>0.1f;
+            float fTimeBetweenBarks = cMath_RandRectf(8, 12);
+            fTimeBetweenBarks*=fTimeBetweenBarlksMul;
+            bool bGettingTired = false;
+            
+            if (bPlayerIsMoving)
+            {
+                mfTimeSinceLastStop += afTimeStep;
+                bGettingTired = mfTimeSinceLastStop > cMath_RandRectf(4.f, 8.f);
+                
+                if (bGettingTired)
+                    fTimeBetweenBarks*=0.5f;
+            }
+            else
+            {
+                mfTimeSinceLastStop = 0.f;
+            }
+            
+            //////////////////////
+            // Exhausted Breathing
+            if (mbInShadow==false)
+            {
+                if (mlCurrentHeatLevel >= eHeatLevel_Hot && mfTimeSinceLastBark >= fTimeBetweenBarks && bShouldPerformEvents)
+                {
+                    StopHeatBreathingLoop();
+					mlHeatBreathingLoopID = PlayerEmotion_PlaySound(eEmotionPlaylistType_Breathing, eEmotionSoundType_Loop, 1, "player/vocalisations/fear/trap_breathing", -1, 0.1, 1);
+					cLux_AddTodoMessage(" Replace HeatBreathLoop sound!");
+                    mfTimeSinceLastBark = 0.f;
+                }
+                 mfTimeSinceLastReliefSound += afTimeStep;
+            }
+            ////////////////////
+            // Play relief sound
+            else if (mlCurrentHeatLevel > eHeatLevel_Warm && 
+                    mfTimeInShadow >= 1.f && 
+                    mfTimeSinceLastReliefSound >= gfTimeBetweenReliefReactions)
+            {
+				PlayerEmotion_StopSound(eEmotionPlaylistType_Breathing, mlHeatBreathingLoopID);
+				PlayerEmotion_PlaySound(eEmotionPlaylistType_Breathing, eEmotionSoundType_OneShotEvent, 3, "player/vocalisations/actions/player_laudanum_relief", -1, 0.1, 0.5);
+				cLux_AddTodoMessage(" Replace HeatRelief sound!");
+                mfTimeSinceLastReliefSound = 0.f;
+            }
+            
+            //////////////
+            // Anim Events
+            mfTimeSinceLastEvent+=afTimeStep;
+            float fTimeBetweenEvents = cMath_RandRectf(gfMinTimeBetweenEvents, gfMaxTimeBetweenEvents);
+            
+            if (mbAnimationEventsActive &&
+				mbInShadow == false && bShouldPerformEvents && 
+				bPlayerIsMoving && bIsVeryHot && 
+				(mfTimeSinceLastEvent > fTimeBetweenEvents) && bGettingTired)
+            {
+                PlayerBody_StopAnimationLayer(ePlayerBodyAnimationLayer_FullBody, 0.3f);
+                PlayerBody_PlayCutsceneAnimation(sHeatEventAnim, false, 0.5f, "");
+				
+				PlayerEmotion_PlaySound(eEmotionPlaylistType_Breathing, eEmotionSoundType_OneShotEvent, 2, sHeatBark, -1, 0.1, 0.5);
+				cLux_AddTodoMessage(" Replace HeatBark sound!");
+                mfTimeSinceLastEvent = 0.f;
+            }
+        }
+        
+        ///////////////
+        // Protect eyes
+        if (mbShouldProtectEyes)
+        {
+            cLightDirectional@ pDirLight = cLux_GetCurrentMap().GetWorld().GetDirectionalLight();
+            cVector3f vSunDir = cMath_Vector3Normalize(pDirLight.GetDirection());
+            cVector3f vForward = cMath_Vector3Normalize(cLux_GetPlayer().GetCamera().GetForward());
+            float fAngleTowardsTheSun = cMath_Vector3Dot(vForward, vSunDir);
+            bool bIsFacingTheSun = fAngleTowardsTheSun < -0.5f;
+            
+            mfTimeFacingTheSun = bIsFacingTheSun? mfTimeFacingTheSun + afTimeStep : 0.f;
+            
+            bool bProtectEyes = bIsFacingTheSun && 
+                                mbInShadow == false && 
+                                (mlCurrentHeatLevel >= eHeatLevel_Scorching) && 
+                                Item_IsHeld()==false && 
+                                bGlobalStateOK && 
+                                mfTimeFacingTheSun > gfTimeBeforeProtectingEyes;
+                
+            if (bProtectEyes && mbIsProtectingEyesFromSun==false)
+            {
+                mBaseObj.Timer_Add("OnTimer_ProtectEyesAnimLoop", 1.666f, "OnTimer_ProtectEyesAnimLoop");
+                PlayerBody_PlayAnimation("player_rarm_protect_from_storm_start", ePlayerBodyAnimationLayer_RightArm, false, false, false);
+                PlayerBody_SetArmAnimationPitchLimits(-20.f, 60.f);
+                PlayerBody_SetArmAnimationPitch(true, true);
+            }
+            else if (bProtectEyes==false && mbIsProtectingEyesFromSun)
+            {
+                mBaseObj.Timer_Remove("OnTimer_ProtectEyesAnimLoop");
+                PlayerBody_PlayAnimation("player_rarm_protect_from_storm_end", ePlayerBodyAnimationLayer_RightArm, false, false, true);
+                PlayerBody_ResetArmAnimationPitchLimits(); // TODO: Not sure if the first param should remain true.
+                PlayerBody_SetArmAnimationPitch(true, false);
+            }
+            mbIsProtectingEyesFromSun = bProtectEyes;
+        }
+    }
+	
+	//------------------------------------------------------------
+	
+	void StopHeatBreathingLoop()
+	{
+		if (mlHeatBreathingLoopID >= 0) return;
+		PlayerEmotion_StopSound(eEmotionPlaylistType_Breathing, mlHeatBreathingLoopID);
+		mlHeatBreathingLoopID = -1;
+	}
+	
+	//------------------------------------------------------------
+	
+	void PostUpdate(float afTimeStep)
+	{
+		if (mbIsActive==false || 
+        cLux_GetPlayer().IsActive()==false || 
+        cLux_GetGodModeActivated())
+			return;
+        
+        //////////////////////////////////////////
+        // Check whether the player is getting lit
+        mfShadowCheck -= afTimeStep;
+        if (mfShadowCheck < 0.0f)
+        {
+            mfShadowCheck = 0.1f;
+            cVector3f vPlayerPos = cLux_GetPlayer().GetCharacterBody().GetPosition()+ (cVector3f_Up * gfShadowCheckDistAboveCamera);
+            mbInShadow = Player_IsInLiquid() || cLux_CheckIsInDirectLight(vPlayerPos) == false || Player_GetLightLevel(true, true) < 0.1f;
+        }
+    }
+	
+	//------------------------------------------------------------
+	
+	void VariableUpdate(float afDeltaTime){}
+
+	//------------------------------------------------------------
+	
+	void OnDraw(float afFrameTime){}
+	void OnPostRender(float afFrameTime){}
+	
+	//------------------------------------------------------------
+	
+	void OnRenderSolid(cRendererCallbackFunctions@ apFunctions){}
+	
+	//------------------------------------------------------------
+    
+    /////////////////////////////////////////
+	// FUNCTIONS
+	/////////////////////////////////////////
+    
+	//-------------------------------------------------------
+	
+	void OnTimer_ProtectEyesAnimLoop(uint64 alTimer)
+	{
+		PlayerBody_PlayAnimation("player_rarm_protect_from_storm_loop", ePlayerBodyAnimationLayer_RightArm, true, false, false);
+	}
+    
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// INTERFACE
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	void SetHeatActive(const bool abActive, const float afMaxHeatExposureToAdd, const bool abShouldPerformEvents, const bool abShouldAffectMoveSpeed, const bool abShouldProtectEyes)
+	{
+		mbIsActive = abActive;
+		mfLevelMaxExposureFromHeat = afMaxHeatExposureToAdd;
+        mbShouldPerformEvents = abShouldPerformEvents;
+        mbShouldAffectMoveSpeed = abShouldAffectMoveSpeed;
+        mbShouldProtectEyes = abShouldProtectEyes;
+        
+        if (abActive==false)
+        {
+            ///////////////
+            // Reset Values
+            mbInShadow = true;
+            mfShadowCheck = 0.f;
+            mfTimeUnderTheSun = 0.f;
+            mfTimeInShadow = 0.f;
+            mfTimeSinceLastBark = 0.f;
+            mfTimeSinceLastReliefSound = 0.f;
+            mfTimeSinceLastEvent = 0.f;
+            mlCurrentHeatLevel = eHeatLevel_None;
+            mfTimeSinceLastStop = 0.f;
+
+            //////////////////////
+            // Fade active effects
+            float fFadeOutTime = 5.f;
+            Player_FadeMoveSpeedMulTo(1.f, fFadeOutTime, ePlayerMoveSpeedMulType_Heat);
+            Effect_ToneMapping_FadeExposure(mfExposureBase, fFadeOutTime);
+            SetExtremeHeatEffectsActive(false);
+            SetHeatDOFActive(false);
+        }
+        //////////////////
+        // Create entities
+        else if (mbEntitiesCreated==false)
+        {
+            cLuxMap@ pMap = cLux_GetCurrentMap();
+            
+            cLightDirectional@ pDirLight = pMap.GetWorld().GetDirectionalLight();
+            cVector3f vDir = pDirLight.GetDirection();
+            cVector3f vCamPos = cLux_GetPlayer().GetCamera().GetPosition();
+            cMatrixf matSpawn = cMatrixf_Identity;
+            matSpawn.SetTranslation(vCamPos);
+
+            pMap.CreateEntity("Heat_Refraction", "heat_effect_refraction.ent", matSpawn, cVector3f_One);
+            matSpawn.SetTranslation(vCamPos-vDir*100.0f);
+            pMap.CreateEntity("Heat_Sun", "heat_effect_sun.ent", matSpawn, cVector3f_One);
+
+            Entity_SetCollideCharacter("Heat_Sun",false);
+            Entity_SetCollide("Heat_Sun",false);
+            Entity_SetCollideCharacter("Heat_Refraction",false);
+            Entity_SetCollide("Heat_Refraction",false);
+
+            Entity_AttachToEntity("Heat_Sun", "Player", "", false, false, false);
+            Entity_AttachToEntity("Heat_Refraction", "Player", "", false, false, false);
+
+            Entity_SetEffectsActive("Heat_Sun", false, false);
+            LensFlare_SetVisible("Heat_Sun_LensFlare_1", false);
+            Entity_SetActive("Heat_Refraction", false);
+            
+            mbEntitiesCreated = true;
+			mbEntitiesAttached = true;
+        }
+	}
+
+	//---------------------------------------------------
+    
+    void SetEventsActive(const bool abActive)
+    {
+        mbShouldPerformEvents = abActive;
+    }
+	
+	//---------------------------------------------------
+	
+	void SetAnimationEventsActive(bool abX)
+	{
+		mbAnimationEventsActive = abX;
+	}
+    
+	//---------------------------------------------------
+
+	bool InShadow()
+	{
+		return mbInShadow;
+	}
+	
+	//------------------------------------------------------------
+    
+    int GetHeatLevel()
+    {
+        return mlCurrentHeatLevel;
+    }
+    
+    //------------------------------------------------------------
+    
+    void SetHeatLevel(const int alHeatLevel)
+    {
+        cMath_Clamp(alHeatLevel, eHeatLevel_None, eHeatLevel_Scorching);
+        mlCurrentHeatLevel = alHeatLevel;
+    }
+    
+    //------------------------------------------------------------
+    
+    void SetExtremeHeatEffectsActive(const bool abActive)
+    {
+        if (mbSetExtremeHeatEffectsActive == abActive) return;
+        
+        Entity_SetActive("Heat_Sun", abActive);
+        Entity_SetEffectsActive("Heat_Sun", abActive, true);
+        
+        if (Entity_IsActive("Heat_Refraction")==false)
+            Entity_SetActive("Heat_Refraction", true);
+        Entity_SetEffectsActive("Heat_Refraction", abActive, true);
+        
+        LensFlare_SetVisible("Heat_Sun_LensFlare_1", abActive);
+        mbSetExtremeHeatEffectsActive = abActive;
+    }
+    
+    //------------------------------------------------------------
+    
+    void SetHeatDOFActive(const bool abActive)
+    {
+        if (abActive)
+        {
+            if (mlHeatDOF==-1)
+                mlHeatDOF = Effect_DoF_Start(0.1f, 15.0f, 1.0f, 100.0f);
+        }
+        else if (mlHeatDOF>-1)
+        {
+            Effect_DoF_FadeOut(mlHeatDOF, 2.f);
+            mlHeatDOF=-1;
+        }
+    }
+    
+    //------------------------------------------------------------
+    
+    void SetAffectMoveSpeed(const bool abAffectSpeed)
+    {
+        mbShouldAffectMoveSpeed = abAffectSpeed;
+    }
+    
+    //------------------------------------------------------------
+    
+    void SetProtectEyesFromSun(const bool abActive)
+    {
+        mbShouldProtectEyes = abActive;
+    }
+    
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// GLOBALS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnAction(int alAction, bool abPressed){}
+	
+	//------------------------------------------------------------
+	
+	void OnAnalogInput(int alAnalogId, const cVector3f &in avAmount){}
+	void OnExitPressed(){}
+	void AppGotInputFocus(){}
+	void AppLostInputFocus(){}
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+    bool mbIsActive = false;
+	int mlCurrentHeatLevel = eHeatLevel_None;
+	int mlPrevHeatLevel = eHeatLevel_None;
+	bool mbInShadow = true;
+	float mfShadowCheck=0.f;
+    float mfTimeUnderTheSun = 0.f;
+    float mfTimeInShadow = 0.f;
+    float mfExposureBase = 1.0f;
+    float mfLevelMaxExposureFromHeat = 0.f;
+	bool mbEntitiesCreated = false;
+	[nosave] bool mbEntitiesAttached = false;
+	bool mbSetExtremeHeatEffectsActive=false;
+	int mlHeatDOF = -1;
+    float mfTimeSinceLastBark = 0.f;
+    float mfTimeSinceLastReliefSound = 0.f;
+    float mfTimeSinceLastEvent = 0.f;
+    bool mbShouldPerformEvents = true;
+	bool mbAnimationEventsActive = true;
+    float mfTimeSinceLastStop = 0.f;
+    bool mbIsProtectingEyesFromSun = false;
+    bool mbShouldProtectEyes = true;
+    bool mbShouldAffectMoveSpeed = true;
+    float mfTimeFacingTheSun = 0.f;
+	int mlHeatBreathingLoopID = -1;
+	
+	//------------------------------------------------------------
+}

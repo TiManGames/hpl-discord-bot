@@ -1,0 +1,354 @@
+#include "interfaces/Prop_Interface.hps"
+#include "helpers/helper_props.hps"
+#include "custom/helpers/helper_props_custom.hps"
+#include "custom/components/ComponentInterfaces_Custom.hps"
+
+class cScrPropPadlock : iScrProp, iScrProp_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		/////////////
+		// Vars
+		msDoorEntity = apInstanceVars.GetVarString("DoorEntity", "");
+		msAttachedEntity = apInstanceVars.GetVarString("EntityAttached", "");
+		msAttachedBody = apInstanceVars.GetVarString("BodyAttached", "");
+		mbUseSwingPhysics = apInstanceVars.GetVarBool("UseSwingPhysics", false);
+		msAnimationPositionEntity = apInstanceVars.GetVarString("AnimationPositionEntity", "");
+		
+		/////////////
+		// Wooden Breakable
+		@mpWoodenBreakableComponent = UserComponent_WoodenBreakableComponent_Create(mBaseObj);
+		mpWoodenBreakableComponent.SetMainBody(mBaseObj.GetMainBody());
+		mpWoodenBreakableComponent.SetupAfterLoad(apWorld, apVars, apInstanceVars);
+		
+		////////////
+		// Preload
+		Entity_Preload("padlock_cut.ent");
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnAfterWorldLoad()
+	{
+		////////////////
+		// Don't sleep!
+		if (mbUseSwingPhysics)
+		{
+			mBaseObj.SetAutoSleep(false);
+			
+			for (int i = 0; i < mBaseObj.GetBodyNum(); ++i)
+			{
+				mBaseObj.GetBody(i).SetAutoDisable(false);
+			}
+		}
+		
+		////////////////
+		// Setup
+		cLuxMap@ pMap = mBaseObj.GetMap();
+		iLuxEntity@ pEnt = pMap !is null ? pMap.GetEntityByName(msAttachedEntity, eLuxEntityType_Prop) : null;
+		
+		if (pMap is null) return;
+		if (pEnt is null) return;
+		
+		m_idAttachedEntity = pEnt.GetID();
+		
+		iPhysicsBody@ pBody = pEnt.GetBodyFromName(msAttachedBody);
+		if (pBody !is null)
+		{
+			m_idAttachedBody = pBody.GetID();
+			
+			cMatrixf mtxDoorInverse = cMath_MatrixInverse(pBody.GetWorldMatrix());
+			mvPadlockAttachPos = cMath_MatrixMul(mtxDoorInverse, mBaseObj.GetMainBody().GetWorldPosition());
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnUpdate(float afTimeStep)
+	{
+		/////////////////
+		// Swing physics
+		if (mbUseSwingPhysics == false) return;
+		
+		iPhysicsBody@ pBody = mBaseObj.GetMainBody();
+		iLuxEntity@ pEntityAttached = cLux_ID_Entity(m_idAttachedEntity);
+		iPhysicsBody@ pBodyAttached = cLux_ID_Body(m_idAttachedBody);
+		
+		if (pBody is null) return;
+		if (pBodyAttached is null) return;
+		if (pEntityAttached is null) return;
+		if (pEntityAttached.IsActive() == false) return;		
+		
+		cVector3f vPos = pBody.GetWorldPosition();
+		cVector3f vGoal = cMath_MatrixMul(pBodyAttached.GetWorldMatrix(), mvPadlockAttachPos);
+		cVector3f vDelta = vGoal - vPos;
+		
+		pBody.StaticLinearMove(vDelta / afTimeStep);
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetProperties()
+	{
+		if (mpWoodenBreakableComponent is null) return;
+		mpWoodenBreakableComponent.ResetProperties();
+	}
+	
+	//------------------------------------------------------------
+	
+	void BeforeEntityDestruction()
+	{
+		if (mpWoodenBreakableComponent is null) return;
+		mpWoodenBreakableComponent.BeforeEntityDestruction();
+		
+		bool bApplyForces = mLastDamageType != eDamageType_Default;	
+		UnlockDoor(bApplyForces);
+		
+		////////////////////
+		// Wake up the broken ent
+		const tString sBrokenEntity = mBaseObj.GetName() + "_broken";
+		iLuxEntity@ pEnt = mBaseObj.GetMap().GetEntityByName(sBrokenEntity, eLuxEntityType_Prop);
+		if (pEnt is null) return;
+		
+		float fTorqueMul = bApplyForces ? 1.0f : 0.2f;
+		for (int i = 0; i < pEnt.GetBodyNum(); ++i)
+		{
+			iPhysicsBody@ pBody = pEnt.GetBody(i);
+			
+			pBody.SetCollide(true);
+			pBody.SetCollideFlags(mBaseObj.GetMainBody().GetCollideFlags());
+			pBody.AddTorque(cMath_RandomSphereSurfacePoint(1.f) * fTorqueMul);
+		}
+		
+		mBaseObj.GetMap().AddTimer(sBrokenEntity, 0.3f, "$_Padlock_OnTimer_ResetCollideFlag");
+	}
+		
+	//------------------------------------------------------------
+	
+	void OnStartMove()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetAnimationPositionEntity()
+	{
+		cScript_SetGlobalReturnString(msAnimationPositionEntity);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_Break()
+	{
+		//mBaseObj.GiveDamage(mBaseObj.GetMainBody(), mBaseObj.GetPosition(), mBaseObj.GetPosition(), eDamageType_Default, 1.0f, 1, 1, 1, tID_Invalid, 0);
+		tString sCutFile = "padlock_cut.ent";
+		cMatrixf mtxCutMtx = mBaseObj.GetBodyFromName("Body_1").GetWorldMatrix();
+		mtxCutMtx.SetTranslation(mtxCutMtx.GetTranslation()+mtxCutMtx.GetTranspose().GetUp()*0.1125);
+		mBaseObj.GetMap().CreateEntity(mBaseObj.GetName()+"_Cut", sCutFile, mtxCutMtx, 1);
+		
+		iLuxEntity@ pCutEntity = mBaseObj.GetMap().GetLatestEntity();
+		if (pCutEntity is null)
+		{
+			Error("[Prop_Padlock] Unable to create entity '"+mBaseObj.GetName()+"_Cut' from ent file '"+sCutFile+"'!");
+			return;
+		}
+		
+		pCutEntity.SetVarString("Padlock", mBaseObj.GetName());
+		
+		mBaseObj.SetActive(false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_UnlockDoor()
+	{
+		UnlockDoor(false);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnSetActive(bool abX)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void GiveDamage(iPhysicsBody@ apBodyHit, const cVector3f&in avOrigin, const cVector3f&in avHitPos, cLuxDamageProperties@ apDamageProps)
+	{
+		mLastDamageType = eDamageType(apDamageProps.mDamageType);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnHealthChange()
+	{
+		if (mpWoodenBreakableComponent is null) return;
+		mpWoodenBreakableComponent.OnHealthChange();
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnConnectionStateChange(iLuxEntity@ apEntity,int alState)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnUpdateAutoSleep()
+	{
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnPhysicsCollision(iPhysicsBody @apBody, iPhysicsBody @apCollideBody, cPhysicsContactData&in apContactData)
+	{
+		if (mpWoodenBreakableComponent is null) return;
+		mpWoodenBreakableComponent.OnPhysicsCollision(apBody, apCollideBody, apContactData);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	bool CanInteract(int alType, iPhysicsBody@ apBody)
+	{
+		return true;
+	}
+	
+	//------------------------------------------------------------
+		
+	bool OnInteract(int alType, iPhysicsBody@ apBody, const cVector3f &in avFocusPos, const tString&in asData)
+	{
+		return true;
+	}
+    
+    //------------------------------------------------------------
+	
+	int GetInteractIconId(int alType, iPhysicsBody@ apBody)
+	{
+		return eCrossHairState_Default;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// Local
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void UnlockDoor(bool abApplyForces)
+	{
+		array<iLuxEntity@> vDoors;
+		if (Map_GetEntityArray(msDoorEntity, vDoors, eLuxEntityType_Prop)==false)
+		{
+			Error("[Padlock] No door entity called " + msDoorEntity + " found!");
+			return;
+		}
+		
+		for (int i=0; i<vDoors.size(); i++)
+		{
+			iLuxEntity@ pDoorEnt = vDoors[i];
+			if (pDoorEnt is null) continue;
+				
+			tString sDoorClass = pDoorEnt.GetClassName();	
+			
+			////////////////////
+			// A slide prop?
+			if (sDoorClass == "cScrPropSlide")
+			{
+				Slide_SetLocked(msDoorEntity, false, true);
+				Slide_AutoMoveTo(msDoorEntity, 0.15);
+			}
+			
+			////////////////////
+			// A swing door?
+			else if (sDoorClass == "cScrPropSwingDoor")
+			{
+				SwingDoor_SetBlocked(msDoorEntity, false, true);
+				SwingDoor_SetLocked(msDoorEntity, false, true);
+				SwingDoor_PushOpen(msDoorEntity, abApplyForces ? 1.5f : 0.15f);
+			}
+		}
+		
+	}
+		
+	//------------------------------------------------------------
+
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool mbUseSwingPhysics = false;
+	
+	tString msDoorEntity;
+	tString msAttachedEntity;
+	tString msAttachedBody;
+	tString msAnimationPositionEntity;
+	
+	cVector3f mvPadlockAttachPos = 0.f;
+	
+	tID m_idAttachedEntity = tID_Invalid;
+	tID m_idAttachedBody = tID_Invalid;
+	
+	eDamageType mLastDamageType = eDamageType_Default;
+	
+	[volatile] iScrWoodenBreakableComponent_Interface@ mpWoodenBreakableComponent = null;
+	
+	//------------------------------------------------------------
+}

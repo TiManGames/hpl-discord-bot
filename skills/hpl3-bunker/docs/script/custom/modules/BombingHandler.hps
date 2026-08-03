@@ -1,0 +1,431 @@
+#include "interfaces/UserModule_Interface.hps"
+#include "custom/modules/ModuleInterfaces_Custom.hps"
+#include "base/Player_Types.hps"
+#include "base/InputHandler_Types.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_map.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_player.hps"
+#include "helpers/helper_player_custom.hps"
+#include "helpers/helper_props.hps"
+#include "helpers/helper_props_custom.hps"
+
+//----------------------------------------------------------------------------------------
+
+/////////////////////////////////////////
+// SETTINGS
+/////////////////////////////////////////
+
+//----------------------------------------------------------------------------------------
+
+const float gfMinTimeSinceNextBomb = 3.5 * 60.0f; 
+const float gfMaxTimeSinceNextBomb = 6.5 * 60.0f;
+const float gfTimeSinceBombAfterEffects = 0.5f;
+
+//----------------------------------------------------------------------------------------
+
+class cScrBombingHandler : iScrUserModule, iScrUserModule_Interface, iScrBombingHandler_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		mfCountDownTime = cMath_RandRectf(gfMinTimeSinceNextBomb, gfMaxTimeSinceNextBomb);
+	}
+		
+	//------------------------------------------------------------
+	
+	void LoadUserConfig()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void SaveUserConfig()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INTERFACE
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetActive(bool abX)
+	{
+		mbActive = abX;
+		cLux_AddDebugMessage("[BombingHandler] Set Active: " + mbActive);
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetActive()
+	{
+		return mbActive;
+	}
+	
+	//------------------------------------------------------------
+	
+	void TriggerAfterEffects()
+	{
+		///////////////////////
+		// Shake effect
+		if (mbWeak)
+		{
+			Effect_Shake_Start(0.005, 0.25, 0.01, 0.5);
+			Effect_Rumble_Start(0.5, 0.25f, 0.f, 0.25f);
+		}
+		else
+		{
+			Effect_Shake_Start(0.025, 0.25, 0.01, 0.5); // Initial explotion
+			Effect_Shake_Start(0.005, 1, 0.5, 2.5); //Shockwave
+			Effect_Rumble_Start(0.75f, 1.f, 0.f, 1.5f);;
+		}
+		
+		cVector3f vPlayerPos = cLux_GetPlayer().GetCharacterBody().GetPosition();
+		
+		//////////////////////
+		// Spawn dust particle
+		if (mbWeak == false)
+		{
+			float fCeilingDist;
+			cVector3f vCeilingNrm;
+			float fWallAheadDist;
+			cVector3f vWallAheadNrm;
+			
+			cVector3f vForward = cLux_GetPlayer().GetCharacterBody().GetForward();
+			
+			/////////////////////////////////
+			// Look for a ceiling where the dust comes from
+			iPhysicsBody@ pHitBody = cLux_GetClosestBody(vPlayerPos, cVector3f_Up, 20.f, fCeilingDist, vCeilingNrm);
+			if (pHitBody !is null)
+			{
+				cParticleSystem @pPS = ParticleSystem_CreateAtEntity("BombingPS", "bombing_effect.ps", "player", true);
+				
+				if (pPS !is null)
+				{
+					////////////////////////////////
+					// Look for any walls ahead
+					@pHitBody = cLux_GetClosestBody(vPlayerPos, vForward, 5.0f, fWallAheadDist, vWallAheadNrm);
+					
+					float fPSDistanceAheadOfPlayer = cMath_RandRectf(2.f, 4.f);
+					
+					//////////////////////////////////
+					// If there's a wall ahead spawn the particle near it or behind the player
+					if (pHitBody !is null)
+						fPSDistanceAheadOfPlayer = (fWallAheadDist < 1.5) ?  - 0.5 : fWallAheadDist;
+					
+					/////////////////////////////////
+					// If there's no wall ahead and the player is running, spawn the PS further away to get a chance to see it.
+					else if (Player_GetRunning())
+						fPSDistanceAheadOfPlayer *= 2.0;
+					
+					/////////////////
+					// Set PS position
+					cVector3f vRnd = cMath_Vector3Cross(vForward, cVector3f_Up) * cMath_RandRectf(-1.0, 1.0);
+					cVector3f vParticlePos = vPlayerPos + (vForward * fPSDistanceAheadOfPlayer - 1.0) + (cVector3f_Up * fCeilingDist) + vRnd;
+					pPS.SetWorldPosition(vParticlePos);
+				}
+			}
+		}
+		
+		///////////////////////////////////////////////
+		// if the detonation happened before the prev ended clear the prev effected lamps
+		StopAffectedLampsFlickering();
+		
+		//////////////////////////////////
+		// Flicker lamps nearby
+		if (mbFlickerLights)
+		{
+			for (int i=0; i<mvLampsInCurrentLevel.size(); i++)
+			{
+				tString sLamp = mvLampsInCurrentLevel[i];
+				
+				////////////////////////////////////////
+				// If the lamp is already flickering or unlit ignore it. 
+				if (Lamp_GetLit(sLamp)==false) continue;
+				if (Lamp_GetFlickerActive(sLamp)) continue;
+				
+				iLuxEntity@ pEnt = cLux_GetCurrentMap().GetEntityByName(sLamp, eLuxEntityType_Prop, "cScrPropLamp");
+				if (pEnt is null) continue;
+				
+				float fDist = cMath_Vector3Dist(vPlayerPos, pEnt.GetPosition());
+				float fMaxFlickerDist = 10.f;
+				if (fDist < fMaxFlickerDist)
+				{
+					Lamp_SetupFlicker(sLamp, 0.015, 0.15, 0.2, 1.0, true, "", "", "", "", 0.75f, 0.85f);
+					Lamp_SetFlickerActive(sLamp, true);
+					
+					/////////////////////////////
+					// Store the affected lamps to reverse the effect later
+					mvAffectedLamps.push_back(sLamp);
+				}
+			}
+		}
+		
+		mfResetLampsFlickerTimer = cMath_RandRectf(1.8, 2.2);
+	}
+	
+	//------------------------------------------------------------
+	
+	void TriggerBombEffect()
+	{
+		cLux_AddDebugMessage("[BombingHandler] BombEffect Triggered");
+		Sound_PlayGui("officer_hub/amb/war_bomb", 1.0, eSoundEntryType_World);
+		Sound_AddClosedCaption("GeneralClosedCaptions", "MortarExplosion");
+		mfAfterEffectsTriggerTimer = gfTimeSinceBombAfterEffects;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetWeak(bool abX)
+	{
+		mbWeak = abX;
+	}
+	
+	//------------------------------------------------------------
+	
+	void StopAffectedLampsFlickering()
+	{
+		for (int i=0; i<mvAffectedLamps.size(); i++)
+		{
+			tString sLamp = mvAffectedLamps[i];
+			iLuxEntity@ pEnt = cLux_GetCurrentMap().GetEntityByName(sLamp, eLuxEntityType_Prop, "cScrPropLamp");
+			if (pEnt is null) continue;
+			
+			Lamp_SetFlickerActive(sLamp, false);
+		}
+		
+		mvAffectedLamps.resize(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// MAP LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+		mfCountDownTime = cMath_RandRectf(gfMinTimeSinceNextBomb, gfMaxTimeSinceNextBomb);
+		mfAfterEffectsTriggerTimer = 0.0;
+		mfResetLampsFlickerTimer = 0.0;
+		
+		array<iLuxEntity@> vLamps;
+		cLux_GetCurrentMap().GetEntityArray("*", eLuxEntityType_Prop, "cScrPropLamp", vLamps);
+		
+		mvLampsInCurrentLevel.resize(0);
+		mvAffectedLamps.resize(0);
+		
+		for (uint i=0; i<vLamps.size(); i++)
+		{
+			tString sLampName = vLamps[i].GetName();
+			if (sLampName == "SaveLamp") continue;
+			mvLampsInCurrentLevel.push_back(sLampName);
+		}
+
+	}
+
+	//------------------------------------------------------------
+
+	void OnMapLeave(cLuxMap @apMap)
+	{
+		mvLampsInCurrentLevel.resize(0);
+		StopAffectedLampsFlickering();
+	}
+	
+	//------------------------------------------------------------
+	
+	void PreloadData(cLuxMap @apMap)
+	{
+		////////////
+		// Preload
+		ParticleSystem_Preload("bombing_effect.ps");
+	}
+	
+	//------------------------------------------------------------
+
+	void CreateWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void DestroyWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnEnterContainer(const tString&in asOldContainer)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnLeaveContainer(const tString&in asNewContainer)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep)
+	{
+		if (mbActive==false) return;
+		
+		mfCountDownTime -= afTimeStep;
+		if (mfCountDownTime <= 0.0)
+		{
+			mfCountDownTime = cMath_RandRectf(gfMinTimeSinceNextBomb, gfMaxTimeSinceNextBomb);
+			TriggerBombEffect();
+		}
+		
+		if (mfAfterEffectsTriggerTimer > 0)
+		{
+			mfAfterEffectsTriggerTimer -= afTimeStep;
+			
+			if (mfAfterEffectsTriggerTimer <= 0.0)
+				TriggerAfterEffects();
+		}
+		
+		if (mfResetLampsFlickerTimer > 0)
+		{
+			mfResetLampsFlickerTimer -= afTimeStep;
+			
+			if (mfResetLampsFlickerTimer <= 0.0)
+			{
+				StopAffectedLampsFlickering();
+				
+				/////////////////////////
+				// Small chance to drop another bomb right away
+				int lRnd = cMath_RandRectl(0, 7);
+				if (lRnd == 0)
+					mfCountDownTime = cMath_RandRectf(1.0, 3.0);
+			}
+		}
+		
+		/*cLux_AddDebugMessage("mfCountDownTime " + mfCountDownTime);
+		cLux_AddDebugMessage("mfAfterEffectsTriggerTimer " + mfAfterEffectsTriggerTimer);
+		cLux_AddDebugMessage("mfResetLampsFlickerTimer " + mfResetLampsFlickerTimer);*/
+	}
+	
+	//------------------------------------------------------------
+	
+	void VariableUpdate(float afDeltaTime)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void PostUpdate(float afTimeStep)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnAction(int alAction, bool abPressed)
+	{
+
+	}
+	
+	//------------------------------------------------------------
+
+	void OnAnalogInput(int alAnalogId, const cVector3f &in avAmount)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnExitPressed()
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void AppGotInputFocus()
+	{
+	
+	}
+	void AppLostInputFocus()
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GUI
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnGui(float afTimeStep)
+	{
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnDraw(float afFrameTime)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnPostRender(float afFrameTime)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool mbActive = false;
+	float mfCountDownTime = 0.0f;
+	float mfAfterEffectsTriggerTimer = 0.0f;
+	float mfResetLampsFlickerTimer = 0.0f;
+	array<tString> mvLampsInCurrentLevel;
+	array<tString> mvAffectedLamps;
+	bool mbWeak = false;
+	bool mbFlickerLights = false;
+	
+	//------------------------------------------------------------
+}

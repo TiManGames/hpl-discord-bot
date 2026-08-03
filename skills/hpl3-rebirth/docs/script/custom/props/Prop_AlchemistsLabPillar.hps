@@ -1,0 +1,121 @@
+#include "custom/props/Prop_Rigid.hps"
+
+class cScrAlchemistsLabPillar : cScrPropRigid
+{
+	void Init() override
+	{
+		mRotatePid.SetErrorNum(10);
+		mRotatePid.p = 10.0f;
+		mRotatePid.i = 0.0f;
+		mRotatePid.d = 0.5f;
+		cScrPropRigid::Init();
+	}
+	
+	bool OnUpdateAutoSleep()
+	{
+		return !mbAutoMoving;
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetAutoMove()
+	{
+		mbAutoMoving = false;
+		mRotatePid.Reset();
+	}
+	
+	//------------------------------------------------------------
+		
+	void OnUpdate(float afTimeStep)
+	{
+		if(mbAutoMoving)
+		{
+			iPhysicsJointHinge@ pJoint = cPhysics_ToJointHinge(mBaseObj.GetJoint(0));
+			iPhysicsBody@ pBody = mBaseObj.GetMainBody();
+			if (cMath_Abs(cMath_GetAngleDistanceRad(pJoint.GetAngle(), mfAutoMoveGoal)) < cMath_ToRad(4.f))
+			{
+				//cLux_AddDebugMessage(mBaseObj.GetName() + " Resets");
+				cSoundEntity@ pSound = cLux_ID_SoundEntity(mid_MoveSound);
+				if (pSound !is null) pSound.Stop(true);
+				mid_MoveSound=tID_Invalid;
+				
+				ResetAutoMove();
+				return;
+			}
+
+			float fWantedSpeed = cMath_GetAngleDistanceRad(mfAutoMoveGoal, pJoint.GetAngle());
+			
+			cVector3f vRotateDir = pJoint.GetPinDir();
+			cVector3f vBodyVel = pBody.GetAngularVelocity();
+			cVector3f vHingeVel = vRotateDir * cMath_Vector3Dot(vRotateDir, vBodyVel);
+			cVector3f vWantedVel = vRotateDir * fWantedSpeed;
+
+			cVector3f vTorque = mRotatePid.Output(vWantedVel - vHingeVel, afTimeStep);
+			vTorque = cMath_MatrixMul(pBody.GetInertiaMatrix(), vTorque);
+			
+			pBody.AddTorque(vTorque);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetAngle()
+	{
+		float fAngle = cScript_GetGlobalArgFloat(0);
+		bool bInstant = cScript_GetGlobalArgBool(1);
+		
+		mRotatePid.Reset();
+		mBaseObj.WakeUp();
+		
+		if (bInstant)
+		{
+			SetAngleInstant(cMath_GetAngleDistanceRad(0, cMath_ToRad(fAngle)));
+			mbAutoMoving = false;
+			return;
+		}
+		
+		mfAutoMoveGoal = cMath_GetAngleDistanceRad(0, cMath_ToRad(fAngle));
+		mbAutoMoving = true;
+		
+		iPhysicsJointHinge@ pJoint = cPhysics_ToJointHinge(mBaseObj.GetJoint(0));
+		if (cMath_Abs(cMath_GetAngleDistanceRad(pJoint.GetAngle(), mfAutoMoveGoal)) >= cMath_ToRad(2.f) && mid_MoveSound==tID_Invalid)
+		{
+			mid_MoveSound = mBaseObj.PlaySound("MoveLoop", "03_04_pillar_room/pillar/pillar_move", true, false).GetID();
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	// Copy-pasted from SwingDoor's SetOpenAmount
+	void SetAngleInstant(float afAngle)
+	{
+		iPhysicsBody @pChildBody = mBaseObj.GetMainBody();
+		iPhysicsJointHinge @pJoint = cPhysics_ToJointHinge(mBaseObj.GetJoint(0));
+		
+		cQuaternion qRotation; qRotation.FromAngleAxis(pJoint.GetAngle()-afAngle, pJoint.GetPinDir());
+		cMatrixf mtxRotation = cMath_MatrixQuaternion(qRotation);
+		cMatrixf mtxBody = pChildBody.GetLocalMatrix();
+
+		cVector3f vBodyPos = pChildBody.GetLocalPosition();
+		cVector3f vPivotOffset = pJoint.GetPivotPoint() - pChildBody.GetLocalPosition();
+
+		mtxBody.SetTranslation(vPivotOffset*-1);
+		mtxBody = cMath_MatrixMul(mtxRotation, mtxBody);
+		mtxBody.SetTranslation(mtxBody.GetTranslation() + vPivotOffset + vBodyPos);
+
+		cMatrixf mtxDelta = cMath_MatrixMul(mtxBody, cMath_MatrixInverse(pChildBody.GetWorldMatrix()));
+		
+		pChildBody.SetMatrix(mtxBody);
+		pChildBody.SetAngularVelocity(cVector3f(0));
+		pChildBody.SetLinearVelocity(cVector3f(0));
+	}
+	
+	//------------------------------------------------------------
+	
+	[nosave] cPidControllerVec3 mRotatePid;
+	
+	tID mid_MoveSound;
+	
+	bool mbAutoMoving = false;
+	float mfAutoMoveGoal = 0;
+}	

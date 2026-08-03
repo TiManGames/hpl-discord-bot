@@ -1,0 +1,311 @@
+////////////////////////////////////////////////////////
+// Terrain helpers
+//
+
+//---------------------------------------------
+
+cVector4f UnpackYCoCg(cVector4f avYCoCg)
+{
+	const float kfOffset = 128.0 / 255.0;
+
+	float fScale = 1.0 / ((255.0 / 8.0) * avYCoCg.b + 1);
+	avYCoCg.rg = (avYCoCg.rg - kfOffset) * fScale;
+
+	cVector3f vRGB;
+	vRGB.r = dot(avYCoCg, cVector4f(1, -1, 0, 1));
+	vRGB.g = dot(avYCoCg, cVector4f(0,  1, 0, 1));
+	vRGB.b = dot(avYCoCg, cVector4f(-1,-1, 0, 1));
+	
+	return vRGB.rgbb;
+}
+
+cVector4f UnpackYCoCgsRGB(cVector4f avYCoCg)
+{
+	const float kfOffset = 128.0 / 255.0;
+
+	float fScale = 1.0 / ((255.0 / 8.0) * avYCoCg.b + 1);
+	avYCoCg.rg = (avYCoCg.rg - kfOffset) * fScale;
+
+	cVector3f vRGB;
+	vRGB.r = dot(avYCoCg, cVector4f(1, -1, 0, 1));
+	vRGB.g = dot(avYCoCg, cVector4f(0,  1, 0, 1));
+	vRGB.b = dot(avYCoCg, cVector4f(-1,-1, 0, 1));
+	
+	return vRGB.rgbb * vRGB.rgbb;
+}
+
+cVector3f UnpackNormal(cVector4f avX)
+{
+	float fScale = 2.0 / ((255.0 / 8.0) * avX.b + 1);
+	cVector3f vNormal = avX.wyx * cVector3f(2, fScale, 2) - 1;
+	vNormal.z = sqrt(1 - min(dot(vNormal.xy,vNormal.xy),1) );
+	return vNormal;	
+}
+
+//---------------------------------------------
+
+float GetTerrainFade(cVector2f avUV, cVector2f avRelPos)
+{
+	cVector2f vBox = abs(avUV - 0.5);
+	float fDist = clamp((afOuterRadius - dot(avRelPos, avRelPos)) * afInnerRadius, 0.0, 1.0);
+
+	return fDist * step(max(vBox.x, vBox.y), 0.5);
+}
+
+cVector4f GetNumSamples(float afDx, float afDy)
+{
+	cVector4f vSamples;
+	vSamples.x = clamp( floor(afDx), 1.0, 4.0);
+	vSamples.y = clamp( floor(afDy), 1.0, 4.0);
+	vSamples.z = 1.0 / vSamples.x;
+	vSamples.w = 1.0 / vSamples.y;
+
+	return vSamples;
+}
+
+//---------------------------------------------
+
+cVector3f SampleDiffuse(int alLayer, cVector2f avUV, cVector2f avUVx, cVector2f avUVy, cVector4f avSamples)
+{
+	cVector4f vSum = cVector4f(0, 0, 0, 0);
+	
+	//////////////
+	// Do manual ansiotropic sampling
+	avUVx *= avSamples.z;
+	avUVy *= avSamples.w;
+
+	for(float x = 0.0; x < avSamples.x; ++x)
+	for(float y = 0.0; y < avSamples.y; ++y)
+	{
+		cVector3f vUV = cVector3f(	avUV + 
+									avUVx * x + 
+									avUVy * y,
+									alLayer);
+		vUV.y = 1.0 - vUV.y;
+		vSum += UnpackYCoCgsRGB(sampleGrad(aDiffuseMap, vUV, avUVx, avUVy));
+	}
+
+	return vSum.rgb * (avSamples.z * avSamples.w);
+}
+
+cVector3f SampleNormal(int alLayer, cVector2f avUV, cVector2f avUVx, cVector2f avUVy, cVector4f avSamples)
+{
+	cVector3f vSum = cVector3f(0, 0, 0);
+
+	//////////////
+	// Do manual ansiotropic sampling
+	avUVx *= avSamples.z;
+	avUVy *= avSamples.w;
+
+	for(float x = 0.0; x < avSamples.x; ++x)
+	for(float y = 0.0; y < avSamples.y; ++y)
+	{
+		cVector3f vUV = cVector3f(	avUV + 
+									avUVx * x + 
+									avUVy * y,
+									alLayer);
+		vUV.y = 1.0 - vUV.y;
+		vSum += UnpackNormal(sampleGrad(aNormalMap, vUV, avUVx, avUVy));
+	}
+
+	return vSum * (avSamples.z * avSamples.w);
+}
+
+cVector3f SampleSpecular(int alLayer, cVector2f avUV, cVector2f avUVx, cVector2f avUVy)
+{
+	return UnpackYCoCgsRGB(sampleGrad(aSpecularMap, cVector3f(avUV.x, 1.0 - avUV.y, alLayer), avUVx, avUVy)).rgb;
+}
+
+cVector3f SampleDetail(int alLayer, cVector2f avUV, cVector2f avUVx, cVector2f avUVy)
+{
+	return UnpackYCoCg(sampleGrad(aDetailMap, cVector3f(avUV.x, 1.0 - avUV.y, alLayer), avUVx, avUVy)).rgb;
+}
+
+float SampleBump(int alLayer, cVector2f avUV)
+{
+	cVector2f vUV = cVector2f(avUV.x, 1.0 - avUV.y);
+	return afTessellationOffset + sampleLod(aBumpMap, cVector3f(vUV.x, vUV.y, alLayer), 0).a * afTesselationScale;
+}
+
+//---------------------------------------------
+
+@ifdef TesselationShader
+
+	float GetTerrainBump(int alLayer, cVector3f avPos)
+	{
+		cVector2f vUV = avPos.xz;
+		cVector2f vLUV = (vUV - (avBumpOffsetScale[alLayer].xy - avBumpOffsetScale[alLayer].w)) * avBumpOffsetScale[alLayer].z;
+
+		return SampleBump(alLayer, vLUV);
+	}
+
+	//---------------------------------------------
+
+	float GetTessellationFactor(cVector3f avPos, cVector3f avCamera)
+	{
+		//////////////
+		// Setup
+		cVector2f vUV = avPos.xz;
+		cVector2f vRelPos = vUV - avCamera.xz;
+
+		/////////////
+		// Sample from all layers from lStart until the alpha sum is 1.0
+		for(int i = 0; i < 6; ++i)
+		{
+			cVector2f vLUV = (vUV - (avBumpOffsetScale[i].xy - avBumpOffsetScale[i].w)) * avBumpOffsetScale[i].z;
+			float fFade = GetTerrainFade(vLUV, vRelPos * avBumpOffsetScale[i].z);
+
+			if(fFade > 0.0)
+			{
+				return clamp(pow(2.0, 6 - i) * afUnitScale * avTesselationMulAndLimit.x, 1.0, avTesselationMulAndLimit.y);
+			}
+		}
+
+		return 1.0;
+	}
+
+	//---------------------------------------------
+
+	//---------------------------------------------
+
+	float GetTerrainBump(cVector3f avPos, cVector3f avCamera)
+	{
+		//////////////
+		// Setup
+		cVector2f vUV = avPos.xz;
+		cVector2f vRelPos = vUV - avCamera.xz;
+
+		/////////////
+		// Sample from all layers from lStart until the alpha sum is 1.0
+		float fAlpha = 0.0;
+		float fBump = 0.0;
+
+		for(int i = 0; i < 6; ++i)
+		{
+			cVector2f vLUV = (vUV - (avBumpOffsetScale[i].xy - avBumpOffsetScale[i].w)) * avBumpOffsetScale[i].z;
+			float fFade = GetTerrainFade(vLUV, vRelPos * avBumpOffsetScale[i].z);
+
+			if(fFade > 0.0)
+			{
+				//////////////
+				// Calcualte texture samples needed
+				fFade = fFade * fFade * (3.0 - 2.0 * fFade);
+
+				fFade *= (1.0 - fAlpha);
+				fBump = fBump + fFade * SampleBump(i, vLUV);
+
+				fAlpha = fAlpha + fFade;
+
+				if(fAlpha > 0.99) break;
+			}
+		}
+
+		return fBump;
+	}
+@else
+	void GetTerrainMaterial(cVector3f avPos, cVector3f avCamera, out cVector3f avDiffuse, out cVector3f avNormal, out cVector3f avSpecular, out cVector3f avDetailAmount, bool abDetail)
+	{
+		//////////////
+		// Setup
+		avDiffuse = avDetailAmount = avNormal = avSpecular = cVector3f(0, 0, 0);
+		cVector2f vUV = avPos.xz; 
+		cVector2f vRelPos = vUV - avCamera.xz;
+	
+		///////////
+		// Calucluate derivate for texcoords to get the start mipmap
+		cVector2f vUVx = dFdx(vUV) * cVector2f(1, -1); //flip y to get correct direction (y uv flipped)
+		cVector2f vUVy = dFdy(vUV) * cVector2f(1, -1);
+	
+		float fXLen = length(vUVx) * afMaterialResolution;
+		float fYLen = length(vUVy) * afMaterialResolution;
+		float fLen = min(fXLen, fYLen);
+
+		//////////////
+		// Get initial layer to sample from
+		int lLayerNum = min(alLayerNum, 20);
+		
+		int lStart = 0;
+		float fStartFade = 1.0;
+	
+		while(lStart < (lLayerNum - 1))
+		{
+			fStartFade = fLen * avLayerOffsetScale[lStart].z;
+
+			if(fStartFade < 2.0)
+			{
+				fStartFade = clamp(2.0 - fStartFade, 0.0, 1.0);
+				break;
+			}
+			else
+			{	
+				lStart++;
+			}
+		}
+
+		/////////////
+		// Sample from all layers from lStart until the alpha sum is 1.0
+		float fAlpha = 0.0;
+		for(int i = lStart; i < lLayerNum; ++i)
+		{
+			cVector2f vLUV = (vUV - (avLayerOffsetScale[i].xy - avLayerOffsetScale[i].w)) * avLayerOffsetScale[i].z;
+		
+			float fFade = fStartFade * GetTerrainFade(vLUV, vRelPos * avLayerOffsetScale[i].z);
+			if(i == lLayerNum - 1) fFade = 1.0;
+			fStartFade = 1.0;
+
+			if(fFade > 0.0)
+			{
+				//////////////
+				// Calcualte texture samples needed
+				cVector2f vLUVx = vUVx * avLayerOffsetScale[i].z;
+				cVector2f vLUVy = vUVy * avLayerOffsetScale[i].z;
+				cVector4f vNumSamples = GetNumSamples(fXLen * avLayerOffsetScale[i].z, fYLen * avLayerOffsetScale[i].z);
+
+				fFade *= (1.0 - fAlpha);
+			
+				avDiffuse		= avDiffuse		+ fFade * SampleDiffuse(i, vLUV, vLUVx, vLUVy, vNumSamples);
+				avNormal		= avNormal		+ fFade * SampleNormal(i, vLUV, vLUVx, vLUVy, vNumSamples);
+				avSpecular		= avSpecular	+ fFade * SampleSpecular(i, vLUV, vLUVx, vLUVy);
+			
+				if(abDetail) avDetailAmount	= avDetailAmount + fFade * SampleDetail(i, vLUV, vLUVx, vLUVy);
+
+				fAlpha = fAlpha + fFade;
+
+				if(fAlpha > 0.99) break;
+			}
+		}
+
+		avNormal = normalize(avNormal);
+	}
+@endif
+
+//---------------------------------------------
+
+void GetTangentSpace(cVector2f avHeightCoord, float afSharpness, out cVector3f avNormal, out cVector3f avTangent, out cVector3f avBinormal)
+{
+	/////////
+	// Calculate per pixel normal
+	float fHeightX0 = sampleLod(aHeightMap, cVector2f(avHeightCoord.x + avHeightMapProperties.y * afSharpness, avHeightCoord.y), 0).x;
+	float fHeightX1 = sampleLod(aHeightMap, cVector2f(avHeightCoord.x - avHeightMapProperties.y * afSharpness, avHeightCoord.y), 0).x;
+		
+	float fHeightZ0 = sampleLod(aHeightMap, cVector2f(avHeightCoord.x, avHeightCoord.y + avHeightMapProperties.y * afSharpness), 0).x;
+	float fHeightZ1 = sampleLod(aHeightMap, cVector2f(avHeightCoord.x, avHeightCoord.y - avHeightMapProperties.y * afSharpness), 0).x;
+		
+	float fDeltaX = fHeightX1 - fHeightX0;
+	float fDeltaZ = fHeightZ1 - fHeightZ0;
+
+	avNormal = cVector3f(fDeltaX, avHeightMapProperties.z * afSharpness * 2.0, fDeltaZ);
+	avBinormal = cross(avNormal, cVector3f(1,0,0));
+	avTangent = cross(avBinormal,avNormal);
+
+	//////////
+	// Fast normalization of the tangent space
+	cVector3f vLength = inversesqrt(cVector3f(	dot(avTangent, avTangent),
+												dot(avBinormal, avBinormal),
+												dot(avNormal, avNormal)));
+	avTangent *= vLength.x;
+	avBinormal *= vLength.y;
+	avNormal *= vLength.z;
+}
+
+//---------------------------------------------

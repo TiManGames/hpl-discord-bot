@@ -1,0 +1,276 @@
+#include "interfaces/PlayerState_Interface.hps"
+#include "custom/player/PlayerState_UsingItem_Base.hps"
+#include "base/InputHandler_Types.hps"
+#include "player/Player_Types.hps"
+#include "custom/helpers/helper_items.hps"
+#include "custom/helpers/helper_props_custom.hps"
+#include "helpers/helper_effects.hps"
+
+//------------------------------------------------------------
+
+const float gfUsingLighter_MinPitch = cMath_ToRad(-70.f);
+const float gfUsingLighter_MaxPitch = cMath_ToRad(30.f);
+const float gfUsingLighter_PitchFadeTime = 1.f;
+
+const tString gsUsingLighter_PlayerLighterIgniteAnim = "tool_lighter_focus_ignite";
+const tString gsUsingLighter_PlayerLighterCloseAnim = "tool_lighter_focus_extinguish";
+
+const tString gsUsingLighter_ItemLighterIgniteAnim = "lighter_focus_ignite";
+const tString gsUsingLighter_ItemLighterCloseAnim = "lighter_focus_ignite";
+
+const tString gsUsingLighter_ItemLighterFocusStart_Lit = "lighter_focus_idle";
+const tString gsUsingLighter_ItemLighterFocusStart_Unlit = "lighter_focus_start";
+
+const tString gsUsingLighter_ItemLighterFocusEnd_Lit = "lighter_focus_idle";
+const tString gsUsingLighter_ItemLighterFocusEnd_Unlit = "lighter_focus_end";
+
+const float gfUsingLighter_ReturnToLoopDelay = 0.5f;
+
+const float gfUsingLighter_IntroAnim_MoveStart = 0.066f;
+const float gfUsingLighter_IntroAnim_MoveStop = 0.351f;
+const float gfUsingLighter_IntroAnim_OpenStart = 0.525f;
+const float gfUsingLighter_IntroAnim_OpenStop = 0.769f;
+
+const float gfUsingLighter_OutroAnim_MoveStart = 0.4f;
+const float gfUsingLighter_OutroAnim_MoveStop = 0.675f;
+
+//------------------------------------------------------------
+
+class cScrPlayerState_UsingLighter : iScrPlayerState_UsingItem_Base, iScrPlayerState_Interface
+{
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		iScrPlayerState_UsingItem_Base::Init();
+		
+		msFocusIntroAnim_R = "tool_lighter_focus_start";
+		msFocusIntroAnim_Item = "lighter_focus_start";
+		msFocusLoopAnim_R = "tool_lighter_focus_idle";
+		msFocusLoopAnim_Item = "lighter_focus_idle";
+		msFocusOutroAnim_R = "tool_lighter_focus_end";
+		msFocusOutroAnim_Item = "lighter_focus_end";
+		
+		mfIntroDelayTime = 0.2;
+		
+		msItemPrompt = "UseItem";
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnEnterState(int alPrevStateId)
+	{		
+		////////////////
+		// Enter base
+		iScrPlayerState_UsingItem_Base::OnEnterState(alPrevStateId);
+		AddInteractableEntityClass("cScrPropFuelSpill");
+		mlUseCrossHairState = eCrossHairState_UseLighter;
+		
+		////////////////
+		// Setup vars
+		
+		////////////////
+		// Setup pitch
+		SetupPitchFade(gfUsingLighter_MinPitch, gfUsingLighter_MaxPitch, gfUsingLighter_PitchFadeTime, false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateAnimationStates(float afTimeStep) override
+	{
+		////////////////
+		// Ignite
+		if (mlAnimState == eUsingItemAnimState_Use)
+		{
+			mfUseTimer += afTimeStep;
+			
+			///////////////
+			// Update state
+			int lState = UpdateStateAnims(gsUsingLighter_PlayerLighterIgniteAnim, "", gsUsingLighter_ItemLighterIgniteAnim, false, false, 0.3f);
+			
+			////////////////
+			// Ignite lighter!
+			if (lState == 1)
+			{
+				mfUseTimer = 0;
+				Lighter_Ignite();
+			}
+			
+			////////////////
+			// State over?
+			else if (lState == -1)
+			{
+				ChangeAnimState(eUsingItemAnimState_Loop);
+			}
+			
+			else if (mfUseTimer > gfUsingLighter_ReturnToLoopDelay && mbLeaveState)
+			{
+				ChangeAnimState(eUsingItemAnimState_Outro);
+			}
+		}
+		
+		////////////////
+		// Outro
+		else 
+		{
+			if (mlAnimState == eUsingItemAnimState_Outro && 
+				mlPrevAnimState != eUsingItemAnimState_Outro)
+			{
+				Lighter_Close();
+			}
+			
+			iScrPlayerState_UsingItem_Base::UpdateAnimationStates(afTimeStep);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	bool CheckCanUse() 
+	{
+		return iScrPlayerState_UsingItem_Base::CheckCanUse() || mlAnimState == eUsingItemAnimState_Use;
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnUse() 
+	{
+		if (Lighter_GetLit())
+		{
+			if (GetCanInteractWithFocusedEntity())
+			{
+				iLuxEntity@ pEnt = mPickBasics.GetFocusedEntity();
+				FuelSpill_Ignite(pEnt.GetName(), true);
+			}
+		}
+		else
+		{
+			ChangeAnimState(eUsingItemAnimState_Use);
+			Effect_Rumble_Start(0.2, 0.2);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool OnAnalogInput(int alAnalogId, const cVector3f &in avAmount)
+	{
+		return iScrPlayerState_UsingItem_Base::OnAnalogInput(alAnalogId, avAmount);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPERS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool GetCanInteractWithFocusedEntity() override
+	{
+		if (!iScrPlayerState_UsingItem_Base::GetCanInteractWithFocusedEntity())
+			return false;
+			
+		iLuxEntity@ pPickedEnt = mPickBasics.GetFocusedEntity();
+		return Lighter_GetLit() && FuelSpill_GetCanIgnite(pPickedEnt.GetName());
+	}
+	
+	//------------------------------------------------------------
+	
+	float GetAnimStateRelTime(eUsingItemAnimState aState, eUsingItemAnimState aBlendState) override
+	{
+		float fBlendTime = _GetAnimStateRelTime_GetBlendTime(aBlendState);
+		if (fBlendTime >= 1.0f) return 0.0f;
+		
+		/////////////////////////////////
+		// Split the animations up into separate steps and blend between those
+		if (aState == eUsingItemAnimState_Outro && aBlendState == eUsingItemAnimState_Intro)
+		{
+			if (fBlendTime < gfUsingLighter_IntroAnim_MoveStart)
+			{
+				float fStepRel = fBlendTime/gfUsingLighter_IntroAnim_MoveStart;
+				return cMath_Easing(eEasing_Linear, 1.0f - fStepRel, gfUsingLighter_OutroAnim_MoveStop, 1.0f);
+			}
+			if (fBlendTime < gfUsingLighter_IntroAnim_MoveStop)
+			{
+				float fStepRel = (fBlendTime-gfUsingLighter_IntroAnim_MoveStart)/(gfUsingLighter_IntroAnim_MoveStop-gfUsingLighter_IntroAnim_MoveStart);
+				return cMath_Easing(eEasing_Linear, 1.0f - fStepRel, gfUsingLighter_OutroAnim_MoveStart, gfUsingLighter_OutroAnim_MoveStop);
+			}
+			if (fBlendTime < gfUsingLighter_IntroAnim_OpenStart)
+			{
+				return gfUsingLighter_OutroAnim_MoveStart;
+			}
+			else
+			{
+				float fStepRel = (fBlendTime-gfUsingLighter_IntroAnim_OpenStart)/(gfUsingLighter_IntroAnim_OpenStop-gfUsingLighter_IntroAnim_OpenStart);
+				fStepRel = cMath_Min(fStepRel, 1.0f);
+				return cMath_Easing(eEasing_Linear, 1.0f - fStepRel, 0, gfUsingLighter_OutroAnim_MoveStart);
+			}
+		}
+		
+		if (aState == eUsingItemAnimState_Intro && aBlendState == eUsingItemAnimState_Outro)
+		{
+			if (fBlendTime < gfUsingLighter_OutroAnim_MoveStart)
+			{
+				float fStepRel = fBlendTime/gfUsingLighter_OutroAnim_MoveStart;
+				return cMath_Easing(eEasing_Linear, 1.0f - fStepRel, gfUsingLighter_IntroAnim_OpenStart, gfUsingLighter_IntroAnim_OpenStop);
+			}
+			
+			if (fBlendTime < gfUsingLighter_OutroAnim_MoveStop)
+			{
+				float fStepRel = (fBlendTime-gfUsingLighter_OutroAnim_MoveStart)/(gfUsingLighter_OutroAnim_MoveStop-gfUsingLighter_OutroAnim_MoveStart);
+				return cMath_Easing(eEasing_Linear, 1.0f - fStepRel, gfUsingLighter_IntroAnim_MoveStart, gfUsingLighter_IntroAnim_MoveStop);
+			}
+			
+			else
+			{
+				return gfUsingLighter_IntroAnim_MoveStop;
+			}
+		}
+		
+		// clamp and ease for the best possible look when blending the animations, this is all a bit magic numbery
+		float fRel = cMath_Max(fBlendTime, 0.2f);
+		return cMath_Easing(eEasing_ExpoIn, 1.0f - fRel);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet@ apSet, iFontData@ apFont, float afStartY)
+	{			
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	float mfUseTimer = 0;
+	
+	//------------------------------------------------------------
+}

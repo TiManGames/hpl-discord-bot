@@ -1,0 +1,133 @@
+////////////////////////////////////////////////////////
+// Deferred Dynamic Diffuse Decal - Fragment Shader
+//
+// A decal shader that is projected onto the depth buffer
+////////////////////////////////////////////////////////
+
+@include helper_normal_packing.hpsl
+
+///////////////////////
+// Variables
+///////////////////////
+
+//--------------------------------------------
+
+cBuffer cDynDecalTypeArguments : 0
+{
+	cMatrixf a_mtxViewProjection;
+	cMatrixf a_mtxProjection;
+	cMatrixf a_mtxView;
+	cMatrixf a_mtxInvViewProjection;
+	cMatrixf a_mtxInvProjection;
+	cMatrixf a_mtxInvView;
+		
+	float afFarPlane;
+	float afNearPlane;
+	float afNearByFarPlane;
+	float afInvFarPlane;
+	
+	cVector4f avScreenToFarPlane;
+	cVector2f avInvScreenSize;
+
+	float afT;
+};
+
+cBuffer cDynDecalArguments : 1
+{
+	cVector4f avClearColor;
+	int alBlendMode;
+	int alMaterialMask;
+	int alInstanceOffset;
+	int alInstanceStride;
+};
+
+//--------------------------------------------
+
+///////////////////////
+// samplers
+///////////////////////
+
+uniform cTexture2D aDiffuseMap : 0;
+uniform cTexture2D aNormalMap : 1;
+uniform cTexture2D aSpecularMap : 2;
+uniform cTexture2D aAlphaMap : 3;
+uniform cTexture2D aSceneDepth : 4;
+
+cVector3f GetPos(in cVector2f avUV, float afDepth)
+{
+	return cVector3f(avUV.xy * avScreenToFarPlane.xy + avScreenToFarPlane.zw, -afFarPlane) * afDepth;
+}
+
+void main(in cVector4f px_vPosition,
+		  in cMatrixf px_mtxUV,
+		  in cVector3f px_vTangent,
+		  in cVector3f px_vBinormal,
+		  in cVector4f px_vUvMinMax,
+		  in cVector4f px_vColor,
+		  out cVector4f out_vNormal : 1,			//normal xyz, depth w
+		  out cVector4f out_vSpecular : 2,			//spec color rgb, spec power a
+		  out cVector4f out_vDiffuse : 0)	//diffuse rgb, translucency a	
+{
+	//masks 
+	const int klDiffuseMask = 0x1;
+	const int klNormalMask = 0x2;
+	const int klSpecularMask = 0x4;
+	const int klAlphaMask = 0x8;
+
+	float fDepth = load(aSceneDepth, cVector2l(px_vPosition.xy), 0).r;
+	cVector3f vPos = GetPos(px_vPosition.xy, fDepth);
+
+	cVector4f vUV = mul(px_mtxUV, cVector4f(vPos, 1.0));
+	cVector4f vAbsUV = abs(vUV - 0.5);
+	
+	float fMax = max(vAbsUV.x, max(vAbsUV.y, vAbsUV.z));
+
+	if(fMax > 0.5) discard;
+	float fAlphaFade = (1.0 - clamp((vAbsUV.z - 0.4375) * 16.0, 0.0, 1.0)); 
+	vUV.xy = mix(px_vUvMinMax.xy, px_vUvMinMax.zw, vUV.xy);
+
+	cVector4f vDiffuse = avClearColor;
+	cVector4f vSpec = avClearColor;
+	cVector4f vNormal = avClearColor;
+	
+	///////////////
+	// Get diffuse and alpha
+	if((alMaterialMask & klDiffuseMask) > 0)	vDiffuse = sample(aDiffuseMap, vUV.xy) * px_vColor;
+	if((alMaterialMask & klAlphaMask) > 0)		vDiffuse.a = sample(aAlphaMap, vUV.xy).a * px_vColor.a;
+	if((alMaterialMask & (klDiffuseMask | klAlphaMask)) > 0)
+	{
+		fAlphaFade *= vDiffuse.a; 
+		vDiffuse.a = fAlphaFade;
+	}
+
+	if(fAlphaFade < 0.0125) discard; // alpha test
+
+	///////////////
+	// Sample the other textures
+	if((alMaterialMask & klSpecularMask) > 0)
+	{
+		vSpec = sample(aSpecularMap, vUV.xy);
+		vSpec.a = fAlphaFade;
+	}
+	if((alMaterialMask & klNormalMask) > 0)
+	{
+		cVector3f px_vNormal = cross(px_vBinormal, px_vTangent);
+		cVector3f vNormalMap = UnpackNormalmapYW(sample(aNormalMap, vUV.xy));
+		vNormal.xyz = normalize(vNormalMap.x * px_vTangent * sign(px_vUvMinMax.z - px_vUvMinMax.x) - vNormalMap.y * px_vBinormal * sign(px_vUvMinMax.w - px_vUvMinMax.y) + vNormalMap.z * px_vNormal);
+		vNormal.a = fAlphaFade * 0.8;
+	}
+
+	///////////////////
+	// Fade toward clear color if non-alpha blend mode
+	if(avClearColor.a > 0.0)
+	{
+		vDiffuse = mix(avClearColor, vDiffuse, fAlphaFade);
+		vSpec = mix(avClearColor, vSpec, fAlphaFade);
+		vNormal = mix(avClearColor, vNormal, fAlphaFade);
+	}
+
+	out_vDiffuse = vDiffuse;
+	out_vNormal = vNormal;
+	out_vSpecular = vSpec;
+
+}

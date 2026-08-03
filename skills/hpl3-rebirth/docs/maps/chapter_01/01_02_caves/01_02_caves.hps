@@ -1,0 +1,2599 @@
+#include "interfaces/Map_Interface.hps"
+#include "base/Inputhandler_Types.hps"
+
+#include "interfaces/UserModule_Interface.hps"
+#include "modules/ModuleInterfaces.hps"
+#include "custom/helpers/helper_items.hps"
+
+#include "custom/player/Player_Custom.hps"
+#include "custom/player/PlayerTypes_Custom.hps"
+
+#include "helpers/helper_map.hps"
+#include "helpers/helper_menu.hps"
+#include "helpers/helper_props.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_audio.hps"
+#include "helpers/helper_imgui.hps"
+#include "helpers/helper_sequences.hps"
+#include "helpers/helper_game.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_ai.hps"
+#include "helpers/helper_player.hps"
+#include "helper_components_custom.hps"
+#include "custom/helpers/helper_player_custom.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+#include "custom/helpers/helper_items.hps"
+#include "custom/helpers/helper_areas_custom.hps"
+#include "custom/helpers/helper_agent.hps"
+#include "player/PlayerState_Struggle.hps"
+#include "base/AchievementHandler_Types.hps"
+
+
+//--------------------------------------------------
+ 
+/*Place any global values here. These must be const variables as they will not be saved*/
+/*This is also the place for enums and classes, but these should be avoided whenever possible*/
+
+//--------------------------------------------------
+
+enum eCavesPermaFail
+{
+	eCavesPermaFail_DeepCaves,
+	eCavesPermaFail_Bridges,
+	eCavesPermaFail_Nest,
+	eCavesPermaFail_PreDarkWorld,
+	eCavesPermaFail_DarkWorld,
+	eCavesPermaFail_PostDarkWorld,
+};
+ 
+//--------------------------------------------------
+ 
+class cScrMap : iScrMap
+{
+	//--------------------------------------------
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN CALLBACKS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+ 
+	////////////////////////////
+	// Set up map environment
+	void Setup()
+	{
+		// Put display name entry in english.lang / Levels
+		GetBase().SetDisplayNameEntry("01-02-caves");
+		
+		// Set up color grading etc.
+		Effect_Bloom_FadeBrightPass(0.25f, 2);
+		Effect_Bloom_FadeBloomWidth(128, 0.6);
+		Effect_Bloom_FadeBloomFalloff(1.5f, 2);
+		Effect_Bloom_FadeBloomTint(1, 1, 1, 2);
+		
+		Map_Preset_Fade("OutsideRift", 2.0f);
+		
+		Map_Preset_SetupColorGrading("InsideRift","grading_inside_rift.dds");
+		Map_Preset_SetupColorGrading("OutsideRift","grading_default.dds");
+		Map_Preset_SetupBloom("LightningFlashOn",4,0.02f,1.5f,cColor(1, 2, 2, 1));
+		Map_Preset_SetupBloom("LightningFlashOff",32,0.07f,1.5f,cColor(1, 1, 1, 1));
+		Map_Preset_SetupToneMapping("OutsideRift", 0.5, 0.5, 3.5);
+		Map_Preset_SetupToneMapping("Wakeup", 1, 1, 0.5);
+		
+		Pregnancy_SetStage(ePregStage_Unknown);
+		Pregnancy_SetBarksActive(true);
+		Pregnancy_SetBabyKicksEnabled(false);
+		Pregnancy_SetBabyTalkStage(eBabyTalkStage_Unknown);
+		GhoulProgression_SetBarkStage(eGhoulBarkStage_Ill);
+		Player_SetAllowCheckBaby(false);
+		FearHandler_SetWhisperStage(eFearWhisperStage_StartToSalim);
+		
+		StruggleFlashHandler_SetActive(true);
+		StruggleFlashHandler_PreloadFlashGroupTextures(0);
+		StruggleFlashHandler_SetProgression(0);
+		
+		Player_SetAutoTeleportWhenBelowAltitude(-30.f);
+	}
+	
+	//-------------------------------------------------------
+		
+	void PreloadData()
+	{
+		/////////////////
+		// Preload gui
+		//ImGui_PreloadImage("some_image");
+
+		///////////////
+		// Preload particles
+		ParticleSystem_Preload("wind_scare.ps");
+
+		//////////////
+		// Preload screen effects
+		//Material_Preload("some_material.mat");
+		Sound_PreloadGroup("level_entity_shared/portal", true);
+		Sound_PreloadEvent("level_entity_shared/fire/fire_ignite/campfire_ignite");
+		Sound_PreloadEvent("level_entity_shared/fire/fire_ignite/wall_torch_ignite");
+	}
+	
+	//-------------------------------------------------------
+	
+	float mfDeepShadowLevel = 0.35f;
+	bool mbInLight = true;
+
+	////////////////////////////
+	// Run first time starting map
+	void OnStart()
+	{
+		//Set GhoulProgresison limit
+		GhoulProgression_SetLimit(1);
+		Player_SetMapDeepShadow(mfDeepShadowLevel);
+//		Player_SetNightVisionStrength(1.15f);
+		//Player_SetNightVisionEnabled(false);
+		// Any general setup of script / entities
+		
+		if (ItemType_GetCountInInventory("CurseMedallion") < 1)
+		{
+			Item_AddToInventory("CurseMedallion");
+		}
+			
+		/////////////////////////
+		// Debug
+		if(cLux_ScriptDebugOn())
+		{
+			if (ItemType_GetCountInInventory("Lantern") < 1)
+			{
+				Item_AddToInventory("Lantern");
+				Lantern_SetAmount(10);
+			}
+			
+			Item_AddToInventory("ModernOilFixed");
+			Item_AddToInventory("ModernOilFixed");
+			//Item_AddToInventory("Matchbook", true);
+			Item_AddToInventory("Matchbook");
+			Item_AddToInventory("Matchbook");
+		}
+		else
+		{
+		}
+		
+		//cExposureArea@ pExpo = cLux_GetCurrentMap().GetWorld().GetExposureArea("ExposureArea_Camp");
+		//pExpo.ConnectExposureAreaWindow(cLux_GetCurrentMap().GetWorld().GetExposureArea("ExposureArea_Camp_LookAt"));
+		Entity_PlayAnimation("ghoulscare_1_test","leans_around_corner_right_slow",0,true);
+		Entity_PlayAnimation("ghoulscare_2_test","crouch_idle_ledge",0,true);
+		Entity_SetAnimationPaused("ghoulscare_2_test","crouch_idle_ledge",true);
+		Slide_SetSlideAmount("arabic_fort_door_lock_01_1",0);
+		Entity_SetAnimationMessageEventCallback("Player","OnAnimMessage_Player",false);
+		
+		ParticleSystem_SetActive("sandfalling_01", false);
+		//Music_Play("A2_Proto_CreepyDesertAmbience", 0.2, false, eMusicPrio_BigEvent);
+		
+		//Lamp_SetupFlicker("torch_lamp_11",0.5f,1,0.5f,1,true);
+		//Light_SetupFlicker("torch_light_78",cColor(1,0.863,0.678,0.298),10,0.5f,1,"","",0.5f,1,"","",false,0.5f,1,0.5f,1);
+		//Lamp_SetFlickerActive("torch_lamp_11",true);
+		
+		Effect_FearTentacles_SetVignetteMul(0.82f);
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when entering map
+	void OnEnter()
+	{	
+		PlayerBody_SetActive(true);
+		FearHandler_SetUpdateInterval(0.4f);
+		FearHandler_SetPermaFailEnabled(false);
+        Heat_SetActive(false);
+		
+		// Updated 200403
+		Player_SetNightVisionBrightness(2.3f);
+		Player_SetNightVisionRadius(5.5f);
+		
+		if(cLux_ScriptDebugOn() == false)
+		{
+			//Player_Teleport("Start_Begin");
+			Player_SetMoveSpeedMul(0.8f);
+			Player_SetRunSpeedMul(0.3f);
+			Player_FadeMoveSpeedMulTo(1,15);
+		}
+		
+		Hint_Block("Hints", "HintPermafail");		
+		RiftHandler_SetAllowHint(false);
+		
+		Item_SetHidden(ItemType_GetFirstInInventory("CurseMedallion"), true);
+		
+		Achievement_Unlock(eAchievement_Amnesiac);
+		
+		cLux_ClearAllMapSaveData();
+		Game_AutoSave();	
+	}
+	
+	void Update(float afTimeStep) 
+	{	
+		UpdateLightLevelBarks(afTimeStep);
+		//UpdateFearLevelBarks();
+		//Debug_Log("RUN SPEED: "+Player_GetRunSpeedMul());
+	}
+	
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when leaving map
+	void OnLeave()
+	{
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// The player has died.
+	void OnPlayerKilled(int alRecentDeaths, const tString&in asSource)
+	{
+	}
+	
+	//-------------------------------------------------------
+	
+	int mlPermaFailStage = eCavesPermaFail_DeepCaves;
+	
+	bool OnCollide_Player_SetPermaFail(const tString &in asParent, const tString &in asChild, int alState)
+	{		
+		if (alState != 1) return true;
+		
+		if (asParent == "Trigger_SetPermaFail_DeepCaves")			mlPermaFailStage = eCavesPermaFail_DeepCaves;
+		else if (asParent == "Trigger_SetPermaFail_Bridges") 		mlPermaFailStage = eCavesPermaFail_Bridges;
+		else if (asParent == "Trigger_SetPermaFail_PreDarkWorld") 	mlPermaFailStage = eCavesPermaFail_PreDarkWorld;
+		else if (asParent == "Trigger_SetPermaFail_DarkWorld") 		mlPermaFailStage = eCavesPermaFail_DarkWorld;
+		else if (asParent == "Trigger_SetPermaFail_PostDarkWorld") 	mlPermaFailStage = eCavesPermaFail_PostDarkWorld;
+	
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnPermaFail()
+	{		
+		switch (mlPermaFailStage)
+		{
+			case eCavesPermaFail_DeepCaves:		PermaFail_Default("DeepCaves_*"); 		return true;
+			case eCavesPermaFail_Bridges:		PermaFail_Default("Bridges_*"); 		return true;
+			case eCavesPermaFail_Nest: 			PermaFail_Nest(); 						return true;
+			case eCavesPermaFail_PreDarkWorld: 	PermaFail_Default("PreDarkWorld_*"); 	return true;
+			case eCavesPermaFail_DarkWorld: 	PermaFail_Default("DarkWorldFall_*"); 	return true;
+			case eCavesPermaFail_PostDarkWorld: PermaFail_Default("PostDarkWorld_*"); 	return true;
+		}
+		
+		return true;
+	}
+	
+	bool OnPermaFailRespawn()
+	{
+		if (mlPermaFailStage == eCavesPermaFail_Nest) 	
+		{
+			cLux_AddDebugMessage("NOEEEEEEEEEEEEEEEE");
+			Voice_StopAll();
+			mlBlurID = Effect_Blur_Start(2,0);
+			mlTrailID = Effect_ImageTrail_Start(3,0,5,3);
+			Map_AddTimer("Timer_WakeUpBark",0,"OnTimer_WakeUpBark");
+			Entity_SetActive("Trigger_WakeUpBark",false);
+			Effect_Blur_FadeOut(mlBlurID,3);
+			Seq_PermaFailRespawn_Nest("");
+		}
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	void PermaFail_Default(const tString &in asArea)
+	{
+		FearHandler_SetPermaFailRespawnArea("PermaFail_"+asArea);
+	}
+	
+	//-------------------------------------------------------
+	
+	void PermaFail_Nest()
+	{
+		mbFearBarksAllowed = false;
+		FearHandler_AddPermaFailScene("PosArea_PermaFail_A_Start", "PosArea_PermaFail_A_End", 5.f, 1.5f, true);
+		FearHandler_AddPermaFailScene("PosArea_PermaFail_B_Start", "PosArea_PermaFail_B_End", 8.f, 1.5f, true);
+		FearHandler_AddPermaFailScene("PosArea_PermaFail_C_Start", "PosArea_PermaFail_C_End", 3, 3.f, true);
+		FearHandler_SetPermaFailRespawnArea("PermaFail_PostNest");
+		//Map_AddTimer("Timer_PermafailRespawn",16,"OnTimer_PermafailRespawn");
+		FearHandler_SetPermaFailPlayVocals(false);
+		
+	}
+	
+	void OnTimer_PermafailRespawn(const tString &in asTimer)
+	{
+		Seq_PermaFailRespawn_Nest("");
+	}
+	
+	//-------------------------------------------------------
+	
+	cSequenceStatesData mSequencePermaFailRespawnNest;
+	void Seq_PermaFailRespawn_Nest(const tString &in asTimer)
+	{
+		Sequence_Begin("Seq_PermaFailRespawn_Nest", mSequencePermaFailRespawnNest);
+		if (Sequence_DoStepAndWait(3.f))
+		{			
+			Player_SetMoveSpeedMul(0.f);
+            Player_SetLookSpeedMul(0.f);			
+			//Music_Stop(0.5f, eMusicPrio_BgAmb);
+		}
+		else if (Sequence_DoStepAndWait(3.f))
+		{
+			//Effect_ImageTrail_Start(1.2f,0,10,5);
+			//PlayerBody_PlayAnimation("wake_up_from_death_1a",ePlayerBodyAnimationLayer_FullBody,false,false,true);
+			//PlayerBody_PlayCutsceneAtEntity("wake_up_from_death_1a","player",false,0.3f,"");
+			Effect_Fade_In(2.f);
+			Map_Preset_Fade("Wakeup", 0.5f);
+		}
+		else if (Sequence_DoStepAndWait(1.f))
+		{
+			Player_SetMoveSpeedMul(.6f);
+            Player_SetLookSpeedMul(1.f);
+			Player_SetRunSpeedMul(.4f);
+		}
+		else if (Sequence_DoStepAndWait(1.f))
+		{
+			Player_FadeMoveSpeedMulTo(1.f,5.f);
+			Player_FadeMoveSpeedMulTo(1.f,10);
+			Map_Preset_Fade("OutsideRift", 6.0f);
+			ParticleSystem_SetActive("sandfalling_01", true);
+			
+			FearHandler_SetAllowDarknessReminderHint(true);
+		}
+		Sequence_End();
+	}
+	
+	//-------------------------------------------------------
+	
+	cSequenceStatesData mSequencePermaFailDarkWorldFall;
+	void Seq_PermaFail_DarkWorldFall(const tString &in asTimer)
+	{
+		Sequence_Begin("Seq_PermaFail_DarkWorldFall", mSequencePermaFailDarkWorldFall);
+		if (Sequence_DoStepAndWait(3.f))
+		{			
+			Player_SetMoveSpeedMul(0.f);
+            Player_SetLookSpeedMul(0.f);			
+			Player_Teleport("Start_PostPermafail");
+			Music_Stop(1.5f, eMusicPrio_BgAmb);
+		}
+		else if (Sequence_DoStepAndWait(3.f))
+		{
+			Effect_ImageTrail_Start(1.2f,0,10,5);
+			//PlayerBody_PlayAnimation("wake_up_from_death_1a",ePlayerBodyAnimationLayer_FullBody,false,false,true);
+			//PlayerBody_PlayCutsceneAtEntity("wake_up_from_death_1a","player",false,0.3f,"");
+			PlayerBody_PlayCutsceneAnimation("wake_up_from_death_1a",false,0.3f);
+			Effect_Fade_In(2.f);
+		}
+		else if (Sequence_DoStepAndWait(1.f))
+		{
+			Player_SetMoveSpeedMul(1.f);
+            Player_SetLookSpeedMul(1.f);
+			Player_SetRunSpeedMul(1.f);
+		}
+		Sequence_End();
+	}
+	
+	//-------------------------------------------------------
+	
+	////////////////////////////////////
+	// Called when player should respawn (after death)
+	bool OnRespawn(const tString &in asSource)
+	{		
+		// return false for default behaviour (fadeout and death area)
+		return false;
+	}
+
+	//-------------------------------------------------------
+	
+	void GoToIdle(const tString &in asAnimName)
+	{
+		//PlayerBody_PlayCutsceneAnimation("tool_match_idle_larm",true,0.2f,"");
+	}
+
+	////////////////////////////
+	// To get when player makes input (mostly used for debug)
+	void OnAction(int alAction, bool abPressed) 
+	{
+		if(abPressed==false) return;
+		
+		if(alAction == eAction_Test1)
+		{
+			Entity_SetAnimationMessageEventCallback("Player","OnAnimMessage_Player",false);
+			Player_SetMoveSpeedMul(0.5);
+		}
+		if(alAction == eAction_Test2)
+		{
+			cLux_AddDebugMessage(cString_To8Char(cLux_TranslatePlatformSpecific("LoadScreen","PressToStart")));
+			//cLux_AddDebugMessage("UNLOCKED? :"+Achievement_GetUnlocked(eAchievement_Amnesiac));
+			//Item_RemoveFromInventory("Matchbook"); return; Map_AddTimer("Test",0,"OnTimer_PlayerWakeUpAfterFallNew"); return;
+			//PlayerHands_PlayAnimation("tool_match_idle_larm", true,false,0.2f,"", false, 1, -1, false);
+			//Amulet_StartTracking(true, "Rift_Goal", 300.f);
+		}
+		if(alAction == eAction_Test3)
+		{
+			Achievement_Unlock(eAchievement_Amnesiac);
+		}
+		if(alAction == eAction_Test4)
+		{
+			for (int i = 0; i <= 39; i++)
+				Achievement_Unlock(i);
+		}
+		if(alAction == eAction_Test5)
+		{
+			Player_Teleport("Start_PostNest");
+			Effect_Fade_Out(0);
+			Seq_PermaFailRespawn_Nest("");
+			PlayerBody_PlayCutsceneAnimation("wake_up_from_death_1a",false,0.3f);
+		}
+		if (alAction == eAction_Test6)
+		{
+			//Sound_CreateAtEntity("Sound_FinalWhisper", "player/UI/memory_sketch/whisper_flash", "player");
+			Credits_Start("Credits.cfg","");
+		}
+		
+		if (alAction == eAction_Test7)
+		{
+		}
+		
+		if (alAction == eAction_Test8)
+		{
+			Entity_SetActive("CurseMedallion_0_Held", false);
+		}
+		
+		if (alAction == eAction_Test9)
+		{
+			Sketchbook_AddAllIdeas(false);
+			//cLux_AddDebugMessage("Match out and burning? "+Match_IsHeldAndBurning());
+		}
+		if (alAction == eAction_Test0)
+		{			
+			Sketchbook_AddIdea("find_salim");
+			//Sketchbook_AddAllIdeas(true);
+			//Amulet_StartTracking(true, "Rift_Goal");
+		}
+		if(alAction == eAction_TestPlus)
+		{
+			//ItemType_RemoveFromInventory("Lantern", 10);
+			//return;
+			float fCurrentFearLevel = FearHandler_GetLevel();
+			FearHandler_FadeLevelTo(fCurrentFearLevel+0.1f,0,true);
+		}
+		
+	}
+	
+	void OnEndOfCredits()
+	{
+		Map_ChangeMap("main_menu.hpm","PlayerStartArea_1","","",false);
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// This only used for pure debug purposes when info needs to printed.
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afY)
+	{
+		//afY = cLux_DrawDebugText("My Debug value:"+..., afY);
+		return afY;
+	}
+ 
+	//-------------------------------------------------------
+ 
+	//} END MAIN CALLBACKS
+ 
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN FUNCTIONS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+ 
+	/*Put any variables that are used in more than one scene here.*/
+ 
+	//-------------------------------------------------------
+	
+	int mlNotesHintId = -1;
+	
+	//-------------------------------------------------------
+ 
+	/*Put any functions that are used in more than one scene here.*/
+	
+	//-------------------------------------------------------
+	
+	bool OnCollide_Player_SpeedFade(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		float fTarget = Entity_GetVarFloat(asParent,"");
+		(alState == 1) ? Player_FadeRunSpeedMulTo(fTarget,0.8f) : Player_FadeRunSpeedMulTo(1,1.2f);
+		
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnSketchbookStateChange(int alState)
+	{									
+		if (alState == -1 && mlNotesHintId > -1)
+		{
+			Hint_StopHint();
+			Hint_Release(mlNotesHintId);
+			mlNotesHintId = -2;
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnClose_ShowNotesHint(const tString &in asEntity)
+	{
+		if (mlNotesHintId == -1)
+			mlNotesHintId = Hint_ShowHint_Hold("Hints", "HintNotes", true);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnPutAwayItem(const tString &in asItemType, const tString &in asItemID)
+	{
+		if (mbShowedAmuletHint == false && asItemType == "CurseMedallion")
+		{
+			mbShowedAmuletHint = true;
+			Hint_ShowHint_Hold("Hints", "HintAmulet", true, 1.5f, false, 10);
+		}
+	}
+ 
+	//-------------------------------------------------------
+ 
+	//} END MAIN FUNCTIONS
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 1 *PLAYER EXPLORES THE CAVES AND THE SURVIVOR'S CAMP*
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+ 
+		 /////////////////////////////////////////
+		 // General
+		 //{//////////////////////////////////////
+		 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are used by many events in Scene 1 here.*/
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are used in more than one event in Scene 1 here.*/
+		
+		bool OnCollide_ShimmyEnter(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState != 1) return true;
+
+			Hint_StopHint();
+			Player_FadeNightVisionStrength(0,3);
+			PlayerBody_PlayInteractiveAnimationAtEntity("squeeze_through_crack_ghoul_encounter","PosArea_Shimmy",0.2f,"",false);
+			Entity_SetAnimationMessageEventCallback(PlayerBody_GetEntityName(),"OnAnimMessage_Player",false);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnAnimMessage_Player(const tString &in asEntityName, const tString &in asAnimName, int alMessageEventID)
+		{
+			if (alMessageEventID == 0) // Push door closed
+			{
+				OnCollide_Player_Scare("","",1);
+			}
+			if (alMessageEventID == 852) // Look at hands, magic number to avoid collision with generic events
+			{
+				GhoulScare_LookAtHands();
+			}
+		}
+		
+		//------------------------------------------------------- 
+		
+	    bool OnCollide_Player_Scare(const tString &in asParent, const tString &in asChild, int alState)
+        {
+		   // Entity_PlayAnimation("ghoulscare", "sniff_long_2", 0.1, true, false, "");
+	        Prop_MoveLinearTo("ghoulscare_2_test","ghoulscare_2_test_target",1,7,0,false,"");
+			//Entity_PlayAnimation("ghoulscare_1_test","leans_around_corner_right_exit",0,false);
+			Map_AddTimer("Timer_GhoulGetUp",0.5f,"OnTimer_GhoulGetUp");
+			Map_AddTimer("Timer_GhoulGetUpSound",1.5f,"OnTimer_GhoulGetUpSound");
+			Map_AddTimer("Timer_BackAway",2.0f,"OnTimer_BackAway");
+			Map_AddTimer("Timer_BackAwayPermafail",8.3f,"OnTimer_BackAwayPermafail");
+			Sound_CreateAtEntity("Sound_Movement","01_02_caves/scare_events/ghoul_nest_movement_02","ghoulscare_2_test");
+		    cLux_AddDebugMessage("ghoul on the move");
+	        return false;
+        }
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_GhoulGetUp(const tString &in asTimer)
+		{
+			//Prop_SetActiveAndFade("fetish_light_2",true,1);
+			//Prop_SetActiveAndFade("fetish_light_1",false,1);
+			FearHandler_SetPermaFailEnabled(true);
+			FearHandler_FadeLevelTo(1,0.5f);
+			FearHandler_SetForcedAddFearRate(1,15,false);
+			Entity_PlayAnimation("ghoulscare_2_test","eat_ground_tr_idle_stand_slow",0.7f,false);
+			Map_AddTimer("Timer_SlowDownAnim",0.4,"OnTimer_SlowDownAnim");
+			Entity_SetAnimationSpeed("ghoulscare_2_test","eat_ground_tr_idle_stand_slow",3);
+			Sound_CreateAtEntity("Sound_GhoulEmerge", "01_02_caves/events/ghoul_nest_scare", "ghoulscare_2_test");
+		}
+		
+		void OnTimer_SlowDownAnim(const tString &in asTimer)
+		{
+			Entity_SetAnimationSpeed("ghoulscare_2_test","eat_ground_tr_idle_stand_slow",0.5);
+		}
+		
+		void OnTimer_GhoulGetUpSound(const tString &in asTimer)
+		{
+			Sound_PlayGui("02_02_courtyard/window_scare/window_stinger",1);
+			Sound_PlayGui("02_05_cistern/lizard/lizard_stinger",1);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_BackAway(const tString &in asTimer)
+		{
+			Player_FadeNightVisionStrength(1,3);
+			Light_FadeBrightnessTo("Light_Spot_3",1,2);
+			//Entity_SetEffectsActiveExt("fetish_light_rigid_1",false,true,1,3);
+			//Sound_PlayGui("tasi_scream_temp.ogg", 1.f);	
+			Voice_Play("Dialogue_CrackScare", -1, "OnVoiceEnd_CrackScare");
+			PlayerBody_PlayCutsceneAtEntity("spooked_fall_back_permafail_ghoul_encounter", "PosArea_Shimmy", false, 0.3f, "");
+			Sound_CreateAtEntity("Sound_TasiSpooked", "new_sounds/animations/ghoul_scare", "player");
+			PlayerBody_SetCutsceneMaxPitch(20.f);
+			PlayerBody_SetCutsceneMaxYaw(20.f);
+			
+			FearHandler_PlayStruggleSoundLoop(3.0f, 0.5f, false);
+		}
+		
+		//------------------------------------------------------- 
+		
+		void OnVoiceEnd_CrackScare(const tString& in asScene, const tString& in asLine)
+		{
+			Sound_CreateAtEntity("Sound_TransformEmotes", "new_sounds/player/ghoul_transition_high", "player");
+		}
+		
+		//------------------------------------------------------- 
+		
+		void GhoulScare_LookAtHands()
+		{
+			GhoulProgression_FadeCustomArmMaterial(GhoulProgression_GetPermafailFadeProgression(), 1.0f);
+			FearHandler_PlayStruggleSoundLoop(0.75f, 1.0f, false);
+		}
+		
+		//------------------------------------------------------- 
+		
+		void OnTimer_BackAwayPermafail(const tString &in asTimer)
+		{
+			Entity_SetActive("ghoulscare_2_test",false);
+			mlPermaFailStage = eCavesPermaFail_Nest;
+			FearHandler_TriggerPermaFail(false,"",true);
+		}
+		
+		//------------------------------------------------------- 
+	
+		bool OnCollide_Player_AnyoneThere(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (!Voice_AnySceneIsActive())
+			{
+				//Voice_Play("Dialogue_AnyoneThere");
+				return false;
+			}
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		// Louder version
+		bool OnCollide_Player_AnyoneThereCamp(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (!Voice_AnySceneIsActive())
+			{
+				//Voice_Play("Dialogue_AnyoneThereCamp");
+				return false;
+			}
+			return true;
+		}
+
+		//-------------------------------------------------------
+		
+		//} END General	
+	 
+		/////////////////////////////////////////
+		// Event A *Player explores the Camp finding traces of the survivors*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 1, Event A here.*/
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 1, Event A here.*/
+		
+		bool OnCollide_Player_ExposureIntro(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Effect_ToneMapping_FadeExposure(-2.f, 0.1);
+			Map_AddTimer("Timer_AdjustExposure",0.1,"OnTimer_AdjustExposure");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_AdjustExposure(const tString &in asTimer)
+		{
+			Effect_ToneMapping_FadeExposure(-1, 4);
+			Map_AddTimer("Timer_AdjustExposure2",5,"OnTimer_AdjustExposure2");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_AdjustExposure2(const tString &in asTimer)
+		{
+			Effect_ToneMapping_FadeExposure(0, 5);
+			Map_AddTimer("Timer_AdjustExposure2",2,"OnTimer_AdjustExposure2");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnLookAt_ExposureBrightArea(const tString &in asEntity, int alState)
+		{
+			if (alState == 1)
+			{
+				Effect_ToneMapping_FadeExposure(-1, 1);
+			}
+			else
+			{
+				Effect_ToneMapping_FadeExposure(0, 1);
+			}
+		}
+		
+		//-------------------------------------------------------
+		 
+		bool OnCollide_Player_Intro(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Sketchbook_Microflash("Microflash_Intro","OnEndOfVoice_CampIntro");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnEndOfVoice_CampIntro(const tString &in asScene, const tString &in asSubject)
+		{
+			Player_FadeRunSpeedMulTo(1,4);
+			Voice_PlayDelayed("Dialogue_CampIntro",0.5);
+		}
+	 
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_MusicCampsiteDiscover(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Music_PlayExt("A2_01_02_CavesAmbience.ogg", true, 0.15f, 1.0f, 5.0f, 0.0f, eMusicPrio_SceneAmb, false);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+
+	 
+		//} END Event A *Player explores the Camp finding traces of the survivors*
+		
+		/////////////////////////////////////////
+		// Event B *Player finds the spot where Salim slept, has a flashback and reads SALIM’S NOTE*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 1, Event B here.*/
+		
+		bool mbReadSalimsNote = false;
+		
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 1, Event B here.*/
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Luggage_ReadableActive(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState == 1)
+				Entity_SetInteractionDisabled("Readable_HanksNote_Tasi",false);
+			else
+				Entity_SetInteractionDisabled("Readable_HanksNote_Tasi",true);
+				
+			return true;
+		}
+		
+		//------------------------------------------------------- 
+		
+		void OnClose_ExpeditionRoster(const tString &in asEntity)
+		{
+			Voice_PlayDelayed("Dialogue_WhereDidTheyGo",0.8f);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnClose_SalimTasiPhoto(const tString &in asEntity)
+		{
+			Sketchbook_UnlockMemory("SalimsNote");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_SalimTasiPhoto(const tString &in asEntity)
+		{
+			Voice_PlayDelayed("Dialogue_WeddingPhoto", 1.5f);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnClose_SterlingFairchild(const tString &in asEntity)
+		{
+			Sketchbook_UnlockMemory("SterlingAndFairchild");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnClose_YasminID(const tString &in asEntity)
+		{
+			Sketchbook_UnlockMemory("YasminAndTasi");
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTriggerSterlingAndFairchild(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Sketchbook_UnlockMemory("SterlingAndFairchild");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnClose_SalimNote(const tString &in asEntity)
+		{
+			Voice_PlayDelayed("Dialogue_SalimsNote",1.3f);
+			Music_PlayExt("A2_1_2_SalimLetter.ogg", false, 0.5f, 1.0f, 8.0f, 1.0f, eMusicPrio_MinorEvent, false);
+			mbReadSalimsNote = true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_SalimStitching(const tString &in asEntity)
+		{
+			Sketchbook_UnlockMemory("StitchingSalimsWound");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnLookAt_StitchingTools(const tString &in asEntity, int alState)
+		{
+			Sketchbook_UnlockMemory("StitchingSalimsWound");
+		}
+	 
+		//-------------------------------------------------------
+	 
+		//} END Event B *Player finds the spot where Salim slept, has a flashback and reads SALIM’S NOTE*
+		
+		/////////////////////////////////////////
+		// Event C *Player finds LUKAS’ GRAVE and EVA’S SUICIDE NOTE*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 1, Event C here.*/
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 1, Event C here.*/
+		
+		void OnInteract_LukasPhoto(const tString &in asEntity)
+		{
+			Voice_PlayDelayed("Memory_LukasMemento_Prelude",0.8f);
+		}
+		
+		//-------------------------------------------------------
+
+		void Trigger_LookAt_Eva_OnPlayerLookAt(const tString &in asEntity, int alState)
+		{
+			if (Sketchbook_IsMicroflashActive())
+				Map_AddTimer("Timer_EvaReaction",1,"OnTimer_EvaReaction");
+			else
+			{
+				Voice_Play("Dialogue_Worry_Grave");
+				Entity_SetPlayerLookAtCallback(asEntity,"");
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_EvaReaction(const tString &in asTimer)
+		{
+			if (Sketchbook_IsMicroflashActive())
+				Map_RestartCurrentTimer(0.5f);
+			else
+			{
+				Entity_SetPlayerLookAtCallback("Trigger_LookAt_Eva","Trigger_LookAt_Eva_OnPlayerLookAt");
+			}
+		}
+		
+		//-------------------------------------------------------
+				
+		void Trigger_Interact_Eva_OnPlayerInteract(const tString &in asEntity)
+		{
+			Voice_PlayDelayed("Dialogue_Find_Eva",0.5f);
+			Music_PlayExt("A2_01_02_DiscoverGrave.ogg", false, 0.1f, 1.0f, 2.0f, 0.0f, eMusicPrio_BigEvent, false);
+		}
+
+		//-------------------------------------------------------
+		
+		void OnInteract_EvaCandle(const tString &in asEntity)
+        {
+		    ParticleSystem_SetVisible("smouldering_candle",false);
+			cLux_AddDebugMessage("whuduuuuup");
+        }
+		
+		//-------------------------------------------------------
+		
+		//} END Event C *Player finds LUKAS’ GRAVE and EVA’S SUICIDE NOTE*
+		
+	 
+	//} END SCENE 1
+	 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 2 *PLAYER FOLLOWS THE PILGRIMS' PATH AND DETOURS THROUGH THE DEEP CAVES TO OVERCOME THE BLOCKAGE*
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+ 
+		/////////////////////////////////////////
+		// General
+		//{//////////////////////////////////////
+		 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are used by many events in Scene 2 here.*/
+		
+		int mlSalimJacketStage = 0;
+		bool mbReadFirstNote = false;
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are used in more than one event in Scene 2 here.*/
+		
+		void OnLookAt_SalimTrail(const tString &in asEntity, int alState)
+		{
+			mlSalimJacketStage++;
+			
+			if (mlSalimJacketStage == 1)
+			{
+				if (mbReadSalimsNote) 
+				{
+					Voice_Play("Dialogue_SalimsTrail", -1, "OnEndOfVoice_SeeScarf");
+				}
+				else
+				{
+					//Voice_Play("Dialogue_TasiSeesTorch");
+				}
+				SuppressLightLevelBarks();
+				//Music_Play("A2_01_02_DiscoverSurvivors.ogg", 0.2f, false, eMusicPrio_BigEvent);
+			}
+			else if (mlSalimJacketStage == 2)
+			{
+				SuppressLightLevelBarks();
+				Voice_Play("Dialogue_SalimsTrail");
+			}
+			else
+			{
+				SuppressLightLevelBarks();
+				Voice_Play("Dialogue_TrailBarks");
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnEndOfVoice_SeeScarf(const tString &in asScene, const tString &in asSubject)
+		{
+			Voice_PlayDelayed("Dialogue_SeeScarf_Realise",0.5f);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnRead_SalimsNote(const tString &in asEntity)
+		{
+			int lNote = cString_GetNumericSuffixInt(asEntity);
+			
+			if (mbReadFirstNote == false)
+			{
+				Voice_PlayDelayed("Dialogue_CommentDiary_1",0.6f);
+				mbReadFirstNote = true;
+				return;
+			}
+			else
+			{
+				if (lNote == 2)
+					Voice_PlayDelayed("Dialogue_CommentDiary_2",0.6f);
+				
+			}	
+		}
+		
+		//------------------------------------------------------- 
+		
+		bool mbLightLevelBarkAllowed = true;
+		bool mbLightLevelBarksDelay = true;
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_LightLevelBarksDelay(const tString &in asTimer)
+		{
+			mbLightLevelBarksDelay = false;
+		}
+		
+		void UpdateLightLevelBarks(float afTimeStep)
+		{			
+			if (Entity_GetCollide("Fear_DeepCaves","player") == false && 
+				Entity_GetCollide("Fear_DeepCaves_1","player") == false)
+					return;
+					
+			if (Voice_CharacterIsSpeaking("Player")) return;
+			
+			float fLightLevel = Player_GetLightLevel();
+			if (mbInLight)
+			{	
+				if (fLightLevel <= mfDeepShadowLevel)
+				{
+					if (mbLightLevelBarksDelay) return;
+					mbInLight = false;
+					
+					cLux_AddDebugMessage("HERE");
+					
+					if (mbLightLevelBarkAllowed) 
+						Map_AddTimer("Timer_LeaveLightBarkDelay",9,"OnTimer_LeaveLightBarkDelay");
+					
+					if (Map_TimerExists("Timer_EnterLightBarkDelay"))
+					{
+						mbLightLevelBarkAllowed = false;
+						Map_RemoveTimer("Timer_EnterLightBarkDelay");
+						Map_AddTimer("Timer_ResetLightBarks",5,"OnTimer_ResetLightBarks");
+					}
+				}
+			}
+			else
+			{
+				if (fLightLevel > mfDeepShadowLevel)
+				{
+					mbInLight = true;
+					
+					if (mbLightLevelBarkAllowed)
+						Map_AddTimer("Timer_EnterLightBarkDelay",2,"OnTimer_EnterLightBarkDelay");
+					
+					if (Map_TimerExists("Timer_LeaveLightBarkDelay"))
+					{
+						mbLightLevelBarkAllowed = false;
+						Map_RemoveTimer("Timer_LeaveLightBarkDelay");
+						Map_AddTimer("Timer_ResetLightBarks",5,"OnTimer_ResetLightBarks");
+					}
+				}
+			}
+		}
+		
+		//------------------------------------------------------- 
+		
+		bool mbFearBarksAllowed = false;
+		
+		/* Moved these to caves B - IT
+		void UpdateFearLevelBarks()
+		{
+			if (Player_GetLightLevel() > mfDeepShadowLevel) return;
+			if (FearHandler_GetLevel() < .61f) return;
+			if (mbFearBarksAllowed == false) return;
+			
+			if (Map_TimeHasPassed("FearBark",30))
+				Voice_PlayWhenPossible("Dialogue_HighFearBarks");
+		}*/
+		
+		//------------------------------------------------------- 
+		
+		void OnTimer_EnterLightBarkDelay(const tString &in asTimer)
+		{
+			if (mbLightLevelBarkAllowed == false) return;
+			
+			if (Map_TimeHasPassed("LightBark",30))
+			{
+				float fLightLevel = Player_GetLightLevel();
+				if ((fLightLevel>mfDeepShadowLevel)&&(FearHandler_GetRate()<0.1f)&&(!Voice_AnySceneIsActive()))
+					Voice_Play("Dialogue_EnteringLightBarks");
+			}
+		}
+		
+		//------------------------------------------------------- 
+		
+		void OnTimer_LeaveLightBarkDelay(const tString &in asTimer)
+		{
+			if (mbLightLevelBarkAllowed == false) return;
+			
+			if (Map_TimeHasPassed("DarknessBark",20))
+			{
+				float fLightLevel = Player_GetLightLevel();
+				if ((fLightLevel<mfDeepShadowLevel)&&(!Voice_AnySceneIsActive()))
+					Voice_Play("Dialogue_LeavingLightBarks");
+			}
+		}
+		
+		//------------------------------------------------------- 
+		
+		void OnTimer_ResetLightBarks(const tString &in asTimer)
+		{
+			mbLightLevelBarkAllowed = true;
+		}
+		
+		//------------------------------------------------------- 
+		
+		void SuppressLightLevelBarks()
+		{
+			mbLightLevelBarkAllowed = false;
+			Map_AddTimer("Timer_ResetLightBarks",10,"OnTimer_ResetLightBarks");
+			Map_RemoveTimer("Timer_EnterLightBarkDelay");
+			Map_RemoveTimer("Timer_LeaveLightBarkDelay");
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END General
+		
+		/////////////////////////////////////////
+		// Event A *Player notices signs of Salim along the Pilgrim’s Path*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 2, Event A here.*/
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 2, Event A here.*/
+		
+		void OnLookAt_SomeoneAlive(const tString &in asEntity, int alState)
+		{
+			//Voice_Play("Dialogue_TasiSeesTorch");
+			Voice_Play("Dialogue_AnyoneThere");
+			 
+			//Music_Play("A2_01_02_DiscoverSurvivors.ogg", 0.2f, false, eMusicPrio_BigEvent);
+		}
+		
+		bool OnCollide_Player_ToggleNightVision(const tString &in asArea, const tString &in asEntity, int alState)
+		{
+			if (alState == 1)
+				Player_SetNightVisionEnabled(true);
+			else
+				Player_SetNightVisionEnabled(false);
+
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_MatchHint(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (ItemType_GetCountInInventory("Matchbook") == 0) return true;
+			
+			Hint_ShowHint("Hints","HintMatchbook",true);
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		bool OnTrigger_PlayCaveSound(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Sound_Play("Sound_DebrisCaveEnter", 0.0f);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_DeepCavesDialogue(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Voice_Play("Dialogue_DeeperCaves");
+			
+			Map_AddTimer("Timer_LightLevelBarksDelay",10,"OnTimer_LightLevelBarksDelay");
+			return false;
+		}
+		
+		//------------------------------------------------------- 
+		
+		bool OnCollide_Player_NopeStart(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			cScript_SetGlobalVarBool("Past_Camp", true);
+			return false;
+		}
+		
+		//------------------------------------------------------- 
+		
+		bool OnCollide_Player_NopeEnd(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			cScript_SetGlobalVarBool("Caves_Deeper", true);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_SalimWounded(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			SuppressLightLevelBarks();
+			Voice_PlayWhenPossible("Dialogue_TasiRemembersWound");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_PlayWindSound(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Sound_Play("Sound_WindSweet_1", 0.0f);
+			Sound_Play("Sound_DeepRumble", 0.0f);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_FirstTorch(const tString &in asEntity)
+		{
+			if (ItemType_GetCountInInventory("Matchbook") == 0) return;
+			
+			if (!mbInLight)
+				Voice_PlayDelayed("Dialogue_TasiLightsFirstTorch",.8f);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_ActivateWindGust(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Entity_SetActive("deepcave_entrance",true);
+		    return false;
+		}
+		
+        void OnLookAt_DeepCavesEntranceWind(const tString &in asEntity, int alState)
+        {	
+		    ParticleSystem_CreateAtEntityExt("wind_scare_deepcave_entrance", "wind_scare.ps", "windscare_deepcave_entrance", false, cColor(1,1,1,1), 1, false);
+			//Seq_TorchWind("");
+			Entity_SetPlayerLookAtCallback(asEntity,"");
+        }
+		
+		//------------------------------------------------------- 
+		
+		cSequenceStatesData mSeq_TorchWind;
+		
+        void Seq_TorchWind(const tString &in asTimer)
+        {
+	        Sequence_Begin("Seq_TorchWind", mSeq_TorchWind);
+	            if (Sequence_DoStepAndWait(0.5f))
+		        {
+					Sound_Play("Sound_WindScare_2", 0.0f);
+		        }
+		        else if (Sequence_DoStepAndWait(1.5f))
+		        {
+				    Entity_SetActive("torch_pilgrim_wood_2", false);
+				    Entity_SetActive("torch_pilgrim_wood_wind", true);
+		        }
+		        else if (Sequence_DoStepAndWait(0))
+		        {
+				    Entity_SetActive("torch_pilgrim_wood_wind", false);
+				    Entity_SetActive("torch_pilgrim_wood_2", true);
+		        }
+	        Sequence_End();
+        }
+		
+		//-------------------------------------------------------
+		
+		//} END Event A *Player notices signs of Salim along the Pilgrim’s Path*
+		
+		/////////////////////////////////////////
+		// Event B *Player finds a way through the Deep Caves*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 2, Event B here.*/
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 2, Event B here.*/
+	
+		bool OnCollide_Player_SoundTrigger(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_Wind(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			
+			DeepCaves_WindGust();
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void DeepCaves_WindGust()
+		{
+			mbFearBarksAllowed = true;
+			Sound_CreateAtEntity("Sound_TunnelWind", "01_02_caves/scare_events/wind_scare_flame", "SoundArea_Wind");
+			Sound_AddClosedCaption("01_02_caves","CC_WindFlame");
+			Map_AddTimer("Timer_TorchOff",0.9f,"OnTimer_TorchOff");
+			//Map_AddTimer("Timer_SoundAnimalsDelay",1.5f,"OnTimer_SoundAnimalsDelay");
+			ParticleSystem_CreateAtEntity("windgust", "wind_scare.ps", "SoundArea_Wind", false);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_TorchOff(const tString &in asTimer)
+		{
+			
+			FearHandler_FadeLevelTo(0.6f,2.f);
+			FearHandler_SetForcedAddFearRate(0.7f,3);
+			Lamp_SetLit("brazier_5",false,true);
+			Lamp_SetLit("torch_lamp_5",false,true);
+			Lamp_SetLit("torch_lamp_9",false,true);
+		}
+		
+		void OnTimer_SoundAnimalsDelay(const tString &in asTimer)
+		{
+			Sound_Play("Sound_NestSound_4", 0.0f);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_PlaymovementSound_1(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			FearHandler_SetForcedAddFearRate(0.4f,2,false);
+			Sound_Play("Sound_CaveMovement_1", 0.0f);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_PlaymovementSound_2(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Sound_Play("Sound_CaveMovement_2", 0.0f);
+			Sound_Play("Sound_WindScare_3", 0.0f);
+			Sound_Play("Sound_StepSweet_1", 0.0f);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_PlaymovementSound_3(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Sound_Play("Sound_CaveMovement_3", 0.0f);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_PlayWindScare_1(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Sound_Play("Sound_WindScare_1", 0.0f);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		int mlJumpHintId = -1;
+		int mlCrouchHintId = -1;
+		
+		bool OnCollide_Player_JumpHint(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState == 1)
+			{
+				Hint_StopHint();
+				mlJumpHintId = Hint_ShowHint_Hold("Hints","HintJump",true,100.f,false);
+			}
+			else
+			{
+				Hint_StopHint();
+				Hint_Release(mlJumpHintId);
+			}
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_ShowDarknessHint(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Player_SetNightVisionEnabled(true);
+			Hint_StopHint();
+			Hint_ShowHint_Hold("Hints", "HintDarkness", true, 1.5f, true, 10.f);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_CrouchHint(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState == 1)
+			{
+				if (Player_GetCrouching() == false)
+				{
+					Hint_StopHint();
+					mlCrouchHintId = Hint_ShowHint_Hold("Hints","HintCrouch",true,100.f,false);
+				}
+			}
+			else
+			{
+				Hint_StopHint();
+				Hint_Release(mlCrouchHintId);
+				
+				if (Entity_PlayerIsInFront(asParent))
+					return false;
+			}
+						
+			return true;
+		}
+		
+		//MUSIC--------------------------------------------------
+
+		bool OnCollide_StopCavesMusic(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Music_Stop(5.0f, eMusicPrio_SceneAmb);
+			Entity_SetActive("Trigger_CaveMusicStop",false);
+			return true;
+		}
+		
+		//-------------
+		
+		bool OnColllide_MusicCave_1(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Entity_SetActive("Trigger_CaveMusicStop",true);
+			Entity_SetActive("Trigger_DeepcaveMusic_2",true);
+			Music_PlayExt("A2_01_02_Deep_Cave_A_New.ogg", true, 0.3f, 1.0f, 5.0f, 1.0f, eMusicPrio_SceneAmb, true);
+			return true;
+		}
+		
+		//-------------
+		
+		bool OnColllide_MusicCave_2(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Music_Stop(2.0f, eMusicPrio_SceneAmb);
+			Entity_SetActive("Trigger_DeepcaveMusic_2",false);
+			Entity_SetActive("Trigger_DeepcaveMusic_3",true);
+			Music_PlayExt("A2_01_02_Deep_Cave_B_New.ogg", true, 0.06f, 1.0f, 2.0f, 1.0f, eMusicPrio_SceneAmb, true);
+			return true;
+		}
+		
+		//--------------
+		
+		bool OnColllide_MusicCave_3(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Music_Stop(2.0f, eMusicPrio_SceneAmb);
+			Entity_SetActive("Trigger_DeepcaveMusic_3",false);
+			Music_PlayExt("A2_01_02_Deep_Cave_C_New.ogg", true, 0.06f, 1.0f, 2.0f, 1.0f, eMusicPrio_SceneAmb, true);
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event B *Player finds a way through the Deep Caves*
+		
+		/////////////////////////////////////////
+		// Event C *Player finds the Shrine Room and creates a safe room
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 2, Event C here.*/
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 2, Event C here.*/
+		
+		bool OnCollide_Player_EnterSafeRoom(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			//Hint_ShowHint_Hold("Hints", "SafeRoom", true);
+			Voice_PlayDelayed("Dialogue_TheShrine",1);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnBreak_Pot(const tString &in asEntity)
+        {
+			tString sContent = Entity_GetVarString(asEntity,"");
+            Prop_RemoveAttachedProp(asEntity,sContent);
+			Prop_SetStaticPhysics(sContent,false);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnStateChange_SlideLock_Shrine(const tString &in asEntity, int alState)
+		{
+			if (SwingDoor_GetOpenAmount("Door_SafeRoom") > .1f) return;
+			
+			if (alState == 1)
+			{
+				Entity_SetActive("Safe_Room",true);
+				Map_AddTimer("Timer_ShrineStory",3,"OnTimer_ShrineStory");
+				Debug_Log("SAFE");
+				cLux_AddDebugMessage("yoooooooooooooooooooooooooooooo");
+			}
+			if (alState == -1)
+			{
+				Entity_SetActive("Safe_Room",false);
+				Debug_Log("UNSAFE");
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_InSafeRoom(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState == 1)
+			{
+				if (Map_TimerExists("Timer_IsInSafeRoom") == false)
+					Map_AddTimer("Timer_IsInSafeRoom", 1, "OnTimer_IsInSafeRoom");
+			}
+			else
+			{
+				Map_RemoveTimer("Timer_IsInSafeRoom");
+			}
+				
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_IsInSafeRoom(const tString &in asTimer)
+		{
+			cLux_AddDebugMessage("CHECK DOOR");
+			if (SwingDoor_GetOpenAmount("Door_SafeRoom") > .1f)
+			{
+				Map_RestartCurrentTimer();
+				return;
+			}
+			
+			if (Map_TimerExists("Timer_ShrineStory") == false)
+				Map_AddTimer("Timer_ShrineStory",2.5f,"OnTimer_ShrineStory");
+				
+			Map_RestartCurrentTimer();
+			
+		}
+
+		//------------------------------------------------------- 
+		
+		bool OnCollide_Lock_SafeRoom(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (SwingDoor_GetOpenAmount("Door_SafeRoom") > .1f) return true;
+			
+			if (alState == 1)
+			{
+				//Entity_SetActive("Safe_Room",true);
+				FearArea_SetLocked("Safe_Room", true);
+				Map_AddTimer("Timer_ShrineStory",3,"OnTimer_ShrineStory");
+				Debug_Log("SAFE");
+			}
+			if (alState == -1)
+			{
+				//Entity_SetActive("Safe_Room",false);
+				FearArea_SetLocked("Safe_Room", false);
+				Debug_Log("UNSAFE");
+			}
+			
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ShrineStory(const tString &in asTimer)
+		{
+			if (Voice_CharacterIsSpeaking("Player"))
+				Map_RestartCurrentTimer(2);
+			else
+				Voice_Play("Dialogue_ShrineStory");
+		}
+		
+		//} END Event C *Player finds the Shrine Room and creates a safe room*
+		
+	//} END SCENE 2
+	
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 3 *PLAYER EXPLORES THE PILGRIM'S PATH AND FALLS IN THE NEST*
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+ 
+		/////////////////////////////////////////
+		// General
+		//{//////////////////////////////////////
+		 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are used by many events in Scene 3 here.*/
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are used in more than one event in Scene 3 here.*/
+		
+		//-------------------------------------------------------
+		
+		//} END General
+		
+		/////////////////////////////////////////
+		// Event A *Player finds the animal's carcass*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 3, Event A here.*/
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 3, Event A here.*/
+		
+		void OnLookAt_Blood(const tString &in asEntity, int alState)
+		{
+			Voice_Play("Tasi_Blood");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnLookAt_DeactivateBloodFear(const tString &in asEntity, int alState)
+		{
+			Entity_SetActive("FearScaryObject_2",false);
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event A *Player finds the animal's carcass*
+		
+		/////////////////////////////////////////
+		// Event B *Player falls from the broken bridge*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 3, Event B here.*/
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 3, Event B here.*/
+		
+		bool OnCollide_Player_SlowWalk(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState == 1)
+			{
+				Player_SetRunSpeedMul(0.5f);
+				Player_SetMoveSpeedMul(0.5f);
+				Player_SetJumpForceMul(0.6f);
+			}
+			else
+			{
+				Player_SetRunSpeedMul(1);
+				Player_SetMoveSpeedMul(1);
+				Player_SetJumpForceMul(1);
+			}
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_Fall(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			tString sLength = Entity_GetVarString(asParent,"");
+			CameraAnimation_Begin("CamAnim_"+sLength,"",true);
+			FearHandler_FadeLevelTo(0.75f,0.2f);
+			//Sound_CreateAtEntity("Sound_Fall","Global_Tasi_Bark_Stage3_Fall_Start","player");
+			Voice_Play("Global_Tasi_Bark_Stage3_Fall_Start");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_PlankCreak(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState == 1) 
+			{
+				if (asParent == "Trigger_Creak_3") Voice_PlayDelayed("Dialogue_CrossingPlankBarks",0.3f,4);
+				else	Voice_PlayDelayed("Dialogue_CrossingPlankBarks",0.3f);
+			}
+			
+			Debug_Log("SOUND"+cMath_RandRectl(0,10));
+			Sound_CreateAtEntity("Sound_PlankCreak","02_04_living_quarters/floor_plank/floor_plank_creak",asChild);
+			Sound_AddClosedCaption("01_02_caves","CC_WoodCreak",0.8f);
+			
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_PlayNestSounds(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Sound_Play("Sound_SweetGhoul_1", 0.0f);
+			Sound_Play("Sound_RockSlideSweet", 0.0f);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+			bool OnTrigger_PlayFeetScare(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Sound_Play("Sound_FeetScare", 0.0f);
+			Sound_Play("Sound_WindSweet_1", 0.0f);
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_BreakPlank(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			//FearHandler_SetPermaFailEnabled(true);
+			Sound_CreateAtEntity("Sound_PlankBreak","02_04_living_quarters/floor_plank/floor_plank_splinter",asChild);
+			Entity_SetActive("Plank_2",false);
+			Entity_SetActive("Plank_Broken_1",true);
+			FearHandler_SetForcedAddFearRate(1,5);
+			FearHandler_FadeLevelTo(0.75f,0.2f);
+			//CameraAnimation_Begin("CamAnim_Fall2","",true);
+			Voice_StopAll();
+			Voice_Play("Dialogue_TheFall_Start");
+			//Voice_Play("Global_Tasi_Bark_Stage3_Fall_Start");
+			
+			Music_Stop(1.0f, eMusicPrio_BgAmb);
+			Music_Play("A2_01_02_FallingDown_Stinger.ogg", 0.3f, false, eMusicPrio_BigEvent);
+			
+			Sound_CreateAtEntity("Sound_PlayerFall","01_02_caves/scare_events/tasi_cave_fall", "player");
+			Sound_Stop("Sound_RockSlideSweet", 2.0f);
+			Sound_Stop("Sound_FeetScare", 1.0f);
+			Sound_Stop("Sound_CritterSweet", 1.0f);
+			Sound_Stop("Sound_GoreSweet_1", 1.0f);
+			
+			PlayerBody_PlayCutsceneAtEntity("fall_from_collapsed_plankbridge","PosArea_BridgeCollapseAnim",false,1);
+			Map_AddTimer("Timer_HitGround",11.3f,"OnTimer_HitGround");
+			Map_AddTimer("Timer_GhoulSound",4.5f,"OnTimer_PlayGhoulSound");
+			
+			Seq_PlankFallRumbles();
+			
+			mbFearBarksAllowed = false;
+			
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSeqPlankFallRumbles;
+		
+		void Seq_PlankFallRumbles(const tString& in asTimer="")
+		{
+			Sequence_Begin("Seq_PlankFallRumbles", mSeqPlankFallRumbles);
+		
+			if (Sequence_DoStepAndWait(1.f))
+			{
+				Effect_Rumble_Start(0.5f, 0.5f, 0.1f, 0.2f);
+			}
+			else if (Sequence_DoStepAndWait(1.5f))
+			{
+				Effect_Rumble_Start(0.75f, 0.75f, 0.1f, 1.0f);
+			}
+			else if (Sequence_DoStepAndWait(0.25f))
+			{
+				Effect_Rumble_Start(0.5f, 5.f, 0.1f, 0.3f);
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{
+				Effect_Rumble_Start(1.0f, 0.25f, 0.1f, 0.1f);
+			}
+			else if (Sequence_DoStepAndWait(7.5f))
+			{
+				Effect_Rumble_Start(1.0f, 0.25f, 0.1f, 0.1f);
+			}
+			else if (Sequence_DoStepAndContinue())
+			{
+				Effect_Rumble_Start(1.0f, 0.5f, 0.0f, 0.0f);
+			}
+			
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_HitGround(const tString &in asTimer)
+		{
+			Entity_SetActive("Trigger_HitGround",false);
+			Effect_Fade_Out(0.1f);
+			Map_AddTimer("Timer_PlayStruggleSound",0.75f,"OnTimer_PlayStruggleSound");
+			Map_AddTimer("Timer_PlayerWakeupAfterFall",1,"OnTimer_PlayerWakeUpAfterFallNew");
+			Music_Play("A2_01_02_PitAmbience.ogg", 0.5f, false, eMusicPrio_BgAmb);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PlayGhoulSound(const tString &in asTimer)
+		{
+			Sound_Play("Sound_GhoulPit", 0.0f);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_HitsGround(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			mbFearBarksAllowed = false;
+			Voice_StopAll();
+			cLux_AddDebugMessage("GROUND");
+			Effect_Fade_Out(0.1f);
+			//Sound_CreateAtEntity("Sound_FallImpact","player/foley/damage/player_fall_damage","player");
+			//Sound_CreateAtEntity("Sound_FallDamage","player/foley/damage/player_hit","player");
+			Map_AddTimer("Timer_PlayStruggleSound",3.75f,"OnTimer_PlayStruggleSound");
+			Map_AddTimer("Timer_PlayerWakeupAfterFall",4,"OnTimer_PlayerWakeUpAfterFallNew");
+			Music_Play("A2_01_02_PitAmbience.ogg", 0.5f, false, eMusicPrio_BgAmb);
+			
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PlayStruggleSound(const tString &in asTimer)
+		{
+			FearHandler_PlayStruggleSoundLoop(2.0f, 0.75f, false);
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event B *Player falls from the broken bridge*
+		
+		/////////////////////////////////////////
+		// Event C *Player explores Nest and permafails*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 3, Event C here.*/
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 3, Event C here.*/
+		
+		void OnTimer_PlayerWakeUpAfterFall(const tString &in asTimer)
+		{
+			Player_Teleport("Start_Nest",true);
+			FearHandler_FadeLevelTo(0.70f,0.1f);
+			FearHandler_SetPermaFailStruggleEnabled(false);
+			FearHandler_SetPermaFailTriggerAnimation("kneels_down_and_permafails");
+			Effect_ImageTrail_Start(1.6f,0.1f,15,5);
+			Player_SetMoveSpeedMul(0.6f);
+			Player_SetRunSpeedMul(0.1f);
+			Music_Play("A2_01_02_PitLand.ogg", 0.2f, false, eMusicPrio_BigEvent);
+			Map_AddTimer("Timer_FadeInAfterFall",0.2f,"OnTimer_FadeInAfterFall");
+			Map_AddTimer("Timer_MusicDeepCaves", 14.0f, "OnTimer_PlayMusicDeepCaves");
+			Map_AddTimer("Timer_TasiInNest",1,"OnTimer_TasiInNest");
+			Map_AddTimer("Timer_PrePermafailBark",8,"OnTimer_PrePermafailBark");
+			Map_AddTimer("Timer_NestSounds",10,"OnTimer_NestSounds");
+			Map_AddTimer("Timer_ShowFearHint", 14.f, "OnTimer_ShowFearHint");
+			
+			PlayerBody_PlayCutsceneAtEntity("get_up_after_fall_from_plankbridge","PosArea_NestAnim",false,0);
+						
+			mlPermaFailStage = eCavesPermaFail_Nest;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PlayerWakeUpAfterFallNew(const tString &in asTimer)
+		{
+			
+			/*int lMatches = ItemType_GetCountInInventory("Matchbook");
+			for (int i = 1; i <= lMatches; i++)
+			{
+				Item_RemoveFromInventory(ItemType_GetFirstInInventory("Matchbook"));
+			}*/
+			
+			Player_SetMoveSpeedMul(0);
+			FearHandler_FadeLevelTo(1.f,0);
+			Player_Teleport("Start_Nest",true);
+			//Struggle_StartStationary("PosArea_StruggleTarget","","OnSuccess_ExploreNest","",8);
+			FearHandler_SetPermaFailTriggerAnimation("kneels_down_and_permafails");
+			
+			
+			tString sAnimLoop = "permafail_struggle1_high_crouch_loop";
+			tString sAnimStruggle = "permafail_struggle1_low_crouch_loop";
+			tString sAnimIntro = "permafail_struggle1_high_crouch_start";
+			tString sAnimOutro = "permafail_struggle1_high_crouch_end";
+			Struggle_StartAnimation("", sAnimLoop, sAnimStruggle, sAnimIntro, sAnimOutro, true, "", "OnSuccess_ExploreNest", "", "", 6.f, true, 2.f, 1.0f, true, 0.3f, false, true);
+
+			
+			Map_AddTimer("Timer_FadeInAfterFall",0.2f,"OnTimer_FadeInAfterFall");
+			
+			mlPermaFailStage = eCavesPermaFail_Nest;
+		}
+		
+		//------------------------------------------------------- 
+		
+		void OnSuccess_ExploreNest()
+		{
+			FearHandler_FadeLevelTo(0.8f,0);
+			FearHandler_SetPermaFailStruggleEnabled(false);
+			FearHandler_SetPermaFailEnabled(true);
+			Player_SetMoveSpeedMul(0.3f);
+			Player_SetRunSpeedMul(0.3f);
+			Player_FadeMoveSpeedMulTo(0.7f,6);
+			Player_FadeRunSpeedMulTo(0.7f,10);
+			Music_Play("A2_01_02_PitLand.ogg", 0.2f, false, eMusicPrio_BigEvent);
+			Map_AddTimer("Timer_MusicDeepCaves", 5.0f, "OnTimer_PlayMusicDeepCaves");
+			Voice_PlayDelayed("Dialogue_TheNest",2,1,"OnEndOfVoice_LastLine");
+			//Map_AddTimer("Timer_PrePermafailBark",10,"OnTimer_PrePermafailBark");
+			Map_AddTimer("Timer_NestSounds",10,"OnTimer_NestSounds");
+			Map_AddTimer("Timer_ShowFearHint", 19.f, "OnTimer_ShowFearHint");
+			Effect_ImageTrail_Start(1.2f,4,10,10);
+			
+			FearHandler_StopStruggleSoundLoop(1.25f);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnEndOfVoice_LastLine(const tString &in asScene, const tString &in asSubject)
+		{
+			Voice_PlayDelayed("Dialogue_TheNest",1,2,"OnEndOfVoice_PrePermafail");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnEndOfVoice_PrePermafail(const tString &in asScene, const tString &in asSubject)
+		{
+			//Map_AddTimer("Timer_PrePermafailBark",3,"OnTimer_PrePermafailBark");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_FadeInAfterFall(const tString &in asTimer)
+		{
+			Struggle_SetCannotLose(false);
+			Effect_Fade_In(0.1f);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_TasiInNest(const tString &in asTimer)
+		{
+			Voice_Play("Dialogue_TheNest");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PlayMusicDeepCaves(const tString &in asTimer)
+		{
+			Music_Stop(4.0f, eMusicPrio_BigEvent);
+			Music_PlayExt("A2_01_02_PitAmbience.ogg", true, 0.2f, 1.0f, 6.0f, 0.0f, eMusicPrio_BgAmb, true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PrePermafailBark(const tString &in asTimer)
+		{
+			if (FearHandler_GetLevel() > .85f && Voice_CharacterIsSpeaking("Player") == false)
+				Voice_Play("Dialogue_PrePermafail",-1,"OnEndOfVoice_NestPermafail");
+			else
+				Map_RestartCurrentTimer(1);
+		}
+		
+		//------------------------------------------------------- 
+		
+		void OnTimer_NestSounds(const tString &in asTimer)
+		{
+			int lRand = cMath_RandRectl(1,6);
+			Sound_CreateAtEntity("Sound_Movement","01_02_caves/scare_events/ghoul_nest_movement_02","SoundArea_NestSounds_"+lRand);
+			Map_RestartCurrentTimer(cMath_RandRectf(7,10));
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ShowFearHint(const tString &in asTimer)
+		{
+			Hint_RemoveFromGiven("Hints","HintFear");
+			Hint_ShowHint_Hold("Hints", "HintFear", false, 1.5f, true, 10.f);
+		}
+		
+		//------------------------------------------------------- 
+		
+		void OnEndOfVoice_NestPermafail(const tString &in asScene, const tString &in asSubject)
+		{
+			FearHandler_TriggerPermaFail(true);
+			FearHandler_FadeLevelTo(1.f,0.1f);
+			FearHandler_SetForcedAddFearRate(1,10,false);
+			
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_PlayNestSound_1(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Sound_Play("Sound_NestSound_1", 0.0f);
+			Voice_PlayDelayed("Dialogue_GhoulNoises",1.2f,0);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_PlayNestSound_2(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Sound_Play("Sound_NestSound_2", 0.0f);
+			//Voice_PlayDelayed("Dialogue_GhoulNoises",1.2f,2);
+			Entity_SetActive("Trigger_AnyoneThere_2",false);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_PlayNestSound_3(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Sound_Play("Sound_NestSound_3", 0.0f);
+			Sound_Stop("Sound_CritterSweet", 2.0f);
+			FearHandler_SetForcedAddFearRate(0.4f,3,false,-1,-1,1.f);
+			//Voice_PlayDelayed("Dialogue_GhoulNoises",2.6f,3);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_RemoveEyes(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Entity_SetActive("ghoul_eyes",false);
+			Entity_SetActive("PosArea_GhoulEyes",false);
+			return false;
+		}
+
+		//------------------------------------------------------- 
+		
+		void OnLookAt_EyesGoAway(const tString &in asEntity, int alState)
+		{
+			Debug_Log("SAW EYES");
+			//FearHandler_FadeLevelTo(0.83f,0.1f);
+			Sound_CreateAtEntity("Sound_Movement","01_02_caves/scare_events/ghoul_nest_movement_02","ghoul_eyes");
+			Entity_SetActive("ghoul_eyes",false);
+			
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_PlayNestSweet(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			//Entity_SetActive("ghoul_eyes",true);
+			//Entity_SetActive("PosArea_GhoulEyes",true);
+			//Map_AddTimer("Timer_RemoveEyes",10,"OnTimer_RemoveEyes");
+			Sound_Play("Sound_NestHorrorAbove", 0.0f);
+			Sound_Play("Sound_NestHorrorBehind", 0.0f);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_RemoveEyes(const tString &in asTimer)
+		{
+			Entity_SetActive("ghoul_eyes",false);
+			Entity_SetActive("PosArea_GhoulEyes",false);
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event C *Player explores Nest and permafails*
+		
+	//} END SCENE 3
+	
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 4 *Player wakes up, uses the Amulet to open a rift and proceeds through the caves*
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+ 
+		/////////////////////////////////////////
+		// General
+		//{//////////////////////////////////////
+		 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are used by many events in Scene 4 here.*/
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are used in more than one event in Scene 4 here.*/
+		
+		//-------------------------------------------------------
+		
+		//} END General
+		
+		/////////////////////////////////////////
+		// Event A *Player explores the caves and finds the overlap*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 4, Event A here.*/
+		
+		bool mbRiftOpen = false;
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 4, Event A here.*/
+				
+		int mlBlurID = -1;
+		int mlTrailID = -1;
+		
+		void Player_WakeUp(const tString &in asAnim, float afFadeTime)
+		{
+			mlBlurID = Effect_Blur_Start(4,0);
+			mlTrailID = Effect_ImageTrail_Start(3,0,5,3);
+			PlayerBody_PlayAnimation(asAnim,ePlayerBodyAnimationLayer_FullBody,false,false,false);
+			Effect_Fade_In(afFadeTime);
+			Map_AddTimer("Timer_WakeUpBark",0,"OnTimer_WakeUpBark");
+			Entity_SetActive("Trigger_WakeUpBark",false);
+			Effect_Blur_FadeOut(mlBlurID,3);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_WakeUpBark(const tString &in asTimer)
+		{	
+			Voice_StopAll();
+			Voice_PlayDelayed("Dialogue_PostPermafail",3,-1,"OnEndOfVoice_PainIsGone");
+			
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_WakeUpBark(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Map_AddTimer("Timer_WakeUpBark",0,"OnTimer_WakeUpBark");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnEndOfVoice_PainIsGone(const tString &in asScene, const tString &in asSubject)
+		{
+			FearHandler_SetPermaFailPlayVocals(true);
+			Map_AddTimer("Timer_PainIsGone",5,"OnTimer_PainIsGone");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PainIsGone(const tString &in asTimer)
+		{
+			Voice_Play("Dialogue_FeelBetter");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnLookAt_Overlap(const tString &in asEntity, int alState)
+		{			
+			if (alState == 1)			
+				Voice_PlayWhenPossible("Dialogue_WeirdShit");
+			else
+				Voice_StopCheckTimer("Dialogue_WeirdShit");
+		}
+					 
+		//-------------------------------------------------------
+		
+		bool OnCollide_PlayDWBoom(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Sound_Play("Sound_DWBoom",0.0f);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_PlayDWSweet(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Sound_Play("Sound_DWCaveSweet", 0.0f);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event A *Player explores the caves and finds the overlap*
+		
+		/////////////////////////////////////////
+		// Event B *Player opens the rift and crosses through the resulting overlap*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 4, Event B here.*/
+		
+		int mfTransitionFear = 0;
+
+		//-------------------------------------------------------
+
+		/*Put any functions that are only used in Scene 4, Event B here.*/
+		
+		bool OnCollide_Player_EquipAmulet(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (mbRiftOpen) return false;
+			
+			Seq_AmuletTutorial("");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSeqDataAmuletTutorial;
+		void Seq_AmuletTutorial(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_AmuletTutorial", mSeqDataAmuletTutorial);
+			if (Sequence_DoStepAndWait(2.f))
+			{
+				Amulet_StartTracking(true, "Rift_Goal");				
+				
+				Player_FadeRunSpeedMulTo(0.f, 1.f);
+				Player_SetJumpDisabled(true);
+			}
+			else if (Sequence_DoStepAndWait(2.f))
+			{				
+				Player_SetCrouching(false);
+				
+				cScript_SetGlobalVarBool("Caves_TakenOutAmulet", true);
+				
+				Item_TakeOut(ItemType_GetFirstInInventory("CurseMedallion"));
+				
+				PlayerBody_SetUnequipItemsOnCutscene(false);
+				
+				Item_PutAway(eItemHandlerHand_Left);
+			
+				PlayerBody_SetArmAnimationPitch(false, true, false);
+				PlayerBody_SetCutsceneMaxPitch(5.f);
+				PlayerBody_SetCutsceneMaxYaw(5.f);
+				PlayerBody_PlayCutsceneAnimation("tasi_first_time_amulet_equip", false, 0.3f, "OnAnimEnd_AmuletTutorial");			
+				
+				tString sEnt = Item_GetHeldEntity(eItemHandlerHand_Right);
+				Entity_PlayAnimation(sEnt, "amulet_first_time_amulet_equip", 0.3f, false);
+				
+				Voice_StopAll();
+				Voice_Play("Dialogue_TheAmulet1");
+				
+				Amulet_SetTutorialActive(true);
+				Item_SetHidden(ItemType_GetFirstInInventory("CurseMedallion"), false);
+			}
+			else if (Sequence_DoStepAndWait(8.25f))
+			{
+				Amulet_StartTracking(true, "Rift_Goal");
+			}
+			else if (Sequence_DoStepAndPause(1.f))
+			{
+				Amulet_StartTracking(true, "Rift_Goal");
+			}
+			else if (Sequence_DoStepAndWait(2.f))
+			{
+				Hint_StopHint();
+				mbShowedAmuletHint = true;
+				Hint_ShowHint_Hold("Hints", "HintAmulet", true, 1.5f, false, 10);
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{
+				//if (Amulet_IsHeld())
+				//	Voice_Play("Dialogue_TheAmulet2");				
+			}
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnAnimEnd_AmuletTutorial(const tString &in asAnim)
+		{
+			Amulet_SetTutorialActive(false);
+			
+			PlayerBody_SetArmAnimationPitch(true, true, false);
+			PlayerHands_PlayAnimation("tool_amulet_idle", true, false, 0.f, Item_GetHeldEntity(eItemHandlerHand_Right), true, 1.f, -1.f, true, true);
+			
+			SequenceStates_Resume("Seq_AmuletTutorial");
+			
+			Player_FadeRunSpeedMulTo(1.f, 1.f);
+			Player_SetJumpDisabled(false);
+		}
+				
+		//-------------------------------------------------------
+		
+		void RiftRock_Dressing_Move(int alRockNumber, int alDirection)
+		{
+			tString sRock = "riftrock_dressing_"+alRockNumber;
+			tString sTarget = (alDirection == 1) ? sRock+"_end" : sRock+"_start";
+			
+			Prop_MoveLinearTo(sRock,sTarget,30,20,2,false);
+			Prop_AlignRotation(sRock,sTarget,30,10,2,false);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_DWWhispers(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			(alState == 1) ? DarkWorldWhispers_Play(1) : DarkWorldWhispers_Stop();
+			return true;
+		}
+						
+		//-------------------------------------------------------
+		
+		void OnRiftStage_FirstRift(const tString &in asRift, int alStage, bool abOpening, float afOpenAmount)
+		{
+			Debug_Log("RIFT: "+alStage+" "+afOpenAmount+" "+abOpening);
+			
+			if (alStage == 0)
+			{
+				if (abOpening)
+				{
+					//ParticleSystem_CreateAtEntityExt("rift_implosion", "rift_opening.ps", "position_particle_rift_exit", false, cColor(1,1,1,1), 1, false, 1, 2, 100, 100);
+				}
+				else
+				{
+					RiftRock_Dressing_Move(1,-1);
+				}
+			}
+			if (alStage == 1)
+			{
+				if (abOpening)
+				{
+					RiftRock_Dressing_Move(1,1);
+				}
+				else
+				{
+					RiftRock_Dressing_Move(2,-1);
+					//Prop_SetActiveAndFade("riftrock_entrance_*",true,1);
+				}
+			}
+			if (alStage == 2)
+			{
+				if (abOpening)
+				{
+					RiftRock_Dressing_Move(2,1);
+					Voice_PlayWhenPossible("Dialogue_RiftOpen", "VoiceCondition_OutsideOfRift");
+					//Prop_SetActiveAndFade("riftrock_entrance_*",false,1);
+					
+					if (Sound_Exists("Sound_DWCaveSweet"))
+					{
+						Sound_Stop("Sound_DWCaveSweet", 3.0f);
+					}
+					
+				}
+				else
+				{
+					RiftRock_Dressing_Move(3,-1);
+				}
+			}
+			if (alStage == 3)
+			{
+				if (abOpening)
+				{
+					RiftRock_Dressing_Move(3,1);
+				}
+				else
+				{
+					if (!Entity_IsActive("rift_1_entrance_1"))
+					{
+						
+						Prop_SetActiveAndFade("rift_1_entrance_*",true,1);
+						Prop_SetActiveAndFade("rift_1_exit_*",true,1);
+						ParticleSystem_CreateAtEntityExt("rift_implosion", "rift_opening.ps", "position_particle_rift_entrance", false, cColor(1,1,1,1), 1, false, 1, 2, 100, 100);
+						
+					}
+				}
+			}
+			else if (alStage == 4)
+			{
+				if (abOpening)
+				{
+					
+					Prop_SetActiveAndFade("rift_1_entrance_*",false,1);
+					Prop_SetActiveAndFade("rift_1_exit_*",false,1);
+					ParticleSystem_CreateAtEntityExt("rift_implosion", "rift_opening.ps", "position_particle_rift_entrance", false, cColor(1,1,1,1), 1, false, 1, 2, 100, 100);
+					ParticleSystem_CreateAtEntityExt("rift_implosion", "rift_opening.ps", "position_particle_rift_exit", false, cColor(1,1,1,1), 1, false, 1, 2, 100, 100);
+					Prop_SetStaticPhysics("riftrock_irratic_*", false);
+					Entity_AddImpulse("riftrock_irratic_*", cVector3f_Down * 0.25, true, true);
+				}
+				else
+				{
+					
+				}
+			}
+		}
+		
+        bool InsideRift(const tString &in asParent, const tString &in asChild, int alState)
+        {
+		    if (alState == 1)
+			{
+		        Map_Preset_Fade("InsideRift", 1);
+				Effect_Screen_Start("ripple_screen.mat", cVector2f(0.5, 0.5), cVector2f(1.8, 1.8), 1, 1.0f, 3, 1.0f); 
+			}
+		    if (alState == -1)
+			{
+		        Map_Preset_Fade("OutsideRift", 1);
+				Effect_Screen_Start("ripple_screen.mat", cVector2f(0.5, 0.5), cVector2f(1.8, 1.8), 1, 0.5f, 1, 0.5f); 
+			}
+			return true;
+        }
+		
+		//-------------------------------------------------------
+		
+		bool VoiceCondition_OutsideOfRift(const tString &in asSubject)
+		{
+			return (Entity_GetCollide("player","rift_1_bounds") == false);
+		}
+		
+		void OnRiftStage_Caves(const tString &in asRift, int alStage, bool abOpening, float afOpenAmount)
+		{
+			//Debug_Log(alStage+" "+afOpenAmount+" "+abOpening);
+			if (alStage == 1)
+			{
+				if (!abOpening)
+					RiftStage_EntranceWall(abOpening);
+			}
+			else if (alStage == 2)
+					Prop_SetActiveAndFade("rift_1_entrance_*",false,1);
+					Prop_SetActiveAndFade("rift_1_exit_*",false,1);
+		}
+		
+		//-------------------------------------------------------
+		
+		void RiftStage_EntranceWall(bool abOpening)
+		{
+			if (abOpening)
+			{
+				//Prop_SetActiveAndFade("riftwall_entrance_2", false, 2.f);
+				//Prop_SetActiveAndFade("riftwall_exit_2", false, 2.f);
+				Entity_PlayAnimation("riftwall_exit_*", "sway", 0.8f, false, true, "");
+				Entity_PlayAnimation("riftwall_entrance_*", "sway", 0.8f, false, true, "");
+				Voice_PlayDelayed("Dialogue_RiftOpen",1);
+			}
+			else
+			{
+				//Prop_SetActiveAndFade("riftwall_entrance_2", true, 2.f);
+				//Prop_SetActiveAndFade("riftwall_exit_2", true, 2.f);
+				Entity_PlayAnimation("riftwall_exit_*", "closed", 0.8f, false, true, "");
+				Entity_PlayAnimation("riftwall_entrance_*", "closed", 0.8f, false, true, "");
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_EnterRift(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Voice_PlayWhenPossible("Dialogue_EnterRift");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnEndOfVoice_SurroundingsCheck(const tString &in asScene, const tString &in asSubject)
+		{
+			//Map_AddTimer("Timer_SurroundingsCheck",0,"OnTimer_SurroundingsCheck");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_SurroundingsCheck(const tString &in asTimer)
+		{
+			if (Entity_GetCollide("player","Trigger_RiftArea"))
+				Voice_Play("Dialogue_InsideRift");
+			else
+				Map_RestartCurrentTimer(1);
+		}
+
+		//-------------------------------------------------------
+		
+		void OnRiftOpened_RiftGoal(const tString &in asRift)
+		{
+			Entity_SetActive("Rift_Goal",false);
+			Entity_SetActive("cave_module_side_ribbed_1",false);
+			Entity_SetActive("Trigger_ActivateAmulet",false);
+			Amulet_StopTracking();
+			FearHandler_SetForcedAddFearRate(0.4f, 7.f, false, -1.f, 0.1f);	
+			Map_AddTimer("Timer_UnequipAmulet",1,"OnTimer_UnequipAmulet");
+			mbRiftOpen = true;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_DarkWorldFall(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState == -1)	return true;
+			
+			mlPermaFailStage = eCavesPermaFail_DarkWorld;
+			Player_GiveDamage(0,0.9f,eDamageType_Fall,asParent);
+			FearHandler_TriggerPermaFail();
+			Debug_Log("TRIGGER PERMAFAIL MAP SCRIPT");
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_UnequipAmulet(const tString &in asTimer)
+		{
+			tString sAmulet = ItemType_GetFirstInInventory("CurseMedallion");
+			Item_Unequip(sAmulet);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_InsideRift(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState == 1)
+			{
+				if (mfTransitionFear == 0)
+				{
+					FearHandler_SetForcedAddFearRate(0.3f, 2.0f, false, 1.0f, 0.08f);
+					mfTransitionFear++;
+				}
+				//Effect_ChromaticAberration_StartAnim(1.5f, 0.08f, 0.2f, cVector2f_Zero);
+				Effect_Shake_Start(0.01f, 0.5f, 0.2f, 0.2f);
+				Sound_CreateAtEntity("Sound_DarkworldEnterPulse_1", "01_04_dark_world_ledge/darkworld_pulse/darkworld_enter_pulse", "player");
+			}
+			if (alState == -1)
+			{
+				if (mfTransitionFear == 1)
+				{
+					FearHandler_SetForcedAddFearRate(0.3f, 2.0f, false, 1.0f, 0.08f);	
+					mfTransitionFear++;
+				}
+				//Effect_ChromaticAberration_StartAnim(1.5f, 0.08f, 0.2f, cVector2f_Zero);
+				Effect_Shake_Start(0.01f, 0.5f, 0.2f, 0.2f);
+				Sound_CreateAtEntity("Sound_DarkworldEnterPulse_1", "01_04_dark_world_ledge/darkworld_pulse/darkworld_exit_pulse", "player");
+			}
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event B *Player opens the rift and crosses through the resulting overlap*
+		
+		/////////////////////////////////////////
+		// Event C *Player finds a crack and leaves*
+		//{//////////////////////////////////////
+	 
+		//-------------------------------------------------------
+
+		/*Put any variables that are only used in Scene 4, Event B here.*/
+		
+		bool mbShowedAmuletHint = false;
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_ShowUnequipAmuletHint(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (mbShowedAmuletHint == false && Amulet_IsHeld())
+			{
+				mbShowedAmuletHint = true;
+				Hint_ShowHint_Hold("Hints", "HintAmulet", true, 1.5f, false, 10.f);
+			}
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Player_Memory(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Sketchbook_UnlockMemory("LeavingSalim");
+			return false;
+		}
+
+		/*Put any functions that are only used in Scene 4, Event B here.*/
+		
+		//-------------------------------------------------------
+		
+		//} END Event C *Player finds a crack and leaves*
+		
+	//} END SCENE 4 
+ 
+	/////////////////////////////////////////
+	// ==============
+	// HANKS NOTES
+	// ==============
+	//{//////////////////////////////////////
+ 		
+		void OnInteractLeave_HanksNote(const tString &in asEntity)
+		{
+			Map_AddTimer(Entity_GetVarString(asEntity, ""), 1.f, "OnTimer_PlayDossierMicroflash");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PlayDossierMicroflash(const tString &in asTimer)
+		{
+			if (Voice_SceneInvolvingCharacterIsActive("Player") || Sketchbook_IsMicroflashActive())
+				return;
+			
+			Sketchbook_Microflash(asTimer);
+		}
+	
+	//} END HANKS NOTES
+ 
+}

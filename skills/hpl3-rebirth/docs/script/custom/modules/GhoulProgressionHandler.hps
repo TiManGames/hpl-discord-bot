@@ -1,0 +1,687 @@
+#include "interfaces/UserModule_Interface.hps"
+#include "custom/modules/ModuleInterfaces_Custom.hps"
+#include "base/Player_Types.hps"
+#include "base/InputHandler_Types.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_map.hps"
+#include "helpers/helper_effects.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+#include "custom/helpers/helper_player_custom.hps"
+#include "custom/helpers/helper_menu.hps"
+
+//----------------------------------------------------------------------------------------
+
+const int glGhoulProgressionMax = 20;
+const int glGhoulProgressionRubberBanding = 3; // Max progression a ghoul increase will give if at very low progression levels
+
+const float gfGhoulProgressionFadeTime = 2.0f;
+
+const tString gsMaterialPrefix = "Tasi_Body_Upgrade_hands_ghoul_";
+
+//----------------------------------------------------------------------------------------
+
+class cPlayerArms
+{
+	tString msLeftArm;
+	tString msRightArm;
+}
+
+//----------------------------------------------------------------------------------------
+
+class cScrGhoulProgressionHandler : iScrUserModule, iScrUserModule_Interface, iScrGhoulProgressionHandler_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init() 
+	{
+		mlImageTrailId = -1;
+		
+		mlProgression = 0;
+		mlPermafailFadeProgression = 12;
+		mlPrevProgression = 0;
+		mlProgressionLimit = 0;
+		
+		mfMaxStruggleTime = -1.f;		
+		mfProgressionIncrease = 0.f;
+		mbIncreaseDuringStruggle = false;
+		
+		mbDoEffects = false;
+		mbQuiet = false;
+		
+		mbArmsSetup = false;
+		mbFadeArms = false;
+		mfArmsFadeT = 0.f;
+		mlNormalArmsId = 0;
+		mlEffectArmsId = 1;
+		
+		mvArms.resize(0);
+		
+		m_idPlayerBodyId = tID_Invalid;
+		mBarkStage = eGhoulBarkStage_Ill;
+	}
+		
+	//------------------------------------------------------------
+	
+	void LoadUserConfig() {}	
+	void SaveUserConfig() {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// MAP LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+		mbArmsSetup = false;
+	}
+
+	//------------------------------------------------------------
+
+	void OnMapLeave(cLuxMap @apMap)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void PreloadData(cLuxMap @apMap) 
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void CreateWorldEntities(cLuxMap @apMap) {}	
+	void DestroyWorldEntities(cLuxMap @apMap) {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INTERFACE
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------	
+	
+	void Increase(bool abIgnoreLimit = false, bool abDoEffects = true, bool abRubberBanding = true)
+	{
+		// Don't go over limit
+		int lMax = (abIgnoreLimit == true ? glGhoulProgressionMax : mlProgressionLimit);
+		if (mlProgression + 1 > lMax) 
+			return;
+			
+		int lTarget = mlProgressionLimit/2;
+		
+		// Rubber-banding
+		if (mlProgression < lTarget && abRubberBanding)
+		{
+			mlProgression = cMath_Min(mlProgression+glGhoulProgressionRubberBanding, lTarget);
+		}
+		else
+		{
+			++mlProgression;
+		}
+		
+		MainMenu_SetPhase_Ghoul(mlProgression);
+			
+		mbDoEffects = abDoEffects;
+			
+		cLux_AddDebugMessage("GHOUL PROGRESSION increasing!");
+	}
+	
+	//------------------------------------------------------------
+	
+	int GetProgression()
+	{
+		return mlProgression;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetProgression(int alProgression)
+	{
+		mlProgression = cMath_Clamp(alProgression, 0, glGhoulProgressionMax);
+		
+		MainMenu_SetPhase_Ghoul(mlProgression);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetPermafailFadeProgression(int alProgression)
+	{
+		mlPermafailFadeProgression = cMath_Clamp(alProgression, 0, glGhoulProgressionMax);
+	}
+	
+	//-------------------------------------------------------
+	
+	int GetPermafailFadeProgression()
+	{
+		return mlPermafailFadeProgression;
+	}
+	
+	//------------------------------------------------------------
+	
+	int GetLimit()
+	{
+		return mlProgressionLimit;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetLimit(int alLimit, bool abIgnoreCurrentLimit = false)
+	{
+		if(!abIgnoreCurrentLimit)
+			alLimit = cMath_Max(alLimit, mlProgressionLimit);
+		
+		mlProgressionLimit = cMath_Clamp(alLimit, 0, glGhoulProgressionMax);
+	}
+	
+	//-------------------------------------------------------
+	
+	int GetMaxProgression()
+	{
+		return glGhoulProgressionMax;
+	}
+	
+	//------------------------------------------------------------
+	
+	void DoEffects(float afMaterialFadeTime = -1.0f)
+	{
+		mbDoEffects = true;
+		
+		if (afMaterialFadeTime >= 0)
+			mfCustomFadeTime = afMaterialFadeTime;
+	}	
+	
+	//------------------------------------------------------------
+	
+	bool GetIncreaseEffectsActive()
+	{
+		return mlImageTrailId != -1;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetIncreaseDuringStruggle(bool abX, float afTimeUntilMax)
+	{
+		mbIncreaseDuringStruggle = abX;
+		mfMaxStruggleTime = afTimeUntilMax;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetBarkStage(eGhoulBarkStage stage)
+	{
+		mBarkStage = stage;
+	}
+	
+	//------------------------------------------------------------
+	
+	eGhoulBarkStage GetBarkStage()
+	{
+		return mBarkStage;
+	}
+	
+	//------------------------------------------------------------
+	
+	tString GetPostPermaFailBark()
+	{
+		tString sBarkID="";
+		// Figure out which bark to use based on level and progression.
+		if (mBarkStage==eGhoulBarkStage_Ill)
+		{
+			// Player knows they're ill, but not what's really happening.
+			sBarkID = "Global_PostPermaFail_Ill";
+		}
+		else if (mBarkStage==eGhoulBarkStage_BecomingMonster)
+		{
+			// Player knows they're turning into something, but not 100% about ghouls.
+			if (mlProgression <= 5) // TODO: NO MAGIC NUMBER
+				sBarkID = "Global_PostPermaFail_Monster_Minor";
+			else
+				sBarkID = "Global_PostPermaFail_Monster_Major";
+		}
+		else // mBarkStage==eGhoulBarkStage_BecomingGhoul
+		{
+			// Player has met Leon and knows what's happening.
+			if (mlProgression <= 10) // TODO: NO MAGIC NUMBER
+				sBarkID = "Global_PostPermaFail_Ghoul_Minor";
+			else
+				sBarkID = "Global_PostPermaFail_Ghoul_Major";
+		}
+		return sBarkID;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool mbDoVeinPulse = false;
+	float mfVeinPulseGoal = 0.f;
+	float mfSavedVeinAmount = 0.f;
+	
+	bool mbDoVeinFade = false;
+	float mfVeinFadeGoal = 1.f;
+	float mfVeinAmount = 0.f;
+	float mfVeinFadeSpeedMul = 1.f;
+	float mfVeinFadeTime = 0.f;
+	
+	void DoVeinPulseTo(float afX, float afPulseTime)
+	{
+		mbDoVeinPulse = true;
+		mfVeinPulseGoal = afX;
+		FadeVeinAmount(mfVeinPulseGoal, afPulseTime / 2.f);
+	}
+	
+	void DoVeinPulse(float afPulseTime)
+	{
+		mbDoVeinPulse = true;
+		mfVeinPulseGoal = mfVeinAmount;
+		FadeVeinAmount(1.f, afPulseTime / 2.f);
+	}
+	
+	//------------------------------------------------------------
+	
+	void FadeVeinAmount(float afX, float afFadeTime)
+	{
+		mbDoVeinFade = true;
+		mfVeinFadeGoal = afX;
+		mfSavedVeinAmount = mfVeinAmount;
+		mfVeinFadeSpeedMul = 1.f / afFadeTime;
+		mfVeinFadeTime = 0.f;
+	}
+	
+	//------------------------------------------------------------
+	
+	void FadeCustomArmMaterial(const tString &in asMaterial, float afFadeTime)
+	{
+		mbDoCustomFade = true;
+		msCustomFadeMat = asMaterial;
+		mfCustomFadeTime = afFadeTime;
+	}
+	
+	//------------------------------------------------------------
+	
+	void FadeCustomArmMaterial(int alGhoulLevel, float afFadeTime)
+	{
+		int lLevel = cMath_Clamp(alGhoulLevel, 0, glGhoulProgressionMax);
+		mbDoCustomFade = true;
+		msCustomFadeMat = gsMaterialPrefix + lLevel + ".mat";
+		mfCustomFadeTime = afFadeTime;
+	}
+
+	void SetQuiet(bool abQuiet)
+	{
+		mbQuiet = abQuiet;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnEnterContainer(const tString&in asOldContainer) {}
+	void OnLeaveContainer(const tString&in asNewContainer) {}
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep) {}
+	void PostUpdate(float afTimeStep) {}
+	
+	//------------------------------------------------------------
+	
+	void VariableUpdate(float afDeltaTime)
+	{
+		///////////////////
+		// Setup vars
+		cLuxProp@ pPlayerBody = cLux_ID_Prop(m_idPlayerBodyId);
+		if (pPlayerBody is null)
+		{
+			if (cLux_GetCurrentMap() !is null)
+				@pPlayerBody = cast<cLuxProp>(cLux_GetCurrentMap().GetEntityByName(PlayerBody_GetEntityName()));
+			if (pPlayerBody !is null)
+				m_idPlayerBodyId = pPlayerBody.GetID();
+		}
+		
+		///////////////////
+		// Struggle increase?
+		if (mbIncreaseDuringStruggle && Struggle_IsActive(false))
+		{
+			mfProgressionIncrease = cMath_Max(mfProgressionIncrease, float(mlProgression));
+			mfProgressionIncrease += (glGhoulProgressionMax / mfMaxStruggleTime) * afDeltaTime;
+			mlProgression = mfProgressionIncrease;
+			
+			if (mlProgression >= mlProgressionLimit)
+			{
+				mbIncreaseDuringStruggle = false;
+				mlProgression = mlProgressionLimit;
+			}
+		}
+			
+		///////////////////
+		// Increased? Do effects!
+		bool bDoArmEffects = false;
+		
+		if (mbDoCustomFade)
+		{
+			mbDoCustomFade = false;
+			bDoArmEffects = true;
+		}
+		else if (mlProgression > 0 && mlProgression != mlPrevProgression || mbDoEffects)
+		{
+			bDoArmEffects = mbDoEffects;
+			mbDoEffects = false;
+			
+			if (mlImageTrailId != -1)
+			{
+				Effect_ImageTrail_FadeOut(mlImageTrailId, 0.1f);
+				mlImageTrailId = -1;
+			}
+			
+			mlImageTrailId = Effect_ImageTrail_Start(0.f, 1.f, -1.f, 1.f);
+
+			if (mbQuiet == false)
+			{
+				int lSoundIntensity = ((float(mlProgression)/20.0f)*3.0f)+1;
+				lSoundIntensity = cMath_Min(lSoundIntensity, 3);
+				tString sProgressionStinger = "player/UI/lucid_meter/ghoul_level_" + lSoundIntensity;
+				cLux_AddDebugMessage(sProgressionStinger);
+				Sound_PlayGui(sProgressionStinger, 1.f);
+			}
+
+			mbQuiet = false;
+			
+			///////////////////
+			// Map callback!
+			cLuxMap@ pMap = cLux_GetCurrentMap();
+			tString sFunc = "void OnGhoulProgressionIncreased(int alProgression)";
+			if (pMap.ScriptMethodExists(sFunc) && pMap.ScriptPrepare(sFunc))
+			{
+				pMap.SetArgInt(0, mlProgression);
+				pMap.ScriptExecute();
+			}
+		}
+		
+		mlPrevProgression = mlProgression;	
+		
+		///////////////////
+		// Player arms		
+		if (pPlayerBody !is null)
+		{			
+			///////////////////
+			// Setup
+			cMeshEntity@ pMeshEnt = pPlayerBody.GetMeshEntity();
+			SetupArms(pPlayerBody);
+			
+			///////////////////
+			// Prepare material fade!
+			if (bDoArmEffects)
+			{
+				if (mbArmsSetup)
+				{
+					mbFadeArms = true;
+				
+					SetArmsVisible(pMeshEnt, mlEffectArmsId, true);
+					UpdateArmsMaterial(pPlayerBody, mlEffectArmsId);
+				}
+				else
+				{
+					UpdateArmsMaterial(pPlayerBody, mlNormalArmsId);
+				}				
+			}
+			
+			///////////////////
+			// Fade in new material!
+			if (mbFadeArms)
+			{				
+				float fFadeTime = mfCustomFadeTime >= 0 ? cMath_Max(mfCustomFadeTime, 0.001) : gfGhoulProgressionFadeTime;
+				mfArmsFadeT = cMath_IncreaseTo(mfArmsFadeT, (1.f / fFadeTime) * afDeltaTime, 1.f);
+				SetArmsCoverage(pMeshEnt, mlEffectArmsId, -mfArmsFadeT); // Negative value inverts the dithering to prevent the arms from being transparent at T=0.5
+				SetArmsCoverage(pMeshEnt, mlNormalArmsId, 1.f - mfArmsFadeT);
+
+				if (mfArmsFadeT == 1.f)
+				{
+					mbFadeArms = false;
+					mfArmsFadeT = 0.f;
+										
+					UpdateArmsMaterial(pPlayerBody, mlNormalArmsId);
+					
+					SetArmsVisible(pMeshEnt, mlNormalArmsId, true);
+					SetArmsCoverage(pMeshEnt, mlNormalArmsId, 1.f);
+					
+					SetArmsVisible(pMeshEnt, mlEffectArmsId, false);
+					SetArmsCoverage(pMeshEnt, mlEffectArmsId, 0.f);
+					
+					mfCustomFadeTime = -1.0f;
+					msCustomFadeMat = "";
+				}
+			}
+		}		
+		
+		///////////////////
+		// Vein pulse/fade
+		if(mbDoVeinFade)
+		{
+			mfVeinFadeTime = cMath_Clamp(mfVeinFadeTime+afDeltaTime*mfVeinFadeSpeedMul, 0.f, 1.f);
+			mfVeinAmount = cMath_InterpolateLinear(mfSavedVeinAmount, mfVeinFadeGoal, cMath_Easing(eEasing_QuadInOut, mfVeinFadeTime));
+			PlayerBody_SetArmLiquidAmount(mfVeinAmount);
+			if(mfVeinFadeTime == 1.f)
+			{
+				mbDoVeinFade = false;
+				if(mbDoVeinPulse)
+				{
+					FadeVeinAmount(0, 1.f / mfVeinFadeSpeedMul);
+					mbDoVeinPulse = false;
+				}
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void Reset() {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnAction(int alAction, bool abPressed) {}
+	void OnAnalogInput(int alAnalogId, const cVector3f &in avAmount) {}
+	void OnExitPressed() {}
+	void AppGotInputFocus() {}
+	void AppLostInputFocus() {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPERS
+	/////////////////////////////////////////
+		
+	//------------------------------------------------------------
+	
+	void SetupArms(cLuxProp@ apProp)
+	{
+		if (mbArmsSetup)
+			return;
+			
+		cMeshEntity@ pMeshEnt = apProp.GetMeshEntity();
+				
+		mvArms.resize(2);
+		
+		mlNormalArmsId = 0;
+		mvArms[mlNormalArmsId].msLeftArm = "m_Tasi_L_Arm"; // TODO: put these names in the player body prop!
+		mvArms[mlNormalArmsId].msRightArm = "m_Tasi_R_Arm";
+		
+		cSubMeshEntity@ pArmL = pMeshEnt.GetSubMeshEntityName(mvArms[mlNormalArmsId].msLeftArm);
+		cSubMeshEntity@ pArmR = pMeshEnt.GetSubMeshEntityName(mvArms[mlNormalArmsId].msRightArm);
+		
+		if (pArmL is null || pArmR is null)
+		{
+			mbArmsSetup = true;
+			return;
+		}
+		
+		UpdateArmsMaterial(apProp, mlNormalArmsId);
+		
+		mlEffectArmsId = 1;
+		mvArms[mlEffectArmsId].msLeftArm = "m_Tasi_L_Arm1";
+		mvArms[mlEffectArmsId].msRightArm = "m_Tasi_R_Arm1";
+				
+		cSubMeshEntity@ pArmL1 = pMeshEnt.GetSubMeshEntityName(mvArms[mlEffectArmsId].msLeftArm); 
+		cSubMeshEntity@ pArmR1 = pMeshEnt.GetSubMeshEntityName(mvArms[mlEffectArmsId].msRightArm);		
+
+		if (pArmL !is null && pArmR !is null && pArmL1 !is null && pArmR1 !is null)
+		{
+			mbArmsSetup = true;
+			
+			if (mbFadeArms == false)
+			{
+				SetArmsVisible(pMeshEnt, mlNormalArmsId, true);
+				SetArmsCoverage(pMeshEnt, mlNormalArmsId, 1.f);		
+				SetArmsVisible(pMeshEnt, mlEffectArmsId, false);		
+				SetArmsCoverage(pMeshEnt, mlEffectArmsId, 0.f);
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetArmsVisible(cMeshEntity@ apMeshEnt, int alArmsId, bool abX)
+	{
+		cSubMeshEntity@ pArmL = apMeshEnt.GetSubMeshEntityName(mvArms[alArmsId].msLeftArm);
+		cSubMeshEntity@ pArmR = apMeshEnt.GetSubMeshEntityName(mvArms[alArmsId].msRightArm);
+		
+		if (pArmL !is null && pArmR !is null)
+		{
+			pArmL.SetVisible(abX);
+			pArmR.SetVisible(abX);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetArmsCoverage(cMeshEntity@ apMeshEnt, int alArmsId, float afCoverage)
+	{
+		cSubMeshEntity@ pArmL = apMeshEnt.GetSubMeshEntityName(mvArms[alArmsId].msLeftArm);
+		cSubMeshEntity@ pArmR = apMeshEnt.GetSubMeshEntityName(mvArms[alArmsId].msRightArm);
+		
+		if (pArmL !is null && pArmR !is null)
+		{
+			pArmL.SetCoverageAmount(afCoverage);
+			pArmR.SetCoverageAmount(afCoverage);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateArmsMaterial(cLuxProp@ apProp, int alArmsId)
+	{
+		tString sMat = msCustomFadeMat == "" ?
+					   gsMaterialPrefix + mlProgression + ".mat" :
+					   msCustomFadeMat;
+
+		apProp.SetCustomMaterial(sMat, mvArms[alArmsId].msLeftArm);
+		apProp.SetCustomMaterial(sMat, mvArms[alArmsId].msRightArm);
+		apProp.SetCustomMaterial(sMat, "m_Tasi_Ring");
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetArms()
+	{
+		mbArmsSetup = false;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetArmsVisible(bool abVisible)
+	{
+		cLuxProp@ pPlayerBody = cLux_ID_Prop(m_idPlayerBodyId);
+		if (pPlayerBody==null)
+			return;
+
+		cMeshEntity@ pMeshEnt = pPlayerBody.GetMeshEntity();
+		SetArmsVisible(pMeshEnt, mlNormalArmsId, abVisible);			
+		SetArmsVisible(pMeshEnt, mlEffectArmsId, abVisible);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GUI
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	//void OnGui(float afTimeStep){}
+	void OnDraw(float afFrameTime) {}
+	void OnPostRender(float afFrameTime) {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////	
+
+	//------------------------------------------------------------
+
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		afStartY = cLux_DrawDebugText("-----Ghoul Progression-----", afStartY);
+		afStartY = cLux_DrawDebugText("Current level: " + mlProgression, afStartY);
+		afStartY = cLux_DrawDebugText("Current level limit: " + mlProgressionLimit, afStartY);
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	int mlImageTrailId;
+	
+	float mfProgressionIncrease;
+	
+	int mlProgression;
+	int mlPrevProgression;
+	int mlProgressionLimit;
+	int mlPermafailFadeProgression;
+	
+	float mfMaxStruggleTime;
+	bool mbIncreaseDuringStruggle;
+	
+	bool mbDoEffects;
+	bool mbQuiet;
+	
+	bool mbFadeArms;
+	float mfArmsFadeT;
+	int mlNormalArmsId;
+	int mlEffectArmsId;
+	
+	bool mbDoCustomFade = false;
+	tString msCustomFadeMat = "";
+	float mfCustomFadeTime = -1.0f;
+	
+	[nosave] bool mbArmsSetup;
+	[nosave] array<cPlayerArms> mvArms;
+	
+	[nosave] tID m_idPlayerBodyId;
+	
+	eGhoulBarkStage mBarkStage;
+	
+	//------------------------------------------------------------
+}

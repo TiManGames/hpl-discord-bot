@@ -1,0 +1,243 @@
+#include "custom/props/Prop_Pickup.hps"
+#include "custom/player/PlayerTypes_Custom.hps"
+#include "helpers/helper_modules.hps"
+#include "custom/helpers/helper_items.hps"
+
+//------------------------------------------------------------
+
+const tString gsLighter_LidSubMesh = "L_tapa_low";
+
+const float gfLighter_LidOpenTime = 0.5f;
+const float gfLighter_LidOpenAngleAdd = cMath_ToRad(-20.f);
+const float gfLighter_MinFlameAngle = cMath_ToRad(-30.f);
+const float gfLighter_MaxFlameAngle = cMath_ToRad(30.f);
+const float gfLighter_FlameBrightness = 1.f;
+const float gfLighter_MovementSoundMinYawDiff = 0.1f;
+
+const tString gsLighter_ClickSound = "player/tools/lighter/lighter_click";
+const tString gsLighter_IgniteSound = "player/tools/lighter/lighter_ignite";
+const tString gsLighter_MovementSound = "player/tools/lighter/lighter_movement";
+
+//------------------------------------------------------------
+
+enum eLighterState
+{
+	eLighterState_Unlit,
+	eLighterState_Lit
+}
+
+//------------------------------------------------------------
+
+class cScrPropLighter : cScrPropPickup
+{
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// INIT
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+
+	void Init()
+	{
+		cScrPropPickup::Init();
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld@ apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		cScrPropPickup::SetupAfterLoad(apWorld, apVars, apInstanceVars);
+	}	
+
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// GLOBAL
+	///////////////////////////////	
+	
+	//------------------------------------------------------------
+	
+	void _Global_OnMapLeave()
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_OnMapEnter()
+	{
+		mBaseObj.SetEffectsActive(false, false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_Ignite()
+	{
+		if (mState != eLighterState_Lit)
+			mBaseObj.PlaySound("Sound_Click", gsLighter_ClickSound, true, true);
+		
+		ChangeState(eLighterState_Lit);		
+		for (uint i = 0; i < mBaseObj.GetBillboardNum(); ++i)
+			mBaseObj.GetBillboard(i).SetVisible(true);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_IgniteInstantly()
+	{
+		_Global_Ignite();
+		mfStateCount = 0.5f;
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_Close()
+	{
+		ChangeState(eLighterState_Unlit);		
+		mBaseObj.PlaySound("Sound_Click", gsLighter_ClickSound, true, true);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetLit()
+	{
+		cScript_SetGlobalReturnBool(mState == eLighterState_Lit);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_OnItemTakenOut()
+	{
+		mBaseObj.StopAllAnimations(0.01);
+		mBaseObj.SetEffectsActive(false, false);
+		
+		for (uint i = 0; i < mBaseObj.GetBillboardNum(); ++i)
+			mBaseObj.GetBillboard(i).SetVisible(false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_OnItemPutAway() {}
+	void _Global_OnItemStartPutAway() {}
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// GENERAL
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnVariableUpdate(float afDeltaTime)
+	{
+		////////////////
+		// Setup vars
+		cCamera@ pCam = cLux_GetPlayer().GetCamera();
+		cBillboard@ pFlame = mBaseObj.GetBillboard(0);
+		cSubMeshEntity@ pLid = mBaseObj.GetMeshEntity().GetSubMeshEntityName(gsLighter_LidSubMesh);
+		
+		if (pCam is null || pFlame is null || pLid is null)
+			return;
+		
+		////////////////
+		// Time
+		mfStateCount += afDeltaTime;
+				
+		////////////////
+		// Lit
+		if (mState == eLighterState_Lit)
+		{
+			if (mfStateCount > 0.5f && mBaseObj.GetEffectsActive() == false)
+			{
+				mBaseObj.SetEffectsActive(true, true);
+				mBaseObj.PlaySound("Sound_Ignite", gsLighter_IgniteSound, true, true);
+			}
+		}
+		
+		////////////////
+		// Unlit
+		else if (mState == eLighterState_Unlit)
+		{
+			if (mfStateCount > 0.1f && mBaseObj.GetEffectsActive())
+				mBaseObj.SetEffectsActive(false, true);
+		}
+		
+		////////////////
+		// Rotate flame
+		float fYawDiff = 0.f;		
+		{
+			////////////////
+			// Calculate angle
+			float fCamYaw = pCam.GetYaw();			
+			fYawDiff = (fCamYaw - mfPrevCamYaw);
+			mfPrevCamYaw = fCamYaw;
+				
+			float fAngleGoal = cMath_Clamp(fYawDiff * -15.f, gfLighter_MinFlameAngle, gfLighter_MaxFlameAngle);
+			float fAngleAdd = cMath_Abs(fAngleGoal - mfFlameAngle) * 4.f * afDeltaTime;
+			mfFlameAngle = cMath_IncreaseTo(mfFlameAngle, fAngleAdd, fAngleGoal);			
+				
+			////////////////
+			// Apply angle			
+			cMatrixf mtxRot = pCam.GetMatrix().GetRotation();
+			mtxRot = cMath_MatrixMul(mtxRot, cMath_MatrixRotateZ(mfFlameAngle));
+					
+			cMatrixf mtxNew = pFlame.GetWorldMatrix();
+			mtxNew.SetRotation(mtxRot);			
+			pFlame.SetWorldMatrix(mtxNew);
+		}
+		
+		////////////////
+		// Sounds
+		cSoundEntity@ pSound = cLux_ID_SoundEntity(m_idMovementSound);
+		if (pSound is null && cMath_Abs(fYawDiff) > gfLighter_MovementSoundMinYawDiff)
+		{
+			@pSound = mBaseObj.PlaySound("Sound_Movement", gsLighter_MovementSound, true, true);
+			if (pSound !is null)
+				m_idMovementSound = pSound.GetID();
+		}
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnSetActive(bool abX) {}
+	
+	//------------------------------------------------------------
+	
+	////////////////////////////////////////
+	// HELPERS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void ChangeState(eLighterState aState)
+	{
+		if (mState == aState) return;
+		
+		mState = aState;
+		mfStateCount = 0.f;
+	}
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// PROPERTIES
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool mbSetup = false;
+	float mfFlameAngle = 0.f;
+	float mfPrevCamYaw = 0.f;	
+	float mfStateCount = 0.f;
+	eLighterState mState = eLighterState_Unlit;
+	tID m_idMovementSound = tID_Invalid;
+	
+	//------------------------------------------------------------
+}

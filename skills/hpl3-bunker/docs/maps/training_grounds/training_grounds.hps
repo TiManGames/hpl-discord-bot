@@ -1,0 +1,284 @@
+#include "interfaces/Map_Interface.hps"
+#include "base/Inputhandler_Types.hps"
+
+#include "helpers/helper_map.hps"
+#include "helpers/helper_props.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_audio.hps"
+#include "helpers/helper_imgui.hps"
+#include "helpers/helper_sequences.hps"
+#include "helpers/helper_game.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_ai.hps"
+#include "helpers/helper_agent.hps"
+#include "helpers/helper_player.hps"
+#include "helpers/helper_imgui.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+#include "custom/helpers/helper_gun.hps"
+#include "custom/helpers/helper_props_custom.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+
+//--------------------------------------------------
+ 
+/*Place any global values here. These must be const variables as they will not be saved*/
+/*This is also the place for enums and classes, but these should be avoided whenever possible*/
+ 
+//--------------------------------------------------
+ 
+class cScrMap : iScrMap
+{
+	//--------------------------------------------
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN CALLBACKS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+ 
+	////////////////////////////
+	// Set up map environment
+	void Setup()
+	{
+		// Put display name entry in english.lang / Levels
+		GetBase().SetDisplayNameEntry("training-grounds");
+		
+		// Set up color grading etc.
+		Effect_Bloom_FadeBrightPass(0.2f, 1);
+		Effect_Bloom_FadeBloomWidth(128, 0.6);
+        Effect_Bloom_FadeBloomFalloff(1.5f, 1);
+        Effect_Bloom_FadeBloomTint(1.3, 1, 1, 1);
+	}
+	
+	//-------------------------------------------------------
+		
+	void PreloadData()
+	{
+	}
+	
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run first time starting map
+	void OnStart()
+	{
+		// Any general setup of script / entities		
+		
+		/////////////////////////
+		// Debug
+		if(cLux_ScriptDebugOn())
+		{
+
+		}
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when entering map
+	void OnEnter()
+	{
+		///////////////////////
+		// Setup player body
+		if (PlayerBody_IsActive() == false)
+		{
+			PlayerBody_SetActive(true);
+			PlayerBody_SetModel("player_bunker.ent");
+		}
+		
+		Player_SetAutoTeleportWhenBelowAltitude(-10.f);
+		Death_SetCustomDeathBehaviour(true);
+		Hint_SetCanShowHints(false);
+		BombingHandler_SetActive(false);
+		Item_SetCurrentSlotsCount(15);
+		
+		Generator_SetRunForever(true);
+		Generator_SetFuelAmount(5.f);
+		Generator_ChangeState(eGeneratorState_On);		
+		Generator_SetupEntities("", "", "", "", "", "");
+		Generator_AddPowerSwitch("PowerSwitch_1", "", "", "Lamp_PowerSwitch_1_*", false);
+		Generator_AddPowerSwitch("PowerSwitch_2", "", "", "Lamp_PowerSwitch_2_*", true);
+		Generator_AddPowerSwitch("PowerSwitch_3", "", "", "Lamp_PowerSwitch_3_*", false);
+		Generator_EndSetup();
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when leaving map
+	void OnLeave()
+	{
+		Death_SetCustomDeathBehaviour(false);
+		Hint_SetCanShowHints(true);
+		Generator_SetRunForever(false);
+		Item_SetCurrentSlotsCount(6);		
+		Item_ClearInventory();
+		
+		if (Player_GetHealth() < 1.f)
+			Player_SetHealth(1.f);
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// To get when player makes input (mostly used for debug)
+	void OnAction(int alAction, bool abPressed) 
+	{
+		if (abPressed == false) return;
+		
+		if (alAction == eAction_Test1)
+		{
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	////////////////////////////
+	// This only used for pure debug purposes when info needs to printed.
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afY)
+	{
+		//afY = cLux_DrawDebugText("My Debug value:"+..., afY);
+		return afY;
+	}
+ 
+	//-------------------------------------------------------
+ 
+	//} END MAIN CALLBACKS
+	
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN FUNCTIONS 
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+	
+	//-------------------------------------------------------
+	
+	int mlInsideObstacleCourseCount = 0;
+	float mfObstacleCourseAlpha = 0.f;
+	float mfObstacleCourseTimer = 0.f;
+	bool mbShowObstacleCourseTimer = false;
+	bool mbRunObstalceCourseTimer = false;
+	
+	//-------------------------------------------------------
+	
+	void OnCustomDeath(const tString &in asSource)
+	{
+		cLux_StartMap("training_grounds.hpm");
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnConnectionState_PowerSwitch(const tString &in asEntity, int alState)
+	{
+		if (alState == 0) return;
+		if (cLux_GetCurrentMap() is null) return;
+		if (cLux_IsChangingMap()) return;
+		if (Generator_GetIsSetupDone() == false) return;
+		
+		Generator_SetPowerSwitchOn(asEntity, alState == 1);
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnTrigger_LockDoor(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		SwingDoor_SetBlocked("metal_door_static_2", alState == 1, true);
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnTrigger_Player_EnterObstacleCourse(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		if (alState == 1) return true;
+		if (Entity_PlayerIsInFront(asParent) == false) return true;
+		
+		mfObstacleCourseTimer = 0.f;
+		mbRunObstalceCourseTimer = true;
+		mbShowObstacleCourseTimer = true;
+		
+		Map_RemoveTimer("Timer_StopObstacleCourseTimer");
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnTrigger_Player_ObstacleCourseArea(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		mlInsideObstacleCourseCount += alState;		
+		if (mlInsideObstacleCourseCount == 0)
+		{
+			mbRunObstalceCourseTimer = false;
+		
+			Map_RemoveTimer("Timer_StopObstacleCourseTimer");
+			Map_AddTimer("Timer_StopObstacleCourseTimer", 5.f, "OnTimer_StopObstacleCourseTimer");
+		}
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_StopObstacleCourseTimer(const tString &in asTimer)
+	{
+		mbRunObstalceCourseTimer = false;
+		mbShowObstacleCourseTimer = false;
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnGui(float afTimeStep)
+	{				
+		////////////////////////
+		// Timer		
+		bool bGamePaused = cLux_GetGamePaused();
+		if (mbRunObstalceCourseTimer && bGamePaused == false)
+		{
+			mfObstacleCourseTimer += afTimeStep;
+		}
+		
+		bool bShowTimer = mbShowObstacleCourseTimer && 
+						  bGamePaused == false &&
+						  Sketchbook_IsOpen() == false;
+		
+		float fAlphaGoal = bShowTimer ? 1.f : 0.f;
+		mfObstacleCourseAlpha = cMath_IncreaseTo(mfObstacleCourseAlpha, afTimeStep * (1.f / 0.4f), fAlphaGoal);
+		
+		cImGuiLabelData label;
+		label.mbUseBackgroundGfx = false;
+		label.mFont.mvSize = 32;
+		label.mFont.mColor = cColor(1.f, 1.f, 1.f, mfObstacleCourseAlpha);
+		label.mFont.SetFile(FontHandler_GetFont(eFontType_MainMenu_InfoBox, 72));
+		label.mFontAlign = eFontAlign_Left;
+		
+		tString sTime = String_SecondsToClockDisplay(mfObstacleCourseTimer, false, true, true, true);
+		
+		float fWidth = cMath_CeilToInt(GetFontLengthW(label.mFont, 1.f, sTime));
+		float fAdd = (fWidth % 20.f);
+		fWidth = fWidth - fAdd + 20.f;
+		fWidth = fWidth / cLux_GetCurrentImGui().GetCurrentGroupSize().x;		
+		
+		cVector3f vPos = ImGui_NrmPos(0.5f - (fWidth / 2.f), 0.025f, 1.f);
+		ImGui_DoLabelExt(sTime, label, vPos, cVector2f_MinusOne, 1.f);
+	}
+	
+	//-------------------------------------------------------
+ 
+	//} END MAIN FUNCTIONS
+	
+	//-------------------------------------------------------
+	
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// EVENTS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+  	
+		//-------------------------------------------------------
+		
+		//-------------------------------------------------------
+	
+	//} END EVENTS
+	
+	//-------------------------------------------------------
+}

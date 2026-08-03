@@ -1,0 +1,393 @@
+#include "agents/Agent_Humanoid.hps"
+#include "agents/agent_types.hps"
+#include "helper/helper_audio.hps"
+
+//------------------------------------------------------------
+
+class cScrAgentHumanoidNPC : cScrAgentHumanoid
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	void Init()
+	{
+		
+		mbSetupTrackEntity = true;
+		msVoiceName = "";
+		mbCanBeTalkedTo = false;
+		mbPlayingExtraAnim = false;
+		mbSettingMainAnim = false;
+		msExtraAnim="";
+		msMainAnimation="";
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupCharBody()
+	{
+		cScrAgentHumanoid::SetupCharBody();
+		mBaseObj.GetCharBody().SetMaxPushMass(20.f);
+	}
+	
+	//------------------------------------------------------------
+		
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		mbUsePathfinding = apVars.GetVarBool("UsePathfinding", true);		
+		cScrAgentHumanoid::SetupAfterLoad(apWorld, apVars, apInstanceVars);
+	
+		///////////////////////////////
+		// Head Tracker
+		@mpHeadTracker = cLux_CreateEntityComponent_HeadTracker(mBaseObj);
+		mpHeadTracker.LoadFromVariables(apVars);		
+		
+		msHeadTracker_TargetEntity = apInstanceVars.GetVarString("HeadTracker_TargetEntity", "");
+		if (msHeadTracker_TargetEntity == "") msHeadTracker_TargetEntity = "Player";
+		mpHeadTracker.SetActive(apInstanceVars.GetVarBool("HeadTracker_Active", true));
+		
+		///////////////////////////////
+		// Mover
+		mpMover.SetupWallAvoidance(0.8f, 7.f, 4);
+		mpMover.SetupDynamicObjectAvoidance(1.7f, 5.f, 3.f);		
+		mpMover.SetRunToWalkSpeed(1.6f);
+		mpMover.SetWalkToRunSpeed(3.f);
+		mpMover.SetStoppedToWalkSpeed(0.05f);
+		mpMover.SetWalkToStoppedSpeed(0.1f);
+		
+		mpMover.SetWallAvoidanceActive(apInstanceVars.GetVarBool("WallAvoidActive", false));
+		mpMover.SetDynamicObjectAvoidanceActive(apInstanceVars.GetVarBool("DynamicObjectAvoidActive", false));
+		
+		mpMover.AddSpeedState(eNPCSpeed_Walk);
+			mpMover.SetSpeedState_Forward(apVars.GetVarFloat("Walk_ForwadSpeed", 1.f));
+			mpMover.SetSpeedState_Backward(-apVars.GetVarFloat("Walk_BackwardSpeed", 1.f));
+			mpMover.SetSpeedState_ForwardAcc(apVars.GetVarFloat("Walk_Acc", 1.f));
+			mpMover.SetSpeedState_ForwardDeacc(apVars.GetVarFloat("Walk_Deacc", 1.f));
+			mpMover.SetSpeedState_TurnMaxSpeed(apVars.GetVarFloat("Walk_TurnMaxSpeed", 1.f));
+			mpMover.SetSpeedState_TurnSpeedMul(apVars.GetVarFloat("Walk_TurnSpeedMul", 1.f));
+			mpMover.SetSpeedState_TurnSpeedAcc(apVars.GetVarFloat("Walk_TurnSpeedAcc", 1.f));
+			mpMover.SetSpeedState_TurnSpeedDeacc(apVars.GetVarFloat("Walk_TurnSpeedDeacc", 1.f));
+			mpMover.SetSpeedState_TurnBreakMul(apVars.GetVarFloat("Walk_TurnBreakMul", 1.f));
+		
+		mpMover.AddSpeedState(eNPCSpeed_Run);
+			mpMover.SetSpeedState_Forward(apVars.GetVarFloat("Run_ForwadSpeed", 1.f));
+			mpMover.SetSpeedState_ForwardAcc(apVars.GetVarFloat("Run_Acc", 1.f));
+			mpMover.SetSpeedState_ForwardDeacc(apVars.GetVarFloat("Run_Deacc", 1.f));
+			mpMover.SetSpeedState_TurnMaxSpeed(apVars.GetVarFloat("Run_TurnMaxSpeed", 1.f));
+			mpMover.SetSpeedState_TurnSpeedMul(apVars.GetVarFloat("Run_TurnSpeedMul", 1.f));
+			mpMover.SetSpeedState_TurnSpeedAcc(apVars.GetVarFloat("Run_TurnSpeedAcc", 1.f));
+			mpMover.SetSpeedState_TurnSpeedDeacc(apVars.GetVarFloat("Run_TurnSpeedDeacc", 1.f));
+			mpMover.SetSpeedState_TurnBreakMul(apVars.GetVarFloat("Run_TurnBreakMul", 1.f));
+		
+		///////////////////////////////
+		// Head bone
+		tString sHeadBone = apVars.GetVarString("HeadBone", "Head");
+		if(sHeadBone != "")
+		{
+			mlHeadBoneIdx = mBaseObj.GetMeshEntity().GetBoneStateIndex(sHeadBone);
+			if(mlHeadBoneIdx<0) Error("Could not find headbone '"+sHeadBone+"' in entity '"+mBaseObj.GetName()+"'");
+		}
+		else
+		{
+			mlHeadBoneIdx = -1;
+		}
+		
+		///////////////////////////////
+		// Misc
+		mbCanBeTalkedTo = apInstanceVars.GetVarBool("CanBeTalkedTo", true);
+		
+		SetVoiceName(apInstanceVars.GetVarString("VoiceName", ""));
+
+		SetMainAnimation(apInstanceVars.GetVarString("MainAnimation", ""), false, "", 0,
+						 apInstanceVars.GetVarBool("MainAnimationGlobalSpace",false));
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnAfterWorldLoad()
+	{
+		cScrAgentHumanoid::OnAfterWorldLoad();
+		
+		if(msHeadTracker_TargetEntity != "")
+		{
+			iLuxEntity @pEntity = mBaseObj.GetMap().GetEntityByName(msHeadTracker_TargetEntity);
+			if(pEntity !is null)
+			{
+				mpHeadTracker.SetTrackEntity(pEntity);
+			}
+			else
+			{
+				Error("Could not find headtracker target entity '"+msHeadTracker_TargetEntity+"' for entity '"+mBaseObj.GetName()+"'");
+			}
+		}	
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnUpdate(float afTimeStep)
+	{
+		cScrAgentHumanoid::OnUpdate(afTimeStep);
+		if(mbSetupTrackEntity)
+		{
+			mbSetupTrackEntity = false;
+			
+			iLuxEntity @pEnt = mBaseObj.GetMap().GetEntityByName("Player", eLuxEntityType_LastEnum, "");
+			mpHeadTracker.SetTrackEntity(pEnt);
+			if(pEnt is null) Error("Player not found!");		
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetProperties()
+	{
+		cScrAgentHumanoid::ResetProperties();
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnRecieveMessage(int alMessageId, cLuxEntityMessageData @apData)
+	{
+		if(alMessageId == eLuxEntityMessage_AnimationOver)
+		{
+			if(msMainAnimation != "" && mbPlayingExtraAnim)
+			{
+				mbPlayingExtraAnim = false;
+				msExtraAnim="";
+				mBaseObj.PlayAnimation(msMainAnimation, 0.3f, true, false, "", mbMainAnimGlobalSpace);
+			}
+		}
+		else if(alMessageId == eLuxEntityMessage_EndOfPath)
+		{
+			if(msMainAnimation != "" && mpMover.GetUseMoveStateAnimations())
+			{
+				mBaseObj.PlayAnimation(msMainAnimation, 0.3f, true, true, "", mbMainAnimGlobalSpace);
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	bool CanInteract(int alType, iPhysicsBody@ apBody)
+	{
+		return mbCanBeTalkedTo && !IsTalking();
+	}
+	
+	//------------------------------------------------------------
+		
+	bool OnInteract(int alType, iPhysicsBody@ apBody, const cVector3f &in avFocusPos, const tString&in asData)
+	{
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	int GetInteractIconId(int alType, iPhysicsBody@ apBody)
+	{
+		return eCrossHairState_Talk;
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// CUSTOM
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetVoiceName(const tString&in asName)
+	{
+		msVoiceName = asName;
+	}
+	
+	void _Global_SetVoiceName()
+	{
+		SetVoiceName(cScript_GetGlobalArgString(0));
+	}
+	
+	//------------------------------------------------------------
+	
+	bool IsTalking()
+	{
+		if(msVoiceName=="") return false;
+		
+		return 	Voice_CharacterIsSpeaking(msVoiceName) || Dialog_CharacterIsActive(msVoiceName);
+	}
+	
+	void _Global_IsTalking()
+	{
+		cScript_SetGlobalReturnBool(IsTalking());
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetCanBeTalkedTo()
+	{
+		mbCanBeTalkedTo = cScript_GetGlobalArgBool(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetMainAnimation(const tString& in asAnim, bool abPlayTransition, const tString& in asCallbackFunc, float afFadeTime=0.5, bool abGlobalSpace=false)
+	{
+		if(msMainAnimation == asAnim) return;
+		
+		msMainAnimation = asAnim;
+		mpMover.SetUseMoveStateAnimations(msMainAnimation == "");
+		
+		mbPlayingExtraAnim = false;
+		msExtraAnim="";
+		mbMainAnimGlobalSpace = abGlobalSpace;
+		
+		if(msMainAnimation != "")
+			mBaseObj.PlayAnimation(msMainAnimation, afFadeTime, true,abPlayTransition, asCallbackFunc,mbMainAnimGlobalSpace);
+	}
+	
+	void _Global_SetMainAnimation()
+	{
+		SetMainAnimation(cScript_GetGlobalArgString(0), cScript_GetGlobalArgBool(1), cScript_GetGlobalArgString(2), cScript_GetGlobalArgFloat(3), cScript_GetGlobalArgBool(4));	
+	}
+	
+	//------------------------------------------------------------
+		
+	void PlayExtraAnimation(const tString& in asAnim, float afFadeTime, const tString& in asCallbackFunc, bool abGlobalSpace)
+	{
+		mbPlayingExtraAnim = true;
+		msExtraAnim=asAnim;
+		mBaseObj.PlayAnimation(asAnim, afFadeTime, false, true, asCallbackFunc, abGlobalSpace);
+	}
+	
+	void _Global_PlayExtraAnimation()
+	{
+		PlayExtraAnimation(cScript_GetGlobalArgString(0), cScript_GetGlobalArgFloat(1), cScript_GetGlobalArgString(2), cScript_GetGlobalArgBool(3));	
+	}
+	
+	//------------------------------------------------------------
+		
+	void StopAllAnimations(float afFadeTime=0.0f)
+	{
+		mbPlayingExtraAnim = false;
+		msMainAnimation="";
+		msExtraAnim="";
+		mBaseObj.StopAllAnimations(afFadeTime);
+	}
+	
+	void _Global_StopAllAnimations()
+	{
+		StopAllAnimations(cScript_GetGlobalArgFloat(0));	
+	}
+	
+	//------------------------------------------------------------
+		
+	void StopExtraAnimation(float afFadeTime=0.0f)
+	{
+		if (!mbPlayingExtraAnim)
+			return;
+		mbPlayingExtraAnim = false;
+		mBaseObj.StopAnimation(msExtraAnim,afFadeTime);
+		msExtraAnim="";
+		
+		if(msMainAnimation != "")
+			mBaseObj.PlayAnimation(msMainAnimation, afFadeTime, true, false, "", mbMainAnimGlobalSpace);
+	}
+	
+	void _Global_StopExtraAnimation()
+	{
+		StopExtraAnimation(cScript_GetGlobalArgFloat(0));	
+	}
+
+	//------------------------------------------------------------
+
+	void PlayEmotion(const tString&in asEmotion, float afDuration, float afWeight, float afFadeTime)
+	{
+		cMeshEntity@ pMeshEntity = mBaseObj.GetMeshEntity();
+
+		if(pMeshEntity !is null)
+		{
+			pMeshEntity.GetActorAnimController().PlayEmotion(asEmotion, afDuration, afWeight, afFadeTime);
+		}
+	}
+	
+	void _Global_PlayEmotion()
+	{
+		PlayEmotion(cScript_GetGlobalArgString(0), cScript_GetGlobalArgFloat(1), cScript_GetGlobalArgFloat(2), cScript_GetGlobalArgFloat(3));	
+	}
+	
+	//------------------------------------------------------------
+	
+	void MoveToNode(const tString& in asNodeName, const tString& in asCallbackFunc, const tString& in asResultCallback="")
+	{
+		mpMover.SetUseMoveStateAnimations(true);
+		mpPathfinder.MoveToNode(asNodeName, 1.0f, true, asResultCallback, false);
+		mpPathfinder.SetEndOfPathCallbackFunc(asCallbackFunc);
+	}
+	
+	void _Global_MoveToNode()
+	{
+		MoveToNode(cScript_GetGlobalArgString(0), cScript_GetGlobalArgString(1));
+	}
+	
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	cLuxHeadTracker@ mpHeadTracker;
+	
+	//------------------------------------------------------------
+	
+	bool mbSetupTrackEntity;
+	tString msVoiceName;
+	
+	tString msHeadTracker_TargetEntity;
+	
+	bool mbCanBeTalkedTo;
+	
+	tString msMainAnimation;
+	bool mbPlayingExtraAnim;
+	tString msExtraAnim;
+	bool mbSettingMainAnim;
+	bool mbMainAnimGlobalSpace;
+	
+	int mlHeadBoneIdx;	
+	
+	//------------------------------------------------------------		
+}	

@@ -1,0 +1,2326 @@
+#include "interfaces/UserModule_Interface.hps"
+#include "custom/modules/ModuleInterfaces_Custom.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_props.hps"
+#include "helpers/helper_ai.hps"
+#include "helpers/helper_menu.hps"
+#include "custom/helpers/helper_agent.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+#include "custom/helpers/helper_areas_custom.hps"
+#include "custom/helpers/helper_props_custom.hps"
+#include "custom/components/ComponentInterfaces_Custom.hps"
+
+//----------------------------------------------------------------------------------------
+
+const float gfRatHandler_DefaultFeedPosStepMinDist = 0.5f;
+const float gfRatHandler_RatCollisionCheckMinDistSqr = 0.3f * 0.3f;
+const float gfRatHandler_RatCollisionCheckMaxPushForce = 3000.0f;
+const float gfRatHandler_StalkerRetreatMinDistSqr = 5.f * 5.f;
+const float gfRatHandler_RatHideTimeMin = 7;
+const float gfRatHandler_RatHideTimeMax = 14;
+const float gfRatHandler_RatEmergeDelay = 3.0f;
+const float gfRatHandler_TrackBloodTrailMinDist = 6.0f;
+const float gfRatHandler_TrackBloodTrailMinIntensity = 0.0f;
+const float gfRatHandler_TrackBloodTrailMaxChance = 0.25f;
+const float gfRatHandler_BloodTrailConnectionMinDistSqr = 1.f * 1.f;
+const float gfRatHandler_BloodTrailHoleWeightContribution = 5.0f;
+
+const float[] gvRatHandler_MinRatAttackDelays = {1.0f, 0.9f, 0.8f, 0.75f, 0.7f};
+
+//----------------------------------------------------------------------------------------
+
+class cRat_FoodEntity
+{
+	tID mID;
+	int mlPriority;
+	int mlFeedingSlotsCount;
+	int mlCurrentRatCount;
+	float mfLifeTime;
+	float mfAttractDistance;
+	cVector3f mvBoundsCenter;
+	tString msFoodEntity;
+	array<tID> mvAgentIds;
+	array<cVector3f> mvFeedPositions;
+	array<float> mvFeedSlotFreeDelays;
+	bool mbIsArea;
+	bool mbIsThrownMeat;
+	float mfThreatTime = -1;
+	int mlUnreachableCount = 0;
+}
+
+//----------------------------------------------------------------------------------------
+
+class cRat_Hiding
+{
+	tID m_idAgent;
+	float mfHideCount;
+}
+
+//----------------------------------------------------------------------------------------
+
+class cRat_BloodTrail
+{
+	cVector3f mvPosition;
+	tID m_idEntity;
+	float mfIntensity;
+	int mlTimeStamp;
+}
+
+//----------------------------------------------------------------------------------------
+
+class cRat_Hole
+{
+	tID m_idEntity;
+	float mfBaseWeight = 0;
+	float mfWeight = 0;
+	float mfEmergeTimer = 0;
+	tID m_idBloodTrail;
+	array<tID> mvConnections;
+	
+	int opCmp(const cRat_Hole &in pOther)
+	{
+		if (mfWeight > pOther.mfWeight) return 1;
+		if (mfWeight < pOther.mfWeight) return -1;
+		return 0;
+	}
+}
+
+//----------------------------------------------------------------------------------------
+
+class cScrRatHandler : iScrUserModule, iScrUserModule_Interface, iScrRatHandler_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		LoadUserConfig();
+	}
+		
+	//------------------------------------------------------------
+	
+	void LoadUserConfig() 
+	{
+		mbNonAggressiveRats = cLux_GetUserConfig().GetBool("Accessibility", "NonAggressiveRats", false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SaveUserConfig() {}
+	
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// MAP LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap@ apMap)
+	{
+		///////////////
+		// Setup vars
+		Reset();
+		
+		///////////////
+		// Get stalker
+		array<iLuxEntity@> vStalkers;
+		apMap.GetEntityArray("*", eLuxEntityType_Agent, "cScrAgentStalker", vStalkers);
+		
+		if (vStalkers.size() > 0)
+		{
+			m_idStalker = vStalkers[0].GetID();
+		}
+		
+		///////////////
+		// Get rats
+		apMap.GetEntityArrayID("*", eLuxEntityType_Agent, "cScrAgentRat", mvRatIds);
+		
+		///////////////
+		// Add path blockers
+		array<tID> vPathBlockers;
+		array<iLuxEntity@> vDoors;
+		array<iLuxEntity@> vGratings;
+		apMap.GetEntityArray("*", eLuxEntityType_Prop, "cScrPropSwingDoor", vDoors);
+		apMap.GetEntityArray("*", eLuxEntityType_Prop, "cScrPropGrating", vGratings);
+		
+		for (uint i = 0; i < vDoors.size(); ++i)
+			vPathBlockers.push_back(SwingDoor_GetDoorBodyID(vDoors[i].GetName()));
+			
+		for (uint i = 0; i < vGratings.size(); ++i)
+		{
+			iLuxEntity@ pGrating = vGratings[i];
+			
+			if (pGrating.IsActive() == false) continue;
+			if (Grating_GetIsOpen(pGrating.GetName())) continue;
+			
+			vPathBlockers.push_back(pGrating.GetMainBody().GetID());
+		}
+			
+		cLuxEntityComponentIterator@ pBreakableIt = cLux_GetCurrentMap().GetEntityComponentIterator(eComponentType_Custom_WoodenBreakableComponent);
+		while (pBreakableIt.HasNext())
+		{
+			iLuxEntityComponent@ pComp = pBreakableIt.Next();
+			if (pComp is null) continue;
+			iLuxEntity @pEnt = pComp.GetEntity();
+			if (pEnt is null) continue;
+			
+			iScrWoodenBreakableComponent_Interface@ pBreakableComp = UserComponent_WoodenBreakableComponent_Get(pEnt);
+			if (pBreakableComp.GetIsPathBlocker()==false) continue;
+			
+			vPathBlockers.push_back(pEnt.GetMainBody().GetID());
+		}
+		
+		for (uint i = 0; i < vPathBlockers.size(); ++i)
+		{
+			tID idBlockerBody = vPathBlockers[i];
+			if (idBlockerBody == tID_Invalid) continue;
+			
+			AddPathBlocker(idBlockerBody, false);
+		}
+		
+		SetupHoles(apMap);
+		
+		if (GameDifficulty_GetNewGamePlusActive() == false)
+		{
+			SetupFeedAreas();
+		}
+	}
+	
+	//------------------------------------------------------------
+
+	void OnMapLeave(cLuxMap@ apMap) 
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void CreateWorldEntities(cLuxMap@ apMap) {}	
+	void DestroyWorldEntities(cLuxMap@ apMap) {}
+	void PreloadData(cLuxMap@ apMap) {}	
+	void OnEnterContainer(const tString&in asOldContainer) {}
+	void OnLeaveContainer(const tString&in asNewContainer) {}
+	
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+		mlFrameRatUpdateId = -1;		
+		mlPathBlockerCheckId = -1;
+		mfUpdateDamageAreaCount = 0.1f;
+		mvRatIds.resize(0);
+		mvAttackingRatIds.resize(0);
+		mvAlertedRatIds.resize(0);
+		mvPathBlockerBodyIds.resize(0);
+		mvIgnoreDamageAreasRatIds.resize(0);
+		mvHidingRats.resize(0);
+		mvFoodEntities.resize(0);
+		mvBloodTrails.resize(0);
+		mvHoles.resize(0);
+		m_idStalker = tID_Invalid;
+		mlLastAttackTimeStamp = -10000;
+		mlWarningAttackTimeStamp = -10000;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////	
+	
+	//------------------------------------------------------------
+	
+	void VariableUpdate(float afDeltaTime)
+	{		
+		if (!mbActive) return;
+		
+		////////////////
+		// Get frame update rat
+		cLuxAgent@ pRat = null;
+		if (mvRatIds.size() > 0)
+		{
+			mlFrameRatUpdateId = ++mlFrameRatUpdateId % mvRatIds.size();
+			@pRat = cLux_ID_Agent(mvRatIds[mlFrameRatUpdateId]);
+		}
+		
+		////////////////
+		// Updates
+		
+		cSystem_ProfileStart("UpdateFoodEntities");
+			UpdateFoodEntities(afDeltaTime); 
+		cSystem_ProfileEnd("UpdateFoodEntities");
+		cSystem_ProfileStart("UpdateTrackBloodTrail");
+			UpdateTrackBloodTrail(afDeltaTime, pRat); 
+		cSystem_ProfileEnd("UpdateTrackBloodTrail");
+		cSystem_ProfileStart("UpdateHidingRats");
+			UpdateHidingRats(afDeltaTime, pRat); 
+		cSystem_ProfileEnd("UpdateHidingRats");
+		cSystem_ProfileStart("UpdateRatOnRatCollision");
+			UpdateRatOnRatCollision(afDeltaTime, pRat); 
+		cSystem_ProfileEnd("UpdateRatOnRatCollision");
+		cSystem_ProfileStart("UpdatePathBlockers");
+			UpdatePathBlockers(afDeltaTime); 
+		cSystem_ProfileEnd("UpdatePathBlockers");
+		cSystem_ProfileStart("UpdateFleeStalker");
+			UpdateFleeStalker(afDeltaTime, pRat); 
+		cSystem_ProfileEnd("UpdateFleeStalker");
+		cSystem_ProfileStart("UpdateRagdolls");
+			UpdateRagdolls(afDeltaTime, pRat); 
+		cSystem_ProfileEnd("UpdateRagdolls");
+		cSystem_ProfileStart("UpdateThreatenedRats");
+			UpdateThreatenedRats(afDeltaTime, pRat); 
+		cSystem_ProfileEnd("UpdateThreatenedRats");
+	}
+	
+	void UpdateFoodEntities(float afDeltaTime)
+	{
+		for (uint i = 0; i < mvFoodEntities.length(); i++)
+		{
+			cRat_FoodEntity@ pFood = mvFoodEntities[i];
+			
+			if (pFood.mfThreatTime > 0)
+				pFood.mfThreatTime -= afDeltaTime;
+			
+			/////////////////////////////
+			// Free up slots
+			bool bBeingEaten = false;
+			for (uint j = 0; j < pFood.mvAgentIds.length(); j++)
+			{
+				if (pFood.mvFeedSlotFreeDelays[j] > 0)
+				{
+					pFood.mvFeedSlotFreeDelays[j] -= afDeltaTime;
+					if (pFood.mvFeedSlotFreeDelays[j] <= 0)
+					{
+						pFood.mvAgentIds[j] = tID_Invalid;
+					}
+				}
+				
+				if (!bBeingEaten && pFood.mfLifeTime > 0 && pFood.mvAgentIds[j] != tID_Invalid)
+				{
+					cLuxAgent@ pRat = cLux_ID_Agent(pFood.mvAgentIds[j]);
+					if (pRat is null) continue;
+					
+					if (StateMachine_GetCurrentStateName(pRat.GetName()) == "Eat")
+					{
+						bBeingEaten = true;
+						pFood.mfLifeTime -= afDeltaTime;
+					}
+				}
+			}
+			
+			//////////////////////////////
+			// Remove invalid entities
+			iLuxEntity@ pFoodEnt = cLux_ID_Entity(pFood.mID);
+			iScrRatFoodComponent_Interface@ pFoodComponent = pFoodEnt !is null ? UserComponent_RatFoodComponent_Get(pFoodEnt) : null;
+			
+			if (pFoodComponent !is null && bBeingEaten && pFood.mfLifeTime < 0)
+				pFoodComponent.SetIsDestroyed(true);
+			
+			if (pFoodEnt is null || pFoodComponent is null || pFoodComponent.GetIsDestroyed())
+			{
+				RemoveFoodEntity(pFood.mID);
+				i--;
+				continue;
+			}
+			
+			//////////////////////////////
+			// Update position
+			if (pFood.mbIsArea==false)
+			{
+				cMeshEntity@ pMeshEntity = pFoodEnt.GetMeshEntity();
+				if (pMeshEntity !is null)
+				{
+					pFood.mvBoundsCenter = pMeshEntity.GetBoundingVolume().GetPosition();
+				}
+			}
+			else
+			{
+				pFood.mvBoundsCenter = pFoodEnt.GetPosition();
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateTrackBloodTrail(float afDeltaTime, cLuxAgent@ apRat)
+	{
+		if (apRat is null) return;
+		if (apRat.IsActive() == false) return;
+		if (mbNonAggressiveRats) return;
+		
+		////////////////
+		// Trail exists?
+		if (mvBloodTrails.size() == 0)
+		{
+			Rat_SetPrevClosestBloodTrail(apRat.GetName(), tID_Invalid);
+			return;
+		}
+		
+		////////////////
+		// Get most recent blood trail near rat!
+		cRat_BloodTrail@ pTrail = GetMostRecentBloodTrailAtPos(apRat.GetPosition(), gfRatHandler_TrackBloodTrailMinDist);
+		if (pTrail !is null)
+		{
+			tID idPrevTrail = Rat_GetPrevClosestBloodTrail(apRat.GetName());
+			if (idPrevTrail == pTrail.m_idEntity) return;
+			
+			//cLux_AddDebugMessage("FOUND A TRAIL "+pTrail.mfIntensity);
+			Rat_SetPrevClosestBloodTrail(apRat.GetName(), pTrail.m_idEntity);
+			
+			float fDifficultyMultiplier = GameDifficulty_GetSettingValueByID_Float(eGameDifficultySetting_RatsAggressiveness);
+
+			////////////////////////////////////////
+			// Check if trail should be tracked
+			if (Player_GetIsBleeding() == false || 
+				pTrail.mfIntensity < gfRatHandler_TrackBloodTrailMinIntensity ||
+				cMath_RandRectf(0.0f, 1.0f) > gfRatHandler_TrackBloodTrailMaxChance*fDifficultyMultiplier*pTrail.mfIntensity)
+				return;
+			
+			//cLux_AddDebugMessage("TRACK THE TRAIL");
+			Rat_TrackBloodTrail(apRat.GetName(), pTrail.m_idEntity);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateHidingRats(float afDeltaTime, cLuxAgent@ apRat)
+	{
+		for (uint i = 0; i < mvHoles.length(); i++)
+		{
+			cRat_Hole@ pHole = mvHoles[i];
+			if (pHole.mfEmergeTimer > 0)
+				pHole.mfEmergeTimer -= afDeltaTime;
+		}
+		
+		////////////////////
+		// Iterate hiding rats
+		for (uint lRatIx = 0; lRatIx < mvHidingRats.size(); ++lRatIx)
+		{
+			cRat_Hiding@ pHidingRat = mvHidingRats[lRatIx];
+			if (pHidingRat is null) continue;
+			pHidingRat.mfHideCount -= afDeltaTime;
+			
+			////////////////////////////////
+			// Only evaluate the current rat
+			if (pHidingRat.m_idAgent != apRat.GetID()) continue;
+			
+			////////////////////
+			// Hidden long enough?
+			if (pHidingRat.mfHideCount <= 0.f)
+			{
+				tID idFood = GetFreeFoodEntityId(pHidingRat.m_idAgent, false, false);
+				tID idEmergeHole = tID_Invalid;
+				tID idTargetHole = tID_Invalid;
+				tID idTargetBloodTrail = tID_Invalid;
+				
+				//////////////////////////////
+				// temp fix for bugged mesh bounds
+				if (idFood != tID_Invalid)
+				{
+					cVector3f vAreaPos = cVector3f_Zero;
+					if (GetRatFoodIsArea(idFood)==false)
+					{
+						iLuxEntity@ pEntity = cLux_ID_Entity(idFood);
+						
+						if (pEntity !is null)
+						{
+							vAreaPos = pEntity.GetPosition();
+							vAreaPos.y = pEntity.GetMeshEntity().GetBoundingVolume().GetMin().y + 0.2f;
+						}
+					}
+					else
+					{
+						cLuxArea@ pArea = cLux_ID_Area(idFood);
+						if (pArea !is null)
+						{
+							vAreaPos = pArea.GetPosition();
+							vAreaPos.y = pArea.GetAreaBody().GetBoundingVolume().GetMin().y + 0.2f;
+						}
+					}
+					
+					cRat_Hole@ pBestHole = GetBestHoleFromPos(vAreaPos, true);
+					if (pBestHole !is null && pBestHole.mfEmergeTimer <= 0)
+					{
+						idEmergeHole = pBestHole.m_idEntity;
+						pBestHole.mfEmergeTimer = gfRatHandler_RatEmergeDelay;
+					}
+				}
+				
+				if (idEmergeHole == tID_Invalid)
+				{
+					idFood = tID_Invalid;
+					
+					float fBloodTrailMultiplier = GameDifficulty_GetSettingValueByID_Float(eGameDifficultySetting_RatsAggressiveness);
+					
+					///////////////////////////////////////////////
+					// Calculate hole weights
+					cRat_Hole@ pHole = null;
+					iLuxEntity@ pHoleEnt = null;
+					float fTotalWeight = 0;
+					for (uint i = 0; i < mvHoles.length(); i++)
+					{
+						@pHole = mvHoles[i];
+						pHole.mfWeight = pHole.mfBaseWeight;
+						pHole.m_idBloodTrail = tID_Invalid;
+						
+						@pHoleEnt = cLux_ID_Entity(pHole.m_idEntity);
+		
+						cRat_BloodTrail@ pTrail = GetMostRecentBloodTrailAtPos(pHoleEnt.GetPosition(), gfRatHandler_TrackBloodTrailMinDist);
+						bool bBloodTrailFound = mbNonAggressiveRats == false &&
+												pTrail !is null && 
+												pTrail.mfIntensity > gfRatHandler_TrackBloodTrailMinIntensity && 
+												Player_GetIsBleeding();
+						if (bBloodTrailFound)
+						{
+							float fTrailTime = cLux_GetCurrentMap().GetElapsedTime(pTrail.mlTimeStamp);
+							float fTimeMul = 1.0f + cMath_Clamp(1.0f-(fTrailTime/30.0f), 0.0f, 1.0f);
+							
+							if (fTrailTime > 5.0f) // Prevent rats from immediately starting to come out after taking damage
+							{
+								pHole.mfWeight += gfRatHandler_BloodTrailHoleWeightContribution * fBloodTrailMultiplier * pTrail.mfIntensity * fTimeMul;
+								pHole.m_idBloodTrail = pTrail.m_idEntity;
+							}
+						}
+							
+						if (!bBloodTrailFound || 
+							GetIsHoleBlocked(pHole.m_idEntity) ||
+							pHoleEnt.IsActive() == false)
+						{
+							pHole.mfWeight = 0;
+						}
+						
+						pHole.mfWeight = cMath_Max(pHole.mfWeight, 0.0f);
+						
+						fTotalWeight += pHole.mfWeight;
+					}
+					
+					//////////////////////////////////////////////
+					// Create list of candidate indexes
+					array<int> vHoleCandidates;
+					vHoleCandidates.resize(mvHoles.length()); 
+					for (uint i = 0; i < mvHoles.length(); i++)
+						vHoleCandidates[i] = i;
+					
+					////////////////////////////////////////////
+					// Select random hole based on weight
+					while (vHoleCandidates.length() > 0)
+					{
+						if (fTotalWeight <= 0) break;
+						
+						/////////////////////////////
+						// Select random weight
+						float fRandWeight = cMath_RandRectf(0, fTotalWeight);
+						//cLux_AddDebugMessage("Selecting weight "+fRandWeight);
+						
+						/////////////////////////////
+						// Pick the first hole with a culumative weight higher than random value
+						cRat_Hole@ randomHole;
+						int lRandIx = 0;
+						float fCumulativeWeight = 0;
+						for (uint i = 0; i < vHoleCandidates.length(); i++)
+						{
+							lRandIx = i;
+							@randomHole = mvHoles[vHoleCandidates[i]];
+							fCumulativeWeight += randomHole.mfWeight;
+							if (fCumulativeWeight >= fRandWeight)
+								break;
+						}
+						//cLux_AddDebugMessage("Selected index "+vHoleCandidates[lRandIx]);
+					
+						vHoleCandidates.removeAt(lRandIx);
+						
+						if (randomHole is null) continue;
+						
+						idEmergeHole = randomHole.m_idEntity;
+						
+						bool bEmergeTimerOver = randomHole.mfEmergeTimer <= 0;
+						
+						if (bEmergeTimerOver && randomHole.m_idBloodTrail != tID_Invalid)
+						{
+							idTargetBloodTrail = randomHole.m_idBloodTrail;
+							randomHole.mfEmergeTimer = gfRatHandler_RatEmergeDelay;
+						}
+						break;
+					}
+				}
+				
+				if (idEmergeHole == tID_Invalid)
+					continue;
+				
+				cLuxAgent@ pRat = cLux_ID_Agent(pHidingRat.m_idAgent);
+				if (pRat is null) continue;
+				
+				////////////////////
+				// Can emerge?
+				if ((idFood != tID_Invalid && Rat_EmergeToFood(pRat.GetName(), idEmergeHole, idFood)) ||
+					(idTargetHole != tID_Invalid && Rat_EmergeToWander(pRat.GetName(), idEmergeHole, idTargetHole)) ||
+					(idTargetBloodTrail != tID_Invalid && Rat_EmergeToBloodTrail(pRat.GetName(), idEmergeHole, idTargetBloodTrail)))
+				{
+					mvHidingRats.removeAt(lRatIx);
+					--lRatIx;
+				}
+				
+				////////////////////
+				// Otherwise, restart hiding!
+				else
+				{
+					pHidingRat.mfHideCount = cMath_RandRectf(gfRatHandler_RatHideTimeMin, gfRatHandler_RatHideTimeMax);
+				}
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	// TODO: Find a better way of doing this
+	void UpdateRatOnRatCollision(float afDeltaTime, cLuxAgent@ apRat)
+	{
+		if (apRat is null) return;
+		if (apRat.IsActive() == false) return;
+		
+		////////////////////
+		// Setup vars
+		iCharacterBody@ pCharBody = apRat.GetCharBody();
+		
+		bool bCollideChar = true;
+		bool bIsAttacking = mvAttackingRatIds.find(apRat.GetID()) != -1;		
+		
+		////////////////////
+		// Push away from other rats
+		cVector3f vPushForce = cVector3f_Zero;
+		for (uint i = 0; i < mvRatIds.size(); ++i)
+		{			
+			cLuxAgent@ pOtherRat = cLux_ID_Agent(mvRatIds[i]);
+			
+			if (pOtherRat is null) continue;
+			if (pOtherRat.IsActive() == false) continue;
+			if (apRat is pOtherRat) continue;
+			if (StateMachine_GetCurrentStateName(pOtherRat.GetName())=="Dead") continue;
+			
+			////////////////////
+			// Don't collide if close enough and at least one is not moving
+			cVector3f vDelta = pOtherRat.GetPosition() - apRat.GetPosition();
+			float fDistSqr = vDelta.SqrLength();
+			
+			if (fDistSqr < gfRatHandler_RatCollisionCheckMinDistSqr)
+			{
+				float fT = (1.0f-(fDistSqr/gfRatHandler_RatCollisionCheckMinDistSqr));
+				float fForce = cMath_Easing(eEasing_QuadIn, fT, 0, gfRatHandler_RatCollisionCheckMaxPushForce);
+				vPushForce += cMath_Vector3Normalize(vDelta) * -fForce;
+			}
+		}
+		apRat.SetVarVector3f("CollisionPushForce", cMath_Vector3ClampLength(vPushForce, 0, gfRatHandler_RatCollisionCheckMaxPushForce));
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdatePathBlockers(float afDeltaTime)
+	{		
+		if (mvPathBlockerBodyIds.size() == 0)
+			return;
+		
+		////////////////
+		// Check one body per frame
+		mlPathBlockerCheckId = ++mlPathBlockerCheckId % mvPathBlockerBodyIds.size();
+		tID idBody = mvPathBlockerBodyIds[mlPathBlockerCheckId];
+		iPhysicsBody@ pBody = cLux_ID_Body(idBody);		
+		
+		////////////////
+		// Body is gone, remove!
+		if (pBody is null)
+		{
+			RemovePathBlocker(idBody);
+		}
+		
+		////////////////
+		// Update damage areas if they have changed
+		if(mlPathBlockerCounter != Blackboard_GetPathBlockerCounter())
+		{
+			mlPathBlockerCounter = Blackboard_GetPathBlockerCounter();
+			array<tID> vDamageAreaIds = Blackboard_GetPathBlockerBodyIds(false, true);
+			for (uint i = 0; i < vDamageAreaIds.size(); ++i)
+				AddPathBlocker(vDamageAreaIds[i], true);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateFleeStalker(float afDeltaTime, cLuxAgent@ apRat)
+	{
+		if (apRat is null) return;
+		if (apRat.IsActive() == false) return;
+		if (StateMachine_GetCurrentStateName(apRat.GetName())=="Dead") return;
+		
+		//////////////////
+		// Get stalker
+		cLuxAgent@ pStalker = cLux_ID_Agent(m_idStalker);
+
+		if (pStalker is null) return;
+		if (pStalker.IsActive() == false) return;
+		if (pStalker.GetMeshEntity().IsVisible() == false) return;
+		
+		//////////////////
+		// Retreat if stalker is near!
+		float fDistSqr = (pStalker.GetPosition() - apRat.GetPosition()).SqrLength();
+		if (fDistSqr < gfRatHandler_StalkerRetreatMinDistSqr)
+		{
+			Rat_Retreat(apRat.GetName(), true, true, false);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateRagdolls(float afDeltaTime, cLuxAgent@ apRat)
+	{
+		if (apRat is null) return;
+		if (apRat.IsActive() == false) return;
+		
+		//////////////////////
+		// Update ragdoll
+		if (apRat.IsSleeping() && apRat.GetRagdollActive())
+		{
+			apRat.UpdateRagdoll();
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateThreatenedRats(float afDeltaTime, cLuxAgent@ apRat)
+	{
+		if (mbPlayerThreatensRats==false)
+		{
+			return;
+		}
+			
+		if (apRat is null) return;
+		if (apRat.IsActive() == false) return;
+		
+		tString sEntName = apRat.GetName();
+		
+		if (Rat_GetInThreatReactionRange(sEntName) && Entity_IsInPlayerFOV(sEntName))
+		{
+			Rat_Threatened(sEntName);
+		}
+	}
+
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep) {}
+	void PostUpdate(float afTimeStep) {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnAction(int alAction, bool abPressed) {}
+	void OnAnalogInput(int alAnalogId, const cVector3f &in avAmount) {}	
+	void OnExitPressed() {}
+	
+	//------------------------------------------------------------
+	
+	void AppGotInputFocus() {}
+	void AppLostInputFocus() {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPERS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	cRat_FoodEntity@ _AddFoodEntity(iLuxEntity@ apEntity)
+	{
+		if (apEntity is null) return null;
+		
+		iScrRatFoodComponent_Interface@ pFood = UserComponent_RatFoodComponent_Get(apEntity);
+		if (apEntity.IsActive()==false) return null;
+		if (pFood is null || pFood.GetIsDestroyed())  return null;
+		
+		cLuxMap@ pMap = apEntity.GetMap();
+		if (pMap is null) return null;
+		//if (pFood.GetAttractEnabled()==false) continue;
+		
+		for (uint i = 0; i < mvFoodEntities.length(); i++)
+		{
+			if (mvFoodEntities[i].mID == apEntity.GetID())
+				return mvFoodEntities[i];
+		}
+		
+		////////////////////////////////////
+		// Get food entity name. If no alt entity use self.
+		tString sAltFoodEnt = pFood.GetFoodEntity();
+		tString sFoodEnt = (sAltFoodEnt=="") ? apEntity.GetName() : sAltFoodEnt;
+		cLux_AddDebugMessage("[RatHandler]: Food Entity: " + sFoodEnt);
+		
+		////////////////////////////
+		// Setup internal food ent class
+		cRat_FoodEntity foodEntity;
+		foodEntity.mID = apEntity.GetID();
+		foodEntity.mlPriority = pFood.GetPriority();
+		foodEntity.msFoodEntity = sFoodEnt;
+		foodEntity.mlFeedingSlotsCount = pFood.GetFeedingSlotsCount();
+		foodEntity.mfLifeTime = pFood.GetLifeTime();
+		foodEntity.mfAttractDistance = pFood.GetAttractDistance();
+		foodEntity.mbIsArea = pFood.GetIsArea();
+		foodEntity.mbIsThrownMeat = pFood.GetIsThrownMeat();
+		
+		/////////////////////////
+		// Get actual food entity
+		iLuxEntity@ pActualFoodEnt = foodEntity.mbIsArea ? apEntity : pMap.GetEntityByName(sFoodEnt);			
+		if (pActualFoodEnt !is null)
+		{
+			foodEntity.mvBoundsCenter = pActualFoodEnt.GetPosition();
+			if (foodEntity.mbIsArea==false)
+			{
+				cMeshEntity@ pMeshEntity = pActualFoodEnt.GetMeshEntity();
+				if (pMeshEntity !is null)
+					foodEntity.mvBoundsCenter = pMeshEntity.GetBoundingVolume().GetPosition();
+			}
+			
+			GetFeedPositionsAtFoodEntity(foodEntity.mvFeedPositions, pActualFoodEnt, foodEntity.mlFeedingSlotsCount, foodEntity.mbIsArea);
+		}
+		
+		foodEntity.mvAgentIds.resize(foodEntity.mlFeedingSlotsCount);
+		foodEntity.mvFeedSlotFreeDelays.resize(foodEntity.mlFeedingSlotsCount);
+		for (int i = 0; i < foodEntity.mlFeedingSlotsCount; ++i)
+		{
+			foodEntity.mvAgentIds[i] = tID_Invalid;
+			foodEntity.mvFeedSlotFreeDelays[i] = -1;
+		}
+		
+		mvFoodEntities.push_back(foodEntity);
+		
+		/////////////////////////////////////////
+		// Disable agent collision on food entity
+		array<iLuxEntity@> vFoodEnts;
+		pMap.GetEntityArray(foodEntity.msFoodEntity, eLuxEntityType_Prop, "*", vFoodEnts);
+
+		for (uint i = 0; i < vFoodEnts.size(); ++i)
+		{
+			iLuxEntity@ pFoodEnt = vFoodEnts[i];
+			if (pFoodEnt is null) continue;
+			
+			for (int k = 0; k < pFoodEnt.GetBodyNum(); ++k)
+			{
+				iPhysicsBody@ pBody = pFoodEnt.GetBody(k);
+				pBody.SetCollideCharacter(false);
+				pBody.SetCollideRagDoll(false);
+			}
+		}
+		
+		return foodEntity;
+	}
+	
+	//------------------------------------------------------------
+	
+	void DistributeRats()
+	{
+		//////////////////////////////
+		// Distribute rats by entities
+		uint lRatId = 0;
+		
+		for (uint i = 0; i < mvFoodEntities.size(); ++i)
+		{
+			/////////////////////
+			// Setup vars
+			cRat_FoodEntity@ pFoodEntity = mvFoodEntities[i];
+			if (pFoodEntity is null) continue;
+			
+			uint lMaxRatCountAtEntity = cMath_Min(lRatId + pFoodEntity.mlFeedingSlotsCount, mvRatIds.size());
+			
+			/////////////////////
+			// Iterate rats
+			for (; lRatId < lMaxRatCountAtEntity; ++lRatId)
+			{
+				cLuxAgent@ pAgent = cLux_ID_Agent(mvRatIds[lRatId]);
+				iCharacterBody@ pCharBody = pAgent !is null ? pAgent.GetCharBody() : null;
+				tString sRat = pAgent !is null ? pAgent.GetName() : "";
+				
+				//cLux_AddDebugMessage(pAgent.GetName()+" Health: "+pAgent.GetHealth());
+				if (pAgent.GetHealth() <= 0) continue;
+				if (pCharBody is null) continue;
+				if (Rat_GetSpawnAtPos(sRat)) continue;
+				
+				/////////////////////
+				// Place at feed pos
+				cVector3f vFeedPos = AddRatToFoodEntity(pFoodEntity, pAgent.GetID());
+				float fYaw = cMath_GetAngleFromPoints3D(vFeedPos, pFoodEntity.mvBoundsCenter).y;
+				
+				pCharBody.SetFeetPosition(vFeedPos, false);
+				pCharBody.SetYaw(fYaw);
+				pAgent.SetActive(mbActive);
+				
+				Rat_Eat(sRat, pFoodEntity.mID);
+			}
+		}
+		
+		//////////////////////
+		// Any rats left? Hide them!
+		for (; lRatId < mvRatIds.size(); ++lRatId)
+		{
+			cLuxAgent@ pAgent = cLux_ID_Agent(mvRatIds[lRatId]);
+			if (pAgent is null) continue;
+			if (pAgent.GetHealth() <= 0) continue;
+			
+			pAgent.SetActive(false);
+			
+			if (Rat_GetSpawnAtPos(pAgent.GetName())) continue;
+			
+			AddHidingRat(mvRatIds[lRatId]);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupHoles(cLuxMap@ apMap)
+	{
+		///////////////////////////////////
+		// Fetch the holes
+		int lGhoulNetwork = Blackboard_RegisterGhoulHoleNetwork(apMap, "GhoulHole_*");
+		array<tID> vHoleIds = Blackboard_GetGhoulHoleNetwork(lGhoulNetwork);
+		int lRatNetwork = Blackboard_RegisterGhoulHoleNetwork(apMap, "RatHole_*");
+		array<tID> vRatHoleIds = Blackboard_GetGhoulHoleNetwork(lRatNetwork);
+		for (uint i = 0; i < vRatHoleIds.length(); i++)
+			vHoleIds.push_back(vRatHoleIds[i]);
+		
+		cLuxPathfinder@ pPathfinder = GetPathfinder();
+		if (pPathfinder is null) return;
+		
+		mvHoles.resize(vHoleIds.length());
+		for (uint i = 0; i < mvHoles.length(); i++)
+		{
+			cRat_Hole@ pHole = mvHoles[i];
+			pHole.m_idEntity = vHoleIds[i];
+			iLuxEntity@ pHoleEntity = cLux_ID_Entity(pHole.m_idEntity);
+			
+			for (uint j = i+1; j < vHoleIds.length(); j++)
+			{
+				tID idTargetHole = vHoleIds[j];
+				iLuxEntity@ pTargetHoleEntity = cLux_ID_Entity(idTargetHole);
+				
+				if (pPathfinder.BuildPathNodeArrayFromTo(pHoleEntity.GetPosition(), pTargetHoleEntity.GetPosition()))
+				{
+					cRat_Hole@ pTargetHole = mvHoles[j];
+					pTargetHole.mvConnections.push_back(pHole.m_idEntity);
+					pHole.mvConnections.push_back(idTargetHole);
+				}
+			}
+			
+/*			cLux_AddDebugMessage("Connections for "+pHoleEntity.GetName());
+			for (int k = 0; k < pHole.mvConnections.length(); k++)
+			{
+				cLux_AddDebugMessage(cLux_ID_Entity(pHole.mvConnections[k]).GetName());
+			}*/
+			
+			pHole.mfBaseWeight = pHole.mvConnections.length() > 0 ? 1 : 0;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	cRat_Hole@ GetBestHoleFromPos(const cVector3f &in avPos, bool abIgnoreEmergeTimer = false, float afDistanceThreshold = 5.f, bool abOnlyGhoulHoles = false)
+	{		
+		if (mvRatIds.length() == 0)
+			return null;
+		
+		//////////////////
+		// No holes available, escape!
+		if (mvHoles.size() == 0)
+			return null;
+		
+		//////////////////
+		// Get hole with shortest path to pos
+		// TODO: Getting path distance to all holes is very expensive! Find out better way of doing this.
+		float fMinDist = 1000.f;
+		cRat_Hole@ pClosest = null;
+		
+		cLuxPathfinder@ pPathfinder = GetPathfinder();
+		if (pPathfinder is null) return null;
+
+		cSystem_ProfileStart("RatHandler_GetBestHoleFromPos");
+		
+		for (uint i = 0; i < mvHoles.size(); ++i)
+		{
+			cRat_Hole@ pHole = mvHoles[i];
+			if (pHole is null) continue;
+			if (!abIgnoreEmergeTimer && pHole.mfEmergeTimer > 0) continue;
+			if (GetIsHoleBlocked(pHole.m_idEntity)) continue;
+			
+			cLuxArea@ pArea = cLux_ID_Area(pHole.m_idEntity);
+			if (pArea is null) continue;
+			if (pArea.IsActive() == false) continue;
+			if (abOnlyGhoulHoles && cString_GetFirstStringPos(pArea.GetName(), "RatHole") >= 0) continue;
+			
+			cVector3f vAreaPos = pArea.GetPosition();
+			vAreaPos.y = pArea.GetAreaBody().GetBoundingVolume().GetMin().y + 0.2f;
+			
+			// And skip holes that are further away than closest hole
+			if(cMath_Vector3DistSqr(avPos, vAreaPos) > fMinDist * fMinDist)
+				continue;
+			
+			float fDist = GetPathDistanceToPos(avPos, vAreaPos, pPathfinder);
+			if (fDist < fMinDist && fDist > 0.f)
+			{
+				fMinDist = fDist;
+				@pClosest = pHole;
+				
+				// If dist is short enough, just get this one!
+				if (fDist <= afDistanceThreshold)
+				{
+					cSystem_ProfileEnd("RatHandler_GetBestHoleFromPos");
+					return pClosest;
+				}
+			}
+		}
+		
+		cSystem_ProfileEnd("RatHandler_GetBestHoleFromPos");
+		return pClosest;
+	}	
+	
+	//------------------------------------------------------------
+	
+	float GetPathDistanceToPos(const cVector3f &in avFrom, const cVector3f &in avTo, cLuxPathfinder@ aPathfinder)
+	{
+		if (aPathfinder.BuildPathNodeArrayFromTo(avFrom, avTo))
+			return aPathfinder.GetPathNodeArrayFullLength();
+		
+		return -1.f;
+	}
+	
+	//------------------------------------------------------------
+	
+	void GetFeedPositionsAtFoodEntity(array<cVector3f> &out avFeedPositions, iLuxEntity@ apEntity, int alAvailableFeedSlots, bool abIsArea)
+	{
+		if (apEntity is null) return;
+		if (alAvailableFeedSlots == 0) return;
+		
+		avFeedPositions.resize(alAvailableFeedSlots);
+		
+		/////////////
+		// Setup vars
+		cBoundingVolume@ pBounds = null;
+		cVector3f vOffset = 0;
+		if (abIsArea)
+		{
+			cLuxArea@ pArea = cLux_ToArea(apEntity);
+			if (pArea is null)
+			{
+				Error("[RatHandler] RatFoodComponent is defined as area but is not!");
+				return;
+			}
+			
+			@pBounds = pArea.GetAreaBody().GetBoundingVolume();
+		}
+		else
+		{
+			cMeshEntity@ pMeshEntity = apEntity.GetMeshEntity();
+			if (pMeshEntity is null)
+			{
+				Error("[RatHandler] RatFood mesh entity is null!");
+				return;
+			}
+
+			@pBounds = pMeshEntity.GetBoundingVolume();
+			//vOffset = pBounds.GetWorldCenter();
+		}
+		cVector3f vLocalMin = pBounds.GetLocalMin()-vOffset;
+		cVector3f vLocalMax = pBounds.GetLocalMax()-vOffset;
+		
+		//////////////////
+		// Expand bounds if too small to fit all rats
+		float fMinCircumference = alAvailableFeedSlots * 0.35f;
+		float fCircumference = ((vLocalMax.x-vLocalMin.x)+(vLocalMax.z-vLocalMin.z))*2;
+		if (fCircumference < fMinCircumference)
+		{
+			float fExpansion = (fMinCircumference - vLocalMax.x*2 + vLocalMin.x*2 - vLocalMax.z*2 + vLocalMin.z*2)/8.0f;
+			vLocalMin -= cVector3f(fExpansion, 0, fExpansion);
+			vLocalMax += cVector3f(fExpansion, 0, fExpansion);
+		}
+		
+		cVector3f[] vPoints = { cVector3f(vLocalMax.x, vLocalMax.y, vLocalMax.z), 
+									cVector3f(vLocalMax.x, vLocalMax.y, vLocalMin.z),
+									cVector3f(vLocalMin.x, vLocalMax.y, vLocalMin.z),
+									cVector3f(vLocalMin.x, vLocalMax.y, vLocalMax.z) };
+										 
+		cVector3f[] vEdges = { vPoints[1] - vPoints[0], 
+								   vPoints[2] - vPoints[1],
+								   vPoints[3] - vPoints[2],
+								   vPoints[0] - vPoints[3] };
+								   
+		///////////////////////////////////////
+		// Calculate distance along the area's top edges
+		float fTotalDist = 0.f;		
+		for (uint i=0; i < vEdges.length(); ++i)
+		{
+			fTotalDist += vEdges[i].Length();
+		}
+		
+		float fAvailableDist = fTotalDist;
+		
+		/////////////////////////////////////////
+		// Calculate min step dist required for the number of positions
+		float fMinStepDist = fTotalDist / float(alAvailableFeedSlots);
+		if (fMinStepDist > gfRatHandler_DefaultFeedPosStepMinDist)
+			fMinStepDist = gfRatHandler_DefaultFeedPosStepMinDist;
+			
+		//////////////////////////
+		// Calculate the positions
+		for (int i=0; i < alAvailableFeedSlots; ++i)
+		{
+			////////////////////
+			// Get max step dist
+			// (Make sure to leave enough room for all positions)
+			float fMinNeededDist = fMinStepDist * (alAvailableFeedSlots - i);
+			float fMaxStepDist = cMath_RandRectf(fMinStepDist, fAvailableDist / 2.f);
+			
+			if (fAvailableDist - fMaxStepDist < fMinNeededDist)
+			{
+				float fRemainder = fAvailableDist % fMinNeededDist;
+				fMaxStepDist = fMinStepDist + cMath_RandRectf(0.f, fRemainder);
+			}
+		
+			/////////////////
+			// Get step dist
+			float fStepDist = cMath_RandRectf(fMinStepDist, fMaxStepDist);
+			fAvailableDist -= fStepDist;
+			
+			float fTotalStepDist = fTotalDist - fAvailableDist;
+			
+			///////////////////////
+			// Get position on edge
+			cVector3f vPos = cVector3f(0.f);
+			for (uint j = 0; j < vEdges.length(); ++j)
+			{
+				cVector3f vEdge = vEdges[j];
+				float fEdgeDist = vEdge.Length();
+				
+				/////////////////////////
+				// Is point on this edge?
+				if (fTotalStepDist <= fEdgeDist || j == vEdges.length()-1)
+				{
+					float fT = fTotalStepDist / fEdgeDist;
+					vPos = vPoints[j] + cMath_Vector3Normalize(vEdge) * fEdgeDist * fT;
+					break;
+				}
+				
+				///////////////
+				// Keep looking
+				else
+				{
+					fTotalStepDist -= fEdgeDist;
+				}
+			}
+
+			vPos.y = vLocalMin.y;
+			avFeedPositions[i] = vPos;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	cVector3f AddRatToFoodEntity(cRat_FoodEntity@ apFoodEntity, tID a_idAgent)
+	{
+		//////////////////
+		// Setup vars
+		cLuxAgent@ pAgent = cLux_ID_Agent(a_idAgent);
+		
+		if (apFoodEntity is null) 
+			return cVector3f(0.f);	
+		if (pAgent is null) 
+			return cVector3f(0.f);
+		if (GetRatIsInFoodEntity(apFoodEntity, a_idAgent))
+			return cVector3f(0.f);
+			
+		iLuxEntity@ pEnt = cLux_ID_Entity(apFoodEntity.mID);
+		if (pEnt is null) return cVector3f(0.f);
+		
+		int lFreeSlotId = -1;
+		float fMinDistSqr = 1000.f * 1000.f;
+		cVector3f vFeedPos = cVector3f(0.f);
+		
+		/////////////////////////
+		// Iterate feed positions
+		for (uint i = 0; i < apFoodEntity.mvFeedPositions.size(); ++i)
+		{
+			/////////////////////////
+			// Reserved by this agent? Just pick this one.
+			if (apFoodEntity.mvAgentIds[i] == a_idAgent)
+			{
+				lFreeSlotId = i;
+				vFeedPos = cMath_MatrixMul(pEnt.GetMatrix(), apFoodEntity.mvFeedPositions[i]);
+				vFeedPos.y = apFoodEntity.mvFeedPositions[i].y+pEnt.GetPosition().y;
+				break;
+			}
+			
+			/////////////////////////
+			// Used by another agent?
+			if (apFoodEntity.mvAgentIds[i] != tID_Invalid)
+				continue;
+			
+			///////////////////////
+			// Get closest feed pos
+			cVector3f vWorldPos = cMath_MatrixMul(pEnt.GetMatrix(), apFoodEntity.mvFeedPositions[i]);
+			vWorldPos.y = apFoodEntity.mvFeedPositions[i].y+pEnt.GetPosition().y;
+			float fDistSqr = (vWorldPos - pAgent.GetPosition()).SqrLength();
+			if (fDistSqr < fMinDistSqr)
+			{
+				lFreeSlotId = i;
+				fMinDistSqr = fDistSqr;
+				vFeedPos = vWorldPos;
+			}
+		}
+		
+		/////////////////////////////////////////
+		// Assign agent to slot and get feed pos!
+		if (lFreeSlotId != -1)
+		{
+			apFoodEntity.mvAgentIds[lFreeSlotId] = a_idAgent;
+			apFoodEntity.mvFeedSlotFreeDelays[lFreeSlotId] = -1;
+		}
+		return vFeedPos;
+	}
+	
+	//------------------------------------------------------------
+	
+	cVector3f GetFeedWorldPos(cRat_FoodEntity@ apFoodEntity, tID a_idAgent)
+	{
+		iLuxEntity@ pEnt = cLux_ID_Entity(apFoodEntity.mID);
+		if (pEnt is null) return cVector3f_Zero;
+		
+		cVector3f vFeedPos = cVector3f_Zero;
+		
+		/////////////////////////
+		// Find the right slot
+		for (uint i = 0; i < apFoodEntity.mvFeedPositions.size(); ++i)
+		{
+			/////////////////////////
+			// Reserved by this agent? Just pick this one.
+			if (apFoodEntity.mvAgentIds[i] != a_idAgent)
+				continue;
+			
+			vFeedPos = cMath_MatrixMul(pEnt.GetMatrix(), apFoodEntity.mvFeedPositions[i]);
+			vFeedPos.y = apFoodEntity.mvFeedPositions[i].y+pEnt.GetPosition().y;
+			return vFeedPos;
+		}
+		
+		return pEnt.GetPosition();
+	}
+	
+	//------------------------------------------------------------
+	
+	void RemoveRatFromFoodEntity(cRat_FoodEntity@ apFoodEntity, tID a_idAgent, float afDelay)
+	{
+		if (apFoodEntity is null) return;
+		
+		int lId = apFoodEntity.mvAgentIds.find(a_idAgent);
+		if (lId == -1) return;
+		
+		if (afDelay > 0)
+			apFoodEntity.mvFeedSlotFreeDelays[lId] = afDelay;
+		else
+			apFoodEntity.mvAgentIds[lId] = tID_Invalid;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetRatIsInFoodEntity(cRat_FoodEntity@ apFoodEntity, tID a_idAgent)
+	{
+		if (apFoodEntity is null) return false;
+		
+		int lIx = apFoodEntity.mvAgentIds.find(a_idAgent);
+		return lIx != -1 && apFoodEntity.mvFeedSlotFreeDelays[lIx] <= 0;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetFoodEntityIsFree(cRat_FoodEntity@ apFoodEntity)
+	{
+		return apFoodEntity !is null && apFoodEntity.mvAgentIds.find(tID_Invalid) != -1;
+	}
+	
+	//------------------------------------------------------------
+	
+	cRat_FoodEntity@ GetFreeFoodEntity(tID a_idAgent, bool abCheckAttractionDistance, bool abCheckThrownMeat)
+	{
+		///////////////////////////
+		// Get ent ids and separate thrown meat from other entities
+		array<int> vRandomIds;
+		array<int> vThrownMeatIds;
+		for (uint i = 0; i < mvFoodEntities.size(); ++i)
+		{
+			cRat_FoodEntity@ pFoodEntity = mvFoodEntities[i];
+			
+			if (pFoodEntity is null) continue;
+			
+			if (pFoodEntity.mbIsThrownMeat)
+				vThrownMeatIds.push_back(i);
+			else
+				vRandomIds.push_back(i);
+		}
+		
+		//////////////////////////
+		// Prioritize thrown meat if available and checked for
+		while (abCheckThrownMeat && vThrownMeatIds.length() > 0)
+		{
+			cRat_FoodEntity@ pFoodEntity = mvFoodEntities[vThrownMeatIds[0]];
+			vThrownMeatIds.removeAt(0);
+			
+			if (CheckValidFoodEntity(pFoodEntity, a_idAgent, abCheckAttractionDistance))
+				return pFoodEntity;
+		}
+		
+		//////////////////////////
+		// Randomly select an entity and check if it's free
+		while (vRandomIds.size() > 0)
+		{
+			int lId = cMath_RandRectl(0, vRandomIds.size() - 1);
+			cRat_FoodEntity@ pFoodEntity = mvFoodEntities[vRandomIds[lId]];
+			
+			vRandomIds.removeAt(lId);
+			
+			if (CheckValidFoodEntity(pFoodEntity, a_idAgent, abCheckAttractionDistance))
+				return pFoodEntity;
+		}
+		
+		return null;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool CheckValidFoodEntity(cRat_FoodEntity@ apFoodEntity, tID a_idAgent, bool abCheckAttractionDistance)
+	{
+		if (apFoodEntity is null)
+			return false;
+		if (apFoodEntity.mfThreatTime > 0)
+			return false;
+		if (GetFoodEntityIsFree(apFoodEntity) == false)
+			return false;
+		if (GetRatIsInFoodEntity(apFoodEntity, a_idAgent))
+			return false;
+			
+		/////////////////////////////////////////////////////
+		// Check so agent is within attraction distance
+		if (abCheckAttractionDistance || apFoodEntity.mbIsThrownMeat)
+		{
+			cVector3f vFoodPos = cLux_ID_Entity(apFoodEntity.mID).GetPosition();
+			cVector3f vAgentPos = cLux_ID_Entity(a_idAgent).GetPosition();
+			
+			if ((vAgentPos-vFoodPos).Length() > apFoodEntity.mfAttractDistance)
+				return false;
+			
+			cLuxPathfinder@ pPathfinder = GetPathfinder();
+			if (pPathfinder !is null && pPathfinder.BuildPathNodeArrayFromTo(vAgentPos, vFoodPos)==false)
+			{
+				return false;
+				
+			}
+		}
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	cRat_FoodEntity@ GetClosestFoodEntity(tID a_idAgent)
+	{
+		cVector3f vPos = cLux_ID_Entity(a_idAgent).GetPosition();
+		float fClosest = 999999.0f;
+		int lClosestIx = -1;
+		for (uint i = 0; i < mvFoodEntities.size(); ++i)
+		{
+			cRat_FoodEntity@ pFoodEntity = mvFoodEntities[i];
+			float fDist = (pFoodEntity.mvBoundsCenter - vPos).SqrLength();
+			if (fDist > fClosest)
+				continue;
+			fClosest = fDist;
+			lClosestIx = i;
+		}
+		return (lClosestIx >= 0) ? mvFoodEntities[lClosestIx] : null;
+	}
+	
+	//------------------------------------------------------------
+	
+	cRat_FoodEntity@ GetFoodEntityFromId(tID a_idEntity)
+	{
+		for (uint i = 0; i < mvFoodEntities.size(); ++i)
+		{
+			cRat_FoodEntity@ pFoodEnt = mvFoodEntities[i];
+			if (pFoodEnt is null) continue;
+			
+			if (pFoodEnt.mID == a_idEntity)
+				return pFoodEnt;
+		}
+		
+		return null;
+	}
+		
+	//------------------------------------------------------------
+	
+	cLuxPathfinder@ GetPathfinder()
+	{
+		if (mvRatIds.length() == 0) return null;
+		
+		tID idRat = mvRatIds[0];
+		cLuxAgent@ pAgent = cLux_ID_Agent(idRat);
+		if (pAgent is null) return null;
+		
+		return cast<cLuxPathfinder@>(pAgent.GetComponentByType(eLuxEntityComponentType_Pathfinder));
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INTERFACE
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetActive(bool abX)
+	{
+		if (mbActive == abX) return;
+		
+		mbActive = abX;
+		
+		if (mbActive)
+		{
+			for (uint i = 0; i < mvRatIds.size(); ++i)
+			{
+				cLuxAgent@ pAgent = cLux_ID_Agent(mvRatIds[i]);
+				pAgent.SetActive(true);
+			}
+			
+			for (uint i = 0; i < mvHidingRats.size(); ++i)
+			{
+				cRat_Hiding@ pRat = mvHidingRats[i];
+				if (pRat is null) continue;
+				
+				cLuxAgent@ pAgent = cLux_ID_Agent(pRat.m_idAgent);
+				if (pAgent !is null) pAgent.SetActive(false);
+			}
+		}
+		else
+		{
+			for (uint i = 0; i < mvRatIds.size(); ++i)
+			{
+				cLuxAgent@ pAgent = cLux_ID_Agent(mvRatIds[i]);
+				if (pAgent !is null) pAgent.SetActive(false);
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	cVector3f AddEatingRat(tID a_idAgent, tID a_idEntity)
+	{
+		cRat_FoodEntity@ pFoodEntity = GetFoodEntityFromId(a_idEntity);
+		if (pFoodEntity is null) return cVector3f(0.f);
+		
+		return AddRatToFoodEntity(pFoodEntity, a_idAgent);
+	}
+	
+	//------------------------------------------------------------
+	
+	void RemoveEatingRat(tID a_idAgent, float afDelay = 0, tID a_idSpecificFood = tID_Invalid)
+	{
+		for (uint i = 0; i < mvFoodEntities.size(); ++i)
+		{
+			cRat_FoodEntity@ pFoodEntity = mvFoodEntities[i];
+			if (a_idSpecificFood != tID_Invalid && pFoodEntity.mID != a_idSpecificFood)
+				continue;
+				
+			RemoveRatFromFoodEntity(pFoodEntity, a_idAgent, afDelay);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetFoodThreatTime(tID a_idFood, float afTime)
+	{
+		cRat_FoodEntity@ pFoodEntity = null;
+		for (uint i = 0; i < mvFoodEntities.size(); ++i)
+		{
+			if (mvFoodEntities[i].mID != a_idFood)
+				continue;
+			
+			@pFoodEntity = mvFoodEntities[i];
+			break;
+		}
+		
+		if (pFoodEntity is null) return;
+		
+		pFoodEntity.mfThreatTime = afTime;
+		
+		if (afTime < 0) return;
+		
+		for (int i = 0; i < pFoodEntity.mvAgentIds.length(); i++)
+		{
+			cLuxAgent@ pRat = cLux_ID_Agent(pFoodEntity.mvAgentIds[i]);
+			if (pRat is null) continue;
+			
+			if (StateMachine_GetCurrentStateName(pRat.GetName()) != "Eat")
+				continue;
+			
+			Rat_Retreat(pRat.GetName(), true, true, false, "", true);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	cVector3f GetFeedWorldPos(tID a_idAgent, tID a_idEntity)
+	{
+		cRat_FoodEntity@ pFoodEntity = GetFoodEntityFromId(a_idEntity);
+		if (pFoodEntity is null) return cVector3f(0.f);
+		
+		return GetFeedWorldPos(pFoodEntity, a_idAgent);
+	}
+	
+	//------------------------------------------------------------
+	
+	bool AddHidingRat(tID a_idAgent, tID a_idUsedHole = tID_Invalid)
+	{
+		///////////////
+		// Already hiding?
+		bool bExists = false;
+		for (uint i = 0; i < mvHidingRats.size(); ++i)
+		{
+			cRat_Hiding@ pHidingRat = mvHidingRats[i];
+			if (pHidingRat is null) continue;
+			
+			if (pHidingRat.m_idAgent == a_idAgent)
+			{
+				bExists = true;
+				break;
+			}
+		}
+		
+		///////////////
+		// Add to hiding array!
+		if (bExists == false)
+		{
+			cRat_Hiding hidingRat;
+			hidingRat.m_idAgent = a_idAgent;
+			hidingRat.mfHideCount = cMath_RandRectf(gfRatHandler_RatHideTimeMin, gfRatHandler_RatHideTimeMax);
+			mvHidingRats.push_back(hidingRat);
+			
+			if (a_idUsedHole != tID_Invalid)
+			{
+				for (uint i = 0; i < mvHoles.length(); i++)
+				{
+					if (mvHoles[i].m_idEntity == a_idUsedHole)
+					{
+						mvHoles[i].mfEmergeTimer = gfRatHandler_RatEmergeDelay;
+					}
+				}
+			}
+			
+			return true;
+		}
+		
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	void RemoveHidingRat(tID a_idAgent)
+	{
+		for (uint i = 0; i < mvHidingRats.size(); ++i)
+		{
+			cRat_Hiding@ pHidingRat = mvHidingRats[i];
+			if (pHidingRat is null) continue;
+			
+			if (pHidingRat.m_idAgent == a_idAgent)
+			{
+				mvHidingRats.removeAt(i);
+				break;
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	tID GetFreeFoodEntityId(tID a_idAgent, bool abCheckAttractionDistance, bool abCheckThrownMeat=false)
+	{
+		cRat_FoodEntity@ pFoodEntity = GetFreeFoodEntity(a_idAgent, abCheckAttractionDistance, abCheckThrownMeat);
+		return pFoodEntity !is null ? pFoodEntity.mID : tID_Invalid;
+	}
+	
+	//------------------------------------------------------------
+	
+	tID GetClosestFoodEntityId(tID a_idAgent)
+	{
+		cRat_FoodEntity@ pFoodEntity = GetClosestFoodEntity(a_idAgent);
+		return pFoodEntity !is null ? pFoodEntity.mID : tID_Invalid;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool AddAttackingRat(tID a_idAgent)
+	{
+		if (mvAttackingRatIds.find(a_idAgent) != -1)
+			return false;
+		
+		mvAttackingRatIds.push_back(a_idAgent);
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	void RemoveAttackingRat(tID a_idAgent)
+	{
+		int lId = mvAttackingRatIds.find(a_idAgent);
+		if (lId != -1)
+			mvAttackingRatIds.removeAt(lId);
+	}
+	
+	//------------------------------------------------------------
+	
+	int GetAttackingRatCount()
+	{
+		return mvAttackingRatIds.size();
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetAttackAllowed()
+	{
+		float fRatAggressiveness = GameDifficulty_GetSettingValueByID_Float(eGameDifficultySetting_RatsAggressiveness);;
+		float fAttackDelayMul = 1.0f;
+		
+		if (fRatAggressiveness > 1.0)
+			fAttackDelayMul = 1.0f - fRatAggressiveness*0.125;
+		else if (fRatAggressiveness < 1.0)
+			fAttackDelayMul = 1.0f + (1.0f/fRatAggressiveness)*0.25f;
+		
+		int lMinDelayIx = cMath_Clamp(mvAttackingRatIds.size()-1, 0, gvRatHandler_MinRatAttackDelays.size()-1);
+		float fDelay = gvRatHandler_MinRatAttackDelays[lMinDelayIx]*fAttackDelayMul;
+		return cLux_GetCurrentMap().GetElapsedTime(mlLastAttackTimeStamp) > fDelay;
+	}
+	
+	//------------------------------------------------------------
+	
+	void DoRatAttack()
+	{
+		mlLastAttackTimeStamp = cLux_GetCurrentMap().GetTimeStamp();
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetWarningAttackWasIssued()
+	{
+		float fTimeSinceWarning = cLux_GetCurrentMap().GetElapsedTime(mlWarningAttackTimeStamp);
+		return fTimeSinceWarning > 0.75f && fTimeSinceWarning < 10.0f;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetWarningAttackIsPending()
+	{
+		float fTimeSinceWarning = cLux_GetCurrentMap().GetElapsedTime(mlWarningAttackTimeStamp);
+		return fTimeSinceWarning < 10.0f;
+	}
+	
+	//------------------------------------------------------------
+	
+	void IssueWarningAttack(tID a_idFoodEntity)
+	{
+		cRat_FoodEntity@ pFood = GetFoodEntityFromId(a_idFoodEntity);
+		if (pFood is null)
+		{
+			iLuxEntity@ pEnt = cLux_ID_Entity(a_idFoodEntity);
+			Error("[Rat Handler] Attempting to issue warning attack for invalid food entity '"+(pEnt is null ? "NULL" : pEnt.GetName())+"'");
+			return;
+		}
+		
+		tString sClosestAgent = "";
+		float fClosestDist = 10000.0f;
+		for (uint i = 0; i < pFood.mvAgentIds.length(); i++)
+		{
+			cLuxAgent@ pRat = cLux_ID_Agent(pFood.mvAgentIds[i]);
+			if (pRat is null) continue;
+			
+			if (StateMachine_GetCurrentStateName(pRat.GetName()) == "Eat")
+			{
+				float fDist = pRat.GetDistanceToPlayer2D();
+				if (fDist < fClosestDist)
+				{
+					fClosestDist = fDist;
+					sClosestAgent = pRat.GetName();
+				}
+			}
+		}
+		
+		if (sClosestAgent == "")
+		{
+			iLuxEntity@ pEnt = cLux_ID_Entity(a_idFoodEntity);
+			Error("[Rat Handler] Could not find valid rat for issuing warning attack on food entity '"+(pEnt is null ? "NULL" : pEnt.GetName())+"'");
+			return;
+		}
+		
+		Rat_Attack(sClosestAgent, true, true);
+		mlWarningAttackTimeStamp = cLux_GetCurrentMap().GetTimeStamp();
+	}
+	
+	//------------------------------------------------------------
+	
+	bool AddAlertedRat(tID a_idAgent)
+	{
+		const tString sTimer = "Timer_AddAlertedRatCooldown";
+		
+		if (mvAlertedRatIds.find(a_idAgent) != -1)
+			return false;
+			
+		mvAlertedRatIds.push_back(a_idAgent);		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	void RemoveAlertedRat(tID a_idAgent)
+	{
+		int lId = mvAlertedRatIds.find(a_idAgent);
+		if (lId != -1)
+			mvAlertedRatIds.removeAt(lId);
+	}
+	
+	//------------------------------------------------------------
+	
+	bool AddStalkingRat(tID a_idAgent)
+	{
+		if (mvStalkingRatIds.find(a_idAgent) != -1)
+			return false;
+		
+		mvStalkingRatIds.push_back(a_idAgent);
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	void RemoveStalkingRat(tID a_idAgent)
+	{
+		int lId = mvStalkingRatIds.find(a_idAgent);
+		if (lId != -1)
+			mvStalkingRatIds.removeAt(lId);
+	}
+	
+	//------------------------------------------------------------
+	
+	int GetStalkingRatCount()
+	{
+		return mvStalkingRatIds.size();
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetRatIgnoresDamageAreas(tID a_idAgent, bool abX)
+	{
+		///////////////
+		// Get id
+		int lIgnoringRatId = mvIgnoreDamageAreasRatIds.find(a_idAgent);		
+		
+		///////////////
+		// Set to ignore!
+		if (abX)
+		{
+			if (lIgnoringRatId != -1)
+				return;
+			
+			///////////////
+			// Get rat
+			int lRatId = mvRatIds.find(a_idAgent);
+			cLuxAgent@ pAgent = lRatId != -1 ? cLux_ID_Agent(mvRatIds[lRatId]) : null;
+			cLuxPathfinder@ pPathfinder = pAgent !is null ? cast<cLuxPathfinder@>(pAgent.GetComponentByType(eLuxEntityComponentType_Pathfinder)) : null;
+			
+			if (pPathfinder is null) 
+				return;
+			
+			///////////////
+			// Remove damage areas from rat's pathfinding
+			array<tID> vDamageAreaIds = Blackboard_GetPathBlockerBodyIds(false, true);
+			for (uint i = 0; i < vDamageAreaIds.size(); ++i)
+				pPathfinder.RemovePathBlockerBody(vDamageAreaIds[i]);		
+				
+			///////////////
+			// Add rat to damage area ignore array
+			mvIgnoreDamageAreasRatIds.push_back(a_idAgent);
+		}
+		
+		///////////////
+		// Stop ignoring
+		else
+		{
+			if (lIgnoringRatId != -1)
+				mvIgnoreDamageAreasRatIds.removeAt(lIgnoringRatId);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void AddBloodTrail(tID a_idEntity, float afIntensity)
+	{
+		////////////////
+		// Get trail
+		cLuxProp@ pTrail = cLux_ID_Prop(a_idEntity);
+		if (pTrail is null) return;
+		
+		////////////////
+		// Invalid?
+		if (a_idEntity == tID_Invalid)
+			return;
+			
+		////////////////
+		// Already exists?
+		for (uint i = 0; i < mvBloodTrails.size(); ++i)
+		{
+			if (mvBloodTrails[i].m_idEntity == a_idEntity)
+				return;
+		}
+		
+		////////////////
+		// Close to another trail? If so, bump that one up to the front to make it most recent!
+		for (uint i = 0; i < mvBloodTrails.size(); ++i)
+		{
+			float fDistSqr = (mvBloodTrails[i].mvPosition - pTrail.GetPosition()).SqrLength();
+			if (fDistSqr < gfRatHandler_BloodTrailConnectionMinDistSqr)
+			{
+				mvBloodTrails.push_back(mvBloodTrails[i]);
+				mvBloodTrails.removeAt(i);
+				return;
+			}
+		}
+		
+		float fRatAggressiveness = GameDifficulty_GetSettingValueByID_Float(eGameDifficultySetting_RatsAggressiveness);
+			
+		////////////////
+		// Add it!
+		cRat_BloodTrail bloodTrail;
+		bloodTrail.m_idEntity = a_idEntity;
+		bloodTrail.mvPosition = pTrail.GetPosition();	
+		bloodTrail.mfIntensity = afIntensity * fRatAggressiveness;
+		bloodTrail.mlTimeStamp = cLux_GetCurrentMap().GetTimeStamp();
+		mvBloodTrails.push_back(bloodTrail);
+	}
+	
+	//------------------------------------------------------------
+	
+	void RemoveBloodTrail(tID a_idEntity)
+	{
+		for (uint i = 0; i < mvBloodTrails.size(); ++i)
+		{
+			if (mvBloodTrails[i].m_idEntity == a_idEntity)
+			{
+				mvBloodTrails.removeAt(i);
+				break;
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	int GetBloodTrailNum()
+	{
+		return mvBloodTrails.size();
+	}
+	
+	//------------------------------------------------------------
+	
+	tID GetBloodTrail(int alId)
+	{		
+		return (alId >= 0 && alId < mvBloodTrails.size()) ? mvBloodTrails[alId].m_idEntity : tID_Invalid;
+	}
+	
+	//------------------------------------------------------------
+	
+	tID GetMostRecentBloodTrailIdAtPos(const cVector3f &in avPos, float afMaxDist)
+	{
+		cRat_BloodTrail@ pTrail = GetMostRecentBloodTrailAtPos(avPos, afMaxDist);
+		return pTrail is null ? tID_Invalid : pTrail.m_idEntity;
+	}
+	
+	//------------------------------------------------------------
+	
+	float GetBloodTrailIntensity(tID a_idTrail)
+	{
+		for (uint i = 0; i < mvBloodTrails.size(); ++i)
+		{
+			cRat_BloodTrail@ pTrail = mvBloodTrails[i];
+			if (pTrail.m_idEntity == a_idTrail) return pTrail.mfIntensity;
+		}
+		
+		return 0;
+	}
+	
+	//------------------------------------------------------------
+	
+	cRat_BloodTrail@ GetMostRecentBloodTrailAtPos(const cVector3f &in avPos, float afMaxDist)
+	{
+		////////////////
+		// Get trails within distance
+		int lMostRecentId = -1;
+		int lMostRecentTimeStamp = -1000;
+		int lCount = 0;
+		for (uint i = 0; i < mvBloodTrails.size(); ++i)
+		{						
+			float fDistSqr = (mvBloodTrails[i].mvPosition - avPos).SqrLength();
+			if (fDistSqr < afMaxDist * afMaxDist && mvBloodTrails[i].mlTimeStamp > lMostRecentTimeStamp)
+			{
+				lMostRecentId = i;
+				lMostRecentTimeStamp = mvBloodTrails[i].mlTimeStamp;
+				lCount++;
+			}
+		}
+		
+		if (lMostRecentId == -1) return null;
+		
+		return mvBloodTrails[lMostRecentId];
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetPointIsInsidePathBlocker(const cVector3f &in avPos, tID &out a_idBody)
+	{
+		for (uint i = 0; i < mvPathBlockerBodyIds.size(); ++i)
+		{
+			tID idBody = mvPathBlockerBodyIds[i];
+			iPhysicsBody@ pBody = cLux_ID_Body(idBody);
+			cBoundingVolume@ pBounds = pBody !is null ? pBody.GetBoundingVolume() : null;
+			
+			if (pBounds is null) continue;
+			
+			cVector3f vOffset = cVector3f(0.2f);
+			cVector3f vMin = pBounds.GetMin() - vOffset;
+			cVector3f vMax = pBounds.GetMax() + vOffset;
+			
+			if (cMath_CheckPointInAABBIntersection(avPos, vMin, vMax))
+			{
+				a_idBody = idBody;
+				return true;
+			}
+		}
+		
+		a_idBody = tID_Invalid;
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetPlayerThreatensRats(bool abX)
+	{
+		//////////////////////////
+		// Use timer to avoid premature falses
+		if (abX==false)
+		{
+			mBaseObj.Timer_Add("Timer_PlayerStopThreateningRats", cMath_RandRectf(0.5f, 1.f), "OnTimer_PlayerStopThreateningRats");
+			return;
+		}
+		
+		mBaseObj.Timer_Remove("Timer_PlayerStopThreateningRats");
+		mbPlayerThreatensRats = true;
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnTimer_PlayerStopThreateningRats(uint64 alTimer)
+	{
+		mbPlayerThreatensRats = false;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetPlayerThreatensRats()
+	{
+		return mbPlayerThreatensRats;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetRatFoodIsArea(tID a_idFood)
+	{
+		cRat_FoodEntity@ pRatFood = GetFoodEntityFromId(a_idFood);
+			
+		if (pRatFood is null) return false;
+		return pRatFood.mbIsArea;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetRatFoodIsThrownMeat(tID a_idFood)
+	{
+		cRat_FoodEntity@ pRatFood = GetFoodEntityFromId(a_idFood);
+			
+		if (pRatFood is null) return false;
+		return pRatFood.mbIsThrownMeat;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetIsHoleBlocked(tID a_idHole, tID &out a_iBlockingBody)
+	{
+		cLuxArea@ pArea = cLux_ID_Area(a_idHole);
+		if (pArea is null) return false;
+		
+		a_iBlockingBody = GhoulHole_GetBlockingBody(pArea.GetName());
+		if (a_iBlockingBody != tID_Invalid) return true;
+		
+		iLuxEntity@ pStalker = cLux_ID_Entity(m_idStalker);
+		return pStalker !is null && Stalker_GetInterestAlertHoleID(pStalker.GetName()) == a_idHole;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetIsHoleBlocked(tID a_idHole)
+	{
+		tID idBlocker;
+		return GetIsHoleBlocked(a_idHole, idBlocker);
+	}
+	
+	//------------------------------------------------------------
+	
+	tID GetBestHoleIdFromPos(const cVector3f &in avPos, bool abIgnoreEmergeTimer, float afDistanceThreshold, bool abOnlyGhoulHoles)
+	{
+		cRat_Hole@ pHole = GetBestHoleFromPos(avPos, abIgnoreEmergeTimer, afDistanceThreshold, abOnlyGhoulHoles);
+		if (pHole is null) return tID_Invalid;
+		
+		return pHole.m_idEntity;
+	}
+	
+	//------------------------------------------------------------
+	
+	tID GetRandomHoleId(tID a_idIgnoredHole, bool abCheckPath, const cVector3f &in avStartPos)
+	{
+		if (mvHoles.length() == 0) return tID_Invalid;
+		if (mvHoles.length() == 1) return mvHoles[0].m_idEntity;
+		
+		cLuxPathfinder@ pPathfinder = GetPathfinder();
+		if (pPathfinder is null) return tID_Invalid;
+		
+		array<tID> vHoleCandidates;
+		vHoleCandidates.resize(mvHoles.length());
+		for (uint i = 0; i < vHoleCandidates.length(); i++)
+			vHoleCandidates[i] = mvHoles[i].m_idEntity;
+		
+		while (vHoleCandidates.length() > 0)
+		{
+			int lIx = cMath_RandRectl(0, vHoleCandidates.length()-1);
+			tID idReturn = vHoleCandidates[lIx];			
+			cLuxArea@ pArea = cLux_ID_Area(idReturn);
+			
+			vHoleCandidates.removeAt(lIx);
+			if (idReturn == a_idIgnoredHole || 
+				GetIsHoleBlocked(idReturn) ||
+				(pArea !is null && pArea.IsActive() == false))
+			{
+				continue;
+			}				
+				
+			bool bPath = abCheckPath ? pPathfinder.BuildPathNodeArrayFromTo(avStartPos, cLux_ID_Entity(idReturn).GetPosition()) : true;
+			if (!abCheckPath || bPath)
+				return idReturn;
+		}
+		return tID_Invalid;
+	}
+	
+	//------------------------------------------------------------
+	
+	void AddFoodEntity(tID a_idEntity)
+	{
+		iLuxEntity@ pEntity = cLux_ID_Entity(a_idEntity);
+		if (pEntity is null) return;
+		
+		_AddFoodEntity(pEntity);
+	}
+	
+	//------------------------------------------------------------
+	
+	void AddFoodEntity(iLuxEntity@ apEntity)
+	{
+		_AddFoodEntity(apEntity);
+	}
+	
+	//------------------------------------------------------------
+	
+	void RemoveFoodEntity(tID a_idEntity)
+	{
+		cRat_FoodEntity@ pFoodEnt = null;
+		int lIx = -1;
+		for (uint i = 0; i < mvFoodEntities.length(); i++)
+		{
+			if (mvFoodEntities[i].mID != a_idEntity) continue;
+			
+			@pFoodEnt = mvFoodEntities[i];
+			lIx = i;
+		}
+		
+		if (pFoodEnt is null) return;
+			
+		float fRetreatDelay = 0;
+		for (uint i = 0; i < pFoodEnt.mvAgentIds.length(); i++)
+		{
+			if (pFoodEnt.mvAgentIds[i] == tID_Invalid || pFoodEnt.mvFeedSlotFreeDelays[i] > 0) 
+				continue;
+			
+			cLuxAgent@ pRat = cLux_ID_Agent(pFoodEnt.mvAgentIds[i]);
+			
+			tString sState = StateMachine_GetCurrentStateName(pRat.GetName());
+			
+			if (sState == "Eat" || sState == "FindFood")
+			{
+				Rat_DelayedFoodRetreat(pRat.GetName(), fRetreatDelay);
+				fRetreatDelay += cMath_RandRectf(0.4, 0.8);
+			}
+		}
+		mvFoodEntities.removeAt(lIx);
+	}
+	
+	//------------------------------------------------------------
+	
+	float GetPlayerDistanceToClosestRat()
+	{
+		float fMinDistSqr = 1000.f * 1000.f;
+		cVector3f vPlayerPos = cLux_GetPlayer().GetCharacterBody().GetPosition();
+		
+		for (int i = 0; i < mvRatIds.size(); ++i)
+		{
+			cLuxAgent@ pAgent = cLux_ID_Agent(mvRatIds[i]);
+			
+			if (pAgent is null) continue;
+			if (pAgent.IsActive() == false) continue;
+			
+			float fDistSqr = (vPlayerPos - pAgent.GetPosition()).SqrLength();
+			if (fDistSqr < fMinDistSqr)
+			{
+				fMinDistSqr = fDistSqr;
+			}
+		}
+		
+		return cMath_Sqrt(fMinDistSqr);
+	}
+	
+	//------------------------------------------------------------
+	
+	void AddPathBlocker(tID a_idBlockerBody, bool abIsDamageArea)
+	{		
+		////////////////
+		// Add to array
+		if (mvPathBlockerBodyIds.find(a_idBlockerBody) != -1)
+			return;
+		
+		mvPathBlockerBodyIds.push_back(a_idBlockerBody);
+		
+		////////////////
+		// Add to rats
+		for (uint i = 0; i < mvRatIds.size(); ++i)
+		{
+			tID idRat = mvRatIds[i];
+			cLuxAgent@ pAgent = cLux_ID_Agent(idRat);
+			if (pAgent is null) continue;
+
+			cLuxPathfinder@ pPathfinder = cast<cLuxPathfinder@>(pAgent.GetComponentByType(eLuxEntityComponentType_Pathfinder));
+			if (pPathfinder is null) continue;
+			
+			
+			if (abIsDamageArea && 
+				mvIgnoreDamageAreasRatIds.find(idRat) != -1)
+			{
+				continue;
+			}
+			
+			pPathfinder.AddPathBlockerBody(a_idBlockerBody);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void RemovePathBlocker(tID a_idBlockerBody)
+	{
+		////////////////
+		// Remove from array
+		int lId = mvPathBlockerBodyIds.find(a_idBlockerBody);
+		if (lId == -1) return;
+		
+		mvPathBlockerBodyIds.removeAt(lId);
+		
+		////////////////
+		// Remove from rats
+		for (uint i = 0; i < mvRatIds.size(); ++i)
+		{
+			cLuxAgent@ pAgent = cLux_ID_Agent(mvRatIds[i]);
+			cLuxPathfinder@ pPathfinder = pAgent !is null ? cast<cLuxPathfinder@>(pAgent.GetComponentByType(eLuxEntityComponentType_Pathfinder)) : null;
+			
+			if (pAgent is null) continue;
+			if (pPathfinder is null) continue;
+			
+			pPathfinder.RemovePathBlockerBody(a_idBlockerBody);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void ReportUnreachableFood(tID a_idFood)
+	{
+		cRat_FoodEntity@ pFoodEnt = GetFoodEntityFromId(a_idFood);
+		pFoodEnt.mlUnreachableCount++;
+		
+		if (pFoodEnt.mlUnreachableCount > 3)
+		{
+			RemoveFoodEntity(a_idFood);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void ReportReachableFood(tID a_idFood)
+	{
+		cRat_FoodEntity@ pFoodEnt = GetFoodEntityFromId(a_idFood);
+		pFoodEnt.mlUnreachableCount = cMath_Max(pFoodEnt.mlUnreachableCount-1, 0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupFeedAreas()
+	{
+		if (mvFoodEntities.length()!=0)
+			return;
+		
+		////////////////////
+		// Get food entities
+		int lTotalMaxRatAmount = 0;
+		
+		array<tID> vRatFoodEntities;
+		cLuxEntityComponentIterator @pFoodIt = cLux_GetCurrentMap().GetEntityComponentIterator(eComponentType_Custom_RatFoodComponent);
+		while (pFoodIt.HasNext())
+		{
+			iLuxEntityComponent @pComp = pFoodIt.Next();
+			if (pComp is null) continue;
+			iLuxEntity @pEnt = pComp.GetEntity();
+			if (pEnt is null) continue;
+			
+			cRat_FoodEntity@ pFood = _AddFoodEntity(pEnt);
+			if (pFood is null) continue;
+			
+			//////////////////////////////////
+			// Calculate total max rat amount
+			lTotalMaxRatAmount += pFood.mlFeedingSlotsCount;
+		}
+		
+		cLux_AddDebugMessage("[RatHandler] TotalMaxRatAmount: "+lTotalMaxRatAmount);
+		
+		DistributeRats();
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetRatsAreAggressive()
+	{
+		return mbNonAggressiveRats == false;
+	}
+	
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// GUI
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+
+	void OnGui(float afTimeStep) {}	
+	void OnDraw(float afFrameTime) {}
+	void OnPostRender(float afFrameTime) {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	float DrawDebugOutput(cGuiSet@ apSet, iFontData@ apFont, float afStartY)
+	{		
+		afStartY = cLux_DrawDebugText("--------- Rat Handler ---------", afStartY);	
+		afStartY = cLux_DrawDebugText("Blood trail num: " + mvBloodTrails.size(), afStartY);			
+		
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnRenderSolid(cRendererCallbackFunctions@ apFunctions)
+	{
+		if (cLux_DebugModeOn() == false) return;
+		if (cLux_ShowEntityInfoOn() == false) return;
+		
+		for (uint i = 1; i < mvBloodTrails.size(); ++i)
+		{
+			apFunctions.GetLowLevelGfx().DrawLine(mvBloodTrails[i - 1].mvPosition, mvBloodTrails[i].mvPosition, cColor_White * 2.f);
+		}
+		
+		for (uint i = 0; i < mvFoodEntities.length(); i++)
+		{
+			cRat_FoodEntity@ pFood = mvFoodEntities[i];
+			iLuxEntity@ pFoodEnt = cLux_ID_Entity(pFood.mID);
+			if (pFoodEnt is null) continue;
+			
+			for (uint j = 0; j < pFood.mvFeedPositions.length(); j++)
+			{
+				cVector3f vFeedPos = cMath_MatrixMul(pFoodEnt.GetMatrix(), pFood.mvFeedPositions[j]);
+				vFeedPos.y = pFood.mvFeedPositions[j].y+pFoodEnt.GetPosition().y;
+				
+				cColor col = cColor_Green*2;
+				if (pFood.mvAgentIds[j] != tID_Invalid)
+				{
+					col = pFood.mvFeedSlotFreeDelays[j] > 0 ? cColor(0, 2, 2) : (cColor_Green*2);
+				}
+				if (pFood.mfThreatTime >= 0)
+					col = cColor_Red*2;
+				apFunctions.GetLowLevelGfx().DrawSphere(vFeedPos, 0.2, col);
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// VARIABLES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool mbActive = true;
+	
+	int mlFrameRatUpdateId = -1;
+	int mlPathBlockerCheckId = -1;
+	int mlPathBlockerCounter = 0;
+	float mfUpdateDamageAreaCount = 0.1f;
+	bool mbPlayerThreatensRats = false;
+	int mlLastAttackTimeStamp = -10000;
+	int mlWarningAttackTimeStamp = -10000;
+
+	int mlHidingRatIndex;
+	
+	[nosave] bool mbNonAggressiveRats = false;
+	
+	array<tID> mvRatIds;
+	array<tID> mvAttackingRatIds;
+	array<tID> mvAlertedRatIds;
+	array<tID> mvStalkingRatIds;
+	array<tID> mvPathBlockerBodyIds;
+	array<tID> mvIgnoreDamageAreasRatIds;
+	array<cRat_Hiding> mvHidingRats;
+	array<cRat_FoodEntity> mvFoodEntities;
+	array<cRat_BloodTrail> mvBloodTrails;
+	array<cRat_Hole> mvHoles;
+
+	tID m_idStalker = tID_Invalid;
+	
+	//------------------------------------------------------------
+}

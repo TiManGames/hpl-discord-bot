@@ -1,0 +1,1455 @@
+#include "interfaces/Prop_Interface.hps"
+#include "base/Player_Types.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_props.hps"
+#include "utilities/Utility_JointFix.hps"
+
+class cScrPropSwingDoor : iScrProp, iScrProp_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		/////////////////////////////
+		// Init array sizes
+		mvHealthDamages.resize(2);
+		mvDamageMeshes.resize(2);
+		mpDamageMeshEntity.resize(3);
+		
+		/////////////////////////////
+		// Init variables
+		mbClosed = false;
+		mbLocked = false;	
+		mbBlocked = false;
+		mbIsInteracting = false;
+
+		mlBrokenEntityID = tID_Invalid;
+
+		mbDisableSnapClose = false;
+		mbAutoClose = false;
+		mfAutoCloseCount = 0.f;
+
+		mlCurrentMeshEntity = 0;
+		mbBroken = false;
+
+		for(int i=0; i<3; ++i)
+			@mpDamageMeshEntity[i] = null;
+
+		mfInteractSoundCount =0;
+		
+		mbInteractConnectionMovementActive = false;
+		
+		mBaseObj.SetAutoSleep(true);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+
+	void SetupDoorPhysics(float afOpenAmount)
+	{
+		mBaseObj.SetIgnoreDynamicAvoidance(true);
+		
+		////////////////////////////////////
+		// Set open amount
+		if(afOpenAmount>0)
+		{
+			SetOpenAmount(afOpenAmount);
+			mBaseObj.SetIsClosedDoor(false);
+		}
+		
+		////////////////////////////////////
+		// Just set closed using no effects
+		else
+		{
+			SetClosed(true, false);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		//////////////////////////
+		// Type variabels
+		mfMoveMaxSpeed = apVars.GetVarFloat("MoveMaxSpeed", 13.5f);
+		mfMoveSlowDownFactor = apVars.GetVarFloat("MoveSlowDownFactor", 3.0f);
+		mfMoveSpeedFactor = apVars.GetVarFloat("MoveSpeedFactor", 1.0f);
+		
+		mbCanInteractWithStaticBody = apVars.GetVarBool("CanInteractWithStaticBody", false);
+		mbAutoClose = apVars.GetVarBool("AutoClose", false);
+		
+		mfBlockedMaxAngle = apVars.GetVarFloat("BlockedMaxAngle", 2.0f);
+		
+		msCloseOnSound = apVars.GetVarString("CloseOnSound", "");
+		msCloseOffSound = apVars.GetVarString("CloseOffSound", "");
+		msLockOnSound = apVars.GetVarString("LockOnSound", "");
+		msLockOffSound = apVars.GetVarString("LockOffSound", "");
+		msInteractLockedSound = apVars.GetVarString("InteractLockedSound", "");
+		msBlockOnSound = apVars.GetVarString("BlockOnSound", "");
+		msBlockOffSound = apVars.GetVarString("BlockOffSound", "");
+
+		msHandleUpAnimation = apVars.GetVarString("HandleUpAnimation", "");
+		msHandleDownAnimation = apVars.GetVarString("HandleDownAnimation", "");
+		msHandleLockedAnimation = apVars.GetVarString("HandleLockedAnimation", "");
+		msHandleMovingAnimation = apVars.GetVarString("HandleMovingAnimation", "");
+		mvHandleMovingRepetition.x = apVars.GetVarFloat("HandleMovingRepetitionMin", 0.25);
+		mvHandleMovingRepetition.y = apVars.GetVarFloat("HandleMovingRepetitionMax", 0.5);
+
+		mbBreakable = apVars.GetVarBool("Breakable", false);
+		mBaseObj.SetScriptCollisionCallbackActive(mbBreakable);
+		
+		mfBreakMinEnergy = apVars.GetVarFloat("BreakMinEnergy", 0);
+
+		mbDamageTint = apVars.GetVarBool("DamageTint", false);
+		mDefaultColorMul = mBaseObj.GetMeshEntity().GetDiffuseColorMul();
+		mvDamageMeshes[0] = apVars.GetVarString("DamageMesh1", "");
+		mvDamageMeshes[1] = apVars.GetVarString("DamageMesh2", "");
+		msBrokenEntity = apVars.GetVarString("BrokenEntity", "");
+
+		msDamageSound = apVars.GetVarString("DamageSound", "");
+		msDamagePS = apVars.GetVarString("DamagePS", "");
+
+		msBreakSound = apVars.GetVarString("BreakSound", "");
+		msBreakPS = apVars.GetVarString("BreakPS", "");
+		mfBreakImpulse = apVars.GetVarFloat("BreakImpulse", 0);
+
+		mvHealthDamages[0] = apVars.GetVarFloat("HealthDamage1", 0);
+		mvHealthDamages[1] = apVars.GetVarFloat("HealthDamage2", 0);
+		
+		mBaseObj.SetIsDoor(apVars.GetVarBool("AgentDoor", true));
+		
+		////////////////////////////////////
+		// Get Joint and door body
+		tString sHandleBody = mBaseObj.GetName() + "_" + apVars.GetVarString("HandleBody", "");
+		@mpHandleBody = null;
+		
+		tString sLockBody = mBaseObj.GetName() + "_" + apVars.GetVarString("LockBody", "");
+		@mpLockBody = null;
+		
+		for (int i = 0; i < mBaseObj.GetJointNum(); i++)
+		{
+			iPhysicsJointHinge@ pHinge = cPhysics_ToJointHinge(mBaseObj.GetJoint(i));
+			iPhysicsBody@ pHingeChildBody = pHinge.GetChildBody();
+			
+			if (pHingeChildBody.GetName() == sHandleBody || pHingeChildBody.GetName() == sLockBody)
+				continue;
+				
+			@mpHingeJoint = pHinge;
+			@mpDoorBody = pHingeChildBody;
+			break;
+		}
+		
+		mfAngularLimitDefault = mpDoorBody.GetMaxAngularSpeed();
+		mfAngularDampingDefault = mpDoorBody.GetAngularDamping();
+		
+		////////////////////////////////
+		// Get index of door body
+		mlDoorBodyIndex =0;
+		for(int i=0; i<mBaseObj.GetBodyNum(); ++i)
+		{
+			iPhysicsBody@ pBody = mBaseObj.GetBody(i);
+			if(pBody is mpDoorBody)
+				mlDoorBodyIndex = i;
+			else if(pBody.GetName() == sHandleBody)
+				@mpHandleBody = pBody;
+			else if (pBody.GetName() == sLockBody)
+				@mpLockBody = pBody;
+		}
+
+		if(mpHandleBody !is null)
+		{
+			/////////
+			// Get joint connected to the handle
+			for(int i=0; i<mBaseObj.GetJointNum(); ++i)
+			{
+				iPhysicsJoint@ pJoint = mBaseObj.GetJoint(i);
+
+				if(pJoint.GetChildBody() is mpHandleBody)
+				{
+					@mpHandleJoint = cPhysics_ToJointHinge(pJoint);
+					mfMaxHandleAngle = mpHandleJoint.GetMaxAngle();
+					break;
+				}
+			}
+		}
+
+		///////////////////////
+		//Set update properties
+		mpHingeJoint.SetStickyMinLimit(true);
+		mpHingeJoint.SetStickyMaxLimit(true);
+		
+		///////////////////////
+		// Setup joint sounds
+		tString sMoveSound = apVars.GetVarString("MoveSound", "");
+		if (sMoveSound != "")
+		{
+			mpHingeJoint.SetMoveSound(sMoveSound);
+			mpHingeJoint.SetMoveSpeedType(ePhysicsJointSpeed_Angular);
+		}
+		float fMinMoveSoundSpeed = apVars.GetVarFloat("MinMoveSoundSpeed", -1);
+		if (fMinMoveSoundSpeed >= 0)
+		{
+			mpHingeJoint.SetMinMoveSpeed(fMinMoveSoundSpeed);
+		}
+		msMaxOpenSound = apVars.GetVarString("MaxOpenSound", "");
+		mfMaxOpenSoundMinSpeed = apVars.GetVarFloat("MaxOpenSoundMinSpeed", 0);
+		if (msMaxOpenSound != "")
+			mpHingeJoint.SetMaxLimitSound(msMaxOpenSound, mfMaxOpenSoundMinSpeed);
+			
+		msInteractBlockedSound = apVars.GetVarString("InteractBlockedSound", "");
+
+		// Allow c++ bug fix to reset the joint to its inital position if it disappears
+		bool bJointResetFix = apInstanceVars.GetVarBool("JointResetFix", false);
+		mpHingeJoint.SetAllowPositionReset(bJointResetFix);
+
+		///////////////////////
+		//Set up data
+		mfMaxAngle = mpHingeJoint.GetMaxAngle();
+
+		cMatrixf mtxInvDynBody = cMath_MatrixInverse(mpDoorBody.GetLocalMatrix());
+		
+		////////////////////////////////////
+		// Set up damage mesh entities
+		@mpDamageMeshEntity[0] = mBaseObj.GetMeshEntity();
+		for(int i=0; i<2;++i)
+		{
+			if(mvDamageMeshes[i]=="") continue;
+			//Log("DamageMesh: %d\n", i);
+
+			//////////////////////////
+			//Create Mesh Entity
+			cMesh @pMesh = cResources_CreateMesh(mvDamageMeshes[i]);
+			if(pMesh is null)
+			{
+				Error("Could not load damage mesh '"+mvDamageMeshes[i]+"' for '"+mBaseObj.GetFileName()+"'\n");
+				continue;
+			}
+
+			cMeshEntity @pDamageEntity = apWorld.CreateMeshEntity(mBaseObj.GetName()+"damage"+(i+1),pMesh,false);
+			pDamageEntity.SetMatrix(mBaseObj.GetMeshEntity().GetLocalMatrix());
+
+			for(int sub=0; sub < pDamageEntity.GetSubMeshEntityNum(); ++sub)
+			{
+				cSubMeshEntity @pDamSubEnt = pDamageEntity.GetSubMeshEntity(sub);
+				int lIdx = mBaseObj.GetMeshEntity().GetMesh().GetSubMeshIndex(pDamSubEnt.GetSubMesh().GetName());
+				//Log(" sub '%s': %d\n", pDamSubEnt.GetName().c_str(), sub);
+				if(lIdx < 0)
+				{
+					//This is not ideal but should be good enough.
+					cMatrixf mtxWorld = cMath_MatrixMul(mBaseObj.GetOnLoadTransform(), pDamSubEnt.GetLocalMatrix());
+					pDamSubEnt.SetMatrix(cMath_MatrixMul(mtxInvDynBody, mtxWorld));
+
+					mpDoorBody.AddChild(pDamSubEnt);
+					continue;
+				}
+				cSubMeshEntity @pBaseSubEnt = mBaseObj.GetMeshEntity().GetSubMeshEntity(lIdx);
+				pDamSubEnt.SetMatrix(pBaseSubEnt.GetLocalMatrix());
+				if(pBaseSubEnt.GetEntityParent() !is null)
+				{
+					pBaseSubEnt.GetEntityParent().AddChild(pDamSubEnt);
+				}
+			}
+					
+			pDamageEntity.SetVisible(false);
+			pDamageEntity.SetActive(false);
+			@mpDamageMeshEntity[i+1] = pDamageEntity;
+		}
+		
+		cVector3f vHingeToBody = mpDoorBody.GetLocalPosition() - mpHingeJoint.GetPivotPoint();
+		mvDoorwayDir = cMath_Vector3Cross(vHingeToBody, mpHingeJoint.GetPinDir());
+		mvDoorwayDir.Normalize();
+		
+		//////////////////////////
+		//INstance variables
+		mbDisableBreakable = apInstanceVars.GetVarBool("DisableBreakable",false);
+
+		SetLocked(apInstanceVars.GetVarBool("Locked",false),false);
+		SetBlocked(apInstanceVars.GetVarBool("Blocked",false),false);
+		float fOpenAmount = apInstanceVars.GetVarFloat("OpenAmount",0);
+		
+		SetupDoorPhysics(fOpenAmount);
+
+		mbIsHatch = apInstanceVars.GetVarBool("IsHatch", false);
+		mbHatchIgnorePlayerPosition = apInstanceVars.GetVarBool("HatchIgnorePlayersPosition", false);
+		mbOpenableByAgent = apInstanceVars.GetVarBool("OpenableByAgent", true);
+		
+		msBreakChildEntity = apInstanceVars.GetVarString("BreakChildEntity","");
+		msOnBreakCallbackFunc = apInstanceVars.GetVarString("OnBreakCallbackFunc", "");
+			
+		/////////////
+		// Dont normalize animations
+		mBaseObj.StopAllAnimations(0);
+		mBaseObj.SetNormalizeAnimationWeights(false);
+
+		/////////////
+		// Preload broken
+		cLux_PreloadEntity(msBrokenEntity);
+		cLux_PreloadParticleSystem(msBreakPS);
+		cLux_PreloadParticleSystem(msDamagePS);
+		
+		
+		//mBaseObj.SetSaveDataIsUpdated(false);
+		mJointFix.Init(mpDoorBody);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	bool mbMaxOpenSoundPlayed = false;
+	void OnUpdate(float afTimeStep)
+	{
+		//cLux_AddDebugMessage("Max Angle: "+mbAutoClose);
+		mfInteractSoundCount-=afTimeStep;
+		mfMovingRepetitionCount-= afTimeStep;
+        
+		//////////////////////
+		// Auto-close
+		if (mbAutoClose && mbClosed == false && mBaseObj.IsInteractedWith() == false)
+		{
+			mfAutoCloseCount -= afTimeStep;
+			if (mfAutoCloseCount <= 0.f)
+			{
+				mfAutoCloseCount = 0.1f;
+				AddDoorBodyImpulse(-0.05f);
+			}
+		}
+		
+		//////////////////////
+		// If the door is close to 0 angle, then close it
+		if(mbClosed==false && mBaseObj.IsInteractedWith()==false && mbDisableSnapClose == false)
+		{
+			if(cMath_Abs(mpHingeJoint.GetAngle()) < cMath_ToRad(5))
+			{
+				SetClosed(true, true);
+			}
+		}
+
+		if(mbIsInteracting)
+		{
+			if(mBaseObj.IsInteractedWith() == false)
+			{
+				mbIsInteracting = false;
+				PlayAnimation(msHandleUpAnimation, 0.25);
+			}
+		}
+
+		if(mpHandleBody !is null &&
+			mpHandleJoint !is null)
+		{
+			mfHandleUpdateCount += afTimeStep;
+
+			if(mbIsInteracting)
+			{
+				mfHandleUpdateCount = 0.0;
+				mpHandleBody.AddForce(cVector3f(0, -512 * afTimeStep, 0));
+			}
+			else if(mfHandleUpdateCount < 5.0)
+			{		
+				mpHandleBody.AddForce(cVector3f(0, 128 * afTimeStep, 0));
+			}
+		}
+		
+		//////////////////////
+		// Change state
+		if (mbClosed)
+		{
+			ChangeState(-1,false,false);
+		}
+		else
+		{
+			ChangeState(1,false,false);
+		}		
+		
+		//////////////////////
+		// Interact connections
+		UpdateInteractConnection();
+	}	
+	
+	//------------------------------------------------------------
+	
+	void OnPostUpdate(float afTimeStep)
+	{
+		// Hack for trying to cure Newton instability
+		mJointFix.Update(mBaseObj,mpDoorBody);
+	}
+	
+	//-----------------------------------------------------------
+	
+	void UpdateInteractConnection()
+	{
+		///////////////////////////////
+		// Update leader
+		if (mbInteractConnectionMovementActive == false)
+			mBaseObj.UpdateInteractConnectionLeader();
+			
+		mbInteractConnectionMovementActive = false;
+		
+		//////////////////////
+		// Broadcast state
+		float fAngle = cMath_Abs(mpHingeJoint.GetAngle());
+		float fT = fAngle / cMath_Max(cMath_Abs(mfMaxAngle), 0.001f);
+		mBaseObj.ChangeInteractConnectionState(fT);
+	}
+	
+	//-----------------------------------------------------------
+
+	void PlayAnimation(const tString&in asName, float afFadeTime)
+	{
+		/////////////////
+		// Stop all other animations
+		if(asName != msHandleUpAnimation) mBaseObj.StopAnimation(msHandleUpAnimation, afFadeTime);
+		if(asName != msHandleDownAnimation) mBaseObj.StopAnimation(msHandleDownAnimation, afFadeTime);
+		if(asName != msHandleLockedAnimation) mBaseObj.StopAnimation(msHandleLockedAnimation, afFadeTime);
+
+		if(asName != "") mBaseObj.PlayAnimation(asName, afFadeTime, false, true, "", false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetProperties()
+	{
+		if(mbBroken)
+		{
+			mbBroken = false;
+			if(mlBrokenEntityID != tID_Invalid)
+			{
+				iLuxEntity @pEntity = mBaseObj.GetMap().GetEntityByID(mlBrokenEntityID, eLuxEntityType_LastEnum, "");
+				if(pEntity !is null)
+				{
+					mBaseObj.GetMap().DestroyEntity(pEntity);
+				}
+				mlBrokenEntityID = tID_Invalid;
+			}
+		}
+		
+		SetupDoorPhysics(0.0f);
+
+		SetCurrentDamageLevel(0);
+
+		//////////////////////////////
+		// Enable all bodies and meshes
+		for(int i=0; i<mBaseObj.GetBodyNum(); ++i)
+		{
+			iPhysicsBody @pBody = mBaseObj.GetBody(i);
+			if(pBody.GetMass()==0) continue;
+
+			pBody.SetActive(true);
+
+			/////////////////////////////////////////
+			// Check what children math mesh entity sub entities
+			cEntity3DIterator@ entIt = pBody.GetChildIterator();
+			while(entIt.HasNext())
+			{
+				iEntity3D @pEntity = entIt.Next();
+				for(int j=0; j<mBaseObj.GetMeshEntity().GetSubMeshEntityNum(); ++j)
+				{
+					iEntity3D @pEnt = mBaseObj.GetMeshEntity().GetSubMeshEntity(j);
+					if(pEnt is pEntity)
+					{
+						cSubMeshEntity@ pMeshEnt = cast<cSubMeshEntity>(pEnt);
+						pMeshEnt.SetActive(true);
+						pMeshEnt.SetVisible(true);
+					}
+				}
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void BeforeEntityDestruction()
+	{
+		for(int i=1; i<3; ++i)
+		{
+			if(mpDamageMeshEntity[i] !is null) 
+				mBaseObj.GetMap().GetWorld().DestroyMeshEntity(mpDamageMeshEntity[i]);
+		}
+	}
+		
+	//------------------------------------------------------------
+	
+	void OnStartMove()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnSetActive(bool abX)
+	{
+		for(int i=0; i<3; ++i)
+		{
+			if(mpDamageMeshEntity[i] !is null)
+			{
+				bool bActive = abX ? mlCurrentMeshEntity==i : false;
+
+				mpDamageMeshEntity[i].SetVisible(bActive);
+				mpDamageMeshEntity[i].SetActive(bActive);
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void GiveDamage(iPhysicsBody@ apBodyHit, const cVector3f&in avOrigin, const cVector3f&in avHitPos, cLuxDamageProperties@ apDamageProps)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnHealthChange()
+	{
+		if(mbBreakable==false || mbDisableBreakable) return;
+		if(mbBroken) return;
+
+		tString msSound = "";
+		tString msPS = "";
+
+		////////////////////////
+		// Broken
+		if(mBaseObj.GetHealth() <= 0 && mbBroken == false)
+		{
+			mbBroken = true;	
+			
+			if (msBreakChildEntity!="")
+			{
+				mlBreakChildEntityID = cLux_GetCurrentMap().GetEntityIDByName(msBreakChildEntity);
+				cLuxProp @pProp = cLux_ToProp(cLux_ID_Entity(mlBreakChildEntityID));
+				pProp.SetHealth(0);
+			}
+
+			SetCurrentDamageLevel(0);
+
+			////////////////////////////
+			//Disable all bodies + any children
+			for(int i=0; i<mBaseObj.GetBodyNum(); ++i)
+			{
+				iPhysicsBody @pBody = mBaseObj.GetBody(i);
+				if(pBody.GetMass()==0) continue;
+
+				pBody.SetActive(false);
+
+				/////////////////////////////////////////
+				// Check what children math mesh entity sub entities
+				cEntity3DIterator@ entIt = pBody.GetChildIterator();
+				while(entIt.HasNext())
+				{
+					iEntity3D @pEntity = entIt.Next();
+					for(int j=0; j<mBaseObj.GetMeshEntity().GetSubMeshEntityNum(); ++j)
+					{
+						iEntity3D @pEnt = mBaseObj.GetMeshEntity().GetSubMeshEntity(j);
+						if(pEnt is pEntity)
+						{
+							cSubMeshEntity@ pMeshEnt = cast<cSubMeshEntity>(pEnt);
+						
+							pMeshEnt.SetActive(false);
+							pMeshEnt.SetVisible(false);
+						}
+					}
+				}
+			}
+			
+			////////////////////////////
+			//Create broken entity
+			if(msBrokenEntity != "")
+			{
+				cEntityBodyExtraData@ pBodyData = mBaseObj.GetBodyExtraData(mlDoorBodyIndex);
+
+				cMatrixf mtxInvLocalBody = cMath_MatrixInverse(pBodyData.m_mtxLocalTransform);
+				cMatrixf mtxEntity = cMath_MatrixMul(mpDoorBody.GetLocalMatrix(), mtxInvLocalBody);
+
+				mBaseObj.GetMap().ResetLatestEntity();
+				mBaseObj.GetMap().CreateEntity(mBaseObj.GetName() + "_broken", msBrokenEntity, mtxEntity, mBaseObj.GetOnLoadScale());	
+
+				////////////////////////
+				//Add impulse and velocity
+				iLuxEntity @pEntity = mBaseObj.GetMap().GetLatestEntity();
+				if(pEntity !is null && pEntity.GetEntityType() == eLuxEntityType_Prop)
+				{
+					mlBrokenEntityID = pEntity.GetID();
+
+					cLuxProp @pProp = cLux_ToProp(pEntity);
+
+					for(int i=0; i< pProp.GetBodyNum(); ++i)
+					{
+						iPhysicsBody @pNewBody = pProp.GetBody(i);
+						cVector3f vNewBodyCenter = cMath_MatrixMul(pNewBody.GetLocalMatrix(), pNewBody.GetMassCenter());
+
+						cVector3f vImpulseDir = cMath_Vector3Normalize(vNewBodyCenter - mtxEntity.GetTranslation());
+
+						pNewBody.AddImpulse(vImpulseDir*mfBreakImpulse + mpDoorBody.GetLinearVelocity());
+					}
+				}
+			}
+			
+			msSound = msBreakSound;
+			msPS = msBreakPS;
+			
+			///////////////////////
+			// Callback
+			//RunCallbackFunc("Break");
+			if(msOnBreakCallbackFunc != "")
+			{
+				if(mBaseObj.GetMap().ScriptPrepare("void " + msOnBreakCallbackFunc + "(const tString& in asEntity)"))
+				{
+					tString sName = mBaseObj.GetName();
+					mBaseObj.GetMap().SetArgString(0, sName);
+					mBaseObj.GetMap().ScriptExecute();
+				}
+			}
+		}
+		////////////////////////
+		// Damage 2
+		else if(mBaseObj.GetHealth() <  mvHealthDamages[1] && mlCurrentMeshEntity<=1)
+		{
+			SetCurrentDamageLevel(2);	
+
+			msSound = msDamageSound;
+			msPS = msDamagePS;
+		}
+		////////////////////////
+		// Damage 1
+		else if(mBaseObj.GetHealth() < mvHealthDamages[0] && mlCurrentMeshEntity==0)
+		{
+			SetCurrentDamageLevel(1);
+
+			msSound = msDamageSound;
+			msPS = msDamagePS;
+		}
+
+		/////////////////////////////
+		// Effects
+		{
+			///////////////////////
+			// Create Sound
+			if(msSound != "")
+			{
+				cSoundEntity @pSound = mBaseObj.GetMap().GetWorld().CreateSoundEntity(mBaseObj.GetName() + "_BreakSound", msSound, true);
+				if(pSound !is null) pSound.SetPosition(mpDoorBody.GetLocalPosition());
+			}
+			
+			///////////////////////
+			// Create Particle System
+			if(msPS != "")
+			{
+				cParticleSystem @pPS = mBaseObj.GetMap().GetWorld().CreateParticleSystem(mBaseObj.GetName() + "_BreakPS", msPS, cVector3f(1), true, false);
+				if(pPS !is null) pPS.SetMatrix(mpDoorBody.GetLocalMatrix());
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void ChangeState(int alState, bool abEffects, bool abChangeConnectionState = true)
+	{
+		if(mlCurrentState == alState) return;
+		
+		mBaseObj.SetSaveDataIsUpdated(true);
+
+		mlCurrentState = alState;
+		
+		/////////////////
+		//Max
+		if(mlCurrentState == 1)
+		{
+			if (abChangeConnectionState) mBaseObj.ChangeConnectionState(1);
+		}
+		/////////////////
+		//Min
+		else if(mlCurrentState == -1)
+		{
+			if (abChangeConnectionState) mBaseObj.ChangeConnectionState(-1);
+		}
+		/////////////////
+		//Middle
+		else if(mlCurrentState == 0)
+		{
+			if (abChangeConnectionState) mBaseObj.ChangeConnectionState(0);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnConnectionStateChange(iLuxEntity@ apEntity,int alState)
+	{
+		if (apEntity.GetClassName() == "cScrPropSlideLock")
+		{
+			iPhysicsBody@ pTeeth = apEntity.GetBodyFromName("claw_body");
+			
+			if (alState == -1)
+			{
+				float fDist = 0;
+				cVector3f vNrm;
+				cVector3f vTeethPos = pTeeth.GetWorldPosition()+pTeeth.GetWorldMatrix().GetRight()*-1*0.1f;
+				iPhysicsBody@ pClosestBody = cLux_GetClosestBody(vTeethPos, pTeeth.GetWorldMatrix().GetRight()*-1,1,fDist,vNrm);
+				bool bDoorBlickingTeeth = false;
+
+				if (pClosestBody !is null)	bDoorBlickingTeeth = Body_GetEntityName(pClosestBody.GetName()) == mBaseObj.GetName();
+				
+				if (bDoorBlickingTeeth && fDist < .05f)
+				{
+					//cLux_AddDebugMessage("[DOOR] I AM LOCKED (TEETH) - Blocked: "+mbBlocked+", Closes: "+mbClosed);
+					SetBlocked(true,true);
+					SwingDoor_PushOpen(mBaseObj.GetName(),-1,1);
+					SwingDoor_SetDisableSnapClose(mBaseObj.GetName(),false);
+					pTeeth.SetCollide(false);
+					
+				}
+				else if (SwingDoor_GetOpenAmount(mBaseObj.GetName())<= 0.1f)
+				{
+					SetBlocked(true,true);
+					//cLux_AddDebugMessage("[DOOR] I AM LOCKED");
+				}
+			}
+			if (alState == 1)
+			{
+				pTeeth.SetCollide(true);
+				
+				if (SwingDoor_GetClosed(mBaseObj.GetName()) || SwingDoor_GetBlocked(mBaseObj.GetName()))
+				{
+					SetBlocked(false,true);
+					SwingDoor_PushOpen(mBaseObj.GetName(),0.2f,2);
+					//cLux_AddDebugMessage("[DOOR] I AM UNLOCKED");
+				}
+			}
+		}
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnInteractConnectionStateChange(cLuxProp@ apProp, float afT)
+	{
+		if (mBaseObj.IsInteractedWith())
+			return;
+		
+		mbInteractConnectionMovementActive = true;
+		SetOpenAmount(afT);
+	}
+    	
+	//------------------------------------------------------------
+	
+	bool OnUpdateAutoSleep()
+	{
+		if (mbAutoClose && mbClosed == false)
+			return false;		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	//NOTE: This is only useable if SetScriptCollisionCallbackActive is true
+	void OnPhysicsCollision(iPhysicsBody @apBody, iPhysicsBody @apCollideBody, cPhysicsContactData&in apContactData)
+	{
+		//////////////////////////////////////
+		// Check breakage
+		if (mbBreakable == false || mbBroken || mbDisableBreakable) return;
+		if (apContactData.mfMaxContactNormalSpeed <= 0.f || mBaseObj.Timer_Exists("Timer_BreakCD")) return;
+		
+		//////////////
+		// Get the average mass of the colliding objects
+		float fMass = apBody.GetMass();			
+		float fCollideMass = apCollideBody.GetMass() > 0.f ? apCollideBody.GetMass() : 1e+6f;
+		
+		float fVelocity = apBody.GetVelocityAtPosition(apContactData.mvContactPosition).Length();
+		float fCollideVelocity = apCollideBody.GetVelocityAtPosition(apContactData.mvContactPosition).Length(); 
+		float fAverageMass = cMath_InterpolateLinear(fMass, fCollideMass, fCollideVelocity / cMath_Max(fVelocity + fCollideVelocity, 0.0001f));
+			
+		//////////////
+		// Get total kinetic energy
+		float fContactVelocity = (1.f - apContactData.mfElasticity) * (1.f - apContactData.mfSoftness) * apContactData.mfMaxContactNormalSpeed;
+		float fTotalEnergy = fContactVelocity * fContactVelocity * 0.5f * fAverageMass;
+					
+		if (fTotalEnergy > mfBreakMinEnergy)
+		{
+			if (mBaseObj.GetHealth() < mvHealthDamages[1])		mBaseObj.SetHealth(0.f);
+			else if (mBaseObj.GetHealth() < mvHealthDamages[0])	mBaseObj.SetHealth(mvHealthDamages[1] - 0.1f);
+			else												mBaseObj.SetHealth(mvHealthDamages[0] - 0.1f);
+				
+			mBaseObj.Timer_Add("Timer_BreakCD", 1.f);
+		}
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INTERACT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	bool CanInteract(int alType, iPhysicsBody@ apBody)
+	{
+		if(mBaseObj.GetParentType() == eParentType_StickyStuck) return false;
+
+		if(	apBody.GetMass()==0 && mbCanInteractWithStaticBody==false)// && mBaseObj.GetMap().BodyIsInDetachableStickyArea(apBody)==false) 
+		{
+			return false;
+		}
+
+		return true;
+	}
+	
+	//------------------------------------------------------------
+		
+	bool OnInteract(int alType, iPhysicsBody@ apBody, const cVector3f &in avFocusPos, const tString&in asData)
+	{			
+		///////////////////////////////
+		//If body mass is 0, get a dynamic body
+		if(apBody.GetMass()==0 && mbCanInteractWithStaticBody || apBody is mpHandleBody)
+		{
+			@apBody = mpDoorBody;
+		}
+		
+		mBaseObj.SetSaveDataIsUpdated(true);
+
+		///////////////////////////////
+		//Check if in sticky area
+		//mBaseObj.GetMap().DetachBodyFromStickyArea(apBody); (not implemented!)
+				
+		///////////////////////////////
+		//Check if locked
+		if(mbLocked)
+		{
+			if(mfInteractSoundCount <=0)
+			{
+				Effect_Rumble_Start(0.3, 0.5);
+				mBaseObj.PlaySound("InteractLocked",msInteractLockedSound,true, true);
+				mfInteractSoundCount = 0.1f;
+			}
+
+			PlayAnimation(msHandleLockedAnimation, 0.25f);
+		}
+		else if(mbBlocked)
+		{
+			PlayAnimation(msHandleDownAnimation, 0.25f);
+		}
+		else if(apBody !is mpLockBody)
+		{
+			SetClosed(false, true);
+			PlayAnimation(msHandleDownAnimation, 0.25f);
+		}
+		mbDisableSnapClose = false; //Do not lock door when at edges!
+
+		///////////////////////////////
+		//Check if needs start speed (if close to edges
+		float fStartPushSpeed = 0;
+		if(mbBlocked==false)
+		{
+			float fAngle = mpHingeJoint.GetAngle();
+			if( cMath_Abs(fAngle-mpHingeJoint.GetMinAngle()) < cMath_ToRad(5) )
+			{
+				fStartPushSpeed = -6;
+			}
+			else if( cMath_Abs(fAngle-mpHingeJoint.GetMaxAngle()) < cMath_ToRad(5) )
+			{
+				fStartPushSpeed = 6;
+			}
+		}
+		
+	
+		///////////////////////////////
+		//Set up the slide state
+		cScript_SetGlobalArgID(0, mBaseObj.GetID()); //Object ID
+		cScript_SetGlobalArgInt(1, apBody.GetUniqueID()); //Body Id
+		cScript_SetGlobalArgVector3f(2, avFocusPos);//The grab postion
+		
+		cScript_SetGlobalArgFloat(3, mbLocked ? 0 : mfMoveMaxSpeed);
+		cScript_SetGlobalArgFloat(4, mfMoveSpeedFactor);
+		cScript_SetGlobalArgFloat(5, mfMoveSlowDownFactor);
+		cScript_SetGlobalArgFloat(6, fStartPushSpeed);
+		cScript_SetGlobalArgString(7, mBaseObj.GetName());
+
+		cScript_RunGlobalFunc("State_Interact_SwingDoor", "", "SetupSwingDoor");
+		
+		///////////////////////////////
+		//Change the player state
+		cLux_GetPlayer().ChangeState(ePlayerState_SwingDoor);	
+		mbIsInteracting = true;
+		
+		///////////////////////////////
+		// Update interact connections
+		mbInteractConnectionMovementActive = false;
+		return true;
+	}
+
+	//------------------------------------------------------------
+
+	void _Global_OnAddSpeed()
+	{
+		mBaseObj.SetSaveDataIsUpdated(true);
+		
+		float fAddSpeed = cScript_GetGlobalArgFloat(0);
+
+		if(cMath_Abs(fAddSpeed) > 0.001)
+		{
+			if(mpHandleBody !is null)
+			{
+				// add random shake to the body
+				mpHandleBody.AddForce(cVector3f(0, cMath_RandRectf(-16, 16), 0));
+			}
+
+			if(mfMovingRepetitionCount <= 0)
+			{
+				mfMovingRepetitionCount = cMath_RandRectf(mvHandleMovingRepetition.x, mvHandleMovingRepetition.y);
+
+				mBaseObj.AppendAnimation(msHandleMovingAnimation, false);
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetDoorBodyID()
+	{
+		cScript_SetGlobalReturnID(mpDoorBody.GetID());
+	}
+	
+	//------------------------------------------------------------
+	
+	int GetInteractIconId(int alType, iPhysicsBody@ apBody)
+	{
+		int lIcon = mbIsHatch ? eCrossHairState_PullDoorHatch : eCrossHairState_PullDoor;
+		
+		if (apBody is mpLockBody)
+			lIcon = eCrossHairState_PullDoorHatch;		
+		
+		return lIcon;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DOOR ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetOpenAmount()
+	{
+		SetOpenAmount(cScript_GetGlobalArgFloat(0));
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetOpenAmount(float afOpenAmount)
+	{		
+		mBaseObj.SetSaveDataIsUpdated(true);
+		
+		iPhysicsBody @pChildBody = mpHingeJoint.GetChildBody();
+		float fWantedAngle = mfMaxAngle * afOpenAmount;
+		
+		cQuaternion qRotation; qRotation.FromAngleAxis(mpHingeJoint.GetAngle()-fWantedAngle, mpHingeJoint.GetPinDir());
+		cMatrixf mtxRotation = cMath_MatrixQuaternion(qRotation);
+		cMatrixf mtxBody = pChildBody.GetLocalMatrix();
+
+		cVector3f vBodyPos = pChildBody.GetLocalPosition();
+		cVector3f vPivotOffset = mpHingeJoint.GetPivotPoint() - pChildBody.GetLocalPosition();
+
+		mtxBody.SetTranslation(vPivotOffset*-1);
+		mtxBody = cMath_MatrixMul(mtxRotation, mtxBody);
+		mtxBody.SetTranslation(mtxBody.GetTranslation() + vPivotOffset + vBodyPos);
+
+		cMatrixf mtxDelta = cMath_MatrixMul(mtxBody, cMath_MatrixInverse(pChildBody.GetWorldMatrix()));
+		
+		pChildBody.SetMatrix(mtxBody);
+		pChildBody.SetAngularVelocity(cVector3f(0));
+		pChildBody.SetLinearVelocity(cVector3f(0));
+		
+		// Set closed or not depending on how open the door is
+		bool bClosed = cMath_Abs(mpHingeJoint.GetAngle()) < cMath_ToRad(10);
+
+		if(mpHandleBody !is null)
+		{
+			mpHandleBody.SetMatrix(cMath_MatrixMul(mtxDelta, mpHandleBody.GetWorldMatrix()));
+		}
+		SetClosed(bClosed, false);
+		
+		if (bClosed) mBaseObj.ChangeConnectionState(-1);	
+	}
+	
+	//------------------------------------------------------------
+
+	void _Global_SetClosed()
+	{
+		SetClosed(cScript_GetGlobalArgBool(0), cScript_GetGlobalArgBool(1));
+	}
+	
+	void SetClosed(bool abClosed, bool abEffects)
+	{
+		if(mbClosed == abClosed) return;
+		
+		mBaseObj.SetSaveDataIsUpdated(true);
+
+		mbClosed = abClosed;
+		mBaseObj.SetIsClosedDoor(mbClosed);
+		
+		float fSpeed = mpHingeJoint.GetAngularVelocity().Length();		
+		
+		if(mbClosed)
+		{
+		
+			if(mbBlocked)
+			{
+				if (msInteractBlockedSound != "")
+					mpHingeJoint.SetMaxLimitSound(msInteractBlockedSound, 0);
+					
+				mpHingeJoint.SetMaxAngle(cMath_ToRad(mfBlockedMaxAngle));
+				mpHingeJoint.SetStickyMinLimit(false);
+				mpHingeJoint.SetStickyMaxLimit(false);
+			}
+			else
+			{
+				if (msMaxOpenSound != "")
+					mpHingeJoint.SetMaxLimitSound("", 0);
+					
+				mpHingeJoint.SetMaxAngle(cMath_ToRad(0.0001f));
+				mpHingeJoint.SetStickyMinLimit(true);
+				mpHingeJoint.SetStickyMaxLimit(true);
+				mpDoorBody.SetMaxAngularSpeed(0.1f);
+				mpDoorBody.SetAngularDamping(0.8f);
+			}
+		}
+		else
+		{
+			if (msMaxOpenSound != "")
+				mpHingeJoint.SetMaxLimitSound(msMaxOpenSound, mfMaxOpenSoundMinSpeed);
+					
+			mpHingeJoint.SetMaxAngle(mfMaxAngle);
+			mpHingeJoint.SetStickyMinLimit(true);
+			mpHingeJoint.SetStickyMaxLimit(true);
+
+			mpDoorBody.SetMaxAngularSpeed(mfAngularLimitDefault);
+			mpDoorBody.SetAngularDamping(mfAngularDampingDefault);
+		}
+		
+		if(mpHandleJoint !is null)
+		{
+			if(mbLocked)
+			{
+				mpHandleJoint.SetMaxAngle(cMath_ToRad(5.0f));
+			}
+			else
+			{
+				mpHandleJoint.SetMaxAngle(mfMaxHandleAngle);
+			}
+		}
+
+		//Add force to body so that the door really closes.
+		mpDoorBody.AddForce(cVector3f(1,1,1));
+		
+		if(abEffects)
+		{
+			if(mbClosed)
+			{
+				cSoundEntity@ pSound = mBaseObj.PlaySound("CloseOn",msCloseOnSound,true, true);
+				if (pSound !is null) pSound.SetParam(0, fSpeed/mfMoveMaxSpeed);
+			}
+			else		mBaseObj.PlaySound("CloseOff",msCloseOffSound,true, true);
+		}
+	}
+
+	//-----------------------------------------------------------------------
+
+	void _Global_GetOpenAmount()
+	{
+		float fAbsAngle = cMath_Abs(mpHingeJoint.GetAngle());
+		float fOpenAmount = fAbsAngle/cMath_Abs(mfMaxAngle);
+		
+		//cLux_AddDebugMessage("Open amount : " + fOpenAmount);
+		cScript_SetGlobalReturnFloat(fOpenAmount);
+	}
+	
+	//-----------------------------------------------------------------------
+	
+	void _Global_GetDoorState()
+	{
+		cScript_SetGlobalReturnInt(GetDoorState());
+	}
+	
+	int GetDoorState()
+	{
+		
+		int lState =0;
+
+		float fAbsAngle = cMath_Abs(mpHingeJoint.GetAngle());
+			
+		float fClosedAngle = cMath_ToRad(5);
+		float fOpenAngle = cMath_Abs(mfMaxAngle)*0.70f;
+
+		if(fAbsAngle < fClosedAngle)
+		{
+			if(lState == 1) return 0;
+			lState = -1;
+		}
+		else if(fAbsAngle >  fOpenAngle)
+		{
+			if(lState == -1) return 0;
+			lState = 1;	
+		}
+		else
+		{
+			return 0;
+		}
+
+		return lState;
+	}
+
+	//-----------------------------------------------------------------------
+
+	void _Global_SetLocked()
+	{
+		SetLocked(cScript_GetGlobalArgBool(0), cScript_GetGlobalArgBool(1));
+	}
+	
+	//------------------------------------------------------------
+
+	void _Global_SetBlocked()
+	{
+		SetBlocked(cScript_GetGlobalArgBool(0), cScript_GetGlobalArgBool(1));
+	}
+
+	//------------------------------------------------------------
+
+	void SetLocked(bool abLocked, bool abEffects)
+	{
+		if(mbLocked == abLocked) return;
+		
+		mBaseObj.SetSaveDataIsUpdated(true);
+
+		mbLocked = abLocked;
+		
+		if(mbLocked) SetClosed(true, false);
+
+		if(abEffects)
+		{
+			if(mbLocked)mBaseObj.PlaySound("LockedOn",msLockOnSound,true, true);
+			else		mBaseObj.PlaySound("LockedOff",msLockOffSound,true, true);
+		}
+
+		if(mpHandleJoint !is null)
+		{
+			if(mbLocked)
+			{
+				mpHandleJoint.SetMaxAngle(cMath_ToRad(5.0f));
+			}
+			else
+			{
+				mpHandleJoint.SetMaxAngle(mfMaxHandleAngle);
+			}
+		}
+	}
+
+	//------------------------------------------------------------
+
+	void SetBlocked(bool abBlocked, bool abEffects)
+	{
+		if(mbBlocked == abBlocked) return;
+		
+		mBaseObj.SetSaveDataIsUpdated(true);
+
+		mbBlocked = abBlocked;
+		
+		if(mbBlocked) SetClosed(true, false);
+
+		if(abEffects)
+		{
+			if(mbBlocked)mBaseObj.PlaySound("BlockedOn",msBlockOnSound,true, true);
+			else		mBaseObj.PlaySound("BlockedOff",msBlockOffSound,true, true);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetDisableSnapClose()
+	{
+		mbDisableSnapClose = cScript_GetGlobalArgBool(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetLocked()
+	{
+		cScript_SetGlobalReturnBool(mbLocked);
+	}
+
+	//------------------------------------------------------------
+
+	void _Global_GetBlocked()
+	{
+		cScript_SetGlobalReturnBool(mbBlocked);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetClosed()
+	{
+		cScript_SetGlobalReturnBool(mbClosed);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_OpenableByAgent()
+	{
+		cScript_SetGlobalReturnBool(mbOpenableByAgent);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetCurrentDamageLevel(int alX)
+	{
+		if(mlCurrentMeshEntity == alX) return;
+		
+		mBaseObj.SetSaveDataIsUpdated(true);
+
+		mlCurrentMeshEntity = alX;
+		
+		bool bAnyActive = false;
+		for(int i=0; i<3; ++i)
+		{
+			if(mpDamageMeshEntity[i] !is null)
+			{
+				bool bActive = mlCurrentMeshEntity==i;
+				if (bActive) bAnyActive = true;
+
+				mpDamageMeshEntity[i].SetVisible(bActive);
+				mpDamageMeshEntity[i].SetActive(bActive);
+				SetDamageTint(mpDamageMeshEntity[i]);
+			}
+		}
+		
+		if (bAnyActive == false && mpDamageMeshEntity.size() > 0)
+		{
+			mpDamageMeshEntity[0].SetVisible(true);
+			mpDamageMeshEntity[0].SetActive(true);
+			SetDamageTint(mpDamageMeshEntity[0]);
+		}
+	}
+	
+	void SetDamageTint(cMeshEntity@ apMesh)
+	{
+		if (mbDamageTint == false) return;
+		cColor colorMul = mDefaultColorMul;
+		if (mlCurrentMeshEntity == 1) colorMul = cColor(3.0, 0.8, 0.0);
+		if (mlCurrentMeshEntity == 2) colorMul = cColor(3.0, 0.0, 0.0);
+		apMesh.SetDiffuseColorMul(colorMul);
+	}
+	
+	//------------------------------------------------------------
+	
+	void AddDoorBodyImpulse(float afAmount)
+	{
+		mBaseObj.SetSaveDataIsUpdated(true);
+		
+		cVector3f vHingeToBody = mpDoorBody.GetLocalPosition() - mpHingeJoint.GetPivotPoint();		
+		cVector3f vDir = cMath_Vector3Cross(vHingeToBody, mpHingeJoint.GetPinDir());		
+		mpDoorBody.AddImpulse(vDir * afAmount);
+	}
+	
+	void _Global_AddDoorBodyImpulse()
+	{
+		AddDoorBodyImpulse(cScript_GetGlobalArgFloat(0));
+	}
+
+	//------------------------------------------------------------
+	
+	void _Global_GetDoorOpenDir()
+	{
+		cVector3f vHingeToBody = mpDoorBody.GetLocalPosition() - mpHingeJoint.GetPivotPoint();
+		cVector3f vDir = cMath_Vector3Cross(vHingeToBody, mpHingeJoint.GetPinDir());
+		vDir.Normalize();
+		
+		cScript_SetGlobalReturnVector3f(vDir);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetHingeToDoorDir()
+	{
+		cVector3f vHingeToBody = mpDoorBody.GetLocalPosition() - mpHingeJoint.GetPivotPoint();
+		cScript_SetGlobalReturnVector3f(vHingeToBody);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetDoorwayOpenDir()
+	{
+		cScript_SetGlobalReturnVector3f(mvDoorwayDir);
+	}
+    
+    //------------------------------------------------------------
+    
+    void _Global_IsHatch()
+    {
+        cScript_SetGlobalReturnBool(mbIsHatch);
+    }
+	
+	//------------------------------------------------------------
+	
+	void _Global_HatchIgnorePlayerPosition()
+	{
+		cScript_SetGlobalReturnBool(mbHatchIgnorePlayerPosition);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_IsBreakable()
+    {
+        cScript_SetGlobalReturnBool(mbBreakable);
+    }
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetAutoClose()
+	{
+		mbAutoClose = cScript_GetGlobalArgBool(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DOOR SPECIFIC UPDATES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	[nosave] iPhysicsJointHinge @mpHingeJoint;
+	[nosave] iPhysicsBody @mpDoorBody;
+	[nosave] int mlDoorBodyIndex;
+	[nosave] array<cMeshEntity@> mpDamageMeshEntity;
+	[nosave] iPhysicsJointHinge @mpHandleJoint;
+	[nosave] iPhysicsBody @mpHandleBody;
+	[nosave] iPhysicsBody @mpLockBody;
+		
+	//------------------------------------------------------------
+	
+    [nosave] float mfMaxAngle;
+    [nosave] float mfMaxHandleAngle;
+	[nosave] float mfBlockedMaxAngle;
+	
+	[nosave] bool mbCanInteractWithStaticBody;
+	[nosave] tString msCloseOnSound;
+	[nosave] tString msCloseOffSound;
+	[nosave] tString msLockOnSound;
+	[nosave] tString msLockOffSound;
+	[nosave] tString msInteractLockedSound;
+	[nosave] tString msBlockOnSound;
+	[nosave] tString msBlockOffSound;
+	[nosave] tString msInteractBlockedSound;
+	[nosave] tString msMaxOpenSound;
+	[nosave] float mfMaxOpenSoundMinSpeed;
+
+	[nosave] tString msHandleUpAnimation;
+	[nosave] tString msHandleDownAnimation;
+	[nosave] tString msHandleLockedAnimation;
+	[nosave] tString msHandleMovingAnimation;
+	[nosave] cVector2f mvHandleMovingRepetition;
+
+	[nosave] bool mbDisableBreakable;
+	[nosave] bool mbBreakable;
+
+	[nosave] array<float> mvHealthDamages;
+	[nosave] array<tString> mvDamageMeshes;
+	[nosave] tString msBrokenEntity;
+	[nosave] tString msOnBreakCallbackFunc;
+
+	[nosave] tString msDamageSound;
+	[nosave] tString msDamagePS;
+
+	[nosave] tString msBreakSound;
+	[nosave] tString msBreakPS;
+	
+	[nosave] float mfBreakMinEnergy;
+	[nosave] float mfBreakImpulse;
+	
+	[nosave] float mfMoveMaxSpeed;
+	[nosave] float mfMoveSlowDownFactor;
+	[nosave] float mfMoveSpeedFactor;
+
+	[nosave] float mfAngularLimitDefault;
+	[nosave] float mfAngularDampingDefault;
+	
+	//------------------------------------------------------------
+	
+	bool mbLocked;
+	bool mbBlocked;
+	bool mbClosed;
+		
+	int mlCurrentState = 0;
+
+	tID mlBrokenEntityID;
+
+	bool mbDisableSnapClose;
+	
+	bool mbAutoClose;
+	float mfAutoCloseCount;
+
+	int mlCurrentMeshEntity;
+	bool mbBroken;
+
+	float mfInteractSoundCount;
+	float mfMovingRepetitionCount;
+	float mfHandleUpdateCount;
+	
+	bool mbIsHatch;
+	bool mbHatchIgnorePlayerPosition;
+	bool mbOpenableByAgent;
+	
+	bool mbInteractConnectionMovementActive;
+
+	bool mbIsInteracting;
+	cUtility_JointFix mJointFix;
+	
+	tString msBreakChildEntity;
+	tID mlBreakChildEntityID;
+	
+	cVector3f mvDoorwayDir;
+	
+	bool mbDamageTint = false;
+	cColor mDefaultColorMul;
+	
+	//------------------------------------------------------------
+		
+}	

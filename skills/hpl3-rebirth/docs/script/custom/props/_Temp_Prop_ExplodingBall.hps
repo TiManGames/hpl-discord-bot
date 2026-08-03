@@ -1,0 +1,202 @@
+#include "interfaces/Prop_Interface.hps"
+#include "base/Player_Types.hps"
+
+#include "interfaces/UserComponent_Interface.hps"
+#include "custom/components/ComponentInterfaces_Custom.hps"
+
+enum eBallType
+{
+	eBallType_Normal,
+	eBallType_Fire
+}
+
+class cScrTempPropExplodingBall : iScrProp, iScrProp_Interface
+{	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		mBaseObj.SetScriptCollisionCallbackActive(true);	
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		mBallType = eBallType_Fire;
+		
+		switch (mBallType)
+		{
+			case eBallType_Normal:
+				break;
+			case eBallType_Fire:
+				///////////////////////
+				// 
+				@mpFlammable = UserComponent_TempFlammableComponent_Create(mBaseObj);
+				mpFlammable.SetOn(true);
+				break;
+		}
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnUpdate(float afTimeStep)
+	{
+
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetProperties()
+	{
+		 
+	}
+	
+	//------------------------------------------------------------
+	
+	void BeforeEntityDestruction()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnSetActive(bool abX)
+	{
+	
+	}
+	
+	//-------------------------------------------------------------
+	
+	void OnPhysicsCollision(iPhysicsBody @apBody, iPhysicsBody @apCollideBody, cPhysicsContactData&in aContactData)
+	{		
+
+		if (!mbExplode)
+		{
+			mBaseObj.Timer_Add("ExplodeTimer", 0.5f, "Explode");
+			mbExplode = true;
+		}
+			
+	}
+	
+		
+	//------------------------------------------------------------
+	
+	void Explode(uint64 alId)
+	{
+		//////////
+		// EXPLODE
+		
+		// Kill component PS
+		if (mpFlammable !is null)
+			mpFlammable.SetOn(false);
+		
+		/////////////
+		// CREATE PUSH
+
+		// Deal damage
+		
+		float fDamage = 0.5f;
+		cVector3f vOrigin = mBaseObj.GetPosition();	
+		cMatrixf mtxId = cMath_MatrixTranslate(vOrigin);
+		iCollideShape@ mpCollideShape = cLux_GetCurrentMap().GetPhysicsWorld().CreateSphereShape(mfMaxDistance,mtxId);
+		cLux_ShapeDamage(mpCollideShape,cMatrixf_Identity,vOrigin,fDamage,0,0,0,0.0f,0,false,true,true,false,mBaseObj.GetID(),cLux_GetCurrentMap().GetNewAttackInstanceID());
+		Debug_Log("Player's Health: "+cLux_GetPlayer().GetHealth());
+		
+		// Create push
+		
+		array<iPhysicsBody@> vNearbyBodies;
+		cVector3f vMin = mBaseObj.GetPosition() - cVector3f_One*mfMaxDistance;
+		cVector3f vMax = mBaseObj.GetPosition() + cVector3f_One*mfMaxDistance;
+		cLux_GetCurrentMap().GetPhysicsWorld().GetBodiesInAABB(vMin,vMax,vNearbyBodies);
+		
+		float fImpulsePower = 10;
+		
+		for (int i = 0; i < vNearbyBodies.length(); i++)
+		{
+			iPhysicsBody@ pBody = vNearbyBodies[i];
+			
+			cVector3f vDir = pBody.GetWorldPosition() - mBaseObj.GetPosition();
+			float fDist = vDir.Length();
+			vDir.Normalize();
+			
+			float fDistMul = 1 - (fDist/mfMaxDistance);
+			fDistMul = cMath_Clamp(fDistMul, 0.1f, 1);
+			
+			float fMassMul = 1 - cMath_Clamp(pBody.GetMass(),0,1);
+			fMassMul = cMath_Clamp(fMassMul, 0.5f,1);
+			
+			cVector3f vFinalImpulse = vDir*fImpulsePower*fDistMul*fMassMul;
+			
+			//tString sPush= "PUSH FOR ["+pBody.GetName()+"] IS: "+vFinalImpulse.Length()+" ("+fDistMul+" : "+fMassMul +" )";
+			//Debug_Log(sPush);
+			
+			pBody.AddImpulse(vFinalImpulse);
+			
+		}
+		
+		// Destroy ball
+		mBaseObj.Timer_Add("DestroyDelay",0.3,"DestroyBall");
+		
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void DestroyBall(uint64 alId)
+	{		
+		// Create explosion PS
+		cParticleSystem@ pPuffPS = cLux_GetCurrentMap().GetWorld().CreateParticleSystem("puff","ball_puff",cVector3f_One,true,false);
+		pPuffPS.SetPosition(mBaseObj.GetPosition());
+		
+		mBaseObj.Break();
+	}
+	
+	//------------------------------------------------------------
+	
+	void DestroyShape(uint64 alId)
+	{
+		//cLux_GetCurrentMap().GetPhysicsWorld().DestroyShape(mpCollideShape);
+	}
+	
+
+	
+	
+	
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// INTERACTION
+	/////////////////////////////////////////
+	
+	
+	//-------------------------------------------------------------
+	
+
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float mfMaxDistance = 8.0f;
+	bool mbExplode = false;
+	eBallType mBallType;
+	
+	// Without [volatile] it will crash. Why?
+	[volatile] iScrTempFlammableComponent_Interface@ mpFlammable = null; 
+	
+	//------------------------------------------------------------
+}

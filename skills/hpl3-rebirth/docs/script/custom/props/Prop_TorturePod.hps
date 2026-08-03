@@ -1,0 +1,578 @@
+#include "props/Prop_Rigid.hps"
+#include "custom/modules/ModuleInterfaces_Custom.hps"
+
+//------------------------------------------------------------
+
+cColor gPodColor_TortureHigh = cColor(1, 0.2, 0.2) * 0.7;
+cColor gPodColor_TortureLow = cColor(1, 0.2, 0.2) * 0.3;
+cColor gPodColor_HappinessHigh = cColor(0.2, 1.0, 0.7) * 0.5;
+cColor gPodColor_HappinessLow = cColor(0.2, 1.0, 0.7) * 0.3;
+cColor gPodColor_Off = cColor(0.5, 0.8, 1) * 0.3;
+
+float gfPodState_Off_Time = 1.5;
+float gfPodState_Torture_Time = 25;
+float gfPodState_Happiness_Time = 10;
+float gfPodStateFadeTime = 1.0f;
+float gfPodTorturePulseSpeed = 5.0f;
+float gfPodHappinessPulseSpeed = 3.0f;
+
+float gfVitaeLinesPulseBrightness = 1.8f;
+
+tString gsAnim_Torture = "dwf_pod_working_torture";
+tString gsAnim_Happiness = "dwf_pod_working_happy";
+tString gsAnim_Off = "dwf_pod_working_idle";
+float gfAnimDefaultFade = 0.8f;
+
+//------------------------------------------------------------
+
+enum eTorturePodState
+{
+	eTorturePodState_None,
+	eTorturePodState_Off,
+	eTorturePodState_Torture,
+	eTorturePodState_Happiness,
+	eTorturePodState_Dead
+}
+
+//------------------------------------------------------------
+
+class cScrPropTorturePod : cScrPropRigid
+{
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		cScrPropRigid::SetupAfterLoad(apWorld, apVars, apInstanceVars);
+		
+		mbActive = apInstanceVars.GetVarBool("Active", true);
+		mfActivationDelay = apInstanceVars.GetVarFloat("ActivationDelay", 0);
+		msVoiceTrack = apInstanceVars.GetVarString("VoiceTrack", "");
+		mbUseCustomSoundRadius = apInstanceVars.GetVarBool("OverrideSoundRadius", false);
+		mfCustomSoundRadius_Max = apInstanceVars.GetVarFloat("MaxDistance", 1);
+		mfCustomSoundRadius_Min = apInstanceVars.GetVarFloat("MinDistance", 12);
+		mbUseMachineSounds = apInstanceVars.GetVarBool("UseMachineSounds", true);
+		
+		// pod illum
+		{
+			cSubMeshEntity@ pPodMesh = mBaseObj.GetMeshEntity().GetSubMeshEntityName("pod");
+			if (pPodMesh !is null)
+			{
+				m_idPodMesh = pPodMesh.GetID();
+				pPodMesh.SetIlluminationColor(gPodColor_Off);
+			}
+			
+			iLight@ pPodLight = mBaseObj.GetLightFromName("Light_Point_1");
+			if (pPodLight !is null) mvPodLights.push_back(pPodLight.GetID());
+		}
+		
+		// vitae lines
+		{
+			cSubMeshEntity@ pVitaeLinesMesh = mBaseObj.GetMeshEntity().GetSubMeshEntityName("inner");
+			if (pVitaeLinesMesh !is null)
+			{
+				m_idVitaeLinesMesh = pVitaeLinesMesh.GetID();
+				mVitaeLinesOrigColor = pVitaeLinesMesh.GetIlluminationColor();
+			}
+		}
+		
+		mBaseObj.SetAutoSleep(false);
+		mBaseObj.Timer_Add("Timer_Activate", mfActivationDelay, "OnTimer_Activate");
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnTimer_Activate(uint64 alId)
+	{
+		if (mfActivationDelay > 0) mbActive = true;
+		StartState_Off();
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnSetActive(bool abX)
+	{
+		if (abX)
+		{
+			mBaseObj.Timer_Add("Timer_Activate", 0, "OnTimer_Activate");
+		}
+		else
+		{
+			mBaseObj.Timer_Remove("Timer_Activate");
+			mState = eTorturePodState_None;
+			SetPodColor(gPodColor_Off);
+			SetVitaeLinesColor(mVitaeLinesOrigColor);
+			mbFadePodColor = false;
+			mbFadeVitaeLinesColor = false;
+			
+			cSoundEntity@ pSound;
+			
+			@pSound = cLux_ID_SoundEntity(m_idPodStateVictimLoop);
+			if (pSound !is null) pSound.FadeOut(1);
+			
+			@pSound = cLux_ID_SoundEntity(m_idPodStateVictimLoop2);
+			if (pSound !is null) pSound.FadeOut(1);
+			
+			@pSound = cLux_ID_SoundEntity(m_idPodStateMachineLoop);
+			if (pSound !is null) pSound.FadeOut(1);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetPodState()
+	{
+		tString sState = "none";
+		if (mState == eTorturePodState_Torture) sState = "torture";
+		else if (mState == eTorturePodState_Happiness) sState = "happiness";
+		else if (mState == eTorturePodState_Off) sState = "off";
+		cScript_SetGlobalReturnString(sState);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetActive()
+	{
+		mbActive = cScript_GetGlobalArgBool(0);
+		StartState_Off();
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetDead()
+	{
+		ChangeState(eTorturePodState_Dead);
+		mbActive = false;
+		FadePodColor(cColor(0), gfPodStateFadeTime);
+		FadeVitaeLinesColor(cColor(0), gfPodStateFadeTime);
+		mBaseObj.Timer_Remove("Timer_Activate");
+		
+		cSoundEntity@ pSound;
+		
+		@pSound = cLux_ID_SoundEntity(m_idPodStateVictimLoop);
+		if (pSound !is null) pSound.FadeOut(1);
+			
+		@pSound = cLux_ID_SoundEntity(m_idPodStateVictimLoop2);
+		if (pSound !is null) pSound.FadeOut(1);
+		
+		@pSound = cLux_ID_SoundEntity(m_idPodStateMachineLoop);
+		if (pSound !is null) pSound.FadeOut(1);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetVolume()
+	{
+		SetPodVolume(cScript_GetGlobalArgFloat(0), cScript_GetGlobalArgFloat(1));
+	}
+	
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnVariableUpdate(float afTimeStep)
+	{
+		mfStateTimer -= afTimeStep;
+		
+		switch (mState)
+		{
+			case eTorturePodState_Off: UpdateState_Off(afTimeStep); break;
+			case eTorturePodState_Torture: UpdateState_Torture(afTimeStep); break;
+			case eTorturePodState_Happiness: UpdateState_Happiness(afTimeStep); break;
+		}
+		
+		if (mbFadePodColor)
+		{
+			mfPodColorFadeTimer += afTimeStep;
+			float fT = cMath_Clamp(mfPodColorFadeTimer / mfPodColorFadeTime, 0.0f, 1.0f);
+			cColor newCol = mPodFadeColor_Start * (1.0f - fT) + mPodFadeColor_End * fT;
+			SetPodColor(newCol);
+			
+			if (fT >= 1) mbFadePodColor = false;
+		}
+		
+		if (mbFadeVitaeLinesColor)
+		{
+			mfVitaeLineColorFadeTimer += afTimeStep;
+			float fT = cMath_Clamp(mfVitaeLineColorFadeTimer / mfVitaeLineColorFadeTime, 0.0f, 1.0f);
+			cColor newCol = mVitaeLineFadeColor_Start * (1.0f - fT) + mVitaeLineFadeColor_End * fT;
+			SetVitaeLinesColor(newCol);
+			
+			if (fT >= 1) mbFadeVitaeLinesColor = false;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void StartState_Off()
+	{
+//		cLux_AddDebugMessage("[Pod] StartState: Off");
+		
+		ChangeState(eTorturePodState_Off);
+		
+		mfStateTimer = gfPodState_Off_Time;
+		mfStateStartTimer = -1;
+		
+		mBaseObj.PlayAnimation(gsAnim_Off, gfAnimDefaultFade, true);
+	}
+
+	void StopState_Off()
+	{
+		mfStateEndTimer = 0;
+	}
+	
+	void UpdateState_Off(float afTimeStep)
+	{
+		if (mfStateStartTimer > 0)
+		{
+			mfStateStartTimer -= afTimeStep;
+			return;
+		}
+		
+		if (mfStateEndTimer >= 0)
+		{
+			mfStateEndTimer -= afTimeStep;
+			if (mfStateEndTimer <= 0)
+			{
+				if (mPrevState == eTorturePodState_Torture) StartState_Happiness();
+				else StartState_Torture();
+			}
+			return;
+		}
+		
+		if (mfStateTimer < 0) StopState_Off();
+	}
+	
+	//------------------------------------------------------------
+		
+	void StartState_Torture()
+	{
+//		cLux_AddDebugMessage("[Pod] StartState: Torture");
+		
+		ChangeState(eTorturePodState_Torture);
+		
+		mfStateTimer = gfPodState_Torture_Time;
+		mfPulseTimer = 0;
+		mfStateStartTimer = gfPodStateFadeTime;
+		
+		FadePodColor(gPodColor_TortureLow, gfPodStateFadeTime);
+				
+		tString sVictimLoop = "";
+		if (msVoiceTrack == "Female") sVictimLoop = "03_07_dw_factory/human_pods/pod_victim/female_tortured";
+		else if (msVoiceTrack == "Male") sVictimLoop = "03_07_dw_factory/human_pods/pod_victim/male_tortured";
+		cSoundEntity@ pVictimLoop = mBaseObj.PlaySound("TortureVictimLoop", sVictimLoop, true, true);
+		if (pVictimLoop !is null)
+		{
+			m_idPodStateVictimLoop = pVictimLoop.GetID();
+			pVictimLoop.SetUseCustomProperties(mbUseCustomSoundRadius);
+			pVictimLoop.SetCustomMaxDistance(mfCustomSoundRadius_Max);
+			pVictimLoop.SetCustomMinDistance(mfCustomSoundRadius_Min);
+			pVictimLoop.FadeVolumeMul(mfSoundVolume, 0);
+		}
+		
+		if (mbUseMachineSounds)
+		{
+			cSoundEntity@ pMachineLoop = mBaseObj.PlaySound("TortureMachineLoop", "new_sounds/theatre/human_pod_torture", true, true);
+			if (pMachineLoop !is null)
+			{
+				m_idPodStateMachineLoop = pMachineLoop.GetID();
+				pMachineLoop.SetUseCustomProperties(mbUseCustomSoundRadius);
+				pMachineLoop.SetCustomMaxDistance(mfCustomSoundRadius_Max);
+				pMachineLoop.SetCustomMinDistance(mfCustomSoundRadius_Min);
+				pMachineLoop.FadeVolumeMul(mfSoundVolume, 0);
+			}
+			
+			cSoundEntity@ pMachineStart = mBaseObj.PlaySound("TortureMachineStart", "03_07_dw_factory/human_pods/human_pod_torture_start", true, true);
+			if (pMachineStart !is null)
+			{
+				pMachineStart.SetUseCustomProperties(mbUseCustomSoundRadius);
+				pMachineStart.SetCustomMaxDistance(mfCustomSoundRadius_Max);
+				pMachineStart.SetCustomMinDistance(mfCustomSoundRadius_Min);
+				pMachineStart.FadeVolumeMul(mfSoundVolume, 0);
+			}
+		}
+		
+		mBaseObj.PlayAnimation(gsAnim_Torture, gfAnimDefaultFade, true);
+	}
+		
+	void StopState_Torture()
+	{
+		mfStateEndTimer = gfPodStateFadeTime;
+		
+		FadePodColor(gPodColor_Off, gfPodStateFadeTime);
+		FadeVitaeLinesColor(mVitaeLinesOrigColor, gfPodStateFadeTime);
+		
+		cSoundEntity@ pVictimLoop = cLux_ID_SoundEntity(m_idPodStateVictimLoop);
+		if (pVictimLoop !is null) pVictimLoop.FadeOut(0.5);
+		
+		cSoundEntity@ pMachineLoop = cLux_ID_SoundEntity(m_idPodStateMachineLoop);
+		if (pMachineLoop !is null) pMachineLoop.FadeOut(0.5);
+		
+		cSoundEntity@ pMachineEnd =  mBaseObj.PlaySound("TortureMachineEnd", "03_07_dw_factory/human_pods/human_pod_torture_end", true, true);
+		if (pMachineEnd !is null)
+		{
+			pMachineEnd.SetUseCustomProperties(mbUseCustomSoundRadius);
+			pMachineEnd.SetCustomMaxDistance(mfCustomSoundRadius_Max);
+			pMachineEnd.SetCustomMinDistance(mfCustomSoundRadius_Min);
+		}
+	}
+		
+	void UpdateState_Torture(float afTimeStep)
+	{
+		if (mfStateStartTimer > 0)
+		{
+			mfStateStartTimer -= afTimeStep;
+			return;
+		}
+		
+		if (mfStateEndTimer >= 0)
+		{
+			mfStateEndTimer -= afTimeStep;
+			if (mfStateEndTimer <= 0) StartState_Off();
+			return;
+		}
+
+		mfPulseTimer += gfPodTorturePulseSpeed * afTimeStep;
+		float fT = 0.5f + cMath_Sin(mfPulseTimer - cMath_PiDiv2) * 0.5f;
+			
+		cColor newPodCol = gPodColor_TortureLow * (1.0f - fT) + gPodColor_TortureHigh * fT;
+		SetPodColor(newPodCol);
+		
+		cColor newVitaeLinesCol = mVitaeLinesOrigColor * (1.0f - fT) + mVitaeLinesOrigColor * gfVitaeLinesPulseBrightness * fT;
+		SetVitaeLinesColor(newVitaeLinesCol);
+		
+		if (mfStateTimer < 0 && fT <= 0.1f) StopState_Torture();
+	}
+	
+	//------------------------------------------------------------
+	
+	void StartState_Happiness()
+	{
+//		cLux_AddDebugMessage("[Pod] StartState: Happiness");
+		
+		ChangeState(eTorturePodState_Happiness);
+		
+		mfStateTimer = gfPodState_Happiness_Time;
+		mfPulseTimer = 0;
+		mfStateStartTimer = gfPodStateFadeTime;
+		
+		FadePodColor(gPodColor_HappinessLow, gfPodStateFadeTime);
+		
+		tString sVictimLoop = "";
+		if (msVoiceTrack == "Female") sVictimLoop = "03_07_dw_factory/human_pods/pod_victim/female_laugh";
+		else if (msVoiceTrack == "Male") sVictimLoop = "03_07_dw_factory/human_pods/pod_victim/male_whisper";
+		cSoundEntity@ pVictimLoop = mBaseObj.PlaySound("TortureVictimLoop", sVictimLoop, true, true);
+		if (pVictimLoop !is null)
+		{
+			m_idPodStateVictimLoop = pVictimLoop.GetID();
+			pVictimLoop.SetUseCustomProperties(mbUseCustomSoundRadius);
+			pVictimLoop.SetCustomMaxDistance(mfCustomSoundRadius_Max);
+			pVictimLoop.SetCustomMinDistance(mfCustomSoundRadius_Min);
+			pVictimLoop.FadeVolumeMul(mfSoundVolume, 0);
+		}
+		
+		tString sVictimLoop2 = "";
+		if (msVoiceTrack == "Male") sVictimLoop2 = "03_07_dw_factory/human_pods/pod_victim/male_groan";
+		cSoundEntity@ pVictimLoop2 = mBaseObj.PlaySound("TortureVictimLoop2", sVictimLoop2, true, true);
+		if (pVictimLoop2 !is null)
+		{
+			m_idPodStateVictimLoop2 = pVictimLoop2.GetID();
+			pVictimLoop2.SetUseCustomProperties(mbUseCustomSoundRadius);
+			pVictimLoop2.SetCustomMaxDistance(mfCustomSoundRadius_Max);
+			pVictimLoop2.SetCustomMinDistance(mfCustomSoundRadius_Min);
+			pVictimLoop2.FadeVolumeMul(mfSoundVolume, 0);
+		}
+		
+		if (mbUseMachineSounds)
+		{
+			cSoundEntity@ pMachineLoop = mBaseObj.PlaySound("TortureMachineLoop", "03_07_dw_factory/human_pods/human_pod_idle_loop", true, true);
+			if (pMachineLoop !is null)
+			{
+				m_idPodStateMachineLoop = pMachineLoop.GetID();
+				pMachineLoop.SetUseCustomProperties(mbUseCustomSoundRadius);
+				pMachineLoop.SetCustomMaxDistance(mfCustomSoundRadius_Max);
+				pMachineLoop.SetCustomMinDistance(mfCustomSoundRadius_Min);
+				pMachineLoop.FadeVolumeMul(mfSoundVolume, 0);
+			}
+		}
+
+		mBaseObj.PlayAnimation(gsAnim_Happiness, gfAnimDefaultFade, true);
+	}
+		
+	void StopState_Happiness()
+	{
+		mfStateEndTimer = gfPodStateFadeTime;
+		
+		FadePodColor(gPodColor_Off, gfPodStateFadeTime);
+		FadeVitaeLinesColor(mVitaeLinesOrigColor, gfPodStateFadeTime);
+		
+		cSoundEntity@ pVictimLoop = cLux_ID_SoundEntity(m_idPodStateVictimLoop);
+		if (pVictimLoop !is null) pVictimLoop.FadeOut(0.5);
+		
+		cSoundEntity@ pVictimLoop2 = cLux_ID_SoundEntity(m_idPodStateVictimLoop2);
+		if (pVictimLoop2 !is null) pVictimLoop2.FadeOut(0.5);
+		
+		cSoundEntity@ pMachineLoop = cLux_ID_SoundEntity(m_idPodStateMachineLoop);
+		if (pMachineLoop !is null) pMachineLoop.FadeOut(0.5);
+	}
+		
+	void UpdateState_Happiness(float afTimeStep)
+	{
+		if (mfStateStartTimer > 0)
+		{
+			mfStateStartTimer -= afTimeStep;
+			return;
+		}
+		
+		if (mfStateEndTimer >= 0)
+		{
+			mfStateEndTimer -= afTimeStep;
+			if (mfStateEndTimer <= 0) StartState_Off();
+			return;
+		}
+		
+		mfPulseTimer += gfPodHappinessPulseSpeed * afTimeStep;
+		float fT = 0.5f + cMath_Sin(mfPulseTimer - cMath_PiDiv2) * 0.5f;
+	
+		cColor newPodCol = gPodColor_HappinessLow * (1.0f - fT) + gPodColor_HappinessHigh * fT;
+		SetPodColor(newPodCol);
+			
+		cColor newVitaeLinesCol = mVitaeLinesOrigColor * (1.0f - fT) + mVitaeLinesOrigColor * gfVitaeLinesPulseBrightness * fT;
+		SetVitaeLinesColor(newVitaeLinesCol);
+		
+		if (mfStateTimer < 0 && fT <= 0.1f) StopState_Happiness();
+	}
+	
+	//------------------------------------------------------------
+	
+	void ChangeState(eTorturePodState aState)
+	{
+		if (mbActive == false) return;
+		
+		mPrevState = mState;
+		mState = aState;
+	}
+	
+	//------------------------------------------------------------
+	
+	void FadePodColor(cColor aGoalCol, float afPodColorFadeTime)
+	{
+		cSubMeshEntity@ pPodMesh = cLux_ID_SubMeshEntity(m_idPodMesh);
+		if (pPodMesh is null) return;
+		
+		mbFadePodColor = true;
+		mPodFadeColor_Start = pPodMesh.GetIlluminationColor();
+		mPodFadeColor_End = aGoalCol;
+		mfPodColorFadeTime = afPodColorFadeTime;
+		mfPodColorFadeTimer = 0;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetPodColor(cColor aCol)
+	{
+		cSubMeshEntity@ pPodMesh = cLux_ID_SubMeshEntity(m_idPodMesh);
+		if (pPodMesh !is null) pPodMesh.SetIlluminationColor(aCol);
+
+		for (int i = 0; i < mvPodLights.size(); ++i)
+		{
+			iLight@ pPodLight = cLux_ID_Light(mvPodLights[i]);
+			if (pPodLight is null) continue;
+			pPodLight.SetDiffuseColor(aCol);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void FadeVitaeLinesColor(cColor aGoalCol, float afFadeTime)
+	{
+		cSubMeshEntity@ pVitaeLines = cLux_ID_SubMeshEntity(m_idVitaeLinesMesh);
+		if (pVitaeLines is null) return;
+		
+		mbFadeVitaeLinesColor = true;
+		mVitaeLineFadeColor_Start = pVitaeLines.GetIlluminationColor();
+		mVitaeLineFadeColor_End = aGoalCol;
+		mfVitaeLineColorFadeTime = afFadeTime;
+		mfVitaeLineColorFadeTimer = 0;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetVitaeLinesColor(cColor aCol)
+	{
+		cSubMeshEntity@ pVitaeLines = cLux_ID_SubMeshEntity(m_idVitaeLinesMesh);
+		if (pVitaeLines !is null) pVitaeLines.SetIlluminationColor(aCol);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetPodVolume(float afVolume, float afFadeSpeed)
+	{
+		mfSoundVolume = afVolume;
+				
+		cSoundEntity@ pSound;
+		
+		@pSound = cLux_ID_SoundEntity(m_idPodStateVictimLoop);
+		if (pSound !is null) pSound.FadeVolumeMul(mfSoundVolume, afFadeSpeed);
+		
+		@pSound = cLux_ID_SoundEntity(m_idPodStateVictimLoop2);
+		if (pSound !is null) pSound.FadeVolumeMul(mfSoundVolume, afFadeSpeed);
+		
+		@pSound = cLux_ID_SoundEntity(m_idPodStateMachineLoop);
+		if (pSound !is null) pSound.FadeVolumeMul(mfSoundVolume, afFadeSpeed);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool mbActive = true;
+	float mfActivationDelay = 0;
+	tString msVoiceTrack = "";
+	
+	eTorturePodState mState = eTorturePodState_None;
+	eTorturePodState mPrevState = eTorturePodState_None;
+	float mfStateStartTimer = 0;
+	float mfStateEndTimer = 0;
+	float mfStateTimer = 0;
+	float mfPulseTimer = 0;
+	
+	tID m_idPodMesh = tID_Invalid;
+	bool mbFadePodColor = false;
+	cColor mPodFadeColor_Start = cColor(0);
+	cColor mPodFadeColor_End = cColor(0);
+	float mfPodColorFadeTimer = 0;
+	float mfPodColorFadeTime = 0;
+	array<tID> mvPodLights;
+	tID m_idPodStateVictimLoop = tID_Invalid;
+	tID m_idPodStateVictimLoop2 = tID_Invalid;
+	tID m_idPodStateMachineLoop = tID_Invalid;
+	bool mbUseCustomSoundRadius = false;
+	float mfCustomSoundRadius_Min = 12;
+	float mfCustomSoundRadius_Max = 1;
+	float mfSoundVolume = 1.0f;
+	
+	tID m_idVitaeLinesMesh = tID_Invalid;
+	cColor mVitaeLinesOrigColor = cColor(0);
+	bool mbFadeVitaeLinesColor = false;
+	cColor mVitaeLineFadeColor_Start = cColor(0);
+	cColor mVitaeLineFadeColor_End = cColor(0);
+	float mfVitaeLineColorFadeTimer = 0;
+	float mfVitaeLineColorFadeTime = 0;
+	bool mbUseMachineSounds = true;
+
+	//------------------------------------------------------------
+}

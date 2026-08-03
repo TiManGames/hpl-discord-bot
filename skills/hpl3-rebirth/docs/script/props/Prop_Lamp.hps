@@ -1,0 +1,497 @@
+#include "interfaces/Prop_Interface.hps"
+#include "player/Player_Types.hps"
+#include "helper_items.hps"
+
+#include "interfaces/UserComponent_Interface.hps"
+#include "custom/components/ComponentInterfaces_Custom.hps"
+#include "helpers/helper_player.hps"
+#include "helpers/helper_modules.hps"
+#include "custom/helpers/helper_player_custom.hps"
+
+class cScrPropLamp : iScrProp, iScrProp_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		mbLit = true;
+		mbFlickerOnState = false;
+		mfFlickerTimer = -1;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		mbCanBeLitByPlayer = apVars.GetVarBool("CanBeLitByPlayer", true);
+		mbCanBeSnuffedOutByPlayer = apVars.GetVarBool("CanBeSnuffedOutByPlayer", false);
+		mbRequiresOil = apVars.GetVarBool("RequiresOil", false);
+		mbRequiresMatches = apVars.GetVarBool("RequiresMatches", false);
+		mbLightByDistance = apVars.GetVarBool("LightByDistance", false);
+		mfLightDistance = apVars.GetVarFloat("LightDistance", 5.0f);
+		
+		SetLit(apInstanceVars.GetVarBool("Lit", true), false);
+		mbConnectionDelay = apInstanceVars.GetVarBool("ConnectionDelay", true);
+		
+		bool bUseCustomFlicker = apInstanceVars.GetVarBool("UseCustomFlickerSettings", false);
+		cResourceVarsObject@ pFlickerVars = bUseCustomFlicker ? apInstanceVars : apVars;
+		
+		mfFlickerMinOnTimer = pFlickerVars.GetVarFloat("FlickerMinOnTime", 0.05f);
+		mfFlickerMaxOnTimer = pFlickerVars.GetVarFloat("FlickerMaxOnTime", 1.f);
+		mfFlickerMinOffTimer = pFlickerVars.GetVarFloat("FlickerMinOffTime", 0.025f);
+		mfFlickerMaxOffTimer = pFlickerVars.GetVarFloat("FlickerMaxOffTime", 0.15f);
+		mbFade = pFlickerVars.GetVarBool("FlickerFade", false);
+		msFlickerOnSound = pFlickerVars.GetVarString("FlickerOnSound", "");
+		msFlickerOffSound = pFlickerVars.GetVarString("FlickerOffSound", "");
+		msFlickerOnPS = pFlickerVars.GetVarString("FlickerOnPS", "");
+		msFlickerOffPS = pFlickerVars.GetVarString("FlickerOffPS", "");
+		mfFlickerOffAlpha = pFlickerVars.GetVarFloat("FlickerOffAlpha", 0);
+		
+		SetFlickerActive(apInstanceVars.GetVarBool("FlickerActive", false));
+
+		//////////////
+		// Preload particles
+		cLux_PreloadParticleSystem(msFlickerOnPS);
+		cLux_PreloadParticleSystem(msFlickerOffPS);
+		
+		//mBaseObj.SetSaveDataIsUpdated(false);
+		
+		// Add component (Agents will use this)
+		@mpLampComponent = UserComponent_LampComponent_Create(mBaseObj);
+		
+		if (mbLightByDistance) mBaseObj.SetAutoSleep(false);
+		
+		mBaseObj.SetFullGameSave(true);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnUpdate(float afTimeStep)
+	{
+		UpdateFlicker(afTimeStep);
+		UpdateDistanceLightUp(afTimeStep);
+	}
+	
+	//------------------------------------------------------------
+	
+	/*void OnPostUpdate(float afTimeStep)
+	{
+	
+	}*/
+	
+	//------------------------------------------------------------
+	
+	void ResetProperties()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void BeforeEntityDestruction()
+	{
+	}
+		
+	//------------------------------------------------------------
+	
+	void OnStartMove()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void ChangeState(int alState, bool abEffects, bool abChangeConnectionState = true)
+	{
+		mBaseObj.ChangeConnectionState(alState);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnConnectionStateChange(iLuxEntity@ apEntity,int alState)
+	{
+		mlConnectionState = alState;		
+		mBaseObj.Timer_Add(0, mbConnectionDelay ? cMath_RandRectf(0.1,0.3f) : 0.f, "Timer_LightUp");
+	}
+	
+	//------------------------------------------------------------
+	
+	void Timer_LightUp(uint64 alID)
+	{
+		SetLit(mlConnectionState == 1, true);
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnUpdateAutoSleep()
+	{
+		return mfFlickerTimer < 0;
+	}
+		
+	//------------------------------------------------------------
+	
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnSetActive(bool abX)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void GiveDamage(iPhysicsBody@ apBodyHit, const cVector3f&in avOrigin, const cVector3f&in avHitPos, cLuxDamageProperties@ apDamageProps)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnHealthChange()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	//NOTE: This is only useable if SetScriptCollisionCallbackActive is true
+	void OnPhysicsCollision(iPhysicsBody @apBody, iPhysicsBody @apCollideBody, cPhysicsContactData&in apContactData)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// LAMP SPECIFIC ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetLit()
+	{
+		SetLit(cScript_GetGlobalArgBool(0), cScript_GetGlobalArgBool(1));
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetLit(bool abLit, bool abEffects)
+	{
+		if(mbLit == abLit) return;
+		
+		mBaseObj.SetSaveDataIsUpdated(true);
+		
+		mbLit = abLit;
+	
+		mBaseObj.SetEffectsActive(mbLit, abEffects);
+		
+		if (mbLit)
+		{
+			ChangeState(1,abEffects,false);
+		}
+		else
+		{
+			ChangeState(-1,abEffects,false);
+			mBaseObj.SetCustomEffectsOffAlpha(0);
+		}	
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetLit()
+	{
+		cScript_SetGlobalReturnBool(mbLit);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetFlickerActive()
+	{
+		SetFlickerActive(cScript_GetGlobalArgBool(0));
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetFlickerActive(bool abActive)
+	{
+		mBaseObj.SetSaveDataIsUpdated(true);
+		
+		if (abActive && mfFlickerTimer < 0)
+		{
+			mbFlickerOnState = true;
+			mfFlickerTimer = cMath_RandRectf(mfFlickerMinOnTimer, mfFlickerMaxOnTimer);
+		}
+		else if (!abActive)
+		{
+			mfFlickerTimer = -1;
+			if (mbLit) mBaseObj.SetEffectsActive(true, mbFade);
+		}
+
+		mBaseObj.WakeUp();
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetupFlicker()
+	{
+		SetupFlicker(cScript_GetGlobalArgFloat(0), cScript_GetGlobalArgFloat(1), cScript_GetGlobalArgFloat(2), cScript_GetGlobalArgFloat(3),
+					 cScript_GetGlobalArgBool(4), cScript_GetGlobalArgString(5), cScript_GetGlobalArgString(6), cScript_GetGlobalArgString(7), 
+					 cScript_GetGlobalArgString(8));
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetCanBeHighlighted()
+	{			
+		bool bRet = ((mbLit == false && mbCanBeLitByPlayer) || (mbLit && mbCanBeSnuffedOutByPlayer));
+		cScript_SetGlobalReturnBool(bRet);
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupFlicker(float afMinOnTime, float afMaxOnTime, float afMinOffTime, float afMaxOffTime, bool abFade,
+					  const tString &in asOnSound, const tString &in asOffSound, const tString &in asOnPS, const tString &in asOffPS)
+	{
+		mfFlickerMinOnTimer = afMinOnTime;
+		mfFlickerMaxOnTimer = afMaxOnTime;
+		mfFlickerMinOffTimer = afMinOffTime;
+		mfFlickerMaxOffTimer = afMaxOffTime;
+		mbFade = abFade;
+		msFlickerOnSound = asOnSound;
+		msFlickerOffSound = asOffSound;
+		msFlickerOnPS = asOnPS;
+		msFlickerOffPS = asOffPS;
+
+		mBaseObj.WakeUp();
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateFlicker(float afTimeStep)
+	{
+		if (mfFlickerTimer < 0 || !mbLit) return;
+		
+		mfFlickerTimer -= afTimeStep;
+		if (mfFlickerTimer <= 0)
+		{
+			tString sSound;
+			tString sParticleSystem;
+			
+			///////////////////////////////
+			// OFF
+			if (mbFlickerOnState)
+			{
+				mfFlickerTimer = cMath_RandRectf(mfFlickerMinOffTimer, mfFlickerMaxOffTimer);
+				sSound = msFlickerOffSound;
+				sParticleSystem = msFlickerOffPS;
+				
+				mBaseObj.SetCustomEffectsOffAlpha(mfFlickerOffAlpha);
+			}
+			
+			///////////////////////////////
+			// ON
+			else
+			{
+				mfFlickerTimer = cMath_RandRectf(mfFlickerMinOnTimer, mfFlickerMaxOnTimer);
+				sSound = msFlickerOnSound;
+				sParticleSystem = msFlickerOnPS;
+				
+				mBaseObj.SetCustomEffectsOffAlpha(0);
+			}
+			
+			mBaseObj.SetEffectsActive(!mbFlickerOnState, mbFade);
+			
+			mbFlickerOnState = !mbFlickerOnState;	
+
+			cWorld @pWorld = mBaseObj.GetMap().GetWorld();
+			
+			///////////////////////
+			// Play sound
+			if(sSound != "")
+			{
+				cSoundEntity @pSound = pWorld.CreateSoundEntity(mBaseObj.GetName() + "_FlickerSound", sSound, true);
+				if(pSound !is null)
+				{
+					pSound.SetPosition(mBaseObj.GetPosition());
+					if(pSound.IsOneShot()==false) pSound.Stop(false);
+				}
+			}
+			
+			///////////////////////
+			// Create particles
+			if(sParticleSystem != "")
+			{	
+				cParticleSystem @pPS = pWorld.CreateParticleSystem(mBaseObj.GetName() + "_FlickerPS", sParticleSystem, cVector3f(1), true, false);
+				if (pPS !is null) mBaseObj.GetAttachEntity().AddChild(pPS);
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateDistanceLightUp(float afTimeStep)
+	{
+		if (mbLightByDistance == false) return;
+		
+		mfDistanceCheckTimer -= afTimeStep;
+		if (mfDistanceCheckTimer < 0)
+		{
+			float fDist = cMath_Vector3Dist(mBaseObj.GetPosition(), Player_GetPosition());
+			SetLit(fDist <= mfLightDistance, true);			
+			mfDistanceCheckTimer = fDist > mfLightDistance + 4.0f || fDist < mfLightDistance - 4.0f ? cMath_RandRectf(1.0f, 2.0f) : cMath_RandRectf(0.1f, 0.2f);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetRequiresOil()
+	{
+		cScript_SetGlobalReturnBool(mbRequiresOil);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetRequiresMatches()
+	{
+		cScript_SetGlobalReturnBool(mbRequiresMatches);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	bool CanInteract(int alType, iPhysicsBody@ apBody)
+	{
+		return ((mbLit == false && mbCanBeLitByPlayer) || (mbLit && mbCanBeSnuffedOutByPlayer)) && 
+			   mbLightByDistance == false && mBaseObj.IsEffectsFading() == false;
+	}
+	
+	//------------------------------------------------------------
+		
+	bool OnInteract(int alType, iPhysicsBody@ apBody, const cVector3f &in avFocusPos, const tString&in asData)
+	{
+		///////////////////////
+		// Light up
+		if (mbLit == false)
+		{
+			if (mbRequiresMatches)
+			{
+				if (Player_IsHoldingMatch() == false) 
+				{
+					if (Matches_GetCount() != 0)
+					{
+						Hint_ShowHint("Hints","HintMatchHowTo",true);
+						Hint_RemoveFromGiven("Hints", "HintMatchHowTo", 60.f * 20.f);
+					}
+					return false;
+				}
+
+				Match_IncreaseBurnTime();
+				
+				if (Match_IsBurnt())
+					Item_PutAway(Match_GetHand());
+			}
+			
+			if (mbRequiresOil)
+			{
+				if (Oil_GetCount() == 0) return false;
+				Item_ReduceContentCount("Oil", 1);
+			}
+			
+			SetLit(true, true);
+		}
+		///////////////////////
+		// Snuff out
+		else
+		{
+			SetLit(false, true);
+		}
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	int GetInteractIconId(int alType, iPhysicsBody@ apBody)
+	{
+		if (mbRequiresOil == false && mbRequiresMatches == false) 	return eCrossHairState_PushButton;
+		if (mbLit == false)											return eCrossHairState_UseMatch;
+		else														return eCrossHairState_SnuffOutLamp;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+		
+		/*apSet.DrawFont(tWString("Lamp: "+ mBaseObj.GetName()), apFont, cVector3f(5,afStartY,0), cVector2f(14), cColor(1,1) );
+		afStartY += 14;
+		
+		return afStartY;*/
+	}
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool mbConnectionDelay = true;
+	bool mbLit = true;
+	bool mbCanBeLitByPlayer = false;
+	bool mbCanBeSnuffedOutByPlayer = false;
+	bool mbRequiresOil = true;
+	bool mbRequiresMatches = true;
+	int mlConnectionState = 0;
+	
+	bool mbFlickerOnState = false;
+	float mfFlickerTimer = 0;
+	float mfFlickerMinOnTimer = 0.05f;
+	float mfFlickerMaxOnTimer = 1.f;
+	float mfFlickerMinOffTimer = 0.05f;
+	float mfFlickerMaxOffTimer = 0.3f;
+	float mfFlickerOffAlpha = 0.5f;
+	bool mbFade = false;
+	tString msFlickerOnSound;
+	tString msFlickerOffSound;
+	tString msFlickerOnPS;
+	tString msFlickerOffPS;
+	
+	bool mbLightByDistance = false;
+	float mfLightDistance = 5.0f;
+	float mfDistanceCheckTimer = -1.0f;
+	
+	[volatile] iScrLampComponent_Interface@ mpLampComponent = null;
+	
+	//------------------------------------------------------------
+}	

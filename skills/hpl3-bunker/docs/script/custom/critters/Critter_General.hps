@@ -1,0 +1,331 @@
+#include "interfaces/Critter_Interface.hps"
+#include "helpers/helper_player.hps"
+
+class cScrCritterGeneral : iScrCritter, iScrCritter_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init(){}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		mfGravityForce = apVars.GetVarFloat("GravityForce", 9);
+		mfWanderMul = apVars.GetVarFloat("WanderMul", 1);
+		mfNormalSpeed = apVars.GetVarFloat("NormalSpeed", 0.5f);
+		mfEscapeSpeed = apVars.GetVarFloat("EscapeSpeed", 2.f);
+		mfEscapeDistance = apVars.GetVarFloat("EscapeDistance", 4.f);
+		mfEscapeMul = apVars.GetVarFloat("EscapeMul", 0.1f);
+		mfIdleTime = apVars.GetVarFloat("IdleTime", 5.f);
+		mfMoveTime = apVars.GetVarFloat("MoveTime", 8.f);
+		mBaseObj.SetUseRayCollision(apVars.GetVarBool("UseRayCollision", false));
+		mBaseObj.SetAlignToGround(apVars.GetVarBool("AlignToGround", false));
+		mBaseObj.SetCanRunOnWalls(apVars.GetVarBool("CanRunOnWalls", false));
+		mBaseObj.SetIgnoreDynamicAvoidance(apVars.GetVarBool("IgnoreDynamicAvoidance", false));
+		mBaseObj.mfMaxTurnSpeed = apVars.GetVarFloat("MaxTurnSpeed", 2.f);
+		mBaseObj.mfTurnSpeedMul = apVars.GetVarFloat("TurnSpeedMul", 3.f);
+		mfTowardsCenterMul = apInstanceVars.GetVarFloat("TowardsCenterMul", 1);
+		mfFlockSeparation = apVars.GetVarFloat("FlockSeparation", 0.7f);
+		mfFlockAlignment = apVars.GetVarFloat("FlockAlignment", 0.5f);
+		mfFlockCohession = apVars.GetVarFloat("FlockCohesion", 0.5f);
+		mlMaxFlockMemberChecks = apVars.GetVarInt("MaxFlockMemberChecks", 6);
+		mbReactToPlayerLight = apVars.GetVarBool("ReactToPlayerLight", false);
+		mfLightEscapeDistMul = apVars.GetVarFloat("LightEscapeDistMul", 2.f);
+		mfWanderLength = apVars.GetVarFloat("WanderLength", 1.f);
+		mfWanderRadius = apVars.GetVarFloat("WanderRadius", 0.5f);
+		mfEscapeLength = apVars.GetVarFloat("EscapeLength", 1.f);
+		mfEscapeRadius = apVars.GetVarFloat("EscapeRadius", 0.5f);
+		
+		mbHandleStuck = apVars.GetVarBool("HandleStuck", false);
+		mfDeactivateIfStuckTime = apVars.GetVarFloat("DeactivateIfStuckTime", 10);
+		mbDeactivateWhileInView = apVars.GetVarBool("DeactivateWhileInView", false);
+		mbStopMovingIfStuck = apVars.GetVarBool("StopMovingIfStuck", true);
+		
+		mBaseObj.mlAnimState = 0;
+		mlMoveState = 0;
+		mfStateCount = cMath_RandRectf(0, 2);
+		mfLightReactionDelay = 0.5f;
+		mfTimeStuck = 0;
+		
+		@mpBackboneTail = cLux_CreateEntityComponent_BackboneTail(mBaseObj);
+		mpBackboneTail.LoadFromVariables(apVars);
+		mpBackboneTail.SetAddTrailFreq(apVars.GetVarFloat("Backbone_AddTrailFreq", 10.f));
+		mpBackboneTail.SetStiffness(apVars.GetVarFloat("Backbone_Stiffness", 1.f));
+		mpBackboneTail.SetMaxTrailSize(apVars.GetVarInt("Backbone_MaxTrailSize", 13));
+		
+		mvPrevPos = mBaseObj.GetPosition();
+		mfTimeSinceStuckStateChange = 0;
+		mbStuck = false;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnUpdate(float afTimeStep)
+	{
+		//////////
+		// Gravity
+		mBaseObj.mvGravityVel += cVector3f(0, -1 * mfGravityForce * afTimeStep, 0);
+	}
+	
+	void OnVariableUpdate(float afTimeStep)
+	{
+		////////////////////////
+		// React to lightsources
+		float fEscapeDistance = mfEscapeDistance;
+		
+		if (mbReactToPlayerLight)
+		{
+			bool bIsNearLightsource = Item_IsLightSourceActive();
+			mfLightReactionDelay = bIsNearLightsource ? mfLightReactionDelay - afTimeStep : 0.5f;
+			if (bIsNearLightsource && mfLightReactionDelay<0) fEscapeDistance*=mfLightEscapeDistMul;
+		}
+		
+		//////////////
+		// Wanter Mode
+		if(mBaseObj.GetDistanceToPlayer() > fEscapeDistance)
+		{
+			/////////////////
+			//State Switching
+			mfStateCount -= afTimeStep;
+			
+			if(mfStateCount < 0)
+			{
+				const float fMoveTime = cMath_RandRectf(mfMoveTime - (mfMoveTime * 0.5f), mfMoveTime + (mfMoveTime * 0.5f));
+				const float fIdleTime = cMath_RandRectf(mfIdleTime - (mfIdleTime * 0.5f), mfIdleTime + (mfIdleTime * 0.5f));
+				mfStateCount = 	mlMoveState==0 ? fMoveTime : fIdleTime;
+				mlMoveState = mlMoveState==0 ? 1 : 0;
+				
+				// Give a push in a direction to avoid some shaking.
+				if(mlMoveState == 1)
+					mBaseObj.mvWantedVel += mBaseObj.Move_GetWanderAdd2D(0.0f, 50.0f, afTimeStep);
+			}
+			
+			/////////
+			// Moving
+			if(mlMoveState == 1)
+			{
+				mBaseObj.mvWantedVel += mBaseObj.Move_GetWanderAdd2D(mfWanderLength, mfWanderRadius, afTimeStep) * mfWanderMul;
+				mBaseObj.mvWantedVel += mBaseObj.Move_GetFlockingAdd(mfTowardsCenterMul * 0.1f, 0.f, mfFlockSeparation, mfFlockAlignment * 0.1f, mfFlockCohession * 0.1f, mlMaxFlockMemberChecks, afTimeStep);
+			}
+			/////////
+			// Idling
+			else
+			{
+				mBaseObj.mvWantedVel += mBaseObj.Move_GetStopAdd(5, afTimeStep);
+			}
+			
+			mBaseObj.Move_ChangeMaxSpeed(mfNormalSpeed, 3.f, afTimeStep);
+		}
+		//////////////
+		// Escape Mode
+		else
+		{
+			mBaseObj.mvWantedVel += mBaseObj.Move_GetWanderAdd2D(mfEscapeLength, mfEscapeRadius, afTimeStep) * 0.1f;
+			mBaseObj.mvWantedVel += mBaseObj.Move_Normalize(mBaseObj.Move_GetTowardPlayerAdd(false, afTimeStep)) * -1.f;
+			
+			mBaseObj.Move_ChangeMaxSpeed(mfEscapeSpeed, 10.f, afTimeStep);
+		}
+		
+		if (mbHandleStuck==false) return;
+		
+		////////////////////////////
+		// Check if critter is stuck
+		cVector3f vDist = mBaseObj.GetPosition() - mvPrevPos;
+		float fDist = cMath_Vector3Dist(mvPrevPos, mBaseObj.GetPosition());
+		
+		float fSpeed = fDist/afTimeStep;
+		mvPrevPos = mBaseObj.GetPosition();
+		
+		//cLux_AddDebugMessage("fSpeed: " + fSpeed + " / " + mBaseObj.mvWantedVel.Length());
+		bool bIsStuck = cMath_Abs(fSpeed - mBaseObj.mvWantedVel.Length()) > 0.5;
+		
+		/////////////////////
+		// Stuck state buffer
+		if (mbStuck != bIsStuck)
+		{
+			mfTimeSinceStuckStateChange += afTimeStep;
+			if (bIsStuck && mfTimeSinceStuckStateChange > 1)	mbStuck = true;
+			else if (mfTimeSinceStuckStateChange > 2)			mbStuck = false;
+		}
+		else
+		{
+			mfTimeSinceStuckStateChange = 0;
+		}
+		
+		mfTimeStuck = mbStuck ? mfTimeStuck + afTimeStep : 0;
+		//cLux_AddDebugMessage("mbStuck: " + mbStuck);
+		
+		///////////////////
+		// Disable on stuck
+		if (mfDeactivateIfStuckTime > 0 && mfTimeStuck > mfDeactivateIfStuckTime)
+		{
+			if (mbDeactivateWhileInView)
+			{
+				mBaseObj.SetActive(false);
+				return;
+			}
+			else if (Entity_IsInPlayerFOV(mBaseObj.GetName())==false)
+			{
+				mBaseObj.SetActive(false);
+				return;
+			}
+		}
+		
+		////////////////
+		// Idle on stuck
+		if (mbStopMovingIfStuck && mbStuck)
+		{
+			mBaseObj.mvWantedVel = 0;
+			mlMoveState = 0;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetProperties()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void BeforeEntityDestruction()
+	{
+	}
+		
+	//------------------------------------------------------------
+	
+	void OnStartMove()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnConnectionStateChange(iLuxEntity@ apEntity,int alState)
+	{
+	}
+	
+		
+	//------------------------------------------------------------
+	
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnSetActive(bool abX)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void GiveDamage(iPhysicsBody@ apBodyHit, const cVector3f&in avOrigin, const cVector3f&in avHitPos, cLuxDamageProperties@ apDamageProps)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnHealthChange()
+	{
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	bool CanInteract(int alType, iPhysicsBody@ apBody)
+	{
+		return false;
+	}
+	
+	//------------------------------------------------------------
+		
+	bool OnInteract(int alType, iPhysicsBody@ apBody, const cVector3f &in avFocusPos, const tString&in asData)
+	{
+		return false;
+	}
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		//afStartY = cLux_DrawDebugText("Dist: "+mBaseObj.GetDistanceToPlayer(), afStartY);
+	
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	cLuxBackboneTail@ mpBackboneTail;
+	[nosave] float mfGravityForce;
+	[nosave] float mfNormalSpeed;
+	[nosave] float mfEscapeSpeed;
+	[nosave] float mfEscapeDistance;
+	[nosave] float mfIdleTime;
+	[nosave] float mfMoveTime;
+	[nosave] float mfWanderMul;
+	[nosave] float mfEscapeMul;
+	[nosave] float mfTowardsCenterMul;
+	[nosave] float mfFlockSeparation;
+	[nosave] float mfFlockAlignment;
+	[nosave] float mfFlockCohession;
+	[nosave] int mlMaxFlockMemberChecks;
+	[nosave] bool mbReactToPlayerLight;
+	[nosave] float mfLightEscapeDistMul;
+	[nosave] float mfWanderLength;
+	[nosave] float mfWanderRadius;
+	[nosave] float mfEscapeLength;
+	[nosave] float mfEscapeRadius;
+	[nosave] bool mbHandleStuck;
+	[nosave] float mfDeactivateIfStuckTime;
+	[nosave] bool mbDeactivateWhileInView;
+	[nosave] bool mbStopMovingIfStuck;
+	
+	int mlMoveState; //0=stop, 1=move
+	float mfStateCount;
+	float mfLightReactionDelay;
+	float mfTimeStuck;
+	bool mbStuck;
+	float mfTimeSinceStuckStateChange;
+	cVector3f mvPrevPos;
+	
+	//------------------------------------------------------------
+}	

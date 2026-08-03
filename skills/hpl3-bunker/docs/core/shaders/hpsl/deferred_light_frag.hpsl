@@ -1,0 +1,745 @@
+////////////////////////////////////////////////////////
+// Deferred G-Buffer Light - Fragment Shader
+//
+// A shader applied to the accumlation buffer, using the
+// G-buffer targets as input.
+//
+// Postion retrival from depth:
+// The position gvFarPlanePos is at the far plane and the far x,y and z postions can be thought of as a "trinagle"
+// The wanted position can also be thought of as a "triangle" with the same ratio as the far one. The ratio is expressed as
+// the stored depth value since it is wanted_pos.z/farplane.
+//	
+////////////////////////////////////////////////////////
+
+//--------------------------------------------------------------
+
+@ifdef UseShadowMap
+	@include helper_shadow_filter.hpsl
+@endif
+
+/////////////////////
+//Uniform varaibles
+
+cBuffer cLightArguments : 0
+{
+	cMatrixf a_mtxViewProjection;
+	cMatrixf a_mtxProjection;
+	cMatrixf a_mtxView;
+	cMatrixf a_mtxInvViewProjection;
+	cMatrixf a_mtxInvProjection;
+	cMatrixf a_mtxInvView;
+		
+	float afFarPlane;
+	float afNearPlane;
+	float afNearByFarPlane;
+	float afInvFarPlane;
+
+	cVector4f avScreenToFarPlane;
+	cVector2f avInvScreenSize;
+
+	cVector2f avFogStartAndLength;
+	cVector4f avFogColor;
+
+	cVector3f avViewSpaceUp;
+	float afFogFalloffExp;
+
+	cVector4f avShadowParams;
+	cVector2f avShadowMapSize;
+	int alInstanceOffset;
+	int alInstanceStride;	
+
+	@ifdef LightType_Directional
+		// Dir light specific
+		cMatrixf a_mtxDirectionLightGobo;
+		cMatrixf a_mtxLightViewProj[4];
+		
+		cVector4f avSplitOffsetMul;
+	
+		cVector3f avLightDirection;
+		int alSliceNum;
+		cVector3f avAmbientColorSky;
+		float afSliceDiv;
+		cVector3f avAmbientColorGround;
+		float afShadowDistance;
+	@endif
+};
+
+////////////////////
+//Textures
+uniform cTexture2D aDiffuseMap : 0;
+uniform cTexture2D aNormalMap : 1;
+
+@ifdef UseSpecular
+	uniform cTexture2D  aSpecMap_RG : 2;
+	uniform cTexture2D  aSpecMap_B_Pow : 3;
+@endif
+
+uniform cTexture2D  aDepthMap : 4;
+	
+////////////////////////////
+//Additional textures
+
+//Spot light
+@ifdef LightType_Spot || LightType_Directional
+	@ifdef UseGobo
+		uniform cTexture2D aGoboMap : 5;
+	@endif
+//Point light
+@else
+	@ifdef UseGobo
+		uniform cTextureCube aGoboMap : 5;
+	@endif
+@endif
+
+//Shadow map
+@ifdef UseShadowMap
+	uniform cTexture2D aShadowMap : 6;	
+
+	cVector2f FilterShadow(	in cVector4f avProjectedUV, in cVector4f avTransProjectedUV, cVector4f avParams
+	@ifdef LightType_Directional
+						, in cVector4f avBorderUV, float afBorderFade, float afShadowSlice
+	@endif
+						)
+	{
+		cVector2f vShadowAmount = cVector2f(1.0, 1.0);
+		
+		//////////////
+		// PCF blur filtering
+		@ifdef ShadowMapQuality_Low
+			vShadowAmount.x = PCF2x2(aShadowMap, avProjectedUV.xy, avProjectedUV.z, avShadowMapSize, avParams);
+		@elseif ShadowMapQuality_Medium																			 
+			vShadowAmount.x = PCF4x4(aShadowMap, avProjectedUV.xy, avProjectedUV.z, avShadowMapSize, avParams);
+		@elseif ShadowMapQuality_High																			 
+			vShadowAmount.x = PCF6x6(aShadowMap, avProjectedUV.xy, avProjectedUV.z, avShadowMapSize, avParams);
+		@endif
+
+		@ifdef LightType_Directional
+				
+		@ifdef ShadowMapQuality_Medium || ShadowMapQuality_High
+			// Fade between borders if needed
+			if(afBorderFade > 0)
+			{
+				float fBorderAmount;
+						
+				@ifdef ShadowMapQuality_Medium
+					fBorderAmount = PCF2x2(aShadowMap, avBorderUV.xy, avBorderUV.z, avShadowMapSize, avParams);
+				@elseif ShadowMapQuality_High
+					fBorderAmount = PCF4x4(aShadowMap, avBorderUV.xy, avBorderUV.z, avShadowMapSize, avParams);
+				@endif
+
+				vShadowAmount.x = mix(vShadowAmount.x, fBorderAmount, sqrt(afBorderFade));
+			}
+		@endif
+
+		@endif
+		
+		@ifdef UseTranslucency
+			vShadowAmount.y = ShadowDistance(aShadowMap, avTransProjectedUV.xy, avTransProjectedUV.z, avShadowMapSize, avParams);
+		@endif
+
+		return vShadowAmount;
+	}
+@endif
+
+cVector3f GetPos(in cVector2f avUV, float afDepth)
+{
+	return cVector3f(avUV.xy * avScreenToFarPlane.xy + avScreenToFarPlane.zw, -afFarPlane) * afDepth;
+}
+
+@ifdef GoboType_Specular
+	cVector3f ReflectRayPlane(in cVector3f avPos, in cVector3f avNormal, in cVector3f avLightPos, in cVector3f avLightDir, in float afLightSourceRadius, out float afT)
+	{			
+		cVector3f vRayDir = -reflect(normalize(avPos), avNormal);
+			
+		@ifdef LightType_Spot
+			afT = (dot(avLightDir, avLightPos) - dot(avPos, avLightDir) - afLightSourceRadius) / dot(vRayDir, avLightDir);
+		@else
+			afT = (dot(avLightDir, avLightPos)  dot(avPos, avLightDir)) / dot(vRayDir, avLightDir);
+		@endif
+
+		return avPos + vRayDir * afT;
+	}
+@endif
+
+cVector3f Fresnel(in cVector3f avSpecColor, float afEoH)
+{
+	float fFresnel = pow(1.0 - afEoH, 5.0);
+	return avSpecColor * (1.0 - fFresnel) + fFresnel * min(avSpecColor.g * 50.0, 1.0);
+}
+
+float Blinn(float afGloss, float afHoN)
+{
+	float fSpecPow = exp2(afGloss * 10.0) + 1.0;
+	return pow(afHoN, fSpecPow) * (fSpecPow + 8.0) * (1.0 / (8.0 * 3.141592));
+}
+
+//--------------------------------------------------------------
+
+///////////////////////////////
+// Main program
+void main(in cVector4f px_vPosition,
+@ifdef LightType_Spot || LightType_Point || LightType_Directional
+@ifdef LightType_Directional
+@else
+		  in cVector4f px_vLightPosScale,
+		  in float px_fFalloff,
+@endif
+		  in cVector4f px_vLightColor,
+@ifdef UseTranslucency
+		  in float px_fTranslucenyMul,
+@endif
+@ifdef UseSpecular && UseGobo && GoboType_Specular
+		  in float px_fLightSourceRadius,
+@endif
+@endif
+@ifdef UseShadowMap
+@ifdef UseShadowFade
+		  in cVector3f px_vShadowFade,
+@endif
+@endif
+@ifdef LightType_Spot
+		  in cMatrixf px_mtxLightViewProj,
+	@ifdef UseSpecular && UseGobo && GoboType_Specular
+		  in cVector3f px_vLightForward,
+		  in cVector3f px_vLightUp,
+		  in cVector3f px_vLightRight,
+	@elseif UseGobo
+	@else
+		  in float px_fSpotFalloffPow,
+	@endif
+@endif
+@ifdef BoxMask
+		  in float px_fMaskExclude,
+		  in cVector3f px_vMaskCenter,
+		  in cVector3f px_vMaskExtent,
+@endif
+@ifdef DebugComplexity
+		  in float px_fComplexity,
+@endif
+		  out cVector4f out_vColor : 0)
+{
+	/////////////////////////////////
+	//Get values from samplers
+	cVector2l vMapCoords = cVector2l(px_vPosition.xy);
+	float fDepth = load(aDepthMap, vMapCoords, 0).x;
+
+	if(fDepth == 1.0) discard;
+
+	cVector4f vColorVal =  sample(aDiffuseMap, px_vPosition.xy * avInvScreenSize);
+	cVector4f vNormalDepthVal = load(aNormalMap, vMapCoords, 0);
+	vNormalDepthVal.w = fDepth;
+
+	/////////////////////////////////
+	// Get postion
+	cVector3f vPos = GetPos(px_vPosition.xy, fDepth);
+		
+	/////////////////////////////////
+	// Light direction and attenuation
+	@ifdef LightType_Directional
+		cVector3f vLightDir = avLightDirection;
+		float fAttenuatuion = 1.0;
+	@else
+		cVector3f vLightDir = px_vLightPosScale.xyz - vPos;
+		float fDistance = sqrt(dot(vLightDir,vLightDir));
+		float fAttenuatuion =  pow(1.0 - min(fDistance * px_vLightPosScale.w, 1.0), px_fFalloff);	
+		vLightDir /= fDistance;
+	@endif
+
+	@ifdef BoxMask
+		////////////
+		// Check if position is outside of box mask
+		cVector3f vMaskDelta = mul(a_mtxInvView, cVector4f(vPos, 1)).xyz - px_vMaskCenter;
+		vMaskDelta = abs(vMaskDelta * 2.0 / px_vMaskExtent);
+
+		float fMaskMul = step(max(max(vMaskDelta.x, vMaskDelta.y), vMaskDelta.z), 1.0);
+		if(px_fMaskExclude > 0) fMaskMul = 1.0 - fMaskMul;
+		fAttenuatuion *= fMaskMul;
+		
+		@ifdef LightType_Directional
+			if(fAttenuatuion <= 0.0) discard;
+		@endif
+	@endif
+
+	@ifdef LightType_Point
+		if(fAttenuatuion <= 0.0) discard;
+	@endif
+
+	/////////////////////////////////
+	//Unpack normal and normalize (if needed)
+	cVector3f vNormal = vNormalDepthVal.xyz * 2.0 - 1.0;
+	
+	@ifdef UseSpecular || UseTranslucency
+		vNormal = normalize(vNormal);
+		cVector3f vEye = -normalize(vPos);
+	@endif
+	
+	//////////////////////////////
+	// Spot attentuation / gobo
+	@ifdef LightType_Directional
+		// Apply shadow bias in the normals direction
+		@ifdef UseGobo
+			cVector4f vGoboUv = mul(a_mtxDirectionLightGobo, cVector4f(vPos,1.0));
+			cVector4f vGoboVal = sample(aGoboMap, vGoboUv.xy);
+		@endif
+	@elseif LightType_Spot
+		// Apply normal based bias
+		float fOffset = (1.0 - dot(vLightDir, vNormal.xyz)) * 0.005f;
+		
+		cVector4f vProjectedUv = mul(px_mtxLightViewProj, cVector4f(vPos + vNormal * fOffset,1.0)); 
+		vProjectedUv = cVector4f(vProjectedUv.xyz, 1.0) / abs(vProjectedUv.w);
+
+		@ifdef UseGobo
+			//////////
+			// Apply near clip and outside of bounds
+			cVector2f fBounds = min(vProjectedUv.xy, cVector2f(1.0, 1.0) - vProjectedUv.xy);
+			fAttenuatuion *= clamp(vProjectedUv.z * 128.0, 0.0, 1.0) * 
+							 clamp((1.0 - vProjectedUv.z) * 128.0, 0.0, 1.0) * 
+							 float(min(fBounds.x, fBounds.y) > 0.0);
+
+			if(fAttenuatuion <= 0.0) discard;
+						
+			// Automatic ddx/ddy would cause artifact since fDepth can vary between pixels
+			// Use a quick custom way to calculcate the delta position. This is not correct but doesnt matter since gobos are blurry
+			cVector4f vPosDelta = cVector4f(vPos.xy + avScreenToFarPlane.xy * fDepth, vPos.z, 1.0);
+			cVector2f vUVDelta = vProjectedUv.xy - mul(px_mtxLightViewProj, vPosDelta).xy * vProjectedUv.w;
+
+			cVector4f vGoboVal = sampleGrad(aGoboMap, cVector2f(1.0, 1.0) - vProjectedUv.xy, vUVDelta, vUVDelta);
+
+			@ifdef GoboType_Diffuse 
+			@else
+				if(vGoboVal.w <= 0.5f / 255.0f) discard;
+			@endif
+		@else
+			//////////
+			// Apply near clip
+			fAttenuatuion *=	pow(max(0.0, 1.0 - distance(vProjectedUv.xy, cVector2f(0.5, 0.5)) * 2.0), px_fSpotFalloffPow);
+								clamp(vProjectedUv.z * 128.0, 0.0, 1.0) * 
+								clamp((1.0 - vProjectedUv.z) * 128.0, 0.0, 1.0);
+
+			if(fAttenuatuion <= 0.0) discard;
+		@endif
+	//////////////////////////////
+	//Point gobo
+	@else
+		@ifdef UseGobo
+			cVector4f vWorldLightDir = mul(a_mtxInvView, cVector4f(vLightDir,0.0));
+			cVector4f vGoboVal = sample(aGoboMap, vWorldLightDir.xyz);
+		@endif
+	@endif
+	
+		 
+	////////////////////////////////////////////
+	// Ambient light
+	@ifdef LightType_Directional
+		float fUpAmount = dot( avViewSpaceUp, vNormal.xyz)*0.5 + 0.5;
+		cVector3f vAmbColor = vColorVal.xyz * mix(avAmbientColorGround, avAmbientColorSky, fUpAmount);
+	@endif
+	
+	/////////////////////////////////
+	//Calculate diffuse color
+	float fLDotN = dot( vLightDir, vNormal.xyz);
+	cVector3f vDiffuse = vColorVal.xyz * float(px_vLightColor.w >= 0.0);
+	cVector3f vSpecular = cVector3f(0, 0, 0);
+	
+	//////////////
+	// Translucency
+	cVector3f vTranslucent = cVector3f(0.0, 0.0, 0.0);
+
+	float fFrontLight = max(0.0, fLDotN);
+	vDiffuse *= fFrontLight;
+
+	@ifdef UseTranslucency
+		const cVector3f kvSkinColor = cVector3f(1.12, 0.42, 0.31) * cVector3f(1.12, 0.42, 0.31);
+		const cVector3f kvInvSkinColor = 1.0 / kvSkinColor;
+
+		float fSkinShader = float(vColorVal.w > 0.5);
+		float fTranslucencyAmount = (vColorVal.w - fSkinShader * 0.5) * 2.0;
+		cVector3f vSubColor = kvSkinColor;
+
+		if(fTranslucencyAmount > 0.0)
+		{
+			/////////////
+			// Get subsurface color
+			if(fSkinShader == 0.0f)
+			{
+				//////////////
+				// Calculate subcolor by satuating the diffuse
+				vSubColor = vColorVal.rgb - min(vColorVal.r, min(vColorVal.g, vColorVal.b)) * 0.5;
+				vSubColor = vSubColor * vSubColor / dot(vSubColor, vSubColor);
+			}
+			else
+			{
+				//////////
+				// Use skin color
+				vSubColor = kvSkinColor;
+			}
+
+			//////////////
+			// Apply wrapped light with energy conservation
+			const float kfWrap = 0.35;
+			const float kfWrapInv = 1.0 / (1.0 + kfWrap * kfWrap + 2.0 * kfWrap);
+			float fBacklight = clamp((-fLDotN + kfWrap) * kfWrapInv, 0.0, 1.0) * px_fTranslucenyMul;
+
+			@ifdef UseShadowMap
+				/////////////////
+				// Get color and fade from shadow map
+				vTranslucent = vColorVal.xyz * fBacklight * min(1.0, fTranslucencyAmount * 16.0);			
+			@else
+				//////////////////
+				// If there is no shadow map do GGX scatter distribution toward the angle of the light source
+				float fEoL = clamp(-dot(vEye, vLightDir + vNormal.xyz * 0.125), 0.0, 1.0);
+				float fD = (fEoL * kfWrap - fEoL) * fEoL + 1.0;
+				float fTransport = 0.2 * fBacklight / (fD * fD);	
+
+				if(fSkinShader > 0.0)
+				{ 
+					const cVector3f kSkinTranslucencyMul = kfWrap / (1.0 + exp2(-32.0 * kvInvSkinColor));
+					vTranslucent = exp2(-32.0 * fBacklight * fBacklight * kvInvSkinColor) * kSkinTranslucencyMul;
+				}
+				else
+				{
+					vTranslucent = vSubColor;
+				}
+
+				vTranslucent *= vColorVal.xyz * fTransport * fTranslucencyAmount;
+			@endif
+		}
+	@endif
+	
+	/////////////////////////////////
+	//Calculate specular amount
+	@ifdef UseSpecular
+		cVector4f vSpecVal;
+		vSpecVal.xy = sample(aSpecMap_RG, px_vPosition.xy * avInvScreenSize).rg;
+		vSpecVal.zw = sample(aSpecMap_B_Pow, px_vPosition.xy * avInvScreenSize).rg;
+		
+		@ifdef GoboType_Specular
+			@ifdef LightType_Spot
+				cVector3f vRayHit[5];
+				cVector2f vSourceUV[5];		
+				float fT = 0;
+				
+				///////////////
+				// Get the main ray
+				vRayHit[0] = ReflectRayPlane(vPos, vNormal, px_vLightPosScale.xyz, px_vLightForward, px_fLightSourceRadius, fT);
+
+				vSpecVal.w = vSpecVal.w * 0.5;
+				float fGradient = mix(0.5, 0.5 / (vSpecVal.w * vSpecVal.w + 1e-5f), clamp(-0.25 - fT, 0.0, 1.0));
+
+				cVector3f vDelta = (px_vLightPosScale.xyz - vRayHit[0]);
+				vSourceUV[0].x = dot(vDelta, px_vLightRight) * 0.5 + 0.5;
+				vSourceUV[0].y = dot(vDelta, px_vLightUp) * 0.5 + 0.5;
+				
+				float fBorder = max(abs(vSourceUV[0].x - 0.5), abs(vSourceUV[0].y - 0.5));
+				float fBorderLimit = 0.6f;
+
+				if(fBorder < fBorderLimit && fT < 0.0f)
+				{
+					@ifdef Gobo_Derivate
+						/////////////
+						// Get dx and dy of the ray
+						cVector4f vND[4];
+						vND[0] = vNormalDepthVal + dFdx(vNormalDepthVal); 
+						vND[1] = vNormalDepthVal - dFdx(vNormalDepthVal); 
+						vND[2] = vNormalDepthVal + dFdy(vNormalDepthVal); 
+						vND[3] = vNormalDepthVal - dFdy(vNormalDepthVal); 
+					@else
+						/////////////
+						// Get dx and dy of the ray, using the backbuffer, slower but higher quality
+						cVector4f vND[4];
+						vND[0] = load(aNormalMap, vMapCoords + cVector2l(1, 0)) * 2.0 - 1.0;
+						vND[1] = load(aNormalMap, vMapCoords - cVector2l(1, 0)) * 2.0 - 1.0;
+						vND[2] = load(aNormalMap, vMapCoords + cVector2l(0, 1)) * 2.0 - 1.0;
+						vND[3] = load(aNormalMap, vMapCoords - cVector2l(0, 1)) * 2.0 - 1.0;
+						vND[0].w = load(aDepthMap, vMapCoords + cVector2l(1, 0)).x;
+						vND[1].w = load(aDepthMap, vMapCoords - cVector2l(1, 0)).x;
+						vND[2].w = load(aDepthMap, vMapCoords + cVector2l(0, 1)).x;
+						vND[3].w = load(aDepthMap, vMapCoords - cVector2l(0, 1)).x;
+					@endif
+
+					float fTO;
+					vRayHit[1] = ReflectRayPlane(GetPos(px_vPosition.xy + cVector2f(1, 0), vND[0].w), vND[0].xyz, px_vLightPosScale.xyz, px_vLightForward, px_fLightSourceRadius, fTO);
+					vRayHit[2] = ReflectRayPlane(GetPos(px_vPosition.xy - cVector2f(1, 0), vND[1].w), vND[1].xyz, px_vLightPosScale.xyz, px_vLightForward, px_fLightSourceRadius, fTO);
+					vRayHit[3] = ReflectRayPlane(GetPos(px_vPosition.xy + cVector2f(0, 1), vND[2].w), vND[2].xyz, px_vLightPosScale.xyz, px_vLightForward, px_fLightSourceRadius, fTO);
+					vRayHit[4] = ReflectRayPlane(GetPos(px_vPosition.xy - cVector2f(0, 1), vND[3].w), vND[3].xyz, px_vLightPosScale.xyz, px_vLightForward, px_fLightSourceRadius, fTO);
+
+					for(int i= 1; i < 5; ++i)
+					{
+						vDelta = (px_vLightPosScale.xyz - vRayHit[i]);
+						vSourceUV[i].x = dot(vDelta, px_vLightRight) * 0.5 + 0.5;
+						vSourceUV[i].y = dot(vDelta, px_vLightUp) * 0.5 + 0.5;
+					}
+
+					vSpecular = sampleGrad(aGoboMap, vSourceUV[0], 
+													 (vSourceUV[1] - vSourceUV[2]) * fGradient, 
+													 (vSourceUV[3] - vSourceUV[4]) * fGradient).xyz;
+
+					////////////
+					// Apply geometry edge anti-aliasing
+					cVector4f vDiff = (cVector4f(vND[0].w, vND[1].w, vND[2].w, vND[3].w) - cVector4f(fDepth)) * afFarPlane;
+					vSpecular *= inversesqrt(1.0 + dot(vDiff, vDiff) * 128.0);
+					vSpecular *= min(1.0, (fBorderLimit - fBorder) * 10.0);
+				}
+				@ifdef GoboType_Diffuse 
+				@else
+				else
+				{
+					discard;
+				}
+				@endif
+
+				float fNoE = clamp(abs(dot(vNormal.xyz, vEye.xyz)) + 1e-5f, 0.0, 1.0);
+				cVector3f vSpecIntensity = Fresnel(vSpecVal.xyz, fNoE);
+								
+				vSpecular *= vSpecIntensity.xyz * abs(px_vLightColor.w) * px_vLightColor.xyz * min(fFrontLight * 32.0, 1.0);
+			@else
+				float fT;
+				cVector3f vRayHit = ReflectRayPlane(vPos, vNormal, px_vLightPosScale.xyz, vLightDir, px_fLightSourceRadius, fT);
+				float fGradient = mix(1.0, 1.0 / vSpecVal.w, clamp(-fT, 0.0, 1.0));
+
+				cVector4f vSpecGoboDir = mul(a_mtxInvView, cVector4f(vRayHit - px_vLightPosScale.xyz, 0.0));
+
+				vSpecular = smoothstep(px_fLightSourceRadius * 1.2 * fGradient, px_fLightSourceRadius * 0.8 * fGradient, distance(vRayHit, px_vLightPosScale.xyz)) *
+									  sample(aGoboMap, vSpecGoboDir.xyz).xyz;
+				
+				float fNoE = clamp(abs(dot(vNormal.xyz, vEye.xyz)) + 1e-5f, 0.0, 1.0);
+				cVector3f vSpecIntensity = Fresnel(vSpecVal.xyz, fNoE);
+
+				vSpecular *= vSpecIntensity.xyz * abs(px_vLightColor.w) * px_vLightColor.xyz * step(fT, 0.0) * min(fFrontLight * 32.0, 1.0);
+			@endif
+		@else
+			cVector3f vHalfVec = normalize(vLightDir + vEye);
+			float fNoH = max(dot(vHalfVec, vNormal.xyz), 0.0);
+			float fEoH = max(dot(vEye, vHalfVec.xyz), 0.0);
+
+			float fSpec = Blinn(vSpecVal.w, fNoH);
+			cVector3f vSpecIntensity = Fresnel(vSpecVal.xyz, fEoH);
+
+			vSpecular = abs(px_vLightColor.w) * min(vSpecIntensity * fSpec, cVector3f(1.0, 1.0, 1.0)) * min(fFrontLight * 32.0, 1.0);
+		@endif
+	@endif
+	
+	/////////////////////////////////
+	// Caclulate shadow (if any)
+	@ifdef UseShadowMap
+		
+		cVector2f vShadowAmount = cVector2f(0.0, 0.0);
+		cVector4f vShadowParams = avShadowParams;
+
+		@ifdef LightType_Directional
+			int lSlice = 0;
+			float fBorderFade = 0;
+			float fShadowSlice = 0;
+		@endif
+
+		float fShadowFade = 0.0;
+
+		@ifdef UseShadowFade
+			fShadowFade = clamp((length(vPos) - px_vShadowFade.x) * px_vShadowFade.y, 0.0, 1.0); 
+		@endif
+
+		if(dot(vDiffuse + vSpecular + vTranslucent, vDiffuse + vSpecular + vTranslucent) > 0.0)
+		{
+			float fDistance = length(vPos);
+
+			@ifdef LightType_Directional
+		
+				cVector4f vProjectedUv = cVector4f(-1, -1, -1, -1);
+				cVector4f vBorderUV = cVector4f(0, 0, 0, 0);
+				cVector4f vTransProjectedUv = cVector4f(-1, -1, -1, -1);
+
+				if(fDistance > afShadowDistance)
+				{
+					// Skip shadow mapping
+					fShadowFade = 1.0f;
+				}
+				else
+				{
+					////////////
+					// Get projected uv and shadow fade
+					fShadowFade = smoothstep(afShadowDistance, afShadowDistance * 0.95, fDistance);
+					float fSliceFade = 0.0;
+					float fFade = 0.0;
+					cVector3f vFade = cVector3f(0, 0, 0);
+
+					for(int i = 0; i < 4 && i < alSliceNum; ++i)
+					{
+						lSlice = i;
+						vProjectedUv = mul(a_mtxLightViewProj[i], cVector4f(vPos,1.0));
+						vProjectedUv = cVector4f(vProjectedUv.xyz, 1.0) / vProjectedUv.w;
+						vTransProjectedUv = mul(a_mtxLightViewProj[i], cVector4f(vPos - vNormal * 0.01,1.0));
+
+						vFade = abs(vProjectedUv.xyz - 0.5);
+						fFade = max(vFade.x, vFade.y);
+						fSliceFade = step(max(fFade, vFade.z), 0.5);
+
+						if(fSliceFade > 0.0) break;
+					}
+
+					////////////
+					// Transform uv to coords that match the slice
+					vProjectedUv = vProjectedUv * cVector4f(afSliceDiv, 1.0, 1.0, 1.0) + cVector4f(lSlice * afSliceDiv, 0.0, 0.0, 0.0);
+					vTransProjectedUv = cVector4f(vTransProjectedUv.xyz, 1.0) / vTransProjectedUv.w;
+					vTransProjectedUv = vTransProjectedUv * cVector4f(afSliceDiv, 1.0, 1.0, 1.0) + cVector4f(lSlice * afSliceDiv, 0.0, 0.0, 0.0);
+
+					//////////////
+					// Do a border check and use the lower resolution slice if at the border and inside that slice
+					@ifdef ShadowMapQuality_Low
+					@else
+						float fBorderLimit = 48.0 * avSplitOffsetMul[0];
+						
+						fBorderFade = clamp((fFade - (0.5 - fBorderLimit * 1.5)) / fBorderLimit, 0.0, 1.0);
+						if(lSlice < (alSliceNum - 1) && fBorderFade > 0)
+						{
+							vBorderUV = mul(a_mtxLightViewProj[lSlice + 1], cVector4f(vPos,1.0));
+							vBorderUV = cVector4f(vBorderUV.xyz, 1.0) / vBorderUV.w;
+						
+							vFade = abs(vBorderUV.xyz - 0.5);
+							fFade = max(vFade.x, max(vFade.y, vFade.z));
+							vBorderUV = vBorderUV * cVector4f(afSliceDiv, 1.0, 1.0, 1.0) + cVector4f((lSlice + 1) * afSliceDiv, 0.0, 0.0, 0.0);
+						
+							if(fFade > 0.5)
+							{
+								fBorderFade = 0.0;
+							}
+							else if(fBorderFade == 1.0)
+							{
+								vProjectedUv = vBorderUV;
+								fBorderFade = 0.0;
+								lSlice++;
+							}
+						}
+					@endif
+					
+
+					////////////
+					// Apply fade from slice
+					fShadowFade *= fSliceFade;
+					fShadowFade = 1.0 - fShadowFade;
+
+					if(lSlice > 0) vShadowParams *= avSplitOffsetMul[lSlice];
+					fShadowSlice = float(lSlice) + fBorderFade;
+
+					@ifdef DebugDirLight
+					if(fSliceFade > 0.0)
+					{
+						if(lSlice == 0) vDiffuse *= mix(cVector3f(1, 0, 0), cVector3f(0, 1, 0), fBorderFade);
+						if(lSlice == 1) vDiffuse *= mix(cVector3f(0, 1, 0), cVector3f(0, 0, 1), fBorderFade);
+						if(lSlice == 2) vDiffuse *= mix(cVector3f(0, 0, 1), cVector3f(1, 0, 1), fBorderFade);
+						if(lSlice == 3) vDiffuse *= cVector3f(1, 0, 1);
+					}
+					@endif
+				}
+
+			@else
+				cVector4f vTransProjectedUv = mul(px_mtxLightViewProj, cVector4f(vPos - vNormal * 0.0025,1.0));
+				vTransProjectedUv = cVector4f(vTransProjectedUv.xyz, 1.0) / vTransProjectedUv.w;
+			@endif
+
+			if(fShadowFade < 1.0f)
+			{
+				@ifdef UseShadowFade
+					vProjectedUv.z = min(vProjectedUv.z, px_vShadowFade.z);
+					vTransProjectedUv.z = min(vTransProjectedUv.z, px_vShadowFade.z);
+				@endif
+
+				@ifdef LightType_Directional
+					vShadowAmount = FilterShadow(vProjectedUv, vTransProjectedUv, vShadowParams, vBorderUV, fBorderFade, fShadowSlice);
+				@else
+					vShadowAmount = FilterShadow(vProjectedUv, vTransProjectedUv, vShadowParams);
+				@endif
+			}
+			
+			vShadowAmount = mix(vShadowAmount, cVector2f(1.0, 1.0), fShadowFade);
+		}
+
+		vDiffuse *= vShadowAmount.x;
+
+		@ifdef UseSpecular
+			vSpecular *= vShadowAmount.x;
+		@endif
+		
+		if(fTranslucencyAmount > 0.0)
+		{
+			///////////////
+			// Attunuate each color channel differentlty
+			float fSkinPenetration = fSkinShader > 0.0f ? 0.0135f : 0.2f;
+			float fScale = 11.0 * (1.0 - fTranslucencyAmount * 0.95) / fSkinPenetration;
+			float fDist = fScale * vShadowAmount.y;
+			float fDistSqr = fDist * fDist;
+
+			cVector3f vTrans = exp2(-fDistSqr / vSubColor);
+
+			@ifdef LightType_Directional
+				if(fSkinShader > 0.0) vTrans = mix(vTrans, cVector3f(0.0, 0.0, 0.0), min(1.0, fShadowSlice)); //only allow skin shading on first slice
+			@endif
+
+			vTranslucent *= vTrans;
+		}
+		
+	@endif
+
+	@ifdef UseUnderwaterFog
+		///////////
+		// Calcualte the amount the fog should affect the light
+		@ifdef LightType_Directional
+			cVector3f vFogColor = avFogColor.xyz;
+		@else
+			float fFogAmount = clamp((fDistance - avFogStartAndLength.x) / avFogStartAndLength.y, 0.0, 1.0);
+			fFogAmount = pow(fFogAmount, afFogFalloffExp);
+
+			cVector3f vFogColor = pow(avFogColor.xyz, cVector3f(fFogAmount * 1.2, fFogAmount * 1.2, fFogAmount * 1.2));
+		@endif
+	@endif
+
+	/////////////////////////////////
+	//Calculate Final color
+	@ifdef UseTranslucency
+		vDiffuse += vTranslucent;
+	@endif
+
+	@ifdef UseGobo
+		@ifdef GoboSpecFlag 
+			//GoboSpecFlag is only here to support backward compatability for now
+			@ifdef GoboType_Diffuse 
+				vDiffuse *= vGoboVal.xyz;
+			@else
+				vDiffuse = cVector3f(0.0, 0.0, 0.0);
+			@endif
+		@else
+			vDiffuse *= vGoboVal.xyz;
+		@endif
+
+		@ifdef UseSpecular
+			vSpecular *= vGoboVal.w;
+		@endif
+	@endif
+
+	vDiffuse *= fAttenuatuion * px_vLightColor.xyz;
+
+	@ifdef UseSpecular
+		vSpecular *= fAttenuatuion * px_vLightColor.xyz;
+		vDiffuse += vSpecular;
+	@endif
+	
+	@ifdef LightType_Directional
+		vDiffuse += vAmbColor;
+	@endif
+		
+	@ifdef UseUnderwaterFog
+		vDiffuse *= vFogColor;
+	@endif
+	
+	@ifdef DebugComplexity
+		vDiffuse = cVector3f(px_fComplexity / 8.0f, px_fComplexity / 8.0f, px_fComplexity / 8.0f);
+	@endif
+
+	// Multiply with 8.0 to increase precision
+	out_vColor.xyz = vDiffuse * 8.0;
+	
+	@ifdef UseSpecular
+		out_vColor.w = length(vSpecular) * 8.0; //save approx spec to alpha
+	@else
+		out_vColor.w = 0.0;
+	@endif
+}

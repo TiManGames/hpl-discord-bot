@@ -1,0 +1,485 @@
+#include "interfaces/UserModule_Interface.hps"
+#include "modules/ModuleInterfaces.hps"
+#include "helpers/helper_imgui.hps"
+
+
+//---------------------------------------------------
+
+const float gfAlphaInc = 2;
+const float gfAlphaDec = 4;
+const float gfForceFadeDec = 0.35;
+const float gfForceFadeInc = 0.75;
+const float gfBetweenMessageMinWait = 0.2f;
+const float gfScreenWidth = 1024;	// We think!
+const float gfMaxTextWidth = 640;	// For wordwrapping
+const float gfTextY = 455;  
+const float gfTextVerticalOffset = 75;
+const float gfFontSize = 30;
+
+//---------------------------------------------------
+
+class cScrDescription
+{
+	cScrDescription()
+	{
+	}
+
+	cScrDescription(const tString &in asTextCat, const tString &in asTextEntry, bool abConnectedToPrevious,
+					int aEffect, float afEffectAmount, cColor aColor, bool abOffsetVertically)
+	{
+		msTextCat = asTextCat;
+		msTextEntry = asTextEntry;
+		mbConnectedToPrevious = abConnectedToPrevious;
+		mEffect = aEffect;
+		mfEffectAmount = afEffectAmount;
+		mColor = aColor;
+		mbOffsetVertically = abOffsetVertically;
+	}
+
+	tString msTextCat;
+	tString msTextEntry;
+	bool mbConnectedToPrevious;
+	int mEffect;
+	float mfEffectAmount;
+	cColor mColor;
+	bool mbOffsetVertically;
+}
+
+//---------------------------------------------------
+
+class cScrDescriptionHandler : iScrUserModule, iScrUserModule_Interface, iScrDescriptionHandler_Interface
+{
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		///////////////////////////////
+		// Load Graphics
+		@mpFont = cResources_CreateFontData("default_medium_outline.fnt");
+	}
+	
+	//------------------------------------------------------------
+	
+	void LoadUserConfig()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void SaveUserConfig()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	//MAP LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+	
+	}
+	void OnMapLeave(cLuxMap @apMap)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void PreloadData(cLuxMap @apMap)
+	{
+	}
+	
+	void CreateWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	void DestroyWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnEnterContainer(const tString&in asOldContainer)
+	{
+	
+	}
+	void OnLeaveContainer(const tString&in asNewContainer)
+	{
+	
+	}
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+		mfAlpha =0;
+		mfBetweenMessageWait = 0;
+		mvCurrentTexts.resize(0);
+		msCurrentTextCatEntry = "";
+		mlCurrentMessageId =0;
+		mbForceFading = false;
+	}
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep)
+	{
+		
+		////////////////////////////////
+		// If there has just been a message, make sure there is a slight pause before the next.
+		if(mfBetweenMessageWait > 0)
+		{
+			mfBetweenMessageWait -= afTimeStep;
+			
+			//If a the next message is connected with previous, we want to show it directly
+			bool bShowNextDirectly = false;
+			if(mvDescQueue.length()>0) bShowNextDirectly = true;
+			
+			if(bShowNextDirectly)
+			{
+				mfBetweenMessageWait = 0; //In case show next directly was true 
+				
+				if(mvDescQueue.length()>0)
+				{
+					cScrDescription desc = mvDescQueue[mvDescQueue.length()-1];
+					StartMessage(desc.msTextCat, desc.msTextEntry, desc.mEffect, desc.mfEffectAmount, desc.mColor, desc.mbOffsetVertically);
+					mvDescQueue.removeLast();
+				}
+			}
+			else
+			{
+				return;
+			}
+		}		
+		
+		if(!mbShowingText && mfAlpha==0) return;
+		
+		////////////////////////
+		//Update effect
+		if(mCurrentEffect == eDescEffect_Shake)
+		{
+			mvTextOffset = cMath_RandRectVector3f(cVector3f(-1, -1,0), cVector3f(1, 1,0) ) * 1.5 * mfCurrentEffectAmount;
+		}
+		
+		////////////////////////
+		//Increase alpha
+		if(mbShowingText && mfAlpha<1 && mbForceFading==false)
+		{
+			mfAlpha += gfAlphaInc*afTimeStep;
+			if(mfAlpha>1) mfAlpha =1;
+		}
+		////////////////////////
+		//update current text
+		else if(mbShowingText)
+		{
+			//////////////////////
+			// Force fade
+			if(mbForceFading)
+			{
+				mfAlpha -= gfForceFadeDec*afTimeStep;
+				if(mfAlpha<0)
+				{
+					mfAlpha = 0;
+					mfBetweenMessageWait = gfBetweenMessageMinWait;
+				}
+			}
+			else if(mfAlpha<1)
+			{
+				mfAlpha += gfForceFadeInc*afTimeStep;
+				if(mfAlpha>1) mfAlpha = 1;
+			}
+		}
+		////////////////////////
+		//Decrease alpha
+		else
+		{
+			mfAlpha -= gfAlphaDec*afTimeStep;
+			
+			if(mfAlpha<0)
+			{
+				mfAlpha = 0;
+				mfBetweenMessageWait = gfBetweenMessageMinWait;
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void PostUpdate(float afTimeStep){}
+		
+	void VariableUpdate(float afDeltaTime)
+	{
+	}
+	//------------------------------------------------------------
+	
+	
+	void OnGui(float afFrameTime)
+	{
+		if(mfAlpha==0 || mvCurrentTexts.length()==0 ) return;
+		
+		cImGuiLabelData labelData = ImGui_GetDefaultLabel();
+		labelData.mFont.SetFile(FontHandler_GetFont(eFontType_Readable,72));
+		labelData.mFont.mvSize = 36;
+		labelData.mColorBase = cColor(1, mfAlpha);
+		
+		ImGui_SetAlignment(eImGuiAlign_CenterCenter);
+		
+		cVector3f vShadowOffset(2, 2, -1);
+		
+		float fTextY = gfTextY;
+		if (mbCurrentOffsetVertically) fTextY += gfTextVerticalOffset;
+		
+		///////////////////////
+		//Multiple rows
+		if(mvCurrentTexts.length()>1)
+		{
+			float fLineHeight = gfFontSize * 1.1f;
+			float fX = gfScreenWidth/2;
+			float fY = fTextY - (mvCurrentTexts.length()-1)*fLineHeight;
+			for(int i=0; i<mvCurrentTexts.length(); ++i)
+			{
+				cVector3f vPos = cVector3f(fX,fY, 1)+mvTextOffset;
+				
+				labelData.mColorBase = cColor(1, mfAlpha);
+				ImGui_DoLabelExtW(mvCurrentTexts[i], labelData, vPos);
+				labelData.mColorBase = cColor(0, mfAlpha);
+				ImGui_DoLabelExtW(mvCurrentTexts[i], labelData, vPos+vShadowOffset);
+				fY += fLineHeight;
+			}
+		}
+		///////////////////////
+		//Single row
+		else
+		{
+			cVector3f vPos = cVector3f(gfScreenWidth/2 ,fTextY, 1)+mvTextOffset;
+				
+			labelData.mColorBase = cColor(1, mfAlpha);
+			ImGui_DoLabelExtW(mvCurrentTexts[0], labelData, vPos);
+			labelData.mColorBase = cColor(0, mfAlpha);
+			ImGui_DoLabelExtW(mvCurrentTexts[0], labelData, vPos+vShadowOffset);
+		}
+		
+		ImGui_SetAlignment(eImGuiAlign_TopLeft);
+	}
+	
+	void OnDraw(float afFrameTime)
+	{
+	}
+	
+	//------------------------------------------------------------
+		
+	void OnPostRender(float afFrameTime)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// MESSAGES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_Add()
+	{
+		Add("",cScript_GetGlobalArgString(0), false, false, 0, 0, cColor(1,1), false);
+	}
+	
+	//------------------------------------------------------------
+	
+	int Add(const tString &in asTextCat, const tString &in asTextEntry, bool abPutInQueueIfShowing, bool abConnectedToPrevious,
+			int aEffect, float afEffectAmount, cColor aColor, bool abOffsetVertically=false)
+	{
+		// Skip descriptions for English
+		tString sLang = cString_SetFileExt(cLux_GetCurrentLanguage(), "");
+		if (sLang=="english") return -1;
+		
+		/////////////////////////////////////
+		// A description is already showing
+		if(IsActive())
+		{
+			//if(abPutInQueueIfShowing)
+			{
+				mvDescQueue.insertAt(0, cScrDescription(asTextCat, asTextEntry, abConnectedToPrevious,aEffect, afEffectAmount, aColor, abOffsetVertically) );
+			}
+			//else
+			//{
+			//	return -1;
+			//}
+		}
+		/////////////////////////////////////
+		// Show the description
+		else
+		{
+			StartMessage(asTextCat, asTextEntry, aEffect, afEffectAmount, aColor, abOffsetVertically);
+		}
+		
+		return mlCurrentMessageId;
+	}
+	
+	//------------------------------------------------------------
+	
+	void Remove(const tString &in asTextCat, const tString &in asTextEntry)
+	{
+		if (mvCurrentTexts.length() > 0)
+		{
+			if (asTextCat+asTextEntry == msCurrentTextCatEntry)
+			{
+				mbShowingText = false;
+			}
+		}
+		
+		for (uint i = 0; i < mvDescQueue.length(); i++)
+		{
+			cScrDescription@ pDesc = mvDescQueue[i];
+			if (pDesc.msTextCat != asTextCat || pDesc.msTextEntry != asTextEntry)
+				continue;
+			
+			mvDescQueue.removeAt(i);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void StartMessage(const tString &in asTextCat, const tString &in asTextEntry, int aEffect, float afEffectAmount, cColor aColor, bool abOffsetVertically=false)
+	{
+		mbForceFading = false;
+	
+		msCurrentTextCatEntry = asTextCat+asTextEntry;
+		
+		tWString sTranslated = asTextCat=="" ? tWString(asTextEntry) : cLux_Translate(asTextCat,asTextEntry);
+		tWString sText = cLux_ParseString(sTranslated);
+	
+		mpFont.GetWordWrapRows(gfMaxTextWidth, cVector2f(gfFontSize), sText, mvCurrentTexts);
+				
+		mbShowingText = true;
+		
+		++mlCurrentMessageId;
+		if(mlCurrentMessageId>640000) mlCurrentMessageId =0; //Make sure it remains positive
+		
+		mCurrentColor = aColor;
+		mCurrentEffect = aEffect;
+		mfCurrentEffectAmount = afEffectAmount;
+		mbCurrentOffsetVertically = abOffsetVertically;
+		
+		//Reset variables
+		mvTextOffset = cVector3f(0);
+		
+		cVector2f vSize(gfFontSize);
+		mfCurrentMaxWidth=0;
+		float fWidth;
+		for (int i=0;i<mvCurrentTexts.length();++i)
+		{
+			fWidth=mpFont.GetLength(vSize,mvCurrentTexts[i]);
+			if (fWidth>mfCurrentMaxWidth)
+				mfCurrentMaxWidth=fWidth;
+		}			
+	}
+	
+	//------------------------------------------------------------
+	
+	bool IsAdded(const tString &in asTextCat, const tString &in asTextEntry)
+	{
+		if (msCurrentTextCatEntry == asTextCat+asTextEntry)
+			return true;
+		
+		for (uint i = 0; i < mvDescQueue.length(); i++)
+		{
+			cScrDescription@ pDesc = mvDescQueue[i];
+			if (pDesc.msTextCat != asTextCat || pDesc.msTextEntry != asTextEntry)
+				continue;
+			
+			return true;
+		}
+		
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool IsActive()
+	{
+		return mfAlpha>0 || mbShowingText || mfBetweenMessageWait>0;
+	}
+	
+	//------------------------------------------------------------
+	
+	int GetCurrentId()
+	{
+		return mlCurrentMessageId;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetForceFading(bool abX)
+	{
+		mbForceFading = abX;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnAction(int alAction, bool abPressed){}
+	void OnAnalogInput(int alAnalogId, const cVector3f &in avAmount){}
+	void OnExitPressed(){}
+	void AppGotInputFocus(){}
+	void AppLostInputFocus(){}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPETIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	[nosave] iFontData@ mpFont;
+	
+	//------------------------------------------------------------
+	
+	bool mbShowingText = false;
+	array<tWString> mvCurrentTexts;
+	tString msCurrentTextCatEntry;
+	float mfAlpha;
+	float mfBetweenMessageWait;
+	int mlCurrentMessageId;
+	
+	cColor mCurrentColor;
+	int mCurrentEffect;
+	float mfCurrentEffectAmount;
+	float mfCurrentMaxWidth;
+	bool mbCurrentOffsetVertically;
+	
+	bool mbForceFading;
+	
+	cVector3f mvTextOffset;
+	
+	array<cScrDescription> mvDescQueue;
+	
+	//------------------------------------------------------------
+	
+		
+}

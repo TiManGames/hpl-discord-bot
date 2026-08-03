@@ -1,0 +1,1314 @@
+#include "interfaces/Map_Interface.hps"
+#include "base/Inputhandler_Types.hps"
+
+#include "helpers/helper_map.hps"
+#include "helpers/helper_props.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_audio.hps"
+#include "helpers/helper_imgui.hps"
+#include "helpers/helper_sequences.hps"
+#include "helpers/helper_game.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_ai.hps"
+
+#include "helpers/helper_player.hps"
+#include "helpers/helper_effects_custom.hps"
+#include "helpers/helper_sequences.hps"
+#include "custom/helpers/helper_player_custom.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+
+//--------------------------------------------------
+ 
+/*Place any global values here. These must be const variables as they will not be saved*/
+/*This is also the place for enums and classes, but these should be avoided whenever possible*/
+ 
+//--------------------------------------------------
+ 
+class cScrMap : iScrMap
+{
+	//--------------------------------------------
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN CALLBACKS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+ 
+	////////////////////////////
+	// Set up map environment
+	void Setup()
+	{
+		// Put display name entry in english.lang / Levels
+		GetBase().SetDisplayNameEntry("01-04-dark-world-ledge-dream");
+		
+		Pregnancy_SetStage(ePregStage_Unknown);
+		Pregnancy_SetBarksActive(false);
+		Pregnancy_SetBabyKicksEnabled(false);
+		Pregnancy_SetBabyTalkStage(eBabyTalkStage_Unknown);
+		GhoulProgression_SetBarkStage(eGhoulBarkStage_Ill);
+		Player_SetAllowCheckBaby(false);
+		FearHandler_SetWhisperStage(eFearWhisperStage_StartToSalim);
+		
+		// Set up color grading etc.
+		Map_Preset_SetupDirLight("Darkness", false, cColor(1,0.664,0.865), 1.f, cVector3f(-0.861, -0.177, 0.477), cColor(0,0,0), cColor(0,0,0));
+		Map_Preset_SetupDirLight("Sunlight", true, cColor(1,0.664,0.865), 1.f, cVector3f(-0.861, -0.177, 0.477), cColor(0.2,0.2,0.15), cColor(0.3,0.3,0.25));
+		
+		StruggleFlashHandler_SetActive(false);
+		
+		Player_SetAutoTeleportWhenBelowAltitude(-4);
+	}
+	
+	//-------------------------------------------------------
+		
+	void PreloadData()
+	{
+		/////////////////
+		// Preload gui
+		//ImGui_PreloadImage("some_image");
+
+		///////////////
+		// Preload particles
+		//ParticleSystem_Preload("dust_large_long_oneshot.ps");
+
+		//////////////
+		// Preload screen effects
+		//Material_Preload("some_material.mat");
+	}
+	
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run first time starting map
+	void OnStart()
+	{
+		//Set GhoulProgresison limit
+		GhoulProgression_SetLimit(2);
+		// Any general setup of script / entities
+		
+		Map_Preset_Fade("Darkness", 0.05f);
+		
+		Light_FadeBrightnessTo("Light_MirrorDoorBack", 0, 0.1);
+		Light_FadeBrightnessTo("Light_MirrorDoorBackSpot", 0, 0.1);
+		
+		/////////////////////////
+		// Blur Fx Init
+		Entity_AttachToSocket("BlurFX_Baby", "Baby_Room", "Head_Socket", false, false);
+		Entity_AttachToSocket("BlurFX_Salim_1", "Salim", "Head_Socket", false, false);
+		
+		//////////////
+		// Setup Salim
+		Entity_PlayAnimation("Salim", "sit_by_the_crib", 0.1f, true);
+
+		/////////////////////////
+		// Debug
+		if(cLux_ScriptDebugOn())
+		{
+			Timer_EndFall("");
+			
+			if (ItemType_GetCountInInventory("Lantern") < 1)
+			{
+				Item_AddToInventory("Lantern");		
+				Item_SetContent(ItemType_GetFirstInInventory("Lantern"), "Oil", 10);
+				Item_AddToInventory("HerbertOil");
+				Item_AddToInventory("HerbertOil");
+				Item_AddToInventory("HerbertOil");
+			}
+			
+			Item_AddToInventory("Matchbook");
+			Item_AddToInventory("Matchbook");
+			Item_AddToInventory("Matchbook");
+			
+			if (ItemType_GetCountInInventory("Orb") < 1)
+			{
+				Item_AddToInventory("Orb");
+			}
+		}
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when entering map
+	void OnEnter()
+	{
+		PlayerBody_SetModel("player.ent");
+		PlayerBody_SetActive(true);
+		FearHandler_SetActive(false);
+		DreamHandler_SetActive(true);
+        Player_SetVertigoActive(false);
+        Pregnancy_SetBabyKicksEnabled(false);
+		Player_SetNightVisionEnabled(false);
+		Heat_SetActive(false);
+		
+		cVector3f vRot = cVector3f(0, cMath_ToRad(180), 0);
+		cLux_GetCurrentMap().GetWorld().SetSkyboxRotation(vRot);
+		
+		StartFallSequence();
+		Voice_SetSource("Salim", "Area_SalimTarget", 5, 25, true);
+			
+		cLux_ClearAllMapSaveData();
+		Game_AutoSave();
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when leaving map
+	void OnLeave(){}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// The player has died.
+	void OnPlayerKilled(int alRecentDeaths, const tString&in asSource){}
+	
+	//-------------------------------------------------------
+	
+	////////////////////////////////////
+	// Called when player HP reaches 0
+	bool OnDeath(const tString &in asSource)
+	{
+		cLux_AddTodoMessage("DEAD : SOURCE = " + asSource);
+		
+		if (asSource == "SomeReason")
+		{
+			Effect_Fade_Out(1.0f);
+			return true; // return true to completely override base behaviour
+		}
+		
+		// return false for default behaviour
+		return false;
+	}
+	
+	//-------------------------------------------------------
+	
+	////////////////////////////////////
+	// Called when player should respawn (after death)
+	bool OnRespawn(const tString &in asSource)
+	{
+		// return false for default behaviour (fadeout and death area)
+		return false;
+	}
+	
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// To get when player makes input (mostly used for debug)
+	void OnAction(int alAction, bool abPressed) 
+	{
+		if(abPressed==false) return;
+		
+		if(alAction == eAction_Test0)
+		{
+			OnTimer_OpenTheDoor("");
+		}
+		
+		if(alAction == eAction_Test2)
+		{
+			mbPlayerSawSalim = true;
+			mbPlayerEnterRoom = true;
+			Entity_SetActive("cave_tunnel_*", false);
+			Entity_SetActive("Ceiling_Intro_*", true);
+			Voice_StopAll();
+			
+			if (SequenceStates_IsActive("Seq_SalimFadeAway")==false && mbSalimFadedAway==false)
+				Seq_SalimFadeAway("");
+				
+			if (SequenceStates_IsActive("Seq_BabyFadeAway")==false)
+				Seq_BabyFadeAway("");
+			
+			if (SequenceStates_IsActive("Seq_RoomBreakApart")==false && bRoomBreakingStarted==false)
+					Seq_RoomBreakApart("");
+		}
+		
+		if(alAction == eAction_Test3)
+		{
+			Entity_SetActive("Sky_Infant", true);
+		}
+		
+		if (alAction == eAction_Test4)
+		{
+			Player_Teleport("Start_OutOfBounds");
+		}
+		/*
+		if (alAction == eAction_Test5)
+		{
+			SetBabyVoiceMode(-1);
+		}
+		
+		if(alAction == eAction_Test0)
+		{
+			Map_ChangeMap("01_02_caves_b.hpm", "Start_Begin", "", "", false);
+		}
+		
+		if (alAction==eAction_Test9)
+		{
+			
+		}*/
+	}
+	
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// This only used for pure debug purposes when info needs to printed.
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afY)
+	{
+		//afY = cLux_DrawDebugText("My Debug value:"+..., afY);
+		return afY;
+	}
+ 
+	//-------------------------------------------------------
+ 
+	//} END MAIN CALLBACKS
+ 
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN FUNCTIONS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+	
+	//-------------------------------------------------------
+ 
+	//} END MAIN FUNCTIONS
+	
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==========================
+	// SCENE 1 *THE ROOM*
+	// ==========================
+	//{//////////////////////////////////////////////////////////////////////////////////////
+	
+		/////////////////////////////////////////
+		// General
+		//{//////////////////////////////////////
+	
+		//-------------------------------------------------------
+
+		bool mbPlayerSawSalim = false;
+		bool mbPlayerEnterRoom = false;
+		bool mbSalimFadedAway = false;
+		float mfInitSpeedMul = 1.f;
+		bool mbMirrorDoorOpen = false;
+
+		//-------------------------------------------------------
+
+		void SalimFacePlayer()
+		{
+			Entity_PlayAnimation("Salim", "turn_around_tr", 0.25, false, true, "OnAnimEnd_PlayLookAtPlayerLooped");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnAnimEnd_PlayLookAtPlayerLooped(const tString &in asEntityName, const tString &in asAnimName)
+		{
+			Entity_PlayAnimation("Salim", "look_at_player", 0.5f, true);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_EnterRoom(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState!=1) return true;
+			
+			Sketchbook_StopAnyMemoryFlashes();
+			Player_SetInteractionAllowed(true);
+			
+			if (mbPlayerEnterRoom) return true;
+
+			mbPlayerEnterRoom = true;
+			mfInitSpeedMul = Player_GetMoveSpeedMul();
+			Player_FadeMoveSpeedMulTo(0.5f, 1.f);
+			
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_Teleport(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState!=1) return true;
+			if (mbPlayerEnterRoom==false) return true;
+			
+			Effect_Flash_Start(0.f, 0.f, 1.f);
+			Player_Teleport("Start_Meet_Salim", false);
+			cLux_GetPlayer().GetCharacterBody().AddYaw(cMath_ToRad(180));
+			
+			SwingDoor_SetClosed("MirrorDoor", true, false);
+			
+			if (mbPlayerSawSalim)
+				Map_AddTimer("OnTimer_StartSalimDialog2", 1.5f, "OnTimer_StartSalimDialog2");
+
+			return true;
+		}
+		//-------------------------------------------------------
+		
+		void OnTimer_StartSalimDialog2(const tString&in asTimer)
+		{
+			StartSalimsDialog2();
+		}
+		
+		//-------------------------------------------------------
+		
+		void WindBlowMobileToy()
+		{
+			iLuxEntity@ pMobileToyEnt = Map_GetEntity("mobile_toy", eLuxEntityType_Prop);
+			iPhysicsBody@ pMainBody = pMobileToyEnt.GetMainBody();
+			iLuxEntity@ pImpulseSourceEnt = Map_GetEntity("Area_WindSource", eLuxEntityType_Area);
+			
+			cVector3f vImpulseDir = pMainBody.GetWorldPosition() - pImpulseSourceEnt.GetPosition();
+			vImpulseDir = cMath_Vector3Normalize(vImpulseDir);
+			float fImpulseAmount = 1.5f;
+			pMainBody.AddImpulse(vImpulseDir * fImpulseAmount);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_OpenTheDoor(const tString&in asTimer)
+		{
+			if(Sketchbook_IsFlashbackActive()) return;
+			if (mbSalimFadedAway) return;
+			
+			////////////////////////////
+			// Remove all related timers
+			if (Map_TimerExists("Timer_CountDowntoOpenTheDoor"))
+				Map_RemoveTimer("Timer_CountDowntoOpenTheDoor");
+			if (Map_TimerExists("OnTimer_OpenTheDoor"))
+				Map_RemoveTimer("OnTimer_OpenTheDoor");
+			
+			////////////////
+			// Open the door
+			if (mbMirrorDoorOpen) return;
+			Light_FadeBrightnessTo("Light_MirrorDoorBack", 1, 5);
+			Light_FadeBrightnessTo("Light_MirrorDoorBackSpot", 5, 5);
+			SwingDoor_SetBlocked("MirrorDoor", false, true);
+			SwingDoor_PushOpen("MirrorDoor", 0.055f, 4);
+			Entity_SetActive("Area_CloseToTheDoor", true);
+			
+			mbMirrorDoorOpen = true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnVoiceEnd_RestartSalimsSong(const tString &in asScene, const tString &in asSubject)
+		{
+			if (mbPlayerSawSalim) return;
+			Voice_Play("Dialogue_SalimSinging", -1, "OnVoiceEnd_RestartSalimsSong", 0);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_CountDowntoOpenTheDoor(const tString&in asTimer)
+		{
+			////////////////////////////
+			// Cancel the prev countdown
+			if (Map_TimerExists("Timer_CountDowntoOpenTheDoor"))
+				Map_RemoveTimer("Timer_CountDowntoOpenTheDoor");
+			
+			/////////////
+			// If in the middle of a flashback wait until it's done.
+			if (Sketchbook_IsFlashbackActive())
+			{
+				Map_AddTimer("Timer_CountDowntoOpenTheDoor", 1.f, "OnTimer_CountDowntoOpenTheDoor");
+				return;
+			}
+			
+			Player_SetInteractionAllowed(true);
+		}
+		
+		//-------------------------------------------------------
+	
+		void SetBabyVoiceMode(int alMode)
+		{
+			if (alMode<0)
+			{
+				if (Sound_Exists("BabyHappy")) Sound_Stop("BabyHappy", 0.1);
+				if (Sound_Exists("BabyCry")) Sound_Stop("BabyCry", 0.1);
+			}
+			else if (alMode==0)
+			{
+				if (Sound_Exists("BabyCry")) Sound_Stop("BabyCry", 0.1);
+				Sound_CreateAtEntity("BabyHappy", "04_03_undercity/baby/baby_happy", "Area_BabyCrySoundSource", 0.1f, true, 0.5f, -1.f, 20.f);
+			}
+			else if (alMode>=1)
+			{
+				if (Sound_Exists("BabyHappy")) Sound_Stop("BabyHappy", 0.1);
+				Sound_CreateAtEntity("BabyCry", "04_03_undercity/baby/baby_cry", "Area_BabyCrySoundSource", 0.0f, true, 0.3f, -1.f, 20.f);
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END General	
+	 
+		////////////////////////////////////////////////////////
+		// Event A *FALLING INTO THE ROOM*
+		//{/////////////////////////////////////////////////////
+
+		//-------------------------------------------------------
+		
+		int mlIDRadialBlur = -1;
+
+		//-------------------------------------------------------
+		
+		void StartFallSequence()
+		{
+			///////////////
+			// Start in the dark and fade in
+			Effect_Fade_Out(0.f);
+			Effect_Fade_In(1.25f);
+			
+			if (cLux_ScriptDebugOn()) return;
+			
+			Sound_CreateAtEntity("Sound_PlayerFall", "level_dreams/DW_ledge/intro_fall", "player", 0, true);
+			Voice_Play("Dialogue_RiftStart");
+			
+			/////////////
+			// Play Fall anim
+			tString sAnim = "player_fall_through_cave";
+			PlayerBody_PlayCutsceneAtEntity(sAnim, "Area_IntroFallAnimPosition", false, 0.1f);
+			
+			////////////////////////////
+			// Setup a timer for landing
+			cMeshEntity@ pEnt = cLux_GetCurrentMap().GetEntityByName(PlayerBody_GetEntityName()).GetMeshEntity();
+			cAnimationState@ pAnimState = pEnt.GetAnimationStateFromName(sAnim);
+			float afDuration = pAnimState.GetLength();
+			Map_AddTimer("Timer_EndFall", afDuration-2.2f, "Timer_EndFall");
+
+			//////////////////////
+			// Blur fx during fall
+			if (mlIDRadialBlur<0)
+				mlIDRadialBlur = Effect_RadialBlur_Start(0.5f, 0.8f, 0.15f, 1.f);
+				
+			Map_AddTimer("Timer_FadeFallingBlur", 1, "OnTimer_FadeFallingBlur");
+		}
+		
+		//-------------------------------------------------------
+		
+		void Timer_EndFall(const tString&in asTimer)
+		{
+			//////////////////
+			// Disable the cave tunnel behind.
+			Entity_SetActive("cave_tunnel_*", false);
+			Entity_SetActive("Ceiling_Intro_*", true);
+			Light_SetBrightness("Light_Falling_*", 0.f);
+			FogArea_SetVisible("FogArea_FallSeq_1", false);
+			
+			/////////////
+			// Landing fx
+			Sound_CreateAtEntity("PlayerLandingSound", "player/footsteps/default/wood_solid", "player");
+			ParticleSystem_CreateAtEntity("impact_dust_PS", "dust_impact_small_oneshot.ps", "Area_IntroFallAnimPosition", false);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_FadeFallingBlur(const tString&in asTimer)
+		{
+			if (mlIDRadialBlur >= 0)
+			{
+				Effect_RadialBlur_FadeOut(mlIDRadialBlur, 1.f);
+				mlIDRadialBlur=-1;
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event A *FALLING INTO THE ROOM*
+
+		////////////////////////////////////////////////////////
+		// Event B *THE PLAYER EΧPLORES THE ROOM*
+		//{/////////////////////////////////////////////////////
+
+		//-------------------------------------------------------
+		
+		bool mbIsMemoryBeingTriggered = false;
+		int mlMemoriesTriggeredCount = 0;
+		bool mbSalimStartedSinging = false;
+		float mfDuckVolume = 1.0f;
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_SetSongLevel(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			//////////////////////////////
+			// Make Salim's voice louder when close to the door
+			if (alState==1)
+				Voice_SetSource("Salim", "Area_SalimTarget", 5, 120, true);
+			else if (alState==-1)
+				Voice_SetSource("Salim", "Area_SalimTarget", 5, 25, true);
+			
+			////////////////////
+			// Start Salims song
+			if (mbSalimStartedSinging) return true;
+			if (mbMirrorDoorOpen==false) return true;
+			
+			mbSalimStartedSinging = true;
+			Voice_Play("Dialogue_SalimSinging", -1, "OnVoiceEnd_RestartSalimsSong");
+			
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void TriggerMemoryEvent(const tString&in asEntity, const tString&in asMicroFlash="", const float afDelay=0.f, const bool abDisableInteract=false, float afDuckVolumeTo=0.3f)
+		{
+			if (mbPlayerEnterRoom) return;
+			if (Entity_GetVarBool(asEntity, "bMemoryTriggered")) return;
+			if (asMicroFlash!="" && Sketchbook_IsFlashbackActive()) return;
+			if (asMicroFlash!="" && Map_TimerExists(asMicroFlash)) return;
+			
+			Entity_SetVarBool(asEntity, "bMemoryTriggered", true);
+			mlMemoriesTriggeredCount+=1;
+			cLux_AddDebugMessage("mlMemoriesTriggeredCount " + mlMemoriesTriggeredCount);
+			mfDuckVolume=afDuckVolumeTo;
+			
+			if (abDisableInteract)
+				Entity_SetInteractionDisabled(asEntity, true);
+			
+			if (asMicroFlash=="")
+			{
+				if(mlMemoriesTriggeredCount<3) return; 
+				Map_AddTimer("Timer_OpenTheDoor", 5, "OnTimer_OpenTheDoor");
+				return;
+			}
+				
+			Player_SetInteractionAllowed(false, true);
+			
+			if (afDelay<=0)
+			{
+				OnTimer_PlayMicroFlash("");
+				return;
+			}
+			
+			Map_AddTimer(asMicroFlash, afDelay, "OnTimer_PlayMicroFlash");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PlayMicroFlash(const tString&in asTimer)
+		{
+			Sketchbook_Microflash(asTimer, "OnVoiceEnd_CheckTriggeredMemoriesCount", -1, mfDuckVolume);
+			OnTimer_CountDowntoOpenTheDoor("");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnVoiceEnd_CheckTriggeredMemoriesCount(const tString &in asScene, const tString &in asSubject)
+		{
+			if(mlMemoriesTriggeredCount<3) return; 
+			Map_AddTimer("Timer_OpenTheDoor", 5, "OnTimer_OpenTheDoor");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_Microflash(const tString&in asEntity)
+		{
+			if (asEntity=="toy_ball")
+			{
+				TriggerMemoryEvent(asEntity, "Microflash_Football", 1.f);
+			}
+			else if (asEntity=="PhysicsClutter_Crib_2")
+			{
+				TriggerMemoryEvent(asEntity, "Microflash_TheCot", 1.f);
+			}
+			else if (asEntity=="Area_DrawingDesk")
+			{
+				TriggerMemoryEvent(asEntity, "Microflash_DrawingBoard", 1.f);
+			}
+			else if (asEntity=="Area_PoolPhoto")
+			{
+				TriggerMemoryEvent(asEntity, "Microflash_ThePool", 1.f);
+			}
+			else if (asEntity=="Area_WeddingPhoto")
+			{
+				TriggerMemoryEvent(asEntity, "Microflash_WeddingPhoto", 1.f);
+			}
+			else if (asEntity=="readable_dwnote_default_1")
+			{
+				TriggerMemoryEvent(asEntity, "", 1.f);
+			}
+			else if (asEntity=="tasi_father_compass_1")
+			{
+				TriggerMemoryEvent(asEntity, "Microflash_Compass", 1.f);
+			}
+			else if (asEntity=="Area_DrawingDesk_1")
+			{
+				if (Sketchbook_IsFlashbackActive()) return;
+			
+				const float fDelay = 1.f;
+				TriggerMemoryEvent(asEntity, "", fDelay);
+				Map_AddTimer("Timer_FindSalim", fDelay, "OnTimer_FindSalim");
+			}
+			else if (asEntity=="book_readable_1")
+			{
+				TriggerMemoryEvent(asEntity);
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_FindSalim(const tString&in asTimer)
+		{
+			Voice_Play("Dialogue_SketchBook");
+		}
+		
+		//-------------------------------------------------------
+		
+		void SketchbookPage_OnGui(const tString&in asEntityName, float afTimeStep)
+		{
+			ImGui_SetModColorMul(cColor(1,0.85f));
+			ImGui_SetAlignment(eImGuiAlign_CenterCenter);
+			ImGui_GroupBegin(ImGui_NrmPosGroup(0.0,0.0,0.5), ImGui_NrmSizeGroup(1));
+			const float imageZ = 5.0f;
+			cImGuiGfx image("find_salim_notext.dds", eGuiMaterial_Modulative, eImGuiGfx_Texture);
+			ImGui_DoImageCorrectAspect(image, 
+				ImGui_NrmPosGroup(0.5f,0.425f,imageZ), ImGui_NrmSizeGroup(1.0f,1.0f));
+			ImGui_GroupEnd();
+			ImGui_ResetModifiers();
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event B *THE PLAYER EXPLORES THE ROOM*
+			
+		////////////////////////////////////////////////////////
+		// Event C *TASI MEETS SALIM*
+		//{/////////////////////////////////////////////////////
+
+		//-------------------------------------------------------
+		
+		bool OnCollide_Door_TurnOffGlare(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState!=1) return true;
+			
+			Light_FadeBrightnessTo("Light_MirrorDoorBack", 0, 1);
+			Light_FadeBrightnessTo("Light_MirrorDoorBackSpot", 0, 1);
+			Voice_Play("Dialogue_TasiHearsSalim", -1, "", 1);
+			Sketchbook_StopAnyMemoryFlashes();
+			
+			SetBabyVoiceMode(0);
+			Entity_PlayAnimation("Baby_Room", "idle", 0.25f, true);
+			
+			Map_AddTimer("Timer_PlayBabyMusic", 1.5f, "OnTimer_PlayBabyMusic");
+			
+			return false;
+		}
+				
+		//-------------------------------------------------------
+		
+		void OnTimer_PlayBabyMusic(const tString &in asTimer)
+		{
+			Music_PlayExt("A2_1_4_Dark_World_Ledge_Dream_A.ogg", false, 0.1f, 1.0f, 0.0f, 1.0f, eMusicPrio_BgAmb, true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnLookAt_StartSalimDialog1(const tString &in asEntity, int alState)
+		{
+			if (alState!=1) return;
+			if (mbPlayerEnterRoom==false) return;
+			StartSalimDialog1();
+		}
+		
+		//-------------------------------------------------------
+
+		bool OnCollide_StartSalimDialog1(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState!=1) return true;
+			
+			StartSalimDialog1();
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void StartSalimDialog1()
+		{
+			if (mbSalimFadedAway) return;
+			if (mbPlayerSawSalim) return;
+			Map_AddTimer("OnTimer_SalimStopSinging", 1.5f, "OnTimer_SalimStopSinging");
+			Voice_Play("Dialogue_TasiAproachesSalim", -1);
+			mbPlayerSawSalim = true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_SalimStopSinging(const tString&in asTimer)
+		{
+			Voice_Stop(Voice_GetSubjectSceneName("Dialogue_SalimSinging"));
+			
+			////////////////////////////////////
+			// Disable Salim's voice levels switching.
+			Voice_SetSource("Salim", "Area_SalimTarget", 5, 120, true);
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event C *TASI MEETS SALIM*
+		
+		////////////////////////////////////////////////////////
+		// Event D *SALIM FADES AWAY*
+		//{/////////////////////////////////////////////////////
+
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSeq_SalimFadeAway;
+		
+		//-------------------------------------------------------
+		
+		void Seq_SalimFadeAway(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_SalimFadeAway", mSeq_SalimFadeAway);
+
+			if (Sequence_DoStepAndWait(0.5f))
+			{
+				if (Entity_IsInPlayerFOV("Area_SalimTarget") && cLux_ScriptDebugOn()==false)
+					Player_StartLookAt("Area_SalimTarget", 1, 2, 3);
+			}
+			else if (Sequence_DoStepAndWait(0.2f))
+			{
+				ParticleSystem_CreateAtEntity("WindPS1", "window_wind_blow.ps", "Area_WindSource", false);
+				ParticleSystem_CreateAtEntity("WindPS2", "fade_away_wind_blow.ps", "Area_SalimFadeAwayPSSource", false);
+				Sound_CreateAtEntity("WindSound", "level_dreams/DW_ledge/salim_disappear", "Area_WindSource");
+				Sound_CreateAtEntity("Sound_StingerSalim", "level_dreams/sweeteners/room/salim_sweet", "player");
+			}
+			else if (Sequence_DoStepAndWait(0.5f))
+			{
+				Prop_SetActiveAndFade("Salim", false, 2.f);
+				DreamHandler_FadeDreamBlurFx("BlurFX_Salim_1", 2.f);
+				
+				mbSalimFadedAway = true;
+				
+				WindBlowMobileToy();
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{
+				if (Entity_IsInPlayerFOV("Area_SalimTarget") && cLux_ScriptDebugOn()==false)
+				{
+					PlayerBody_PlayAnimation("player_rarm_reach_out_for_salim", ePlayerBodyAnimationLayer_RightArm, false, false, true, 0.3f, 3.f);
+					Voice_Play("Dialogue_SalimVanishes");
+				}
+				
+				Prop_SetStaticPhysics("PhysicsClutter_SalimsChair", false);
+				
+				FearHandler_SetForcedAddFearRate(0.25f, 4.f, true);
+				Player_FadeMoveSpeedMulTo(mfInitSpeedMul, 2.f);
+				Player_StopLookAt(2.f);
+			}
+			else if (Sequence_DoStepAndContinue())
+			{
+				Entity_SetActive("Trigger_InteractWithBaby", true);
+				
+				Entity_PlayAnimation("Baby_Room", "cry", 0.25f, true);
+				
+				SetBabyVoiceMode(1);
+			}
+
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_SalimFadeAway(const tString &in asTimer)
+		{
+			if (mbSalimFadedAway) return;
+			if (mbPlayerSawSalim==false) return;
+			if (SequenceStates_IsActive("Seq_SalimFadeAway")) return;
+			Seq_SalimFadeAway("");
+		}
+		
+		//-------------------------------------------------------
+		
+		bool StartSalimsDialog2()
+		{
+			if (mbSalimFadedAway) return false; 
+			if (mbPlayerSawSalim==false) return true;
+			
+			SalimFacePlayer();
+			Map_AddTimer("OnTimer_SalimFadeAway", 2, "OnTimer_SalimFadeAway");
+			Voice_Play("Dialogue_TasiNotApproachingSalim", -1);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_SalimFacePlayer(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (mbSalimFadedAway) return false;
+			if (alState!=1) return true;
+			
+			SalimFacePlayer();
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_SalimFadeAway(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState!=1) return true;
+			if (mbSalimFadedAway) return false;
+			if (mbPlayerSawSalim==false) return true;
+			if (SequenceStates_IsActive("Seq_SalimFadeAway")) return false;
+			
+			Seq_SalimFadeAway("");
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_StartSalimDialog2(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState!=1) return true;
+			return StartSalimsDialog2();
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnLookAt_StartSalimDialog2(const tString &in asEntity, int alState)
+		{
+			if (mbSalimFadedAway) return;
+			if (alState!=1) return;
+			
+			StartSalimsDialog2();
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event D *SALIM FADES AWAY*
+		
+		////////////////////////////////////////////////////////
+		// Event E *BABY FADES AWAY*
+		//{/////////////////////////////////////////////////////
+
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSeq_BabyFadeAway;
+		int mlBlurFxID = -1;
+		int mlDoFFxID = -1;
+		
+		//-------------------------------------------------------
+		
+		void Seq_BabyFadeAway(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_BabyFadeAway", mSeq_BabyFadeAway);
+			
+            if (Sequence_DoStepAndWait(1.f))
+			{
+				if(cLux_ScriptDebugOn()==false)
+					PlayerBody_PlayCutsceneAtEntity("player_reach_out_baby", "Area_ReachOutForBabyAnimPos", false, 0.35f);
+            }
+			else if (Sequence_DoStepAndWait(1.f))
+			{
+				Voice_Play("Dialogue_TheChild",-1,"",1);
+				Sound_CreateAtEntity("Sound_PreBreak", "level_dreams/DW_ledge/room_break/room_pre_break", "player");
+				Effect_DoF_Start(3.5f, 280, 1.5f, 0.5);
+			}
+			else if (Sequence_DoStepAndWait(0.4))
+			{
+				mlBlurFxID = Effect_Blur_Start(1, 0.2);
+			}
+			else if (Sequence_DoStepAndWait(0.2))
+			{
+				Effect_Blur_FadeAmount(mlBlurFxID, 0.5, 0.2);
+			}
+			else if (Sequence_DoStepAndWait(0.3))
+			{
+				Effect_Blur_FadeAmount(mlBlurFxID, 0.8, 0.3);
+			}
+			else if (Sequence_DoStepAndWait(0.1))
+			{
+				Effect_Blur_FadeAmount(mlBlurFxID, 1, 0.3);
+			}
+			else if (Sequence_DoStepAndWait(0.2f))
+			{
+				ParticleSystem_CreateAtEntity("WindPS3", "wind_scare.ps", "Area_WindSource", false);
+				ParticleSystem_CreateAtEntity("WindPS4", "fade_away_wind_blow.ps", "Area_BabyFadeAwayPSSource", false);
+				
+				Sound_CreateAtEntity("WindSound", "level_dreams/DW_ledge/baby_disappear", "Area_WindSource");
+			}
+			else if (Sequence_DoStepAndWait(1))
+			{
+				Prop_SetActiveAndFade("Baby_Room", false, 2);
+				
+				Sound_Play("Sound_DebrisDust_1", 0.0f);
+				Sound_Play("Sound_DebrisDust_2", 0.0f);
+				Sound_Play("Sound_DebrisDust_3", 0.0f);
+
+				Sound_Play("Sound_WallCrackSweet_1", 0.0f);
+				Sound_Play("Sound_WallCrackSweet_2", 0.0f);
+				Sound_Play("Sound_WallCrackSweet_3", 0.0f);
+				
+				SetBabyVoiceMode(-1);
+				Sound_Stop("Sound_WindowRain", 3.0f);
+				Sound_Stop("Sound_WindowSweet", 3.0f);
+				
+				Light_FadeBrightnessTo("Room_Light_*", 0.f, 1.f);
+				Lamp_SetLit("Room_Lamp_*", false, true);
+				
+				WindBlowMobileToy();
+				
+				FearArea_SetSafe("FearArea_1", false);
+				
+				FearHandler_SetForcedAddFearRate(0.5f, 6.f, true);
+				
+				Sound_CreateAtEntity("SkyBabyCry", "04_03_undercity/baby/baby_throne_room_far", "player", 0.1f, true);
+				
+				Voice_PlayDelayed("Dialogue_ChildVanishes",1.0f);
+				Sound_CreateAtEntity("Sound_BabySweet", "level_dreams/sweeteners/room/baby_fade_sweet", "player");
+				
+				Effect_Blur_FadeAmount(mlBlurFxID, 0.8, 1);
+				
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{
+				DreamHandler_FadeDreamBlurFx("BlurFX_Baby", 1);
+				Effect_Blur_FadeOut(mlBlurFxID, 1);
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{
+				Prop_SetStaticPhysics("PhysicsClutter_crib_1", false);
+				Entity_SetInteractionDisabled("PhysicsClutter_crib_1", false);
+							
+				// Close the door
+				SwingDoor_PushOpen("MirrorDoor", -3.f, 1.f);
+				Sound_CreateAtEntity("CloseDoorSound", "physics/wood/wood_trap_door/trap_door_impact", "Area_DoorSoundSource");
+			}
+			else if (Sequence_DoStepAndWait(6.f))
+			{
+				SwingDoor_SetBlocked("MirrorDoor", true, true);
+				
+				Sound_CreateAtEntity("Sound_BabyFadeStinger_2", "level_dreams/DW_ledge/stingers/baby_vanish_sweet_2", "player");
+				
+				Music_PlayExt("A2_1_4_Dark_World_Ledge_Dream_B.ogg", false, 0.1f, 1.0f, 0.0f, 1.0f, eMusicPrio_BgAmb, true);
+			}
+			else if (Sequence_DoStepAndWait(4.f))
+			{
+				DreamHandler_PregnancyContractions();
+			}
+			else if (Sequence_DoStepAndContinue())
+			{
+				if (SequenceStates_IsActive("Seq_RoomBreakApart")==false && bRoomBreakingStarted==false)
+					Seq_RoomBreakApart("");
+			}
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_BabyFadeAway(const tString &in asEntity)
+		{
+			Entity_SetActive("Trigger_InteractWithBaby", false);
+			
+			if (SequenceStates_IsActive("Seq_BabyFadeAway")==false)
+				Seq_BabyFadeAway("");
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event E *BABY FADES AWAY*
+		
+		////////////////////////////////////////////////////////
+		// Event F *ROOM BREAKS APART*
+		//{/////////////////////////////////////////////////////
+
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSeq_RoomBreakApart;
+		bool bRoomBreakingStarted = false;
+		
+		//-------------------------------------------------------
+		
+		void Seq_RoomBreakApart(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_RoomBreakApart", mSeq_RoomBreakApart);
+			
+			if (Sequence_DoStepAndWait(1.f))
+			{
+				bRoomBreakingStarted = true;
+				Entity_SetActive("Sky_Infant", true);
+				Entity_PlayAnimation("Sky_Infant", "fetus3m_idle", 0.0f, true);
+				
+				array<iLuxEntity@> vDebrisPSSourceEnts;
+				Map_GetEntityArray("Area_Wall_Debris_Source_*", vDebrisPSSourceEnts, eLuxEntityType_Area);
+					
+				for (int i=0; vDebrisPSSourceEnts.size()>0 && i<vDebrisPSSourceEnts.size(); ++i)
+				{
+					iLuxEntity@ pCurrEntity = vDebrisPSSourceEnts[i];
+					if (pCurrEntity==null) continue;
+					
+					tString sCurrEntName = pCurrEntity.GetName();
+					
+					ParticleSystem_CreateAtEntity("dream_room_debris_"+i, "dream_room_debris", sCurrEntName, false);
+				}
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{
+				DreamHandler_PregnancyContractions();
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{
+				////////////////////////
+				// Start the destruction
+				Effect_Shake_Start(0.1f, 0.5f, 0.f, 1.f);
+				
+				Sound_CreateAtEntity("Sound_BreakStinger_1", "level_dreams/DW_ledge/stingers/break_sweet_1", "player");
+				Sound_CreateAtEntity("Sound_BreakStinger_2", "level_dreams/DW_ledge/stingers/break_sweet_2", "player");
+				Sound_CreateAtEntity("Sound_BreakSweet", "level_dreams/sweeteners/room/break_1_sweet", "player");
+				
+				Entity_SetActive("Soundscape_NurseryDestroyed",true);
+				Prop_MoveLinearTo("toy_chest_01", "Area_Toy_Chest_01_Destination", 0.2, 0.5, 1, false, "");
+				Prop_AlignRotation("toy_chest_01", "Area_Toy_Chest_01_Destination", 0.2, 0.5, 1, false, "");
+				Prop_MoveLinearTo("bookshelf_03", "Area_Bookshelf_03_Destination", 0.35, 0.4, 1, false, "");
+				Prop_AlignRotation("bookshelf_03", "Area_Bookshelf_03_Destination", 0.35, 0.4, 1, false, "");
+				Prop_MoveLinearTo("dresser_02", "Area_Dresser_02_Destination", 0.2, 0.25, 1, false, "");
+				Prop_AlignRotation("dresser_02", "Area_Dresser_02_Destination", 0.2, 0.25, 1, false, "");
+			}
+			else if (Sequence_DoStepAndWait(0.5f))
+			{
+				DreamHandler_PregnancyContractions();
+			}
+			else if (Sequence_DoStepAndWait(2.5f))
+			{
+				Map_Preset_Fade("Sunlight", 1.f);
+				Light_FadeBrightnessTo("Env_Light_*", 0, 1.f);
+				
+				BreakProp("ceiling_whole_wave_01_1");
+				Sound_CreateAtEntity("Sound_Break_2", "level_dreams/DW_ledge/wall_break_2", "Sound_Breaks");
+				Sound_CreateAtEntity("Sound_BreakStinger_3", "level_dreams/DW_ledge/stingers/break_sweet_3", "player");
+				
+				Sound_CreateAtEntity("Sound_RoomBreak", "level_dreams/DW_ledge/room_break/room_break_1", "player");
+				Sound_Play("Sound_BigCreak_2", 0.0f);
+				Sound_Play("Sound_BigCreak_1", 0.0f);
+				Music_Stop(10.0f, eMusicPrio_SceneAmb);
+			}
+			else if (Sequence_DoStepAndWait(2.f))
+			{
+				Voice_Play("Dialogue_RoomShatters", -1, "", 1);
+				Sound_CreateAtEntity("Sound_PreBreak_2", "level_dreams/DW_ledge/room_break/room_pre_break_2", "player");
+			}
+			else if (Sequence_DoStepAndWait(2.f))
+			{
+				BreakProp("PhysicsClutter_Painting_*", false);
+				
+				BreakProp("apartment_whole_wave_02_1");
+				BreakProp("ceiling_whole_wave_02_1");
+				
+				Sound_CreateAtEntity("Sound_Break_3", "level_dreams/DW_ledge/wall_break_3", "Sound_Breaks");
+				Sound_CreateAtEntity("Sound_RoomBreak_2", "level_dreams/DW_ledge/room_break/room_break_2", "player");
+				
+				Sound_Stop("Sound_DebrisDust_1", 3.0f);
+				Sound_Stop("Sound_DebrisDust_2", 3.0f);
+				Sound_Stop("Sound_DebrisDust_3", 3.0f);
+
+				Sound_Stop("Sound_WallCrackSweet_1", 3.0f);
+				Sound_Stop("Sound_WallCrackSweet_2", 3.0f);
+				Sound_Stop("Sound_WallCrackSweet_3", 3.0f);
+
+				Sound_Stop("Sound_BigCreak_1", 3.0f);
+				Sound_Stop("Sound_BigCreak_2", 3.0f);
+			}
+			else if (Sequence_DoStepAndWait(1.f))
+			{
+				BreakProp("apartment_whole_wave_03_1");
+				BreakProp("ceiling_whole_wave_03_1");
+				BreakProp("ceiling_whole_wave_04_1");
+                
+				Sound_CreateAtEntity("Sound_Break_4", "level_dreams/DW_ledge/wall_break_4", "Sound_Breaks");
+				Sound_CreateAtEntity("Sound_BreakStinger_4", "level_dreams/DW_ledge/stingers/break_sweet_4", "player");
+				Sound_CreateAtEntity("Sound_BreakSweet_3", "level_dreams/sweeteners/room/break_3_sweet", "player");
+				
+				Prop_MoveLinearTo("bookshelf_01", "Area_Bookshelf_01_Destination", 0.25, 0.5, 1, false, "");
+				Prop_AlignRotation("bookshelf_01", "Area_Bookshelf_01_Destination", 0.25, 0.5, 1, false, "");
+				Prop_MoveLinearTo("bookshelf_02", "Area_Bookshelf_02_Destination", 0.5, 0.5, 1, false, "");
+				Prop_AlignRotation("bookshelf_02", "Area_Bookshelf_02_Destination", 0.5, 0.5, 1, false, "");
+				
+				Sound_CreateAtEntity("Sound_RoomBreak_3", "level_dreams/DW_ledge/room_break/room_break_3", "player");
+				Sound_CreateAtEntity("Sound_RoomBreak_3_Sweet", "level_dreams/DW_ledge/room_break/room_break_3_rumble ", "player");
+				Sound_Play("Sound_BrickWood_1", 0.0f);
+				Sound_Play("Sound_BrickWood_2", 0.0f);
+				Sound_Play("Sound_BrickWood_3", 0.0f);
+				Sound_Play("Sound_BrickWood_4", 0.0f);
+				Sound_Play("Sound_BrickWood_5", 0.0f);
+				Sound_Play("Sound_DebrisFar_1", 0.0f);
+			}
+			else if (Sequence_DoStepAndWait(5.f))
+			{
+				BreakProp("apartment_whole_wave_04_1");
+				
+				//////////////////////////
+				// Fade out all lights but the sky-baby's
+				Map_Preset_Fade("Darkness", 8.f);
+				Entity_SetColorMul("Crib_Window_View", cColor(0));
+				Entity_FadeEffectBaseColor("Crib_Window_View", cColor(0), 8.f);
+				Light_FadeBrightnessTo("Crib_Window_Light_*", 0.f, 8.f);
+			}
+			else if (Sequence_DoStepAndContinue())
+			{
+				Entity_SetActive("Area_LookAtGiantBaby", true);
+			}
+			
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		void BreakProp(const tString&in asPropName="", const bool abDisableCol=true, const bool abFadeAfterBreak=false)
+		{
+			Effect_Shake_Start(0.1f, 0.5f, 0.f, 1.f);
+			
+			if (abDisableCol)
+				Entity_SetCollide(asPropName, false);
+			
+			if (asPropName=="") return;
+			Prop_SetHealth(asPropName, 0.f);
+			
+			/////////////////////////////////////////////
+			// Need to delay the zero G check or it fails
+			Map_AddTimer("OnTimer_ActivateZeroG", 0.1f, "OnTimer_ActivateZeroG");
+			
+			if (abFadeAfterBreak)
+				Map_AddTimer(asPropName, 6.f, "OnTimer_FadeDebris");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_FadeDebris(const tString&in asTimer)
+		{
+			Prop_SetActiveAndFade(asTimer, false, 3.f);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ActivateZeroG(const tString&in asTimer)
+		{
+			/////////////////////////////
+			// Release any grabbed bodies
+			if (Player_GetCurrentStateName()=="State_Interact_Grab")
+				Player_ChangeStateToNormal();
+				
+			////////////////
+			// Get all the physics bodies within a specified area.
+			array <iPhysicsBody@> vPhysicsBodies;
+			cVector3f vMin = Map_GetEntity("ZeroG_Body_Tracker").GetMeshEntity().GetBoundingVolume().GetMin();
+			cVector3f vMax = Map_GetEntity("ZeroG_Body_Tracker").GetMeshEntity().GetBoundingVolume().GetMax();
+			GetBase().GetPhysicsWorld().GetBodiesInAABB(vMin, vMax, vPhysicsBodies);
+			
+			for(int i=0; vPhysicsBodies.size()>0 && i<vPhysicsBodies.size(); ++i)
+			{
+				//////////////////
+				// Disable Gravity
+				iPhysicsBody@ pCurrentPhysBody = vPhysicsBodies[i];
+				if (pCurrentPhysBody is null) continue;
+				if (pCurrentPhysBody.GetMass()<=0) continue;
+					
+				pCurrentPhysBody.SetGravity(false);
+				
+				////////////////////////////////
+				// Push the floating debris away
+				iLuxEntity@ pImpulseSourceEnt = Map_GetEntity("Area_ImpulseSource", eLuxEntityType_Area);
+				if (pImpulseSourceEnt==null) continue;
+				cVector3f vImpulseDir = pCurrentPhysBody.GetWorldPosition() - pImpulseSourceEnt.GetPosition();
+				vImpulseDir = cMath_Vector3Normalize(vImpulseDir);
+				float fImpulseAmount = 1.5f;
+				pCurrentPhysBody.AddImpulse(vImpulseDir * fImpulseAmount);
+				
+				////////////////////
+				// Disable collision
+				tString sPhysBodyEntName = cLux_GetBodyEntity(pCurrentPhysBody).GetName();
+				if (cString_Sub(sPhysBodyEntName, 0, 15) != "PhysicsClutter_")
+					pCurrentPhysBody.SetCollide(false);
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event F *ROOM BREAKS APART*
+		
+		////////////////////////////////////////////////////////
+		// Event G *Infant is growing up*
+		//{/////////////////////////////////////////////////////
+
+		//-------------------------------------------------------
+
+		cSequenceStatesData mSeq_InfantGrowingUp;
+
+		//-------------------------------------------------------
+		
+		void Seq_InfantGrowingUp(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_InfantGrowingUp", mSeq_InfantGrowingUp);
+			
+			if (Sequence_DoStepAndWait(2.0f))
+			{
+				Sound_StopGui("04_03_undercity/baby/baby_throne_room_far", 0, true);
+				Sound_CreateAtEntity("Sound_BabyGrowSweet", "level_dreams/sweeteners/room/grow_sweet", "player");
+			}
+			else if (Sequence_DoStepAndPause(1.0f))
+			{
+				Effect_Flash_Start(10.f, 4.f, 0.1f);
+				
+				Prop_SetActiveAndFade("toy_chest_01", false, 5.f);
+				Entity_PlayAnimation("Sky_Infant", "fetus3mgrow_1", 0.2f, false, true, "OnFetusGrowAnimComplete");
+				Sound_CreateAtEntity("Sound_ContractionStinger", "04_01_town/contraction_pain/contraction_pain_stingers", "player");
+				Entity_SetAnimationSpeed("Sky_Infant", "fetus3mgrow_1", 1.5f);
+				Map_GetEntity("Sky_Infant").FadeMeshScaleMul(1.2f, 1.f);
+			}
+			else if (Sequence_DoStepAndPause(0.5f))
+			{
+				Entity_PlayAnimation("Sky_Infant", "fetus3mgrow_2", 0.2f, false, true, "OnFetusGrowAnimComplete");
+				Sound_CreateAtEntity("Sound_ContractionStinger", "04_01_town/contraction_pain/contraction_pain_stingers", "player");
+				Entity_SetAnimationSpeed("Sky_Infant", "fetus3mgrow_2", 1.5f);
+				Map_GetEntity("Sky_Infant").FadeMeshScaleMul(1.4f, 1.f);
+			}
+			else if (Sequence_DoStepAndWait(1.0f))
+			{
+				Entity_PlayAnimation("Sky_Infant", "fetus3mgrow_3", 0.2f, false, true, "OnFetusGrowAnimComplete");
+				Sound_CreateAtEntity("Sound_ContractionStinger", "04_01_town/contraction_pain/contraction_pain_stingers", "player");
+				Entity_SetAnimationSpeed("Sky_Infant", "fetus3mgrow_3", 1.5f);
+				Map_GetEntity("Sky_Infant").FadeMeshScaleMul(1.6f, 1.f);
+			}
+			else if (Sequence_DoStepAndWait(4.f))
+			{
+				Voice_SetSource("Infant", "Area_DreamBabyVoiceSource", 100, 100, true);
+				Voice_Play("Dialogue_InfantsCall");
+			}
+			else if (Sequence_DoStepAndContinue())
+			{
+				Player_StopLookAt(0.1f);
+				DreamHandler_SetActive(false);
+				
+				if (cLux_ScriptDebugOn()==false)
+					Map_ChangeMap("01_02_caves_b.hpm", "Start_Begin", "", "");
+			}
+			
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnFetusGrowAnimComplete(const tString &in asEntityName, const tString &in asAnimName)
+		{
+			tString sAnimName = asAnimName=="fetus3mgrow_3" ? "fetus3m_bigger_idle" : "fetus3m_idle";
+			Entity_PlayAnimation("Sky_Infant", sAnimName, 0.2f, true);
+			SequenceStates_Resume("Seq_InfantGrowingUp");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnLookAt_BabyGrowUp(const tString &in asEntity, int alState)
+		{
+			if (SequenceStates_IsActive("Seq_InfantGrowingUp")) return;
+			
+			Player_StartLookAt("Area_LookAtGiantInfant_Target", 0.5f, 0.5f, 1.f);
+            Seq_InfantGrowingUp("");
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event G *Infant is growing up*
+		
+	//} END SCENE 1 *THE ROOM*
+}

@@ -1,0 +1,243 @@
+////////////////////////////////////////////////////////
+// Deferred Water shader - Vertex Shader
+////////////////////////////////////////////////////////
+
+@include helper_matrix.hpsl
+
+@ifdef UseTextureBuffer
+	cBuffer cWaterTypeArguments : 0
+	{
+		cMatrixf a_mtxViewProjection;
+		cMatrixf a_mtxProjection;
+		cMatrixf a_mtxView;
+		cMatrixf a_mtxInvViewProjection;
+		cMatrixf a_mtxInvProjection;
+		cMatrixf a_mtxInvView;
+		
+		float afFarPlane;
+		float afNearPlane;
+		float afNearByFarPlane;
+		float afInvFarPlane;
+
+		float afT;
+		int alFogType;
+		cMatrixf a_mtxSkybox;
+		cVector4f avSecondFogSettings;
+		cVector4f avSkyboxColor;
+		cVector4f avSecondFogColor;
+		cVector2f avInvScreenSize;
+	};
+	
+	cBuffer cWaterMaterialArguments : 1
+	{
+		float afWaveAmplitude;
+		float afWaveFreq;	
+		float afWaveT;
+		float afRefractionScale;
+		
+		cVector2f avFrenselBiasPow;
+		cVector2f avReflectionSizeMul;
+		cVector2f avReflectionFadeStartAndLength;
+		cVector2f avFadeWhenShallowProps; //x= 1/Mul, y=pow
+
+		cVector4f avDepthOfFieldParams;
+		float afVtxT;
+		float afVtxWaveAmplitude;
+		float afVtxWaveFreq;
+			
+		int mlChaoticWaves;
+		cVector2f mvChaoticWaveSource;
+		int mlBlendMode;
+		float mfFadeWhenNear;
+	};
+	
+	@ifdef UseInstanceOffset
+	@else
+		cBuffer cInstanceArguments : 2
+		{
+			int alInstanceOffset;
+			int alInstanceStride;
+		};
+	@endif
+@else
+	cBuffer cWaterVertexArguments
+	{
+		//////////////
+		// Default input
+		cMatrixf a_mtxProjection;
+		cMatrixf a_mtxModelViewProjection;
+		cMatrixf a_mtxModelView;
+		cMatrixf a_mtxUV;
+		cMatrixf a_mtxModel;
+		cMatrixf a_mtxNormal;
+		float afVtxT;
+		float afVtxWaveAmplitude;
+		float afVtxWaveFreq;	
+
+		int mlChaoticWaves;
+		cVector2f mvChaoticWaveSource;
+		int mlBlendMode;
+		float mfFadeWhenNear;
+	};
+@endif
+
+@ifdef UseTextureBuffer
+	uniform cTextureBuffer aInstanceBuffer : 15;
+@endif
+
+//---------------------------------------------
+
+float GetOffset(in cVector3f avWorldPos, float afTime)
+{
+	return 	(sin(afTime + avWorldPos.x*afVtxWaveFreq) +  sin(afTime + avWorldPos.z*afVtxWaveFreq) +
+				(sin(afTime + 13.17 + avWorldPos.x*afVtxWaveFreq*2) +  sin(afTime + 17.13 + avWorldPos.z*afVtxWaveFreq*2))*0.5 +
+				(sin(afTime + 3.17 + avWorldPos.x*afVtxWaveFreq*4) +  sin(afTime + 7.13 + avWorldPos.z*afVtxWaveFreq*4))*0.25 -
+			1.0) * afVtxWaveAmplitude;
+}
+
+float Noise(in cVector2f avPos)
+{
+	return sin(avPos.x + avPos.y);
+}
+
+float FBM(cVector2f avPos)
+{
+	const cMatrix2f kMtxRotate = cMatrix2f(0.80,  0.60, -0.60,  0.80);
+
+    float f = 0.0;
+
+    f += 0.5000 * Noise(avPos); avPos = mul(kMtxRotate, avPos) * 2.02;
+    f += 0.2500 * Noise(avPos); avPos = mul(kMtxRotate, avPos) * 2.03;
+    f += 0.1250 * Noise(avPos); 
+
+    return f * (1.0 / 0.875);
+}
+
+float Pattern(in cVector2f avPos)
+{
+    cVector2f q = cVector2f(FBM(avPos + cVector2f(0.0,0.0)),
+							FBM(avPos + cVector2f(5.2,1.3)));
+
+    cVector2f r = cVector2f(FBM(avPos + 4.0*q + cVector2f(1.7,9.2)),
+							FBM(avPos + 4.0*q + cVector2f(8.3,2.8)));
+
+    return FBM(avPos + 4.0*r);
+}
+
+float GetOffsetChaotic(in cVector3f avWorldPos, in cVector3f avChaoticSrcPos, float afTime)
+{
+	float fDistance = distance(avChaoticSrcPos, avWorldPos)  * afVtxWaveFreq * 0.1;
+	float fTime = (-afTime + fDistance) * 0.2;
+	cVector2f vUV = avWorldPos.xz * afVtxWaveFreq * 0.1;
+
+	float fOffset0 = Pattern(vUV - cVector2f(afTime, -afTime) * 0.2);
+	float fOffset1 = Pattern(vUV + afTime * 0.2);
+
+	return (fOffset0 + fOffset1 - 1.0) * afVtxWaveAmplitude * 2;
+}
+
+///////////////////////////////
+// Main program
+void main(in cVector4f vtx_vPosition,
+		  in cVector4f vtx_vTexCoord0,
+		  in cVector3f vtx_vNormal,
+		  in cVector4f vtx_vTangent,
+@ifdef UseInstanceOffset
+		  in int vtx_lInstanceOffset,
+@endif
+@ifdef UseUv
+		  out cVector4f px_vTexCoord0,
+@endif
+@ifdef UseReflection
+		  out cVector3f px_vNormal,
+		  out cVector3f px_vTangent,
+		  out cVector3f px_vBinormal,
+@endif
+@ifdef UseVertexPosition	
+		  out cVector3f px_vVertexPos,
+@endif
+@ifdef UseTextureBuffer
+		  out int px_lInstanceOffset,
+@endif
+		  out cVector4f px_vPosition)
+{	
+	@ifdef UseTextureBuffer
+		///////////////
+		// Load data from texture buffer
+		@ifdef UseInstanceOffset
+			int lBaseOffset = vtx_lInstanceOffset;
+		@else
+			int lBaseOffset = int(alInstanceOffset + vtx_lInstanceID * alInstanceStride);
+		@endif
+
+		cMatrixf a_mtxModel = cMatrixf(load(aInstanceBuffer, lBaseOffset),
+									 load(aInstanceBuffer, lBaseOffset + 1),
+									 load(aInstanceBuffer, lBaseOffset + 2),
+									 load(aInstanceBuffer, lBaseOffset + 3));
+		lBaseOffset += 4;
+			
+		@ifdef UseReflection
+			cMatrix4f mtxTemp = cMatrix4f(load(aInstanceBuffer, lBaseOffset),
+										  load(aInstanceBuffer, lBaseOffset + 1),
+										  load(aInstanceBuffer, lBaseOffset + 2),
+										  cVector4f(0,0,0,1));
+			cMatrix3f a_mtxNormal = ToMatrix3f(mul(a_mtxView, mtxTemp));
+			lBaseOffset += 4;
+		@endif
+
+		px_lInstanceOffset = lBaseOffset;
+
+		/////////////
+		// Setup other matrices
+		cMatrixf a_mtxModelView = mul(a_mtxView, a_mtxModel);
+		cMatrixf a_mtxModelViewProjection = mul(a_mtxProjection, a_mtxModelView);
+	@endif
+
+	//////////////////////
+	// Position
+	@ifdef UseVertexWaves
+		// Get the world postion of vertex
+		cVector4f vWorldVtxPos = mul(a_mtxModel, vtx_vPosition);
+		
+		float fOffset = 0;
+		if (mlChaoticWaves > 0)
+		{
+			cVector4f vChaoticWaveSrc = mul(a_mtxModel, cVector4f(mvChaoticWaveSource.x, vtx_vPosition.y, mvChaoticWaveSource.y, 1.0));
+			fOffset = GetOffsetChaotic(vWorldVtxPos.xyz, vChaoticWaveSrc.xyz, afVtxT);
+		}
+		else					
+		{
+			fOffset = GetOffset(vWorldVtxPos.xyz, afVtxT);
+		}
+
+		cVector4f vLocalVertexPos = cVector4f(vtx_vPosition.xyz + cVector3f(0,fOffset,0), 1.0);
+		px_vPosition =  mul(a_mtxModelViewProjection, vLocalVertexPos);
+	@else
+		cVector4f vLocalVertexPos = vtx_vPosition;
+		px_vPosition = mul(a_mtxModelViewProjection, vLocalVertexPos);
+	@endif
+	
+	@ifdef UseVertexPosition
+		px_vVertexPos = mul(a_mtxModelView, vLocalVertexPos).xyz;
+	@endif
+	
+	@ifdef UseUv
+		//////////////////////
+		// Uv
+		px_vTexCoord0 = vtx_vTexCoord0;
+	@endif
+	
+	//////////////////////
+	// Normals
+	@ifdef UseReflection
+		cMatrix3x3f mtxNormal = cMatrix3x3f(a_mtxNormal);
+	
+		px_vNormal = normalize(mul(mtxNormal, vtx_vNormal));
+
+		px_vTangent = normalize(mul(mtxNormal, vtx_vTangent.xyz));
+			
+		//NOTE: normal are and tan are reveresed, because of OpenGL texture coord system
+		px_vBinormal = normalize(mul(mtxNormal, cross(vtx_vTangent.xyz, vtx_vNormal) * vtx_vTangent.w));
+	@endif
+}	
+	

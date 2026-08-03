@@ -1,0 +1,1 @@
+Custom areas go here. Remember to add them to the EntityTypes.cfg file.

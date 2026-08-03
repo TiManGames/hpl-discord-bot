@@ -1,0 +1,411 @@
+#include "custom/props/Prop_Rigid.hps"
+#include "custom/player/PlayerTypes_Custom.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_effects.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+
+//------------------------------------------------------------
+
+const float gfFlare_BurnTime = 60.f;
+const float gfFlare_AISoundRadius = 25.f;
+const float gfFlare_AISoundEventTimeInterval = 6.f;
+const float gfFlare_BurnEventTimeInterval = 2.f;
+const float gfFlare_StoppedMaxTime = 0.5f;
+const int glFlare_AISoundPrio = 3;
+
+const tString gsFlare_BlockBodyEnt = "path_area_blocker.ent";
+cVector3f gvFlare_BlockBodySize = cVector3f(5.0f, 2.0f, 5.0f);
+
+const tString gsFlare_StartSound = "weapons/throwables/flare/ignite";
+const tString gsFlare_LoopSound = "weapons/throwables/flare/burn_loop";
+const tString gsFlare_EndSound = "weapons/throwables/flare/flare_end";
+
+//------------------------------------------------------------
+
+enum eFlareState
+{
+	eFlareState_Burn,
+	eFlareState_Spent
+}
+
+//------------------------------------------------------------
+
+class cScrPropFlare : cScrPropRigid
+{
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// INIT
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+
+	void Init()
+	{
+		cScrPropRigid::Init();
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld@ apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		cScrPropRigid::SetupAfterLoad(apWorld, apVars, apInstanceVars);
+		
+		mBaseObj.SetAutoSleep(false);
+		mBaseObj.GetMeshEntity().SetRenderFlagBit(eRenderableFlag_ShadowCaster, false);
+		
+		///////////////////
+		// Setup spot transforms
+		int lSpotId = 0;
+		for (int i = 0; i < mBaseObj.GetLightNum(); ++i)
+		{
+			cLightSpot@ pSpot = cast<cLightSpot@>(mBaseObj.GetLight(i));
+			if (pSpot is null) continue;
+
+			m_mtxSpotTransformOnLoad[lSpotId] = pSpot.GetLocalMatrix();
+			++lSpotId;
+		}
+
+		//////////
+		// Preloading
+		Entity_Preload(gsFlare_BlockBodyEnt);
+	}	
+
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// GENERAL
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+
+	void OnMapEnter()
+	{
+		if (mBaseObj.IsActive())
+		{
+			mfStateCount += MapTransfer_GetTimeElapsed(mlTimeStamp);
+
+			/////////////////
+			// Done burning?
+			if (mfStateCount >= gfFlare_BurnTime)
+			{
+				/////////////////
+				// Setup vars
+				mfStateCount = 0.f;
+				mState = eFlareState_Spent;
+				
+				mBaseObj.SetAutoSleep(true);
+				mBaseObj.GetMeshEntity().SetRenderFlagBit(eRenderableFlag_ShadowCaster, true);
+								
+				/////////////////
+				// Stop effects
+				mBaseObj.SetEffectsActive(false, true);
+				
+				//////////////////
+				// Remove blocker
+				if (m_idBlockerBody != tID_Invalid)
+				{
+					iPhysicsBody@ pBody = cLux_ID_Body(m_idBlockerBody);
+					iLuxEntity@ pEnt = pBody !is null ? cLux_GetBodyEntity(pBody) : null;
+					
+					if (pBody !is null && pEnt !is null)
+					{
+						cLux_GetCurrentMap().DestroyEntity(pEnt);
+						m_idBlockerBody = tID_Invalid;
+					}
+				}
+			}
+		}
+	}
+
+	void OnMapLeave()
+	{
+		mlTimeStamp = MapTransfer_GetTimeStamp();
+		m_idLoopSound = tID_Invalid;
+	}
+
+	//------------------------------------------------------------
+	
+	void OnUpdate(float afTimeStep)
+	{
+		//////////////////
+		// Time
+		float fPrevStateCount = mfStateCount;
+		mfStateCount += afTimeStep;
+		
+		/////////////////
+		// Burn
+		if (mState == eFlareState_Burn)
+		{
+			/////////////////
+			// Update loop sound
+			if (mfStateCount < gfFlare_BurnTime - 2.f)
+			{
+				cSoundEntity@ pLoopSound = cLux_ID_SoundEntity(m_idLoopSound);
+				if (pLoopSound is null)
+				{
+					@pLoopSound = mBaseObj.PlaySound("Sound_FlareLoop", gsFlare_LoopSound, true, false);
+					if (pLoopSound !is null) 
+						m_idLoopSound = pLoopSound.GetID();
+				}
+				else
+				{
+					pLoopSound.SetWorldPosition(mBaseObj.GetPosition());
+				}	
+			}		
+
+			/////////////////
+			// AI sound event
+			mfAISoundEventCount += afTimeStep;
+			if (mfAISoundEventCount >= gfFlare_AISoundEventTimeInterval)
+			{
+				mfAISoundEventCount = 0.f;
+				
+				iPhysicsBody@ pBody = mBaseObj.GetMainBody();
+				if (pBody !is null)
+				{
+					mBaseObj.GetMap().BroadcastSoundHeardEvent("Flare", mBaseObj.GetPosition(), gfFlare_AISoundRadius, glFlare_AISoundPrio, 
+																false, pBody.GetThrownByPlayer(), pBody.GetID());
+				}
+			}
+			
+			/////////////////
+			// Play end sound
+			float fPlayEndSoundTime = gfFlare_BurnTime - 2.f;
+			if (mfStateCount > fPlayEndSoundTime && fPrevStateCount < fPlayEndSoundTime)
+			{
+				cSoundEntity@ pLoop = cLux_ID_SoundEntity(m_idLoopSound);
+				if (pLoop !is null) pLoop.FadeOut(2.0f);
+				
+				mBaseObj.PlaySound("Sound_FlareStop", gsFlare_EndSound, true, true);
+			}
+			
+			////////////////////
+			// Send event
+			mfBurnEventCount += afTimeStep;
+			if (mfBurnEventCount > gfFlare_BurnEventTimeInterval)
+			{
+				mfBurnEventCount = 0;
+		
+				//////////////
+				// Broadcast message
+				array<iLuxEntity@> vAgents;
+				cLux_GetCurrentMap().GetEntityArray("*", eLuxEntityType_Agent, "", vAgents);
+				
+				for (int i = 0; i < vAgents.size(); ++i)
+				{
+					cLuxAgent@ pAgent = cLux_ToAgent(vAgents[i]);
+					if (pAgent is null) continue;
+					
+					pAgent.BroadcastMessage(eCustomEntityMessage_FlareBurning, null, mBaseObj.GetPosition(), -1);
+				}
+			}
+			
+			///////////////////
+			// Check if stopped
+			if (mfStoppedCount < gfFlare_StoppedMaxTime)
+			{
+				cVector3f vCurrPos = mBaseObj.GetPosition();
+				if (cMath_Vector3Dist(mvPrevPos, vCurrPos) > 0.05)
+				{
+					mvPrevPos = vCurrPos;
+					mfStoppedCount = 0;
+				}
+				else
+				{
+					mfStoppedCount += afTimeStep;
+					
+					/////////////////////////
+					// Add a blocker body
+					if (mfStoppedCount >= gfFlare_StoppedMaxTime)
+					{
+						cLuxMap@ pMap = cLux_GetCurrentMap();
+						if (pMap is null) return;
+						
+						///////////////////
+						// Create blocker
+						pMap.CreateEntity(mBaseObj.GetName() + "_PathBlocker", gsFlare_BlockBodyEnt, cMatrixf_Identity, cVector3f(1.f));
+						iLuxEntity@ pEnt = pMap.GetLatestEntity();
+						if (pEnt is null) return;
+						
+						pEnt.SetVarBool("IsFlareBlocker", true);
+						
+						cMatrixf mtxNew = cMath_MatrixScale(gvFlare_BlockBodySize);
+						mtxNew.SetTranslation(vCurrPos);
+						pEnt.SetMatrix(mtxNew);
+						
+						///////////////////
+						// Add to blackboard
+						m_idBlockerBody = pEnt.GetMainBody().GetID();
+						Blackboard_AddDamageAreaBody(m_idBlockerBody);
+					}
+				}
+			}
+			
+			/////////////////
+			// Update damage
+			mfIgniteCount -= afTimeStep;
+			if (mfIgniteCount < 0)
+			{
+				cBoundingVolume@ pBV = mBaseObj.GetMainBody().GetBoundingVolume();
+				
+				cVector3f vPos = mBaseObj.GetPosition();
+				cVector3f vMin = vPos - cVector3f(0.4f);
+				cVector3f vMax = vPos + cVector3f(0.4f);
+				vMin.y = pBV.GetMin().y - 0.1f;
+				vMax.y = pBV.GetMax().y + 0.1f;
+				
+				array<iPhysicsBody@> vBodies;
+				cLux_GetCurrentMap().GetPhysicsWorld().GetBodiesInAABB(vMin, vMax, false, false, vBodies);
+				for (uint i = 0; i < vBodies.length(); i++)
+				{
+					iPhysicsBody@ pBody = vBodies[i];
+					
+					//////////////////////////
+					// Check if body should trigger the trap
+					if (pBody.IsActive()==false) continue;
+					
+					iLuxEntity@ pCollidingEnt = cLux_GetBodyEntity(pBody);
+					
+					if (pCollidingEnt !is null && pCollidingEnt.GetEntityType() != eLuxEntityType_Agent)
+					{
+						int lDamageInstance = cLux_GetCurrentMap().GetNewAttackInstanceID();
+						pCollidingEnt.GiveDamage(pBody, mBaseObj.GetPosition(), mBaseObj.GetPosition(), eDamageType_Spark, 0, 1, 0, 0, mBaseObj.GetID(), lDamageInstance);
+					}
+				}
+				
+				mfIgniteCount = cMath_RandRectf(0.1, 0.2);
+			}
+			
+			/////////////////
+			// Done burning?
+			if (mfStateCount >= gfFlare_BurnTime)
+			{
+				/////////////////
+				// Setup vars
+				mfStateCount = 0.f;
+				mState = eFlareState_Spent;
+				
+				mBaseObj.SetAutoSleep(true);
+				mBaseObj.GetMeshEntity().SetRenderFlagBit(eRenderableFlag_ShadowCaster, true);
+								
+				/////////////////
+				// Stop effects
+				mBaseObj.SetEffectsActive(false, true);
+				
+				//////////////////
+				// Remove blocker
+				if (m_idBlockerBody != tID_Invalid)
+				{
+					iPhysicsBody@ pBody = cLux_ID_Body(m_idBlockerBody);
+					iLuxEntity@ pEnt = pBody !is null ? cLux_GetBodyEntity(pBody) : null;
+					
+					if (pBody !is null && pEnt !is null)
+					{
+						cLux_GetCurrentMap().DestroyEntity(pEnt);
+						m_idBlockerBody = tID_Invalid;
+					}
+				}
+			}
+		}
+		
+		/////////////////
+		// Spent
+		/*else if (mState == eFlareState_Spent)
+		{
+			
+		}*/
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnPostUpdate(float afTimeStep)
+	{
+		/////////////
+		// Lock spot rotations
+		cMatrixf mtxTransform = mBaseObj.GetMatrix();
+		mtxTransform.SetRotation(cMatrixf_Identity);		
+		
+		int lSpotId = 0;
+		for (int i = 0; i < mBaseObj.GetLightNum(); ++i)
+		{
+			cLightSpot@ pSpot = cast<cLightSpot@>(mBaseObj.GetLight(i));
+			if (pSpot is null) continue;
+			
+			cMatrixf mtxNew = cMath_MatrixMul(mtxTransform, m_mtxSpotTransformOnLoad[lSpotId]);
+			pSpot.SetWorldMatrix(mtxNew);
+			++lSpotId;
+		}
+	}
+		
+	//------------------------------------------------------------
+	
+	void _Global_ForceSpent()
+	{
+		/////////////////
+		// Setup vars
+		mfStateCount = 0.f;
+		mState = eFlareState_Spent;
+		
+		mBaseObj.SetAutoSleep(true);
+		mBaseObj.GetMeshEntity().SetRenderFlagBit(eRenderableFlag_ShadowCaster, true);
+						
+		/////////////////
+		// Stop effects
+		mBaseObj.SetEffectsActive(false, true);
+		
+		//////////////////
+		// Remove blocker
+		if (m_idBlockerBody != tID_Invalid)
+		{
+			iPhysicsBody@ pBody = cLux_ID_Body(m_idBlockerBody);
+			iLuxEntity@ pEnt = pBody !is null ? cLux_GetBodyEntity(pBody) : null;
+			
+			if (pBody !is null && pEnt !is null)
+			{
+				cLux_GetCurrentMap().DestroyEntity(pEnt);
+				m_idBlockerBody = tID_Invalid;
+			}
+		}
+		
+		/////////////////
+		// Play end sound
+		float fPlayEndSoundTime = gfFlare_BurnTime - 2.f;
+		cSoundEntity@ pLoop = cLux_ID_SoundEntity(m_idLoopSound);
+		if (pLoop !is null) pLoop.FadeOut(2.0f);
+		mBaseObj.PlaySound("Sound_FlareStop", gsFlare_EndSound, true, true);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// PROPERTIES
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	float mfStateCount = 0.f;
+	float mfAISoundEventCount = gfFlare_AISoundEventTimeInterval - 1.f;
+	eFlareState mState = eFlareState_Burn;
+	
+	float mfBurnEventCount = 0;
+	float mfIgniteCount = 0;
+	
+	cVector3f mvPrevPos = 0;
+	float mfStoppedCount = 0;
+	tID m_idBlockerBody;
+	
+	tID m_idLoopSound;
+	cMatrixf[] m_mtxSpotTransformOnLoad = { cMatrixf_Identity, cMatrixf_Identity, cMatrixf_Identity };
+	int mlTimeStamp = 0;
+	
+	//------------------------------------------------------------
+}

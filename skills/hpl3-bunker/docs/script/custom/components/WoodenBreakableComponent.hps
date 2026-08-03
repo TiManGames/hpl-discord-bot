@@ -1,0 +1,788 @@
+#include "interfaces/UserComponent_Interface.hps"
+#include "custom/components/ComponentInterfaces_Custom.hps"
+#include "base/Base_Types.hps"
+#include "helpers/helper_items.hps"
+#include "helpers/helper_game.hps"
+
+//---------------------------------------------------
+
+const int glWoodenBreakable_BreakEventPrioHigh = 5;
+const float gfWoodenBreakable_BreakEventRadiusHigh = 50.f;
+
+const int glWoodenBreakable_BreakEventPrioMedium = 4;
+const float gfWoodenBreakable_BreakEventRadiusMedium = 35.f;
+
+const int glWoodenBreakable_BreakEventPrioLow = 3;
+const float gfWoodenBreakable_BreakEventRadiusLow = 15.f;
+
+//---------------------------------------------------
+
+enum eWoodenBreakable_BreakAIEventPrio
+{
+	eWoodenBreakable_BreakAIEventPrio_Low,
+	eWoodenBreakable_BreakAIEventPrio_Medium,
+	eWoodenBreakable_BreakAIEventPrio_High
+}
+
+//---------------------------------------------------
+
+class cRandomItemDrop
+{
+	cRandomItemDrop(){}
+	cRandomItemDrop(tString&in asItemType, float afDropProbability)
+	{
+		msItemType = asItemType;
+		mfDropProbability = afDropProbability;
+	}
+	tString msItemType;
+	float mfDropProbability;
+}
+
+const float gfItemDropChance_Base = 0.075f;
+const float gfItemDropChance_Mod = 0.275f;
+const float gfItemDropChance_Max = 0.75f;
+const int gfItemDrop_MaxDropCount = 3;
+
+//---------------------------------------------------
+
+class cScrWoodenBreakableComponent : iScrUserComponent, iScrUserComponent_Interface, iScrWoodenBreakableComponent_Interface
+{
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		mbBroken = false;
+		mlHitCount = 0;
+		mlCurrentMeshEntity = 0;
+		mfMinHitMass = 10.f;
+		mvHitPosition = cVector3f(0.f);
+		mvHitNormal = cVector3f(0.f);
+		m_idBrokenEntityId = tID_Invalid;
+		
+		mvRandomItemDrops.resize(0);
+		mbDropItemOnBreak = false;
+		msCustomDropItemsList;
+		mlCustomDropItemsCount = -1;
+		mfCustomDropItemProbability = -1.f;
+		mbScaleCustomDropProbability = true;
+
+		@mpDamageMeshEntity = null;
+		@mpDefaultMeshEntity = null;
+	}
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INTERFACE
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld@ apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		////////////////////
+		// Setup vars
+		mbBreakActive = apVars.GetVarBool("WoodenBreakable_Active", false);
+		mfHitMinEnergy = apVars.GetVarFloat("WoodenBreakable_HitMinEnergy", 100.f);
+		mlMaxHits = apVars.GetVarInt("WoodenBreakable_MaxHits", 2);
+		mfMinHitMass = apVars.GetVarInt("WoodenBreakable_MinHitMass", 10.f);
+		msDamageMesh = apVars.GetVarString("WoodenBreakable_DamageMesh", "");
+		msDamageSound = apVars.GetVarString("WoodenBreakable_DamageSound", "");
+		msDamagePS = apVars.GetVarString("WoodenBreakable_DamagePS", "");
+		msBrokenEntity = apVars.GetVarString("WoodenBreakable_BrokenEntity", "");
+		mfBreakImpulse = apVars.GetVarFloat("WoodenBreakable_BreakImpulse", 3.f);
+		msBreakSound = apVars.GetVarString("WoodenBreakable_BreakSound", "");
+		msBreakPS = apVars.GetVarString("WoodenBreakable_BreakPS", "");
+		mbCanDestroyThrownEnt = apVars.GetVarBool("WoodenBreakable_CanDestroyThrownEntity", false);
+		mbPathBlocker = apVars.GetVarBool("WoodenBreakable_PathBlocker", false);
+		
+		tString sPrio = apVars.GetVarString("WoodenBreakable_BreakAIEventPrio", "");
+		
+		if (sPrio == "Low")			 	mBreakAIEventPrio = eWoodenBreakable_BreakAIEventPrio_Low;
+		else if (sPrio == "Medium") 	mBreakAIEventPrio = eWoodenBreakable_BreakAIEventPrio_Medium;
+		else if (sPrio == "High") 		mBreakAIEventPrio = eWoodenBreakable_BreakAIEventPrio_High;
+		
+		bool bDisableBreakable = apInstanceVars.GetVarBool("DisableBreakable", false);
+		if (bDisableBreakable)
+			mbBreakActive = false;
+			
+		msOnBreakCallbackFunc = apInstanceVars.GetVarString("OnBreakCallbackFunc", "");
+		
+		////////////////////
+		// Get prop
+		cLuxProp@ pProp = cLux_ToProp(mBaseObj.GetEntity());
+		if (pProp is null)
+		{
+			Error("Couldn't find prop 'WoodenBreakableComponent' is attached to!");
+			return;
+		}
+		
+		////////////////////
+		// Setup break
+		SetIsBreakable(mbBreakActive);
+		pProp.SetScriptCollisionCallbackActive(mbBreakActive);
+				
+		////////////////////
+		// Set up damage mesh entities
+		if (mpMainBody !is null)
+		{
+			@mpDefaultMeshEntity = pProp.GetMeshEntity();
+			cMatrixf mtxInvDynBody = cMath_MatrixInverse(mpMainBody.GetLocalMatrix());
+			
+			if (msDamageMesh != "")
+			{
+				////////////////////
+				// Create mesh
+				cMesh@ pMesh = cResources_CreateMesh(msDamageMesh);
+				if (pMesh is null)
+				{
+					Error("Could not load damage mesh '" + msDamageMesh + "' for '"+ pProp.GetFileName() + "'\n");
+				}
+				else
+				{
+					////////////////////
+					// Create mesh entity
+					cMeshEntity@ pDamageMeshEnt = apWorld.CreateMeshEntity(pProp.GetName() + "_damage", pMesh, false);
+					pDamageMeshEnt.SetMatrix(mpDefaultMeshEntity.GetLocalMatrix());
+					
+					////////////////////
+					// Position submeshes and attach to main body
+					for (int i = 0; i < pDamageMeshEnt.GetSubMeshEntityNum(); ++i)
+					{
+						cSubMeshEntity@ pSubMesh = pDamageMeshEnt.GetSubMeshEntity(i);
+						int lId = mpDefaultMeshEntity.GetMesh().GetSubMeshIndex(pSubMesh.GetSubMesh().GetName());
+
+						if (lId < 0)
+						{
+							// This is not ideal but should be good enough.
+							cMatrixf mtxWorld = cMath_MatrixMul(pProp.GetOnLoadTransform(), pSubMesh.GetLocalMatrix());
+							pSubMesh.SetMatrix(cMath_MatrixMul(mtxInvDynBody, mtxWorld));
+
+							mpMainBody.AddChild(pSubMesh);
+							continue;
+						}
+						
+						cSubMeshEntity@ pBaseSubMesh = mpDefaultMeshEntity.GetSubMeshEntity(lId);
+						iEntity3D@ pBaseSubMeshParent = pBaseSubMesh.GetEntityParent();		
+						
+						pSubMesh.SetMatrix(pBaseSubMesh.GetLocalMatrix());					
+						
+						if (pBaseSubMeshParent !is null)
+							pBaseSubMeshParent.AddChild(pSubMesh);
+					}
+					
+					////////////////////
+					// Store it
+					@mpDamageMeshEntity = pDamageMeshEnt;
+					
+					////////////////////
+					// Update meshes
+					if (mBaseObj.GetEntity().IsActive())
+					{
+						mpDefaultMeshEntity.SetVisible(mlCurrentMeshEntity == 0);
+						mpDefaultMeshEntity.SetActive(mlCurrentMeshEntity == 0);
+					}
+					mpDamageMeshEntity.SetVisible(mlCurrentMeshEntity == 1);
+					mpDamageMeshEntity.SetActive(mlCurrentMeshEntity == 1);
+				}
+			}
+		}
+		
+		//////////////////////////
+		// Random item drops setup
+		mbDropItemOnBreak = apVars.GetVarBool("WoodenBreakable_DropItemOnBreak", false);
+		if (mbDropItemOnBreak)
+		{
+			mbScaleCustomDropProbability = apInstanceVars.GetVarBool("WoodenBreakable_ScaleCustomDropProbability", true);
+			
+			int lDropItemsCount_InstVar = apInstanceVars.GetVarInt("WoodenBreakable_CustomDropItemsCount", -1);
+			int lDropItemsCount_ClassVar = apVars.GetVarInt("WoodenBreakable_CustomDropItemsCount", -1);
+			mlCustomDropItemsCount = lDropItemsCount_InstVar != -1 ? lDropItemsCount_InstVar : lDropItemsCount_ClassVar;
+			
+			float fDropItemProbability_InstVar = apInstanceVars.GetVarFloat("WoodenBreakable_CustomDropItemsProbability", -1);
+			float fDropItemProbability_ClassVar = apVars.GetVarFloat("WoodenBreakable_CustomDropItemsProbability", -1);
+			float fCustomDropItemProbability = fDropItemProbability_InstVar != -1.f ? fDropItemProbability_InstVar : fDropItemProbability_ClassVar;
+			mfCustomDropItemProbability = cMath_Min(fCustomDropItemProbability, 1.f);
+			
+			tString sDropItems_InstVar = apInstanceVars.GetVarString("WoodenBreakable_CustomDropItemsList", "");
+			tString sDropItems_ClassVar = apVars.GetVarString("WoodenBreakable_CustomDropItemsList", "");
+			tString sCustomDropItems = sDropItems_InstVar != "" ? sDropItems_InstVar : sDropItems_ClassVar;
+			if (sCustomDropItems != "")
+			{
+				array<tString> vCustomDropItemsList;
+				cString_GetStringVec(sCustomDropItems, vCustomDropItemsList, " ,,");
+				
+				for (int i=0; i<vCustomDropItemsList.size(); i++)
+				{
+					cRandomItemDrop@ pItemDrop = GetRandomItemDropByItemType(vCustomDropItemsList[i]);
+					if (pItemDrop is null) continue;
+					mvRandomItemDrops.push_back(pItemDrop);
+				}
+			}
+			else
+			{
+				mvRandomItemDrops = mvDefaultRandomItemDrops;
+			}
+		}
+		
+		////////////////////
+		// Preload
+		cLux_PreloadEntity(msBrokenEntity);
+		cLux_PreloadParticleSystem(msBreakPS);
+		cLux_PreloadParticleSystem(msDamagePS);
+	}
+	
+	//------------------------------------------------------------
+	
+	cRandomItemDrop@ GetRandomItemDropByItemType(tString&in asType)
+	{
+		for (int i=0; i<mvDefaultRandomItemDrops.size(); i++)
+		{
+			if (asType == mvDefaultRandomItemDrops[i].msItemType)
+				return mvDefaultRandomItemDrops[i];
+		}
+		
+		return null;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetMainBody(iPhysicsBody@ apBody)
+	{
+		@mpMainBody = apBody;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetIsBreakable(bool abX)
+	{
+		mbBreakActive = abX;
+		
+		cLuxProp@ pProp = cLux_ToProp(mBaseObj.GetEntity());
+		if (pProp !is null)
+			pProp.SetIsBreakable(abX);
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetIsBreakable()
+	{
+		return mbBreakActive;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetIsPathBlocker()
+	{
+		return mbPathBlocker;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetIsBroken()
+	{
+		return mbBroken;
+	}
+	
+	//------------------------------------------------------------
+	
+	void ResetProperties()
+	{
+		////////////////////
+		// Destroy broken entity
+		if (mbBroken)
+		{
+			mbBroken = false;
+			
+			if (m_idBrokenEntityId != tID_Invalid)
+			{
+				cLuxMap@ pMap = mBaseObj.GetEntity().GetMap();
+				if (pMap is null) return;
+				
+				iLuxEntity@ pEnt = pMap.GetEntityByID(m_idBrokenEntityId, eLuxEntityType_LastEnum);
+				if (pEnt !is null)
+					pMap.DestroyEntity(pEnt);
+
+				m_idBrokenEntityId = tID_Invalid;
+			}
+		}
+		
+		////////////////////
+		// Reset damage level
+		SetCurrentDamageLevel(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void BeforeEntityDestruction()
+	{
+		////////////////////
+		// Destroy damage mesh
+		if (mpDamageMeshEntity !is null)
+		{
+			mBaseObj.GetEntity().GetMap().GetWorld().DestroyMeshEntity(mpDamageMeshEntity);
+			@mpDamageMeshEntity = null;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnHealthChange()
+	{
+		if (mbBreakActive == false) return;
+		if (mbBroken) return;
+		
+		////////////////////
+		// Setup vars
+		cLuxProp@ pProp = cLux_ToProp(mBaseObj.GetEntity());
+		cLuxMap@ pMap = pProp.GetMap();
+		cWorld@ pWorld = pMap !is null ? pMap.GetWorld() : null;
+		
+		if (pProp is null) return;
+		if (pMap is null) return;
+		if (pWorld is null) return;
+		
+		tString sSound = "";
+		tString sPS = "";
+		int lMainBodyId = 0;
+
+		////////////////////
+		// Broken?
+		if (pProp.GetHealth() <= 0.f && mbBroken == false)
+		{
+			mbBroken = true;
+			const float fDifficultyDropChanceMul = GameDifficulty_GetSettingValueByID_Float(eGameDifficultySetting_ResourceAmount);
+			
+			//////////////////////
+			// Create random drops
+			if (mvRandomItemDrops.size() > 0 && mbDropItemOnBreak && (fDifficultyDropChanceMul>0.f || (mfCustomDropItemProbability>0.f && mbScaleCustomDropProbability==false)))
+			{
+				////////////////////////////////
+				// Calculate general probability. Are we going to have a drop at all?
+				const float fDifficultyDropChance =	cMath_Min(gfItemDropChance_Base + fDifficultyDropChanceMul * gfItemDropChance_Mod, gfItemDropChance_Max);
+				const float fCustomDropChance = mfCustomDropItemProbability * (mbScaleCustomDropProbability ? gfItemDropChance_Base + fDifficultyDropChanceMul * gfItemDropChance_Mod : 1.0f);
+				
+				const float fGeneralDropChance = (mfCustomDropItemProbability > 0.f) ? fCustomDropChance : fDifficultyDropChance;
+				const float fGeneralRnd = cMath_RandRectf(0.f, 1.f);
+				
+				if (fGeneralRnd <= fGeneralDropChance)
+				{
+					///////////////////////
+					// How many drops should we create?
+					int lDropCount = 1;
+					if (mlCustomDropItemsCount > -1) 
+					{
+						lDropCount = mlCustomDropItemsCount;
+					}
+					else
+					{
+						for (int i = 1; i < gfItemDrop_MaxDropCount; i++)
+						{
+							const float fExtraRnd = cMath_RandRectf(0.f, 1.f);
+							if (fExtraRnd <= fGeneralDropChance)
+								lDropCount++;
+							else
+								break;
+						}
+					}
+					
+					///////////////
+					// Create Drops 
+					for (int i=0; i<lDropCount; i++)
+					{
+						float fTotalProbability = 0;
+						for (int i = 0; i < mvRandomItemDrops.size(); i++)
+						{
+							cRandomItemDrop@ pDrop = mvRandomItemDrops[i];
+							if (pDrop is null) continue;
+							fTotalProbability += pDrop.mfDropProbability;
+						}
+						
+						const float fRnd = cMath_RandRectf(0.f, fTotalProbability);
+						
+						///////////////////////////////////////////////
+						// Iterate through the array and select entry based on the individual probabilities
+						float fCumulativeProbability = 0.f;
+						int lChosenIndex = -1;
+						for (int i=0; i<mvRandomItemDrops.size(); i++)
+						{
+							cRandomItemDrop@ pDrop = mvRandomItemDrops[i];
+							if (pDrop is null) continue;
+							fCumulativeProbability += pDrop.mfDropProbability;
+							
+							if (fRnd <= fCumulativeProbability)
+							{
+								lChosenIndex = i;
+								break;
+							}
+						}
+						
+						if (lChosenIndex != -1)
+						{
+							const tString sItemToDrop = mvRandomItemDrops[lChosenIndex].msItemType;
+							const cMatrixf mtx = mBaseObj.GetEntity().GetMatrix();
+							ItemType_SpawnAsEntity(sItemToDrop, mtx, "", 1.f, eItemSpawn_World, eItemSpawnType_Drop);
+							iLuxEntity@ pEntity = cLux_GetCurrentMap().GetLatestEntity();
+							if (pEntity !is null && pEntity.GetMainBody() !is null)
+								pEntity.GetMainBody().AddImpulse(cVector3f(0.f, 0.05f, 0.f)); // wake up 
+						}
+
+					}
+				}
+			}
+
+			////////////////////
+			// Disable bodies and children
+			for (int i = 0; i < pProp.GetBodyNum(); ++i)
+			{
+				iPhysicsBody@ pBody = pProp.GetBody(i);
+				if (pBody.GetMass() == 0.f) continue;
+
+				pBody.SetActive(false);
+				
+				// Get main body index
+				if (pBody is mpMainBody && mpMainBody !is null)
+					lMainBodyId = i;
+
+				cEntity3DIterator@ pIt = pBody.GetChildIterator();
+				while (pIt.HasNext())
+				{
+					iEntity3D@ pEntity = pIt.Next();
+					
+					for(int j = 0; j < pProp.GetMeshEntity().GetSubMeshEntityNum(); ++j)
+					{
+						iEntity3D@ pEnt = pProp.GetMeshEntity().GetSubMeshEntity(j);
+						if (pEnt is pEntity)
+						{
+							cSubMeshEntity@ pMeshEnt = cast<cSubMeshEntity>(pEnt);
+						
+							pMeshEnt.SetActive(false);
+							pMeshEnt.SetVisible(false);
+						}
+					}
+				}
+			}
+			
+			////////////////////////
+			// Create broken entity
+			if (msBrokenEntity != "")
+			{				
+				cEntityBodyExtraData@ pBodyData = pProp.GetBodyExtraData(lMainBodyId);
+
+				cMatrixf mtxInvLocalBody = cMath_MatrixInverse(pBodyData.m_mtxLocalTransform);
+				cMatrixf mtxEntity = cMath_MatrixMul(mpMainBody.GetLocalMatrix(), mtxInvLocalBody);
+
+				pMap.ResetLatestEntity();
+				pMap.CreateEntity(pProp.GetName() + "_broken", msBrokenEntity, mtxEntity, pProp.GetOnLoadScale());	
+				
+				cLuxProp@ pBrokenProp = cLux_ToProp(pMap.GetLatestEntity());
+				
+				////////////////////
+				// Add impulse and velocity
+				if (pBrokenProp !is null)
+				{
+					m_idBrokenEntityId = pBrokenProp.GetID();
+
+					for (int i = 0; i < pBrokenProp.GetBodyNum(); ++i)
+					{
+						iPhysicsBody@ pBody = pBrokenProp.GetBody(i);
+						
+						cVector3f vNewBodyCenter = cMath_MatrixMul(pBody.GetLocalMatrix(), pBody.GetMassCenter());
+						cVector3f vImpulseDir = cMath_Vector3Normalize(vNewBodyCenter - mtxEntity.GetTranslation());
+
+						pBody.AddImpulse(vImpulseDir * mfBreakImpulse + mpMainBody.GetLinearVelocity());
+					}
+				}
+			}
+			
+			////////////////////
+			// Broadcast AI event
+			int lBreakEventPrio;
+			float fBreakEventRadius;
+			
+			if (mBreakAIEventPrio == eWoodenBreakable_BreakAIEventPrio_Low)
+			{
+				lBreakEventPrio = glWoodenBreakable_BreakEventPrioLow;
+				fBreakEventRadius = gfWoodenBreakable_BreakEventRadiusLow;
+			}
+			else if (mBreakAIEventPrio == eWoodenBreakable_BreakAIEventPrio_Medium)
+			{
+				lBreakEventPrio = glWoodenBreakable_BreakEventPrioMedium;
+				fBreakEventRadius = gfWoodenBreakable_BreakEventRadiusMedium;
+			}
+			else if (mBreakAIEventPrio == eWoodenBreakable_BreakAIEventPrio_High)
+			{
+				lBreakEventPrio = glWoodenBreakable_BreakEventPrioHigh;
+				fBreakEventRadius = gfWoodenBreakable_BreakEventRadiusHigh;
+			}
+			
+			pMap.BroadcastSoundHeardEvent(pProp.GetName() + "_Break", pProp.GetPosition(), fBreakEventRadius, lBreakEventPrio, false, false, pProp.GetMainBody().GetID());
+			
+			////////////////////
+			// Set effects
+			sSound = msBreakSound;
+			sPS = msBreakPS;
+			
+			/////////////////////
+			// Callback
+			if (msOnBreakCallbackFunc != "")
+			{
+				if (pMap.ScriptPrepare("void " + msOnBreakCallbackFunc + "(const tString &in asEntity)"))
+				{
+					tString sName = pProp.GetName();
+					pMap.SetArgString(0, sName);
+					pMap.ScriptExecute();
+				}
+			}
+		}
+		
+		////////////////////
+		// Damaged?
+		else if (pProp.GetHealth() <= 0.5f && mlCurrentMeshEntity == 0)
+		{
+			SetCurrentDamageLevel(1);
+
+			sSound = msDamageSound;
+			sPS = msDamagePS;
+		}
+
+		////////////////////
+		// Effects
+		{
+			cVector3f vHitPos = mvHitPosition.SqrLength() != 0.f ? mvHitPosition : pProp.GetPosition();
+			
+			////////////////////
+			// Sound
+			if (sSound != "")
+			{
+				cSoundEntity@ pSound = pWorld.CreateSoundEntity(pProp.GetName() + "_BreakSound", sSound, true);
+				if (pSound !is null) 
+				{
+					pSound.SetPosition(vHitPos);
+				}
+			}
+			
+			////////////////////
+			// Particles
+			if (sPS != "")
+			{
+				cParticleSystem@ pPS = pWorld.CreateParticleSystem(pProp.GetName() + "_BreakPS", sPS, cVector3f(1.f), true, false);
+				if (pPS !is null) 
+				{
+					cMatrixf mtxTransform = mpMainBody.GetLocalMatrix();
+					mtxTransform.SetTranslation(vHitPos + mvHitNormal * 0.05f);
+					
+					pPS.SetMatrix(mtxTransform);
+				}
+			}
+		}
+		
+		////////////////////
+		// Destroy if broken!
+		if (mbBroken)
+		{
+			pMap.DestroyEntity(pProp);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetCurrentDamageLevel(int alX)
+	{			
+		if (mlCurrentMeshEntity == alX) return;
+		if (mpDamageMeshEntity is null) return;
+		
+		////////////////////
+		// Update mesh
+		mlCurrentMeshEntity = alX;
+		
+		mpDefaultMeshEntity.SetVisible(mlCurrentMeshEntity == 0);
+		mpDefaultMeshEntity.SetActive(mlCurrentMeshEntity == 0);			
+		mpDamageMeshEntity.SetVisible(mlCurrentMeshEntity == 1);
+		mpDamageMeshEntity.SetActive(mlCurrentMeshEntity == 1);
+				
+		////////////////////
+		// Make sure prop is saved
+		cLuxProp@ pProp = cLux_ToProp(mBaseObj.GetEntity());
+		if (pProp is null) return;
+			pProp.SetSaveDataIsUpdated(true);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnPhysicsCollision(iPhysicsBody@ apBody, iPhysicsBody@ apCollideBody, cPhysicsContactData &in apContactData)
+	{
+		////////////////////
+		// Setup vars
+		cLuxProp@ pProp = cLux_ToProp(mBaseObj.GetEntity());
+		if (pProp is null) return;
+		
+		////////////////////
+		// Check breakage
+		if (mbBreakActive == false) return;
+		if (mbBroken) return;
+		if (apContactData.mfMaxContactNormalSpeed <= 0.f) return;
+		if (mBaseObj.Timer_Exists("Timer_HitCooldown")) return;
+		
+		////////////////////
+		// Get the average mass of the colliding objects
+		float fMass = apBody.GetMass();			
+		float fCollideMass = apCollideBody.GetMass() > 0.f ? apCollideBody.GetMass() : 1e+6f;
+		
+		float fVelocity = apBody.GetVelocityAtPosition(apContactData.mvContactPosition).Length();
+		float fCollideVelocity = apCollideBody.GetVelocityAtPosition(apContactData.mvContactPosition).Length(); 
+		float fAverageMass = cMath_InterpolateLinear(fMass, fCollideMass, fCollideVelocity / cMath_Max(fVelocity + fCollideVelocity, 0.0001f));
+			
+		////////////////////
+		// Get total kinetic energy
+		float fContactVelocity = (1.f - apContactData.mfElasticity) * (1.f - apContactData.mfSoftness) * apContactData.mfMaxContactNormalSpeed;
+		float fTotalEnergy = fContactVelocity * fContactVelocity * 0.5f * fAverageMass;
+		
+		////////////////////
+		// Register hit?
+		if (fTotalEnergy > mfHitMinEnergy && fCollideMass >= mfMinHitMass)
+		{
+			++mlHitCount;
+			mvHitPosition = apContactData.mvContactPosition;
+			mvHitNormal = apContactData.mvContactNormal;
+			
+			////////////////////
+			// Hit count at max?
+			if (mlHitCount >= mlMaxHits)
+			{
+				pProp.SetHealth(0.f);
+				
+				tString sCollideEntName = Body_GetEntityName(apCollideBody.GetName());
+				
+				/////////////////////////////
+				// Damage the thrown object
+				iLuxEntity@ pCollideEntity = cLux_GetCurrentMap().GetEntityByName(sCollideEntName, eLuxEntityType_Prop, "");
+				cLuxProp@ pCollideProp = pCollideEntity is null ? null : cLux_ToProp(pCollideEntity);
+				if (mbCanDestroyThrownEnt && pCollideProp !is null)
+				{
+					int lCollideObjBreakCount = Entity_GetVarInt(sCollideEntName, "BreakCount")+2;
+					
+					Entity_SetVarInt(sCollideEntName, "BreakCount", lCollideObjBreakCount);
+					if (lCollideObjBreakCount >= 4)
+					{
+						pCollideProp.SetDisableBreakable(false);
+						pCollideProp.Break();
+					}
+				}
+					
+			}
+			
+			////////////////////
+			// Hit count at half?
+			else if (mlHitCount >= mlMaxHits / 2)
+			{
+				pProp.SetHealth(0.5f);
+			}
+			
+			mBaseObj.Timer_Add("Timer_HitCooldown", 1.f);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnSetActive(bool abX)
+	{
+		if (mbBreakActive == false)
+			return;
+		
+		bool bDefaultActive = abX ? mlCurrentMeshEntity == 0 : false;			
+		bool bDamagedActive = abX ? mlCurrentMeshEntity == 1 : false;
+		
+		if (mbBroken)
+		{
+			bDefaultActive = false;
+			bDamagedActive = false;
+		}
+		
+		if (mpDefaultMeshEntity !is null)
+		{
+			mpDefaultMeshEntity.SetVisible(bDefaultActive);
+			mpDefaultMeshEntity.SetActive(bDefaultActive);
+		}
+		
+		if (mpDamageMeshEntity !is null)
+		{
+			mpDamageMeshEntity.SetVisible(bDamagedActive);
+			mpDamageMeshEntity.SetActive(bDamagedActive);	
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	[nosave] bool mbBreakActive;
+	[nosave] bool mbPathBlocker;
+	[nosave] float mfHitMinEnergy;
+	[nosave] int mlMaxHits;
+	[nosave] float mfMinHitMass;
+	[nosave] tString msDamageMesh;
+	[nosave] tString msDamageSound;
+	[nosave] tString msDamagePS;
+	[nosave] tString msBrokenEntity;
+	[nosave] float mfBreakImpulse;
+	[nosave] tString msBreakSound;
+	[nosave] tString msBreakPS;
+	[nosave] bool mbCanDestroyThrownEnt;
+	[nosave] tString msOnBreakCallbackFunc;
+	
+	[nosave] eWoodenBreakable_BreakAIEventPrio mBreakAIEventPrio;
+	
+	[nosave] iPhysicsBody@ mpMainBody;
+	[nosave] cMeshEntity@ mpDamageMeshEntity;
+	[nosave] cMeshEntity@ mpDefaultMeshEntity;
+
+	int mlHitCount;
+	int mlCurrentMeshEntity;
+	bool mbBroken;
+	cVector3f mvHitPosition;
+	cVector3f mvHitNormal;
+	tID m_idBrokenEntityId;
+	
+	bool mbDropItemOnBreak;
+	tString msCustomDropItemsList;
+	int mlCustomDropItemsCount;
+	float mfCustomDropItemProbability;
+	bool mbScaleCustomDropProbability;
+	
+	array<cRandomItemDrop> mvRandomItemDrops;
+	
+	array<cRandomItemDrop> mvDefaultRandomItemDrops = 
+	{
+		cRandomItemDrop("EmptyBottle", 1.f),
+		cRandomItemDrop("ClothPiece", 1.f),
+		cRandomItemDrop("Stick", 0.25f),
+		cRandomItemDrop("Grenade", 1.f),
+		cRandomItemDrop("GasGrenade", 1.f),
+		cRandomItemDrop("Flare", 1.f),
+		cRandomItemDrop("Medkit", 0.25f),
+		cRandomItemDrop("Bandage", 0.5f),
+		cRandomItemDrop("Meat", 1.f),
+		cRandomItemDrop("Ammunition", 0.08f),
+		cRandomItemDrop("ShotgunAmmunition", 0.04f)
+	};
+	
+	//------------------------------------------------------------
+}

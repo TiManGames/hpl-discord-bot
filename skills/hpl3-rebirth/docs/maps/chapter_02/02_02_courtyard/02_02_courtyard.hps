@@ -1,0 +1,3200 @@
+#include "interfaces/Map_Interface.hps"
+#include "interfaces/Map_Interface.hps"
+#include "base/Inputhandler_Types.hps"
+
+#include "helpers/helper_map.hps"
+#include "helpers/helper_menu.hps"
+#include "helpers/helper_props.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_audio.hps"
+#include "helpers/helper_imgui.hps"
+#include "helpers/helper_sequences.hps"
+#include "helpers/helper_game.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_ai.hps"
+#include "helpers/helper_player.hps"
+#include "custom/helpers/helper_items.hps"
+#include "custom/helpers/helper_player_custom.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+#include "custom/helpers/helper_effects_custom.hps"
+#include "custom/helpers/helper_areas_custom.hps"
+#include "base/AchievementHandler_Types.hps"
+#include "helpers/helper_components.hps"
+
+//--------------------------------------------------
+ 
+/*Place any global values here. These must be const variables as they will not be saved*/
+/*This is also the place for enums and classes, but these should be avoided whenever possible*/
+ 
+//--------------------------------------------------
+
+const float gfMinTurretAngle = -8.f;
+const float gfMaxTurretAngle = 33.f;
+
+//--------------------------------------------------
+ 
+class cScrMap : iScrMap
+{
+	//--------------------------------------------
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN CALLBACKS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+ 
+	////////////////////////////
+	// Set up map environment
+	void Setup()
+	{
+		// Put display name entry in english.lang / Levels
+		GetBase().SetDisplayNameEntry("02-02-courtyard");
+		
+		// Set up color grading etc.
+		Pregnancy_SetStage(ePregStage_Stage1);
+		Pregnancy_SetBarksActive(true);
+		Pregnancy_SetBabyTalkStage(eBabyTalkStage_CavesToCisternStart);
+		Pregnancy_SetBabyKicksEnabled(false);
+		GhoulProgression_SetBarkStage(eGhoulBarkStage_Ill);
+		Player_SetAllowCheckBaby(true);
+		
+		if (!cScript_GetGlobalVarBool("Outpost_Visited"))
+		{
+			Pregnancy_SetBabyTalkSpecialSubject("BabyTalk_Initial");
+			cScript_SetGlobalVarBool("Outpost_Visited",true);
+		}
+		
+		if (cScript_GetGlobalVarBool("Outpost_AnsweredRadio"))
+		{
+			FearHandler_SetWhisperStage(eFearWhisperStage_RadioToBabyKick);
+		}
+		else
+		{
+			FearHandler_SetWhisperStage(eFearWhisperStage_SalimToRadio);
+		}
+		
+		StruggleFlashHandler_SetActive(true);
+		StruggleFlashHandler_PreloadFlashGroupTextures(0);
+		StruggleFlashHandler_SetProgression(0);
+		
+		Player_SetAutoTeleportWhenBelowAltitude(10.f);
+	}
+	
+	//-------------------------------------------------------
+		
+	void PreloadData()
+	{
+		/////////////////
+		// Preload gui
+		//ImGui_PreloadImage("some_image");
+
+		///////////////
+		// Preload particles
+		ParticleSystem_Preload("cannon_smoke.ps");
+		ParticleSystem_Preload("cannon_impact_wood.ps");
+		ParticleSystem_Preload("cannon_impact_rock.ps");
+		ParticleSystem_Preload("dust_medium_long_onehsot.ps");
+		
+		//////////////
+		// Preload screen effects
+		//Material_Preload("some_material.mat");
+		
+		//////////////
+		// Preload sounds
+		//Sound_PreloadProject("02_02_courtyard");
+		//Sound_PreloadGroup("creatures/foley/creature/ghoul", true);
+		
+		Sound_PreloadEvent("02_02_courtyard/tank/tank_fire");
+		Sound_PreloadEvent("02_02_courtyard/tank/tank_internal_debris");
+		Sound_PreloadEvent("02_02_courtyard/tank/tank_fall");
+		Sound_PreloadEvent("02_02_courtyard/tank/tank_fall_stinger");
+		
+		//////////////
+		// Preload entities
+		Entity_Preload("player4.ent");
+		Entity_Preload("player4_head.ent");
+		
+		///////////////
+		// Preload materials
+		Material_Preload("Tasi_Body_Upgrade_hands_ghoul_" + GhoulProgression_GetProgression() + ".mat");
+	}
+	
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run first time starting map
+	void OnStart()
+	{
+		//Set GhoulProgresison limit
+		GhoulProgression_SetLimit(4);
+		
+		// Any general setup of script / entities
+		
+		/////////////////////////
+		// Debug
+		if(cLux_ScriptDebugOn())
+		{
+			// TEMP!
+			if (ItemType_GetCountInInventory("Lantern") < 1)
+			{
+				Item_AddToInventory("Lantern");
+				Item_SetContent(ItemType_GetFirstInInventory("Lantern"), "Oil", 10);
+			}
+			
+			if (ItemType_GetCountInInventory("Matchbook") < 1)
+			{
+				Item_AddToInventory("Matchbook");
+				Item_SetContent(ItemType_GetFirstInInventory("Matchbook"), "Matches", 10);
+			}
+			
+			Item_AddToInventory("HerbertOil");
+		}
+		
+		Sketchbook_CompleteIdea("reach_outpost");
+		Sketchbook_NewIdeasPage();
+		
+		Hint_Unblock("Hints", "HintPermafail");
+		FearHandler_SetAllowLanternReminderHint(true);
+		FearHandler_SetAllowLanternRefillHint(true);
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when entering map
+	void OnEnter()
+	{	
+		Game_AutoSave();
+		
+		Achievement_Unlock(eAchievement_Pilgrim);
+		
+		PlayerBody_SetActive(true);
+		
+		FearHandler_SetActive(true);
+		FearHandler_SetPermaFailEnabled(false);
+        
+        Heat_SetActive(false);
+		
+		Player_SetMapDeepShadow(0.f);
+		Player_SetVertigoActive(false);
+		
+		cVector3f vRot = cVector3f(0, cMath_ToRad(278), 0);
+		cLux_GetCurrentMap().GetWorld().SetSkyboxRotation(vRot);
+		
+		//////////////////////
+		// Set up courtyard
+		OnTimer_UpdateTurbine("");		
+		ParticleSystem_SetActive("PS_WindowBang", false);		
+		Visibility_SetAreaActive("VisibilityArea_TankHole", false);
+		
+		Prop_SetRenderLayer("FountainWater", -1);
+				
+		//////////////////////
+		// Set up tank
+		if (cScript_GetGlobalVarBool("Outpost_InitialTankSetup") == false)
+		{
+			cScript_SetGlobalVarBool("Outpost_InitialTankSetup", true);	
+			SetTurretLocked(true);
+		}
+		else
+		{			
+			SetTurretLocked(cScript_GetGlobalVarBool("Outpost_TankTurretLocked"));
+		}
+		
+		ParticleSystem_SetActive("PS_TankGround_*", false);
+		ParticleSystem_SetActive("PS_TankHoleDust_*", false);
+		
+		cLuxProp@ pBreachLever = Map_GetProp("BreachLever");
+		if (pBreachLever !is null && pBreachLever.GetInteractConnectionNum() < 2)
+			pBreachLever.AddInteractConnection("Main", Map_GetProp("FiringMechanism"), true);
+			
+		Entity_AttachToEntity("InteractAux_BreachLever", "BreachLever", "Body_1", true, true, true);
+		Entity_AttachToEntity("InteractAux_TurretLever", "TurretLever", "Body_1", true, true, true);
+		Entity_AttachToEntity("InteractAux_Key", "TurretLever", "Body_1", true, true, true);
+		
+		////////////////////////
+		// Went through LQ?
+		bool bAnsweredRadio = cScript_GetGlobalVarBool("Outpost_AnsweredRadio");
+		if (bAnsweredRadio)
+		{
+			if (cScript_GetGlobalVarBool("Outpost_LQDone") == false && mbFrustratedGhoulSoundsPlayed == false)
+			{
+				mbFrustratedGhoulSoundsPlayed = true;
+				Entity_SetInteractionDisabled("LevelDoor_LQ_Back", true);
+				Entity_SetActive("Trigger_PlayFrustratedGhoulSounds", true);
+			}
+			
+			if (cScript_GetGlobalVarBool("Outpost_LQDone"))
+			{
+				Achievement_Unlock(eAchievement_Communicator);
+			}
+			
+			LevelDoor_SetLocked("LevelDoor_LQ_Back", false);
+				
+			Voice_StopAll();
+			Sound_Stop("Sound_RadioStatic", 0.f);
+			
+			Entity_SetActive("Trigger_ActivateRadioSignal_*", false);
+			Entity_SetActive("Trigger_PlayRadioVoice", false);
+			Entity_SetActive("Trigger_ShowRadioCC", false);
+			Entity_SetActive("Trigger_PlayDoorMemory", true);
+		}
+		
+		ParticleSystem_SetActive("PS_DoorBang_*", false);
+		
+		SetupRadioLight(bAnsweredRadio == false);
+		SetRadioLampState(bAnsweredRadio ? 0 : 1);
+		
+		////////////////////////
+		// Player needs to go back to LQ!
+		if (cScript_GetGlobalVarInt("Outpost_ArsenalProgress") == 2 && 
+			cScript_GetGlobalVarBool("Outpost_LQDone") == false &&
+			cScript_GetGlobalVarBool("Outpost_AnsweredRadio") &&
+			cScript_GetGlobalVarBool("Outpost_SilhouetteScarePlayed") == false)
+		{
+			Entity_SetActive("Trigger_WindowScareStart", true);
+			
+			Map_AddTimer("Timer_ShowRemindersHint", 60.f * 2.f, "OnTimer_ShowRemindersHint");
+			Map_SetTimerUserVarInt("Timer_ShowRemindersHint", 1);
+		}
+		
+		////////////////////////
+		// Player needs to go back to Arsenal!
+		if (cScript_GetGlobalVarBool("Outpost_LQDone") &&
+			cScript_GetGlobalVarBool("Outpost_VultureScarePlayed") == false &&
+			Entity_GetCollide("Area_BackDoor", "player"))
+		{
+			Entity_SetActive("vulture", true);
+			Entity_PlayAnimation("vulture", "tank_fly_way", 0.f, false, false);
+			Map_GetEntity("vulture").GetMeshEntity().GetAnimationStateFromName("tank_fly_way").SetSpeed(0.f);
+			
+			Entity_SetActive("Trigger_VultureScare_*", true);
+			SwingDoor_SetOpenAmount("TurretHatch_*", 1.f);
+			
+			Sound_Play("Sound_VultureInsideLoop", 1.0f);
+		}
+
+		Music_PlayExt("A2_2_2_Courtyard_Ambience.ogg", true, 0.15f, 1.0f, 5.0f, 1.0f, eMusicPrio_BgAmb, true);
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when leaving map
+	void OnLeave()
+	{
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnPermaFail()
+	{
+		return true;
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// To get when player makes input (mostly used for debug)
+	void OnAction(int alAction, bool abPressed) 
+	{
+		if (abPressed == false) return;
+		
+		if (alAction == eAction_Test0)
+		{
+			Player_Teleport("Start_Begin");
+		}
+		
+		if (alAction == eAction_Test1)
+		{
+			Effect_Nausea_Stop();
+			
+			// Went through LQ			
+			Player_Teleport("Start_LQ_Back");			
+			cScript_SetGlobalVarBool("Outpost_AnsweredRadio", true);
+			OnEnter();
+			
+			cLux_SetScriptDebugOn(false);
+		}
+		
+		if (alAction == eAction_Test2)
+		{
+			Effect_Nausea_Stop();
+			
+			// Went through Arsenal, need to go back to LQ!				
+			Player_Teleport("Start_Arsenal");			
+			cScript_SetGlobalVarInt("Outpost_ArsenalProgress", 2); 
+			cScript_SetGlobalVarBool("Outpost_LQDone", false);			
+			cScript_SetGlobalVarBool("Outpost_AnsweredRadio", true);			
+			OnEnter();
+			
+			cLux_SetScriptDebugOn(false);
+		}
+		
+		if (alAction == eAction_Test3)
+		{
+			Effect_Nausea_Stop();
+			
+			// Got Saltpeter from LQ back door!						
+			Player_Teleport("Start_LQ_Back");			
+			cScript_SetGlobalVarBool("Outpost_LQDone", true);
+			cScript_SetGlobalVarBool("Outpost_AnsweredRadio", true);
+			OnEnter();
+			
+			cLux_SetScriptDebugOn(false);
+		}
+		
+		if (alAction == eAction_Test4)
+		{
+			Effect_Nausea_Stop();
+			
+			Player_Teleport("Start_Tank");
+			Item_AddToInventory("Bullet");
+			cScript_SetGlobalVarBool("Outpost_AnsweredRadio", true);
+			OnEnter();
+			
+			cLux_SetScriptDebugOn(false);
+		}
+		
+		if (alAction == eAction_Test5)
+		{
+			//Seq_VultureScare("");	
+			
+			//FireTankCannon();
+			
+			//Map_AddTimer("Timer_ShowRemindersHint", 1.f, "OnTimer_ShowRemindersHint");
+			
+			//Item_AddToInventory("Lantern");                    
+			//Item_SetContent(ItemType_GetFirstInInventory("Lantern"), "Oil", 10);
+			
+			//Visibility_SetAreaActive("VisibilityArea_TankHole", false);
+			
+			Player_GiveDamage(1, 1, eDamageType_Default, "");
+		}
+		
+		if (alAction == eAction_Test6)
+		{
+			cScript_SetGlobalVarBool("SalimsRingVisible", true);
+			
+			iLuxEntity@ pRing = Map_GetEntity("SalimsRing_Accessory", eLuxEntityType_Prop);
+			if (pRing !is null)
+				pRing.GetMeshEntity().SetVisible(true);
+			
+			//cLux_AddTodoMessage(""+Map_GetProp("BreachLever").GetInteractConnectionNum());
+			//PlayerBody_PlayCutsceneAtEntity("tf17_fire_fail_short", "Area_EndControlTurretAnim", false, 0.3f);
+			//Entity_PlayAnimation("FiringMechanism", "tf17_trigger_fire_fail_short_hammer_engaged", 0.3f);
+			
+			//Wheel_SetAngle("Turret", cMath_ToRad(30.f), true);
+			
+			//Item_AddToInventory("Bullet");
+			
+		//	PlayerBody_SetUnequipItemsOnCutscene(false);
+		//	PlayerBody_PlayCutsceneAnimation("tf17_fire_fail_short", false, 0.3f);
+		}
+		
+		if (alAction == eAction_Test7)
+		{
+			//Body_AddImpulse("TankShellCasing_Body_1", cVector3f(0.f, 0.f, -10.f), true);
+			Seq_TankFire("");
+			
+			/*Entity_SetActive("Tank_Animated", true);
+			Entity_PlayAnimation("Tank_Animated", "tf17_fall_through_ground", 0.f);
+			Map_GetEntity("Tank_Animated").GetMeshEntity().GetAnimationStateFromName("tf17_fall_through_ground").SetSpeed(0.f);
+			
+			iLuxEntity@ pLocker = Map_GetEntity("tank_key_locker_1");
+			iLuxEntity@ pTank = Map_GetEntity("Tank_Animated");
+			
+			cLux_AddTodoMessage(""+(pLocker.GetPosition() - pTank.GetMeshEntity().GetSocket("TurretSocket_Top").GetWorldPosition()));
+			
+			
+			Entity_RemoveEntityAttachment("tank_key_locker_1");
+			Entity_AttachToSocket("tank_key_locker_1", "Tank_Animated", "TurretSocket_Locker", false, true);*/
+		}
+		
+		if (alAction == eAction_Test8)
+		{
+			 Sequence_Begin("Seq_VultureScare", mSeqDataVultureScare);
+			 if (Sequence_DoStepAndWait(1.f))
+			 {
+				 Sound_Stop("Sound_VultureInsideLoop", 0.5f);
+				 Sound_Play("Sound_VultureScare", 1.0f);
+				 
+				 Music_Play("A2_2_2_Vulture.ogg", 0.25f, false, eMusicPrio_MinorEvent);
+				 
+				 Map_AddTimer("Timer_DistantVocals", 9.0f, "OnTimer_VultureDistantVocals");
+				 
+				 Entity_SetActive("Vulture", true);
+				 Entity_PlayAnimation("Vulture", "tank_fly_way", 0.f, false, false, "OnAnimEnd_Vulture");
+				 
+				 FearHandler_SetForcedAddFearRate(0.3f, 4.f, false, -1.f, 0.5f);
+			 }
+			 Sequence_End();
+		}
+		
+		if (alAction == eAction_Test9)
+		{
+			//Player_Teleport("Start_Tank");
+			//Item_AddToInventory("Bullet");
+			
+			//Lever_SetStuckState("BreachLever", 1, true);
+			
+			//Entity_SetReflectionVisibility(PlayerBody_GetEntityName(), true, true);
+			//SetRadioLampState(2);
+			Item_AddToInventory("ArsenalKey");
+		}
+
+		if (alAction == eAction_TestMinus)
+		{
+			//Entity_SetActive("Ghoul_SilhouetteScare", true);
+			//Entity_PlayAnimation("Ghoul_SilhouetteScare", "courtyard_window_idle", 0.f, false, true);
+			
+			/*Entity_SetActive("MountainPassGate", false);
+			Entity_SetActive("MountainPassGate_Breakable", true);
+			Prop_SetHealth("MountainPassGate_Breakable", 0.f);
+			Map_AddTimer("Timer_BreakMountainPassGate", 0.1f, "OnTimer_BreakMountainPassGate");*/
+			
+			/*Sketchbook_AddIdea("find_sulfurlocation");
+			Sketchbook_AddIdea("smash_gates");			
+			Sketchbook_AddIdea("get_radio");
+			Sketchbook_AddIdea("find_sulfur");
+			Sketchbook_AddIdea("find_saltpeter");
+			Sketchbook_AddIdea("find_charcoal");
+			Sketchbook_AddIdea("find_saltpeterlocation");
+			Sketchbook_AddIdea("make_bullet");
+			Sketchbook_AddIdea("break_floor");
+			Sketchbook_AddIdea("get_bullet");
+			Sketchbook_AddIdea("fix_elevator");*/
+			
+			PlayerBody_PlayCutsceneAtEntity("tf17_fire_fail_short", "Area_FireFailAnim", false, 0.f, "");
+			 Entity_PlayAnimation("FiringMechanism", "tf17_trigger_fire_fail_short", 0.f);
+		}
+		
+		if (alAction == eAction_TestPlus)
+		{
+			Entity_SetActive("InteractArea_ClimbOutTankFake", false);				 
+			Entity_SetActive("Tank", false);
+			Entity_SetActive("Turret", false);
+			Entity_SetActive("TurretHatch_*", false);
+			Entity_SetActive("TurretHatch_*", false);
+			Entity_SetActive("ft17_*", false);
+			Entity_SetActive("TurretLever", false);
+			Entity_SetActive("TurretLockMechanism", false);
+			Entity_SetActive("Cannon", false);
+			Entity_SetActive("BreachLever", false);
+			Entity_SetActive("Breach", false);
+			Entity_SetActive("FiringMechanism", false);
+			Entity_SetActive("BlockBox_TankRamp_*", false);
+			Entity_SetActive("Tank_SandSack_*", false);
+			Entity_SetActive("sand_tank_pile_*", false);
+			Entity_SetActive("TurretShelf", false);
+			
+			Entity_SetActive("Tank_Animated", true);
+			Entity_PlayAnimation("Tank_Animated", "tf17_fall_through_ground", 0.f, false, false, "", false, true);
+				 
+			bool bPlayClimbFallAnim = false;
+			tString sAnim = bPlayClimbFallAnim ? "player_trying_to_escape_tf17_fall_through_ground" : 
+													  "player_not_trying_to_escape_tf17_fall_through_ground";
+			tString sArea = bPlayClimbFallAnim ? "Area_TankFallClimbAnim" : "Area_TankFallAnim";				 
+			PlayerBody_PlayCutsceneAtEntity(sAnim, "Tank_Animated", false, 0.3f);
+		}
+	}
+		
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// This only used for pure debug purposes when info needs to printed.
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afY)
+	{
+		//afY = cLux_DrawDebugText("My Debug value:"+..., afY);
+		return afY;
+	}
+	
+	//-------------------------------------------------------
+	
+	/*void OnRenderSolid(cRendererCallbackFunctions@ apFunctions)
+	{
+		apFunctions.GetLowLevelGfx().DrawSphere(mvCannonImpactPos, 2.f, cColor_Red);
+	}*/
+ 
+	//-------------------------------------------------------
+ 
+	//} END MAIN CALLBACKS
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN FUNCTIONS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+ 
+	/*Put any variables that are used in more than one scene here.*/
+	
+	bool mbTankFired = false;
+	array<int> mvPlayedMicroflashIds;
+	
+	float[] mfPromptAlpha = {0.f, 0.f};
+	float mfPromptFrameTime = 0.f;
+	bool mbInteractingWithTankCannon = false;
+ 
+	//-------------------------------------------------------
+ 
+	/*Put any functions that are used in more than one scene here.*/
+	
+	void Update(float afTimeStep)
+	{
+		if (mlTurretControlStage > -1)
+			UpdateTankTurret(afTimeStep);
+	}
+	
+	//-------------------------------------------------------
+	
+	void PostUpdate(float afTimeStep)
+	{
+		if (mbPullingTurretHandle)
+			PostUpdateTankTurret(afTimeStep);
+
+		/////////////////////
+		// Position player in tank
+		if (cLux_GetPlayer().GetCurrentStateId() == ePlayerState_CutsceneAnimation)
+		{
+			int lMovePosId = -1;
+			tString[] sAnims = {"tf17_fire_fail_short", "tf17_enter", "tf17_look_through_hole_exit" };
+			float[] fTimeOffsets = { 0.5f, 1.5f, 0.4f };
+			
+			for (int i = 0; i < sAnims.length(); ++i)
+			{
+				cAnimationState@ pState = PlayerBody_GetAnimationState(sAnims[i]);
+				if (pState !is null && pState.IsActive() && pState.GetTimePosition() > pState.GetLength() - fTimeOffsets[i])
+				{
+					lMovePosId = i;
+					break;
+				}
+			}
+			
+			if (lMovePosId != -1)
+			{				
+				cVector3f[] vEndPos = { cVector3f(4.047f, 37.593f, 3.510f), cVector3f(4.036f, 37.593f, 3.526f), cVector3f(4.043f, 37.593f, 3.501f) };
+				tString[] sAreas = {"Area_FireFailAnim", "Area_ClimbInAnim", "Area_EndControlTurretAnim" };
+				
+				iLuxEntity@ pStartEnt = mBaseObj.GetEntityByName(sAreas[lMovePosId], eLuxEntityType_Area);
+				iLuxEntity@ pGoalEnt = mBaseObj.GetEntityByName("Area_TankBase", eLuxEntityType_Area);
+				
+				cVector3f vDelta = pGoalEnt.GetPosition() - vEndPos[lMovePosId];				
+				float fAngle = cMath_GetAngleFromPoints3D(0.f, pStartEnt.GetMatrix().GetTranspose().GetForward()).y;
+				
+				PlayerBody_SetCameraAnimationPositionAndYaw(true, pStartEnt.GetPosition() + vDelta, fAngle, 0.f);
+			}
+		}
+	}
+	
+	//-------------------------------------------------------	
+	
+	void OnGui(float afTimeStep)
+	{
+		/////////////////////
+		// Draw tank cannon button prompts
+		// TODO: A lot of this is duplicated from Utility_Readable, make a helper for prompts instead?
+		if (mbInteractingWithTankCannon == false)
+			return;
+		
+		/////////////////////
+		// Time
+		mfPromptFrameTime += afTimeStep;
+		
+		/////////////////////
+		// Setup
+		cVector3f vPos = cVector3f_Zero;
+		vPos.x = -cLux_GetHudVirtualOffset().x;
+		vPos.y = -cLux_GetHudVirtualOffset().y;
+		vPos.z = 0.0f;
+			
+		cVector2f vScreenSize = ImGui_GetSize();
+		cVector2f vSize = vScreenSize;
+
+		vSize.x = vSize.y / 9.f * 16.f;
+		vPos.x -= (vSize.x - vScreenSize.x) / 2.f;
+			
+		cLuxScreenTextFormatParameters formatParams;
+		formatParams.mLabelText.mColorBase = cColor(1.f);
+		formatParams.mLabelText.mFontAlign = eFontAlign_Left;
+		formatParams.mLabelText.mFont.SetFile("work_56.fnt");
+		formatParams.mLabelText.mFont.mvSize = cVector2f(22.f);
+		formatParams.mfIconGamepadHeight = formatParams.mLabelText.mFont.mvSize.y;
+		formatParams.mfIconKeyHeight = formatParams.mLabelText.mFont.mvSize.y;
+		formatParams.mfIconMouseHeight = formatParams.mLabelText.mFont.mvSize.y;
+			
+		/////////////////////
+		// Start group
+		ImGui_GroupBegin(vPos, vSize);
+		ImGui_SetTransCategory("");
+			
+		cVector3f vPromptPos = ImGui_NrmPosGroup(0.75f, 0.8f, 2.f);
+		cVector2f vPromptSize = ImGui_NrmSizeGroup(0.5f, 0.03f);		
+			
+		/////////////////////
+		// Iterate prompts
+		tString[] sPrompts = { "HintFireTankCannon", "HintExitTankState" };			
+		bool bGamepad  = cLux_GetInputHandler().GetGamepadWasLastDeviceUsed();
+	
+		for (int i = 1; i >= 0; --i)
+		{	
+			/////////////////////
+			// Determine category
+			tString sCategory = "Hints";
+			if (bGamepad && cLux_HasTranslation("HintsGamepad", sPrompts[i]))
+				sCategory = "HintsGamepad";
+				
+			/////////////////////
+			// Alpha
+			float fAlphaGoal = mlTurretControlStage == 2 ? 1.f : 0.f;
+			if (i == 0 && mbTankFired)
+				fAlphaGoal = 0.f;
+			
+			mfPromptAlpha[i] = cMath_IncreaseTo(mfPromptAlpha[i], (1.f / 0.3f) * afTimeStep, fAlphaGoal);
+				
+			cColor color = formatParams.mLabelText.mColorBase;
+			color.a = mfPromptAlpha[i];
+			ImGui_SetModColorMul(color);
+				
+			/////////////////////
+			// Parse prompt
+			array<tWString> vCurrentPromptLines;
+			array<cLuxScreenTextIcon@> vCurrentPromptIcons;
+			array<array<int>> vCurrentPromptIconsPerLine;
+				
+			float fLineHeight = 0.f;
+			float fDisplayTime = 0.f;
+			cLux_ParseStringIntoScreenText(cLux_Translate(sCategory, sPrompts[i]), cLux_GetGameHudImGui(), formatParams, vCurrentPromptLines, 
+										   vCurrentPromptIcons, vCurrentPromptIconsPerLine, fLineHeight, fDisplayTime, bGamepad);
+				
+			/////////////////////
+			// Draw prompt in parts for better spacing
+			tWString sLineOnly = vCurrentPromptLines[0];
+			tWString sSeparator = "-";
+					
+			int lPos = cString_GetFirstStringPosW(sLineOnly, sSeparator);
+			int lLineLength = sLineOnly.length();
+			
+			vCurrentPromptLines[0] = cString_SubW(vCurrentPromptLines[0], 0, lPos);
+			sLineOnly = cString_SubW(sLineOnly, lPos + 1, lLineLength);
+					
+			cVector3f vSeparatorPos = vPromptPos + ImGui_NrmPosGroup(0.035f, 0.f, 0.f);
+			ImGui_DoLabelExt(cString_To8Char(sSeparator), formatParams.mLabelText, vSeparatorPos, vPromptSize);
+				
+			cVector3f vLineOnlyPos = vPromptPos + ImGui_NrmPosGroup(0.055f, 0.f, 0.f);
+			ImGui_DoLabelExt(cString_To8Char(sLineOnly), formatParams.mLabelText, vLineOnlyPos, vPromptSize);
+			
+			/////////////////////
+			// Draw prompt!
+			cLux_DrawScreenText(cLux_GetGameHudImGui(), mfPromptFrameTime, formatParams.mLabelText, vPromptPos, vPromptSize.x, 1.f, 
+								vCurrentPromptLines, vCurrentPromptIcons, vCurrentPromptIconsPerLine);
+									
+			vPromptPos.y -= vPromptSize.y;
+		}		
+			
+		/////////////////////
+		// End group
+		ImGui_ResetModifiers();
+		ImGui_GroupEnd();
+	}
+	
+	//-------------------------------------------------------
+	
+	bool AllowMicroflashAndRadioVoice(bool abIgnoreDisallowTimer = false)
+	{
+		bool bTimerActive = Map_TimerExists("Timer_DisallowMicroflashes");
+		if (abIgnoreDisallowTimer)
+			bTimerActive = false;
+		
+		return Voice_AnySceneIsActive() == false && 
+			   Sketchbook_IsMicroflashActive() == false &&
+			   bTimerActive == false;
+	}
+	
+	//-------------------------------------------------------
+	
+	void PlayMicroflash(const tString &in asFlash, int alId)
+	{
+		if (mvPlayedMicroflashIds.find(alId) != -1)
+			return;
+		
+		Sketchbook_Microflash(asFlash, "", alId);
+		Map_AddTimer("Timer_DisallowMicroflashes", 8.f, "");
+		
+		mvPlayedMicroflashIds.push_back(alId);
+	}
+	
+	//-------------------------------------------------------
+ 
+	//} END MAIN FUNCTIONS
+	
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 1 THE PLAYER HEARS A RADIO SIGNAL COMING FROM THE LIVING QUARTERS
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+ 
+		 /////////////////////////////////////////
+		 // General
+		 //{//////////////////////////////////////
+		 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are used by many events in Scene 1 here.*/
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are used in more than one event in Scene 1 here.*/
+	 
+		//-------------------------------------------------------
+		
+		//} END General	
+		 
+		 /////////////////////////////////////////
+		 // Event A *Tasi speaks an intro*
+		 //{//////////////////////////////////////
+	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any variables that are only used in Scene 1, Event A here.*/
+	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any functions that are only used in Scene 1, Event A here.*/
+		 
+		 bool OnTrigger_Player_PlayIntroDialogue(const tString &in asParent, const tString &in asChild, int alState)
+		 {
+			 Voice_StopAll();
+			 Voice_Play("Dialogue_EnteringCourtyard", -1, "OnVoiceEnd_EnteringCourtyard");
+			 
+			 Map_AddTimer("Timer_PlayedIntroDialogue", 60.f, "");
+			 return false;
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnVoiceEnd_EnteringCourtyard(const tString &in asScene, const tString &in asSubject)
+		 {
+			 Map_AddTimer("Timer_PlayFirstFortMicroflash", 4.f, "OnTimer_PlayFirstFortMicroflash");
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnTimer_PlayFirstFortMicroflash(const tString &in asTimer)
+		 {
+			 if (mbTankFired)
+				 return;
+			 
+			 if (AllowMicroflashAndRadioVoice() == false ||
+				 Entity_GetCollide("player", "Area_DisallowFirstFortMicroflash"))
+			 {
+				 float fTime = Sketchbook_IsMicroflashActive() ? 15.f : 5.f;
+				 Map_AddTimer("Timer_PlayFirstFortMicroflash", fTime, "OnTimer_PlayFirstFortMicroflash");
+				 return;
+			 }
+			 
+			 PlayMicroflash("Microflashes_ExploreFort", 0);
+		 }
+	 
+		 //-------------------------------------------------------
+	 
+		 //} END Event A *Tasi speaks an intro*
+		 
+		 /////////////////////////////////////////
+		 // Event B *Interact with the locked MOUNTAIN PASS GATE*
+		 //{//////////////////////////////////////
+	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any variables that are only used in Scene 1, Event B here.*/
+			
+		 bool mbDoorMicroflashPlayed = false;
+			
+		 //-------------------------------------------------------
+	 
+		 /*Put any functions that are only used in Scene 1, Event B here.*/
+		 
+		 void OnInteract_MountainPassGate(const tString &in asEntity)
+		 {
+			 Map_RemoveTimer("Timer_PlayGateInteractBarks");
+			 Map_AddTimer("Timer_PlayGateInteractBarks", 1.f, "OnTimer_PlayGateInteractBarks");
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnTimer_PlayGateInteractBarks(const tString &in asTimer)
+		 {
+			 if (Entity_IsInteractedWith("MountainPassGate") == false)
+				 return;
+				 
+			 if (Voice_AnySceneIsActive() ||
+				 Push_GetLastForceApplied().Length() < 10.f ||
+				 Map_TimeHasPassed("Timer_GateBarks", 6.f) == false)
+			 {
+				 Map_AddTimer("Timer_PlayGateInteractBarks", 0.25f, "OnTimer_PlayGateInteractBarks");
+				 return;
+			 }
+			 
+			 Voice_Play("Dialogue_TasiTriesGate");			 
+			 Map_AddTimer("Timer_PlayGateInteractBarks", 0.25f, "OnTimer_PlayGateInteractBarks");
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnInteractLeave_MountainPassGate(const tString &in asEntity)
+		 {
+			 Map_RemoveTimer("Timer_PlayGateMicroflash");
+			 Map_AddTimer("Timer_PlayGateMicroflash", 0.1f, "OnTimer_PlayGateMicroflash");
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnTimer_PlayGateMicroflash(const tString &in asTimer)
+		 {
+			 if (cScript_GetGlobalVarBool("Outpost_DoorPostLQPlayed") || mbDoorMicroflashPlayed || mbTankFired) 
+				 return;
+				 
+			 if (AllowMicroflashAndRadioVoice() == false)
+			 {
+				 Map_AddTimer("Timer_PlayGateMicroflash", 1.f, "OnTimer_PlayGateMicroflash");
+				 return;
+			 }
+			 
+			 mbDoorMicroflashPlayed = true;
+			 PlayMicroflash("Microflash_Door", -1);
+		 }
+	 
+		 //-------------------------------------------------------
+	 
+		 //} END Event B *Interact with the locked MOUNTAIN PASS GATE*
+		 
+		 /////////////////////////////////////////
+		 // Event C *Hear the radio signal*
+		 //{//////////////////////////////////////
+	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any variables that are only used in Scene 1, Event C here.*/
+		 
+		 float mfPrevDistToRadioSignal = 0.f;
+		 int mlRadioListenCount = 0;
+		 float mfRadioVoiceTimeBetweenLines = 40.f;
+		 int mlRadioLampState = 0;
+		 tString[] mvRadioLamps = { "Electric_RadioRoom", "RadioStand" };
+	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any functions that are only used in Scene 1, Event C here.*/
+		 
+		 bool OnTrigger_Player_ActivateRadioSignal(const tString &in asParent, const tString &in asChild, int alState)
+		 {
+			 if (alState == 1) 
+				 return true;
+			 
+			 bool bInFront = Entity_PlayerIsInFront(asParent);			 
+			 Sound_Fade("Sound_RadioStatic", bInFront ? 0.f : 1.f, 1.f);
+			 return true;
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 bool OnTrigger_PlayRadioVoice(const tString &in asParent, const tString &in asChild, int alState)
+		 {
+			 if (alState == 1 && mlRadioListenCount != -1)
+			 {
+				 Map_AddTimer("Timer_PlayRadioVoice", 2.f, "OnTimer_PlayRadioVoice");
+			 }
+			 return true;
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnTimer_PlayRadioVoice(const tString &in asTimer)
+		 {
+			 if (mlRadioListenCount == -1) 
+				 return;
+				 
+			 float fDist = Entity_GetDeltaToEntity("player", "Area_RadioSignal").Length();
+			 
+			 if (mfPrevDistToRadioSignal <= 0.f)
+				 mfPrevDistToRadioSignal = fDist;
+				 
+			 float fDiff = cMath_Abs(fDist - mfPrevDistToRadioSignal);
+			 
+			 if (fDist < 17.f && fDiff <= 0.25f)
+			 {
+				 mlRadioListenCount++;
+				 if (mlRadioListenCount == 2)
+					 PlayRadioVoice();
+			 }
+			 else
+			 {
+				 mlRadioListenCount = 0;
+			 }
+			 
+			 if (fDist > 17.f && fDiff > 0.8f)
+				 PlayRadioVoice();
+				 
+			 if (fDist > 22.f)
+			 {
+				 mfPrevDistToRadioSignal = 0.f;
+				 return;
+			 }
+			 
+			 mfPrevDistToRadioSignal = fDist;			 
+			 Map_AddTimer("Timer_PlayRadioVoice", 0.5f, "OnTimer_PlayRadioVoice");
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void PlayRadioVoice()
+		 {
+			 mlRadioListenCount = 0;
+			 
+			 if (AllowMicroflashAndRadioVoice(false) == false ||
+				 Map_TimeHasPassed("Timer_RadioVoice", mfRadioVoiceTimeBetweenLines) == false ||
+				 cScript_GetGlobalVarBool("Outpost_AnsweredRadio"))
+				 return;
+			
+			 mfRadioVoiceTimeBetweenLines = cMath_RandRectf(30.f, 60.f);			 
+			 
+			 Voice_Play("Comment_RadioVoice", -1, "OnVoiceEnd_Radio");
+			 SetRadioLampState(2);
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnVoiceEnd_Radio(const tString &in asScene, const tString &in asSubject)
+		 {
+			 if (cScript_GetGlobalVarBool("Outpost_AnsweredRadio"))
+				 return;
+				 
+			 OnTimer_PlayHeardDoctorDialogue("");
+			 SetRadioLampState(1);
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnTimer_PlayHeardDoctorDialogue(const tString &in asTimer)
+		 {
+			 if (cScript_GetGlobalVarBool("Outpost_AnsweredRadio"))
+				 return;
+			 
+			 if (AllowMicroflashAndRadioVoice(false) == false)
+			 {
+				 Map_AddTimer("Timer_PlayHeardDoctorDialogue", 1.f, "OnTimer_PlayHeardDoctorDialogue");
+				 return;
+			 }
+			 
+			 Map_AddTimer("Timer_DisallowMicroflashes", 8.f, "");
+			 
+			 if (cScript_GetGlobalVarBool("Outpost_HeardRadioInLQ") == false)
+				Voice_Play("Dialogue_HeardDoctor", -1, "OnVoiceEnd_HeardDoctor");
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnVoiceEnd_HeardDoctor(const tString &in asScene, const tString &in asSubject)
+		 {
+			 Map_AddTimer("Timer_ResumeRadioVoice", 2.f, "OnTimer_ResumeRadioVoice");
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnTimer_ResumeRadioVoice(const tString &in asTimer)
+		 {
+			 if (cScript_GetGlobalVarBool("Outpost_AnsweredRadio"))
+				 return;
+				 
+			 Voice_Play("Comment_RadioVoice", -1, "OnVoiceEnd_Radio");
+			 SetRadioLampState(2);
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 bool OnTrigger_ShowRadioCC(const tString &in asParent, const tString &in asChild, int alState)
+		 {			 
+			 if (cScript_GetGlobalVarBool("Outpost_AnsweredRadio")) return false;
+			 if (alState == -1) return true;
+			 
+			 Map_AddTimer("Timer_ShowRadioCC", 0.5f, "OnTimer_ShowRadioCC");
+			 return true;
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnTimer_ShowRadioCC(const tString &in asTimer)
+		 {
+			 Sound_AddClosedCaption("02_02_courtyard", "CC_RadioStatic", 1.f);
+			 
+			 if (Entity_GetCollide("player", "Trigger_ShowRadioCC") == false) 
+				 return;
+			 
+			 Map_RestartCurrentTimer(0.5f);
+		 }
+		 
+		 //-------------------------------------------------------
+		 		 
+		 void SetupRadioLight(bool abLit)
+		 {
+			 for (int i = 0; i < mvRadioLamps.length(); ++i)
+			 {
+				 tString sLamp = mvRadioLamps[i];
+				 
+				 Lamp_SetLit("Lamp_" + sLamp, abLit, false);
+				 Entity_SetEffectBaseColor("Lamp_" + sLamp, cColor_White * 0);
+				 Light_SetBrightness("Light_" + sLamp + "*", 0);
+			 }
+		 }
+		
+		 //-------------------------------------------------------
+		
+		 void SetRadioLampState(int alNewState)
+		 {
+			 if (mlRadioLampState == alNewState) 
+				 return;
+									
+			 if (alNewState > 0 && mlRadioLampState == 0)
+			 {
+				 Map_AddTimer("Timer_FlickerLampsOn", 0, "OnTimer_FlickerLampsOn");
+				 
+				 for (int i = 0; i < mvRadioLamps.length(); ++i)
+				 {
+					 tString sLamp = mvRadioLamps[i];
+					 Sound_CreateAtEntity("ElectricLampOn_" + sLamp, "02_04_living_quarters/scare_events/light_scare/spark_on", "Lamp_" + sLamp, 0, true, 1, 1, 10);
+				 }
+			 }
+			 else if (alNewState == 0 && mlRadioLampState > 0)
+			 {
+				 Map_RemoveTimer("Timer_FlickerLampsOn");
+				 Map_RemoveTimer("Timer_FlickerLampsOff");
+				 
+				 for (int i = 0; i < mvRadioLamps.length(); ++i)
+				 {
+					 tString sLamp = mvRadioLamps[i];
+					 FadeFlickerLampTo(sLamp, 0, 0.2, eEasing_CubicOut);
+					
+					 Sound_Stop("ElectricLampOn_" + sLamp, 0.2);
+					 Sound_CreateAtEntity("ElectricLampOff_" + sLamp, "02_04_living_quarters/scare_events/light_scare/spark_off", "Lamp_" + sLamp, 0, true, 1, 1, 10);
+				 }
+			 }
+			
+			 mlRadioLampState = alNewState;
+		 }
+		
+		 //-------------------------------------------------------
+		
+		 void OnTimer_FlickerLampsOn(const tString &in asTimer)
+		 {
+			 float fFadeTime = cMath_RandRectf(0.02, 0.12);
+			 float fOnTime = cMath_RandRectf(0.01, 0.06);
+			 float fAlpha = 1.0f;
+			
+			 // flicker settings for doctor talk
+			 if (mlRadioLampState == 2)
+			 {
+				 fFadeTime *= 0.75f;
+				 fOnTime *= 0.75f;
+				 fAlpha = cMath_RandRectf(1.2, 1.5);
+			 }
+			
+			 for (int i = 0; i < mvRadioLamps.length(); ++i)
+			 {
+				 tString sLamp = mvRadioLamps[i];
+				
+				 // periodically leave lamps on for a longer time
+				 if (mlRadioLampState != 2 && Map_TimerExists("Lamp_" + sLamp + "_LongCooldown") == false)
+				 {
+					 fOnTime = cMath_RandRectf(0.2, 1.5);
+					 Map_AddTimer("Lamp_" + sLamp + "_LongCooldown", cMath_RandRectf(1, 5), "");
+				 }
+				
+				 FadeFlickerLampTo(sLamp, fAlpha, fFadeTime, eEasing_CubicIn);
+			 }
+
+			 Map_AddTimer("Timer_FlickerLampsOff", fFadeTime + fOnTime, "OnTimer_FlickerLampsOff");
+		 }
+		
+		 //-------------------------------------------------------
+		
+		 void OnTimer_FlickerLampsOff(const tString &in asTimer)
+		 {
+			 float fFadeTime = cMath_RandRectf(0.02, 0.12);
+			 float fOffTime = cMath_RandRectf(0.01, 0.05);
+			 float fAlpha = cMath_RandRectf(0.75, 0.9);
+			
+			 // flicker settings for doctor talk
+			 if (mlRadioLampState == 2)
+			 {
+				 fFadeTime *= 0.75f;
+				 fOffTime *= 0.75f;
+				 fAlpha = cMath_RandRectf(1.0, 1.1);
+			 }
+			
+			 for (int i = 0; i < mvRadioLamps.length(); ++i)
+				 FadeFlickerLampTo(mvRadioLamps[i], fAlpha, fFadeTime, eEasing_CubicOut);
+			
+			 Map_AddTimer("Timer_FlickerLampsOn", fFadeTime + fOffTime, "OnTimer_FlickerLampsOn");
+		 }
+		
+		 //-------------------------------------------------------
+		
+		 void FadeFlickerLampTo(const tString &in asLamp, float afAlpha, float afFadeTime, eEasing aEasing = eEasing_Linear)
+		 {
+			 Entity_FadeEffectBaseColor("Lamp_" + asLamp, cColor_White * afAlpha, afFadeTime);
+		 	
+			 array<iLight@> vLights;
+			 Map_GetLightArray("Light_" + asLamp + "*", vLights);
+			 for (int j = 0; j < vLights.size(); ++j)
+			 {
+				 iLight@ pLight = vLights[j];
+				 pLight.FadeBrightnessTo(pLight.GetDefaultBrightness() * afAlpha, afFadeTime, aEasing);
+			 }
+		 }
+		 
+		 //-------------------------------------------------------
+	 
+		 //} END Event C *Hear the radio signal*
+	 
+	 //} END SCENE 1
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 2 THE PLAYER EXPLORES THE TANK
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+ 
+		 /////////////////////////////////////////
+		 // General
+		 //{//////////////////////////////////////
+		 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are used by many events in Scene 2 here.*/
+		
+		bool mbInsideTank = false;
+		bool mbPickedUpArsenalKey = false;
+		bool mbPlaceInTankCenter = false;
+		float mfPlaceInTankCenterCount = 0.f;
+		cVector3f mvPlayerTankPos = 0.f;
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are used in more than one event in Scene 2 here.*/
+		
+		void OnTimer_PlaceInTankCenter(const tString &in asTimer)
+		{
+			mbPlaceInTankCenter = true;
+			mfPlaceInTankCenterCount = 0.f;
+			mvPlayerTankPos = cLux_GetPlayer().GetCharacterBody().GetFeetPosition();
+			
+			PlayerBody_SetAnimationSet("tank");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_TurretInPlace(const tString &in asTimer)
+		{			
+			Wheel_SetAutoRotateMul("Turret", 2.f);
+			SetTurretLocked(true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void SetTankLightsOn(bool abX)
+		{
+			Map_AddTimer("Timer_SetTankLightsOn", 1.f, "OnTimer_SetTankLightsOn");
+			Map_SetTimerUserVarInt("Timer_SetTankLightsOn", abX ? 1 : 0);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_SetTankLightsOn(const tString &in asTimer)
+		{
+			if (Map_GetTimerUserVarInt(asTimer) == 1)
+				Light_FadeBrightnessTo("Light_Turret", 1.f, 1.f);
+			else
+				Light_FadeBrightnessToDefault("Light_Turret", 1.f);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_PickupArsenalKey(const tString &in asEntity)
+		{
+			mbPickedUpArsenalKey = true;
+		}
+	 
+		//-------------------------------------------------------
+		
+		//} END General	
+	 
+		 /////////////////////////////////////////
+		 // Event A *Open the TANK TURRET HATCH*
+		 //{//////////////////////////////////////
+	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any variables that are only used in Scene 2, Event A here.*/
+		 
+		 int mlTankHatchOpenCount = 0;
+	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any functions that are only used in Scene 2, Event A here.*/
+		 
+		 bool OnTrigger_OpenTurretHatch(const tString &in asParent, const tString &in asChild, int alState)
+		 {
+			 int lOpenCount = 0;
+			 if (Entity_GetCollide("Trigger_OpenTurretHatch_1", "TurretHatch_1"))
+				 ++lOpenCount;
+			 if (Entity_GetCollide("Trigger_OpenTurretHatch_2", "TurretHatch_2"))
+				 ++lOpenCount;
+			 
+			 tString sClimbArea = mbInsideTank ? "InteractArea_ClimbOutTank" : "InteractArea_ClimbIntoTank";
+			 Entity_SetActive(sClimbArea, (mbInsideTank ? lOpenCount >= 1 : lOpenCount == 2));		
+			 return true;
+		 }
+		 
+		 //-------------------------------------------------------
+	 
+		 //} END Event A *Open the TANK TURRET HATCH*
+		 
+		 /////////////////////////////////////////
+		 // Event B *Climb into the FRENCH TANK*
+		 //{//////////////////////////////////////
+	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any variables that are only used in Scene 2, Event B here.*/
+	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any functions that are only used in Scene 2, Event B here.*/
+		 
+		 void OnInteract_ClimbIntoTank(const tString &in asEntity)
+		 {			 
+			 Item_PutAway(eItemHandlerHand_Left);
+			 Item_PutAway(eItemHandlerHand_Right);
+			 
+			 Player_SetCrouching(false, true, true);
+			 
+			 Sound_CreateAtEntity("Sound_TankEnter", "02_02_courtyard/tank/tank_enter", "player");
+			 PlayerBody_PlayCutsceneAtEntity("tf17_enter", "Area_ClimbInAnim", false, 0.5f, "OnAnimEnd_EnterTank");
+			 FootPlacement_SetActive(PlayerBody_GetEntityName(), false);
+			 
+			 SetTankLightsOn(true);
+			 
+			 mbPlaceInTankCenter = true;
+			 mfPlaceInTankCenterCount = 0.f;
+			 
+			 Map_AddTimer("Timer_PushOpenTurretDoors", 0.01f, "OnTimer_PushOpenTurretDoors");
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnAnimEnd_EnterTank(const tString &in asAnim)
+		 {			 
+			 Entity_SetCollideCharacter("Turret", false);
+			 Entity_SetActive("Soundscape_Tank", true);
+			 Entity_SetInteractionDisabled("ft17_tank_front_door_*", true);
+			 
+			 if (cScript_GetGlobalVarBool("Outpost_AnsweredRadio") == false)
+				 Sound_Fade("Sound_RadioStatic", 0.15f, 3.f);
+				 
+			 Map_AddTimer("Timer_FliesSoundStart", 3.5f, "OnTimer_FliesSoundStart");
+			 
+			 Entity_SetActive("InteractArea_ClimbIntoTank", false);
+			 Entity_SetActive("InteractArea_ClimbOutTank", true);
+			 Entity_SetActive("Trigger_PlayCorpseDialogue", true);
+			 
+			 Player_SetMoveSpeedMul(0.f);
+			 Player_SetJumpDisabled(true);
+			 Player_SetLeanDisabled(true);
+			 
+			 Map_AddTimer("Timer_PlaceInTankCenter", 0.1f, "OnTimer_PlaceInTankCenter");			 
+			 
+			 mbInsideTank = true;
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnTimer_FliesSoundStart(const tString &in asTimer)
+		 {
+			 Sound_CreateAtEntity("Sound_TankFlies", "02_02_courtyard/tank/tank_internal_flies", "player");
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnLookAt_TankCorpse(const tString &in asEntity, int alState)
+		 {
+			 Voice_Play("Dialogue_GetInTank");
+		 }
+	 
+		 //-------------------------------------------------------
+	 
+		 //} END Event B *Climb into the FRENCH TANK*
+		 
+		 /////////////////////////////////////////
+		 // Event C *Pull the CANNON LEVER*
+		 //{//////////////////////////////////////
+	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any variables that are only used in Scene 2, Event C here.*/
+	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any functions that are only used in Scene 2, Event C here.*/
+
+		 void OnConnectionStateChange_BreachLever(const tString &in asEntity, int alState)
+		 {
+			 if (cLux_GetCurrentMap() is null || cLux_IsChangingMap())
+				 return;
+			 
+			 if (alState == 0)
+			 {
+				 Entity_SetActive("InteractArea_LoadTank", false);
+				 return;
+			 }
+			
+			 if (alState == -1)
+				PropAnimated_SetStuck("FiringMechanism", true);
+			 
+			 bool bTankLoaded = alState == 1 && Entity_IsActive("LoadedTankShellCartridge");
+			 cScript_SetGlobalVarBool("Outpost_TankLoaded", bTankLoaded);
+			 
+			 if (bTankLoaded)
+			 {
+				 Voice_StopAll();
+				 Voice_Play("Dialogue_FireShell");
+			 }
+			 
+			 if (Entity_IsInteractedWith(asEntity))
+				 cScript_SetGlobalVarBool("Outpost_HasUsedTankGun", true);
+			 
+			 Entity_SetActive("InteractArea_LoadTank", alState == -1);
+			 
+			 Sound_CreateAtEntity("Sound_BreachClose", "02_02_courtyard/tank/tank_breach_close", "FiringMechanism");
+			 
+			 if (alState == -1 && cScript_GetGlobalVarBool("Outpost_FiringMechanismOpen") == false)
+			 {
+				 cScript_SetGlobalVarBool("Outpost_FiringMechanismOpen", true);
+				 
+				 Sound_CreateAtEntity("Sound_BreachOpen", "02_02_courtyard/tank/tank_breach_open", "FiringMechanism");
+				 
+				 if (cScript_GetGlobalVarBool("Outpost_TankShellCasingFell") == false)
+				 {
+					 cScript_SetGlobalVarBool("Outpost_TankShellCasingFell", true);
+					 
+					 Entity_RemoveEntityAttachment("TankShellCasing");
+					 Entity_SetCollideCharacter("TankShellCasing", false);
+					 
+					 Prop_SetStaticPhysics("TankShellCasing", false);
+					 Body_AddImpulse("TankShellCasing_Body_1", cVector3f(0.f, -1.f, 0.f), true);
+					 
+					 Sketchbook_AddIdea("get_bullet");
+				 }
+			 }
+		 }
+	 
+		 //-------------------------------------------------------
+	 
+		 //} END Event C *Pull the CANNON LEVER*
+		 
+		 /////////////////////////////////////////
+		 // Event D *Pull the TANK TURRET LEVER*
+		 //{//////////////////////////////////////
+	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any variables that are only used in Scene 2, Event D here.*/
+	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any functions that are only used in Scene 2, Event D here.*/
+		 
+		 void OnConnectionStateChange_TurretLever(const tString &in asEntity, int alState)
+		 {
+			 if (alState == 0) 
+				 return;
+			 
+			 SetTurretLocked(alState == -1);
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void SetTurretLocked(bool abX)
+		 {
+			 cScript_SetGlobalVarBool("Outpost_TankTurretLocked", abX);			 
+			 
+			 float fAngle = Wheel_GetCurrentAngle("Turret");			 
+			 mfTurretAngle = fAngle;
+			 
+			 if (abX)
+			 {
+				 mfMinTurretAngle = fAngle - 1.f;
+				 mfMaxTurretAngle = fAngle + 1.f;
+				 
+				 Wheel_SetJammed("Turret", true, mfMinTurretAngle, mfMaxTurretAngle);				 
+				 Sound_CreateAtEntity("SoundTurretLock", "02_02_courtyard/tank/turret/clamp_lock", "TurretLockMechanism");
+			 }
+			 else
+			 {
+				 mfMinTurretAngle = gfMinTurretAngle;
+				 mfMaxTurretAngle = gfMaxTurretAngle;
+				 
+				 Wheel_SetJammed("Turret", false, mfMinTurretAngle, mfMaxTurretAngle);				 
+				 Sound_CreateAtEntity("SoundTurretUnlock", "02_02_courtyard/tank/turret/clamp_unlock", "TurretLockMechanism");
+				 
+				 if (cScript_GetGlobalVarBool("Outpost_UnlockedTankTurret") == false)
+				 {
+					 cScript_SetGlobalVarBool("Outpost_UnlockedTankTurret", true);
+					 
+					 mfTurretAngle = fAngle - 5.f;					 
+					 Wheel_SetAutoRotateMul("Turret", 2.f);
+					 Wheel_SetAngle("Turret", cMath_ToRad(mfTurretAngle), true);
+				 }
+			 }
+		 }
+	 
+		 //-------------------------------------------------------
+	 
+		 //} END Event D *Pull the TANK TURRET LEVER*
+		 
+		 /////////////////////////////////////////
+		 // Event E *Control the TANK TURRET*
+		 //{//////////////////////////////////////
+	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any variables that are only used in Scene 2, Event E here.*/
+		 
+		 int mlTurretControlStage = -1;
+		 float mfTurretAngle = 0.f;
+		 float mfPrevTurretAngle = 0.f;
+		 float mfMinTurretAngle = gfMinTurretAngle;
+		 float mfMaxTurretAngle = gfMaxTurretAngle;
+		 float mfTurretControlTransitionCount = 0.5f;
+		 float mfTurretShakeMul = 0.5f;
+		 float mfTurretMoveAmount = 0.f;
+		 float mfTurretLookAmount = 0.f;
+		 bool mbPullingTurretHandle = false;
+		 [nosave] tID m_idTankCam = tID_Invalid;
+	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any functions that are only used in Scene 2, Event E here.*/
+		 
+		 void OnInteract_TankCannon(const tString &in asEntity)
+		 {
+			 mlTurretControlStage = 0;
+			 mbInteractingWithTankCannon = true;
+			 
+			 Item_PutAway(eItemHandlerHand_Left);
+			 Item_PutAway(eItemHandlerHand_Right);
+			 
+			 Player_SetCrouching(false, true, true);			 
+			 PlayerBody_PlayCutsceneAtEntity("tf17_look_through_hole", "Area_StartControlTurretAnim", false, 0.3f);
+			 
+			 cScript_SetGlobalVarBool("Outpost_HasUsedTankGun", true);
+			 
+			 Lever_SetStuckState("BreachLever", 1, true); // Make sure the breach is ready
+		 }
+		 
+		 //------------------------------------------------------
+		 
+		 bool Turret_Move(const cVector2f &in avMoveAmount) 
+		 { 
+			 if (mlTurretControlStage < 2 || mfTurretLookAmount != 0.f) 
+				 return false;
+			 
+			 mfTurretMoveAmount = cMath_Clamp(cMath_Abs(avMoveAmount.x) * 0.25f, 0.f, 0.25f) * cMath_Sign(avMoveAmount.x);
+			 
+			 mfTurretAngle += mfTurretMoveAmount;
+			 mfTurretAngle = cMath_Clamp(mfTurretAngle, mfMinTurretAngle, mfMaxTurretAngle);
+			 
+			 if (mfTurretShakeMul < 0.5f && mfTurretAngle > mfMinTurretAngle && mfTurretAngle < mfMaxTurretAngle)
+				 mfTurretShakeMul += 0.03f;
+			 
+			 Wheel_SetAngle("Turret", cMath_ToRad(mfTurretAngle), true);
+			 return false;
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 bool Turret_Look(const cVector2f &in avLookAmount)
+		 {
+			 if (mlTurretControlStage < 2 || mfTurretMoveAmount != 0.f) 
+				 return false;
+			 
+			 mfTurretLookAmount = cMath_Clamp(cMath_Abs(avLookAmount.x) / 0.25f, 0.f, 0.25f) * -cMath_Sign(avLookAmount.x);
+			 
+			 mfTurretAngle += mfTurretLookAmount;
+			 mfTurretAngle = cMath_Clamp(mfTurretAngle, mfMinTurretAngle, mfMaxTurretAngle);
+			 
+			 if (mfTurretShakeMul < 0.5f)
+				 mfTurretShakeMul += 0.03f;
+			 
+			 Wheel_SetAngle("Turret", cMath_ToRad(mfTurretAngle), true);
+			 return false;
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 bool Turret_Action(int alAction, bool abPressed)
+		 {			 
+			 if (abPressed == false || mlTurretControlStage < 2) 
+				 return false;
+			 
+			 if (alAction == eAction_Interact && mbTankFired == false)
+			 {				 
+				 if (cScript_GetGlobalVarBool("Outpost_TankLoaded"))
+				 {
+					FireTankCannon();
+					return false;
+				 }					
+				 
+				 if (Map_TimeHasPassed("Timer_FireFail", 0.5f))	
+					 Sound_CreateAtEntity("Sound_DryFire", "02_02_courtyard/tank/tank_dry_fire", "Cannon");
+				 
+				 if (cScript_GetGlobalVarBool("Outpost_FireFailAnimPlayed") == false)
+				 {
+					 StopTurretControl(false);
+					 //Map_AddTimer("Timer_PlayFireFailAnim", 0.1f, "OnTimer_PlayFireFailAnim");
+					 OnTimer_PlayFireFailAnim("");
+					 cScript_SetGlobalVarBool("Outpost_FireFailAnimPlayed", true);
+				 }
+				 else if (Lever_GetState("BreachLever") == 1 && cScript_GetGlobalVarBool("Outpost_FiringMechanismOpen"))
+				 {
+					 cScript_SetGlobalVarBool("Outpost_FiringMechanismOpen", false);
+					 
+					 Entity_PlayAnimation("FiringMechanism", "tf17_trigger_fire", 0.f);					 
+					 PropAnimated_SetStuck("FiringMechanism", false);
+				 }
+				 
+				 if (cScript_GetGlobalVarBool("Outpost_TankLoaded") == false)
+				 {
+					 if (ItemType_GetCountInInventory("Bullet") > 0)
+					 {
+						 Voice_PlayDelayed("Dialogue_FireGunHaveShellNotLoaded", 1.5f);
+					 }
+					 else if (Entity_IsActive("LoadedTankShellCartridge") == false)
+					 {
+						//Voice_PlayDelayed("Dialogue_FireGunHaveNoShell", 1.5f);
+						Sketchbook_AddIdea("get_bullet");
+					 }
+				 }
+			 }				 
+			 else if (alAction == eAction_InteractCancel)
+			 {
+				 StopTurretControl();
+				 Wheel_StopAutoMove("Turret");
+			 }
+			 return false;
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnInteract_TurretHandle(const tString &in asEntity)
+		 {
+			 Item_PutAway(eItemHandlerHand_Left);
+			 Item_PutAway(eItemHandlerHand_Right);
+			 
+			 Player_ChangeStateToCustomControls("TurretHandle_Look", "", "TurretHandle_Action", "");
+			 Player_StartLookAt("InteractArea_TurretHandle", 20.f, 2.f, 5.f, true);
+			 
+			 Entity_SetCollide("Turret", false);
+			 Wheel_SetAutoRotateMul("Turret", 5.f);	
+			 
+			 mbPullingTurretHandle = true;
+			 mlTurretControlStage = 2;
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 bool TurretHandle_Look(const cVector2f &in avLookAmount)
+		 {			 
+			 mfTurretLookAmount = cMath_Clamp(cMath_Abs(avLookAmount.x) / 0.25f, 0.f, 0.25f) * -cMath_Sign(avLookAmount.x);
+			 
+			 mfTurretAngle += mfTurretLookAmount;
+			 mfTurretAngle = cMath_Clamp(mfTurretAngle, mfMinTurretAngle, mfMaxTurretAngle);
+			 
+			 Wheel_SetAngle("Turret", cMath_ToRad(mfTurretAngle), true);
+			 return false;
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 bool TurretHandle_Action(int alAction, bool abPressed)
+		 {			 
+			 if (abPressed == true) return false;
+			 
+			 if (alAction == eAction_Interact)
+			 {				 
+				 Player_ChangeStateToNormal();
+				 Player_StopLookAt(1.f);
+				 
+				 Entity_SetCollide("Turret", true);
+				 
+				 mbPullingTurretHandle = false;
+				 mlTurretControlStage = -1;
+			 }			 
+			
+			 return false;
+		 }
+		 
+		 //-------------------------------------------------------		 
+		
+		 void UpdateTankTurret(float afTimeStep)
+		 {	
+			 ///////////////////////////////
+			 // Set up turret control
+			 if (mlTurretControlStage == 0)
+			 { 
+				 cAnimationState@ pState = PlayerBody_GetAnimationState("tf17_look_through_hole");
+				 if (pState.GetRelativeTimePosition() >= 0.75f)
+				 {
+					 pState.SetActive(false);
+					 
+					 iScrPlayerBodyHandler_Interface@ pBody = cast<iScrPlayerBodyHandler_Interface>(cLux_GetUserModuleFromID(eModuleType_PlayerBodyHandler));
+					 pBody.SetAnimationControlledCamera(false);
+					 
+					 iLuxEntity@ pArea = Map_GetEntity("Area_StartControlTurretAnim", eLuxEntityType_Area);
+					 if (pArea !is null)
+						 cLux_GetPlayer().GetCharacterBody().SetFeetPosition(pArea.GetPosition(), false);				 
+					 
+					 PlayerBody_SetActive(false);			 
+					 Player_ChangeStateToCustomControls("Turret_Look", "Turret_Move", "Turret_Action", "");
+			 
+					 cLuxPlayer@ pPlayer = cLux_GetPlayer();
+					 pPlayer.GetCharacterBody().SetCamera(null);
+			 
+					 mfTurretAngle = Wheel_GetCurrentAngle("Turret");
+					 Wheel_SetAutoRotateMul("Turret", 5.f);			 
+			 
+					 Entity_SetCollide("Turret", false);
+					 
+					 mlTurretControlStage = 1;
+				 }
+			 }
+			 ///////////////////////////////
+			 // Camera transition
+			 else if (mlTurretControlStage == 1)
+			 {
+				 mfTurretControlTransitionCount -= afTimeStep;
+				 if (mfTurretControlTransitionCount <= 0.f)
+				 {
+					 mfTurretControlTransitionCount = 0.f;
+					 mlTurretControlStage = 2;
+				 }					
+					 
+				 UpdateTurretControlCamera(1.f - (mfTurretControlTransitionCount / 0.5f));
+			 }
+			 ///////////////////////////////
+			 // Controlling turret
+			 else if (mlTurretControlStage == 2)
+			 {				 
+				 float fAngle = Wheel_GetCurrentAngle("Turret");
+				 bool bLimitReached = fAngle >= mfMaxTurretAngle - 0.5f && mfPrevTurretAngle < mfMaxTurretAngle - 0.5f || 
+									  fAngle <= mfMinTurretAngle + 0.5f && mfPrevTurretAngle > mfMinTurretAngle + 0.5f;
+				 
+				 if (bLimitReached && mfPrevTurretAngle != 0.f)
+				 {
+					 mfTurretShakeMul = 1.5f;
+					 Sound_CreateAtEntity("Sound_TurretLimit", "02_02_courtyard/tank/turret/turret_max", "Turret");
+				 }					 				 
+					 
+				 mfPrevTurretAngle = fAngle;
+				 mfTurretShakeMul = cMath_IncreaseTo(mfTurretShakeMul, afTimeStep * 1.5f, 0.f);
+				 
+				 if (mbPullingTurretHandle)
+				 {					 
+					 if (bLimitReached)
+					 {
+						 Effect_Shake_Start(0.00075f, 0.15f, 0.1f, 0.f);
+						 Sound_CreateAtEntity("Sound_TurretLimit", "02_02_courtyard/tank/turret/turret_max", "Turret");				 
+					 }
+					 
+					 return;
+				 }
+				 
+				 UpdateTurretControlCamera(afTimeStep * 35.f);		 
+			 }
+			 
+			 mfTurretLookAmount = 0.f;
+			 mfTurretMoveAmount = 0.f;
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void PostUpdateTankTurret(float afTimeStep)
+		 {
+			 Player_SetCrossHairState(eCrossHairState_None);
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void UpdateTurretControlCamera(float afT)
+		 {
+			 if (m_idTankCam == tID_Invalid)
+				 m_idTankCam = Map_GetEntity("Area_TankCam", eLuxEntityType_Area).GetID();
+			 
+			 iLuxEntity@ pCamNode = cLux_ID_Entity(m_idTankCam);
+			 cCamera@ pCam = cLux_GetPlayer().GetCamera();
+			 
+			 cVector3f vFwd = pCamNode.GetMatrix().GetTranspose().GetForward();
+			 float fYaw	= cMath_GetAngleFromPoints3D(0.f, vFwd).y;
+			 float fTarYaw = pCam.GetYaw() + cMath_GetAngleDistanceRad(pCam.GetYaw(), fYaw);
+			 
+			 pCam.SetYaw(cMath_InterpolateLinear(pCam.GetYaw(), fTarYaw, afT));
+			 pCam.SetPitch(cMath_InterpolateLinear(pCam.GetPitch(), 0.f, afT));
+			 pCam.SetRoll(cMath_InterpolateLinear(pCam.GetRoll(), 0.f, afT));
+			 
+			 cVector3f vShake = cMath_RandRectVector3f(cVector3f(-1.f), cVector3f(1.f)) * 0.00015f * mfTurretShakeMul;
+			 cVector3f vTar = pCam.GetPosition() * (1.f - afT) + pCamNode.GetPosition() * afT;			 
+			 pCam.SetPosition(vTar + vShake);
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnTimer_PlayFireFailAnim(const tString &in asTimer)
+		 {
+			 float fTimePos = 0.f;			 
+			 PlayerBody_PlayCutsceneAtEntity("tf17_fire_fail_short", "Area_FireFailAnim", false, 0.f, "OnAnimEnd_StopTurretControl", 1.f, fTimePos);
+			 Sound_CreateAtEntity("Sound_DryFireAnimation", "02_02_courtyard/tank/tank_dry_fire_animation", "Cannon");
+			 
+			 if (Lever_GetState("BreachLever") == 1 && cScript_GetGlobalVarBool("Outpost_FiringMechanismOpen"))
+			 {
+				 cScript_SetGlobalVarBool("Outpost_FiringMechanismOpen", false);
+				 Entity_PlayAnimation("FiringMechanism", "tf17_trigger_fire_fail_short", 0.f);
+				 
+				 PropAnimated_SetStuck("FiringMechanism", false);
+			 }
+			 else
+			 {
+				 tString sAnim = cScript_GetGlobalVarBool("Outpost_FiringMechanismOpen") ? "tf17_fire_fail_short_no_hammer" : 
+																						   "tf17_trigger_fire_fail_short_hammer_engaged";
+				 Entity_PlayAnimation("FiringMechanism", sAnim, 0.f);
+			 }
+			 
+			 cAnimationState@ pState = Map_GetEntity("FiringMechanism", eLuxEntityType_Prop).GetCurrentAnimationState();
+			 if (pState !is null)
+				pState.SetRelativeTimePosition(fTimePos);
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void StopTurretControl(bool abPlayExitAnim = true)
+		 {
+			 cLuxPlayer@ pPlayer = cLux_GetPlayer();
+			 cCamera@ pCamera = pPlayer.GetCamera();
+			 
+			 pPlayer.GetCharacterBody().SetCamera(pCamera);
+			 pPlayer.GetCharacterBody().SetYaw(pCamera.GetYaw());
+			 
+			 PlayerBody_SetActive(true);
+			 Player_ChangeStateToNormal();
+			 			 
+			 Entity_SetCollide("Turret", true);
+			 
+			 if (abPlayExitAnim)
+				PlayerBody_PlayCutsceneAtEntity("tf17_look_through_hole_exit", "Area_EndControlTurretAnim", false, 0.f, "OnAnimEnd_StopTurretControl", 1.f, 0.25f);
+				Sound_CreateAtEntity("Sound_LookExit", "new_sounds/animations/tank_window_exit", "player");
+
+			 mfTurretControlTransitionCount = 0.5f;
+			 mlTurretControlStage = -1;
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnAnimEnd_StopTurretControl(const tString &in asAnimName)
+		 {
+			 Map_AddTimer("Timer_PlaceInTankCenter", 0.1f, "OnTimer_PlaceInTankCenter");
+			 mbInteractingWithTankCannon = false;
+			 
+			 Entity_SetInteractionDisabled("InteractArea_Cannon_1", true);
+			 Map_AddTimer("Timer_ActivateCannonInteraction", 0.5f, "OnTimer_ActivateCannonInteraction");
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnTimer_ActivateCannonInteraction(const tString &in asTimer)
+		 {
+			 Entity_SetInteractionDisabled("InteractArea_Cannon_1", false);
+		 }
+		 
+		 //-------------------------------------------------------
+	 
+		 //} END Event E *Control the TANK TURRET*
+		 
+		 /////////////////////////////////////////
+		 // Event F *Climb out of the FRENCH TANK*
+		 //{//////////////////////////////////////
+	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any variables that are only used in Scene 2, Event F here.*/
+	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any functions that are only used in Scene 2, Event F here.*/
+		 
+		 void OnInteract_ClimbOutTank(const tString &in asEntity)
+		 {
+			 Item_PutAway(eItemHandlerHand_Left);
+			 Item_PutAway(eItemHandlerHand_Right);
+				 
+			 Player_SetCrouching(false, true, true);
+			 
+			 Sound_CreateAtEntity("Sound_TankExit", "02_02_courtyard/tank/tank_exit", "player");
+			 PlayerBody_PlayCutsceneAtEntity("tf17_exit", "Area_ClimbOutAnim", false, 0.5f, "OnAnimEnd_ExitTank");
+			 
+			 SetTankLightsOn(false);
+			 
+			 Map_AddTimer("Timer_PushOpenTurretDoors", 0.25f, "OnTimer_PushOpenTurretDoors");
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnTimer_PushOpenTurretDoors(const tString &in asTimer)
+		 {
+			 if (SwingDoor_GetOpenAmount("TurretHatch_1") < 1.f)	
+				 SwingDoor_PushOpen("TurretHatch_1", 3.f, 10, 0.05f);
+			 if (SwingDoor_GetOpenAmount("TurretHatch_2") < 1.f)	
+				 SwingDoor_PushOpen("TurretHatch_2", 3.f, 10, 0.05f);
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnAnimEnd_ExitTank(const tString &in asAnim)
+		 {			 
+			 Entity_SetCollideCharacter("Turret", true);
+			 Entity_SetInteractionDisabled("ft17_tank_front_door_*", false);			 
+			 
+			 if (cScript_GetGlobalVarBool("Outpost_AnsweredRadio") == false)
+				 Sound_Fade("Sound_RadioStatic", 1.f, 3.f);
+			 
+			 Sound_Stop("Sound_TankFlies", 2.0f);
+			 Entity_SetActive("Soundscape_Tank", false);
+				 
+			 Entity_SetActive("InteractArea_ClimbOutTank", false);
+			 Entity_SetActive("InteractArea_ClimbIntoTank", true);
+			 Entity_SetActive("Trigger_PlayCorpseDialogue", false);
+				 
+			 Player_SetMoveSpeedMul(1.f);
+			 Player_SetJumpDisabled(false);
+			 Player_SetLeanDisabled(false);
+				 
+			 PlayerBody_SetAnimationSet("");
+				 
+			 FootPlacement_SetActive(PlayerBody_GetEntityName(), true);
+				 
+			 mbInsideTank = false;
+		 }
+	 
+		 //-------------------------------------------------------
+	 
+		 //} END Event F *Climb out of the FRENCH TANK*
+	 
+	 //} END SCENE 2
+	 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 3 THE PLAYER EXPLORES THE COURTYARD
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+ 
+		 /////////////////////////////////////////
+		 // General
+		 //{//////////////////////////////////////
+		 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are used by many events in Scene 3 here.*/
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are used in more than one event in Scene 3 here.*/		
+		
+		bool OnTrigger_ActivateZoomArea(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			tString sZoomArea = Entity_GetVarString(asParent, "");
+			Entity_SetActive(sZoomArea, (alState==1));
+			return true;
+		}
+	 
+		//-------------------------------------------------------
+		
+		//} END General	
+		
+		 /////////////////////////////////////////
+		 // Event A *Find QUARTERMASTER'S NOTE (TEXT)*
+		 //{//////////////////////////////////////
+	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any variables that are only used in Scene 3, Event A here.*/
+	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any functions that are only used in Scene 3, Event A here.*/
+	 
+		 //-------------------------------------------------------
+	 
+		 //} END Event A *Find QUARTERMASTER'S NOTE (TEXT)*
+	 
+		 /////////////////////////////////////////
+		 // Event B *Use the old ARABIC PUMP*
+		 //{//////////////////////////////////////
+	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any variables that are only used in Scene 3, Event B here.*/
+		 
+		 bool mbReflectionEnabled = false;
+		 int mlFountainMomentCount = 0;
+		 int mlRippleId = 1;
+		
+		 //-------------------------------------------------------
+	 
+		 /*Put any functions that are only used in Scene 3, Event B here.*/
+		 
+		 bool OnTrigger_InsideFountain(const tString &in asParent, const tString &in asChild, int alState)
+		 {
+			 Entity_SetInteractionDisabled("FountainWater", alState == 1);
+			 return true;
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnInteract_FountainWater(const tString &in asEntity)
+		 {
+			 if (mlFountainMomentCount == 0)
+				Entity_SetInteractionDisabled(asEntity, true);
+			 
+			 //////////////////
+			 // Force reflection
+			 cConfigFile@ config = cLux_GetUserConfig();
+			 mbReflectionEnabled = config.GetBool("Graphics", "WorldReflection", true);
+			 
+			 if (mbReflectionEnabled == false)
+			 {
+				 config.SetBool("Graphics", "WorldReflection", true);
+				 cLux_ApplyUserConfig();
+			 }
+			 
+			 Player_SetCrouching(false);
+			 Player_FadeLookSpeedMulTo(0.4f, 0.5f);
+			 PlayerBody_SetModel("player4_head.ent");
+			
+			 tString sEnt = PlayerBody_GetEntityName();
+			 Entity_SetEffectsActive(sEnt, false, false);
+			 FootPlacement_SetActive(sEnt, false);
+			 GhoulProgression_ResetArms();
+			 
+			 PlayerBody_AttachProp("Amulet_Bracelet", "AmuletSocket", false, false);
+			 PlayerBody_AttachProp("SalimsRing_Accessory", "RingSocket", false, false);
+			 PlayerBody_AttachProp(Item_GetItemEntity(ItemType_GetFirstInInventory("CurseMedallion")), "AmuletSocket", false, false);
+			 PlayerBody_SetReflectionVisibility(true);
+			 
+			 Entity_SetReflectionVisibility(Item_GetItemEntity(ItemType_GetFirstInInventory("CurseMedallion")), true, true);
+			 Entity_SetReflectionVisibility("Amulet_Bracelet", true, true);
+			 Entity_SetReflectionVisibility("SalimsRing_Accessory", true, true);
+			 			 
+			 //////////////////
+			 // Get closest fountain area
+			 tString sClosestArea = "";
+			 float fMinDistSqr = 1000.f * 1000.f;
+			 for (int i = 1; i < 9; ++i)
+			 {
+				 tString sArea = "Area_FountainMoment_" + i;
+				 float fDistSqr = Entity_GetDeltaToEntity("player", sArea).SqrLength();
+				 if (fDistSqr < fMinDistSqr)
+				 {
+					 sClosestArea = sArea;
+					 fMinDistSqr = fDistSqr;
+				 }
+			 }
+			 
+			 //////////////////
+			 // Calculate pos & angle for anim
+			 iLuxEntity@ pArea = Map_GetEntity(sClosestArea, eLuxEntityType_Area);
+			 cVector3f vPos = pArea.GetPosition();
+			 float fAngle = cMath_GetAngleFromPoints3D(0.f, pArea.GetMatrix().GetTranspose().GetForward()).y;
+			 
+			 if (mlFountainMomentCount > 0)
+			 {
+				 cVector3f vLocalOffset = cVector3f(0.f, -0.27f, -0.247f);
+				 vPos = cMath_MatrixMul(pArea.GetMatrix(), vLocalOffset);
+			 }		
+				
+			 //////////////////
+			 // Play anim
+			 tString sAnim = mlFountainMomentCount == 0 ? "player_first_fountain_moment" : "player_generic_look_at_fountain_reflection";
+			 PlayerBody_PlayCutsceneAnimation(sAnim, false, 0.3f, "OnAnimEnd_FountainMoment", 1.f, 0.f, true, vPos, fAngle);
+			 PlayerBody_SetCutsceneMaxPitch(15.f);
+			 PlayerBody_SetCutsceneMaxYaw(15.f);
+			 
+			 PlayerBody_GetAnimationState(sAnim).SetWeight(1.f);
+			 
+			 Map_AddTimer(sAnim, PlayerBody_GetAnimationState(sAnim).GetLength() - 0.3f, "OnTimer_ResetPlayerModel");
+			 Map_SetTimerUserVarString(sAnim, sClosestArea);
+			 
+			 if (mlFountainMomentCount == 0)
+			 {
+				 Map_AddTimer("Timer_DoFountainWaterSplash_1", 0.6f, "OnTimer_DoFountainWaterSplash");
+				 Map_AddTimer("Timer_DoFountainWaterSplash_2", 1.f, "OnTimer_DoFountainWaterSplash");
+				 Map_AddTimer("Timer_DoFountainWaterSplash_3", 3.f, "OnTimer_DoFountainWaterSplash");
+				 Map_SetTimerUserVarInt("Timer_DoFountainWaterSplash_3", -1);
+				 Achievement_Unlock(eAchievement_Narcissist);
+			 }
+			 
+			 cVector3f vLightOffset = cVector3f(-0.043f, -0.278f, 0.802f);
+			 cVector3f vLightPos = cMath_MatrixMul(pArea.GetMatrix(), vLightOffset);
+			 mBaseObj.GetWorld().GetLight("Light_Spot_Fountain").SetWorldPosition(vLightPos);
+			 
+			 Light_FadeBrightnessTo("Light_Spot_Fountain", 3.f, 1.f);
+			 
+			 //////////////////
+			 // Voice
+			 Voice_PlayDelayed("Dialogue_FountainMoment", 7.f, -1, "OnVoiceEnd_FouintainMoment");
+			
+			 ++mlFountainMomentCount;
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnTimer_DoFountainWaterSplash(const tString &in asTimer)
+		 {
+			 cVector3f vPos = PlayerBody_GetSocket("R_Hand").GetWorldPosition();
+			 vPos.y = Map_GetEntity("FountainWater", eLuxEntityType_Prop).GetPosition().y;
+			 
+			 if (Map_GetTimerUserVarInt(asTimer) != -1)
+			 {
+				 cParticleSystem@ pPS = ParticleSystem_CreateAtEntity("PS_FountainImpact", "splash_ripples_oneshot_small_long.ps", "player", false);
+				 pPS.SetBrightness(0.75f);
+				 pPS.SetMatrix(cMath_MatrixTranslate(vPos + Player_GetForward() * 0.05f));
+				 pPS.SetFadeAtDistance(false);
+				 pPS.SetMinFadeDistanceEnd(0.f);
+				 pPS.SetMinFadeDistanceStart(0.01f);
+				 pPS.SetColor(cColor(1.f, 1.f, 1.f, 0.35f));
+			 }
+			 
+			 Sound_CreateAtEntity("Sound_Water_" + mlFountainMomentCount, "player/footsteps/default/water_wade", "FountainWater");
+			 cSoundEntity@ pSound = mBaseObj.GetWorld().GetSoundEntity("Sound_Water_" + mlFountainMomentCount);
+			 if (pSound !is null)
+				 pSound.SetPosition(vPos);
+		 }
+		 		 
+		 //-------------------------------------------------------
+		 
+		 void OnTimer_ResetPlayerModel(const tString &in asTimer)
+		 {
+			 float fT = PlayerBody_GetAnimationState(asTimer).GetRelativeTimePosition();
+			 tString sArea = Map_GetTimerUserVarString(asTimer);
+			 
+			 PlayerBody_SetModel("player4.ent");
+			 
+			 tString sEnt = PlayerBody_GetEntityName();
+			 Entity_SetEffectsActive(sEnt, false, false);
+			 FootPlacement_SetActive(sEnt, false);
+			 GhoulProgression_ResetArms();
+			
+ 			 PlayerBody_AttachProp("Amulet_Bracelet", "AmuletSocket", false, false);
+ 			 PlayerBody_AttachProp("SalimsRing_Accessory", "RingSocket", false, false);
+			 PlayerBody_AttachProp(Item_GetItemEntity(ItemType_GetFirstInInventory("CurseMedallion")), "AmuletSocket", false, false);
+
+			 PlayerBody_PlayCutsceneAtEntity(asTimer, sArea, false, 0.f, "OnAnimEnd_FountainMoment", 1.f, fT);			 
+			 PlayerBody_SetCutsceneMaxPitch(15.f);
+			 PlayerBody_SetCutsceneMaxYaw(15.f);
+			 
+			Light_FadeBrightnessTo("Light_Spot_Fountain", 0.f, 1.f);
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnAnimEnd_FountainMoment(const tString &in asAnim)
+		 {
+			 if (mbReflectionEnabled == false)
+			 {
+				 cLux_GetUserConfig().SetBool("Graphics", "WorldReflection", mbReflectionEnabled);
+				 cLux_ApplyUserConfig();
+			 }
+			 
+			 Player_FadeLookSpeedMulTo(1.f, 0.5f);
+			 PlayerBody_SetReflectionVisibility(false);
+			 
+			 Entity_SetReflectionVisibility(Item_GetItemEntity(ItemType_GetFirstInInventory("CurseMedallion")), false, true);
+			 Entity_SetReflectionVisibility("Amulet_Bracelet", false, true);
+			 Entity_SetReflectionVisibility("SalimsRing_Accessory", false, true);
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnVoiceEnd_FouintainMoment(const tString &in asScene, const tString &in asSubject)
+		 {
+			  Entity_SetInteractionDisabled("FountainWater", false);
+		 }
+	 
+		 //-------------------------------------------------------
+	 
+		 //} END Event B *Use the old ARABIC PUMP*
+		 
+		 /////////////////////////////////////////
+		 // Event C *Get microflashes of being here*
+		 //{//////////////////////////////////////
+	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any variables that are only used in Scene 3, Event C here.*/
+		 	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any functions that are only used in Scene 3, Event C here.*/
+		 
+		 void OnLookAt_PlayFortMicroflash(const tString &in asEntity, int alState)
+		 {
+			 if (alState == -1 || 
+				 mbTankFired ||
+				 AllowMicroflashAndRadioVoice() == false)
+				 return;
+				 
+			 int lId = Entity_GetVarInt(asEntity, "");
+			 if (lId == 4)
+			 {
+				 // LQ microflash, only play if LQ entrance is positioned correctly and haven't been there!				 
+				 if (cScript_GetGlobalVarBool("Outpost_AnsweredRadio") ||
+					 Map_TimerExists("Timer_PlayedIntroDialogue") || 
+					 Entity_PlayerIsInFront(asEntity) == false ||
+					 cMath_Vector3Dot(cLux_GetPlayer().GetCamera().GetForward(), cVector3f_Forward) < 0.2f)
+					 return;
+			 }
+			 
+			 PlayMicroflash("Microflashes_ExploreFort", lId);
+			 Entity_SetActive(asEntity, false);
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 bool OnTrigger_Player_PlayPumpMicroflash(const tString &in asParent, const tString &in asChild, int alState)
+		 {
+			 if (alState == -1)
+			 {
+				 if (Entity_PlayerIsInFront(asParent))
+					 Map_RemoveTimer("Timer_PlayPumpMicroflash");
+				 
+				 return true;
+			 }
+			 
+			 Map_RemoveTimer("Timer_PlayPumpMicroflash");
+			 Map_AddTimer("Timer_PlayPumpMicroflash", 0.5f, "OnTimer_PlayPumpMicroflash"); 
+			 return true;
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnTimer_PlayPumpMicroflash(const tString &in asTimer)
+		 {
+			 if (AllowMicroflashAndRadioVoice() == false)
+			 {
+				 Map_RestartCurrentTimer(1.5f);
+				 return;
+			 }			 
+			 
+			 PlayMicroflash("Microflashes_ExploreFort", 3);
+		 }
+	 
+		 //-------------------------------------------------------
+	 
+		 //} END Event C *Get microflashes of being here*
+		 
+		 /////////////////////////////////////////
+		 // Event D *Unlock the Arsenal*
+		 //{//////////////////////////////////////
+	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any variables that are only used in Scene 3, Event D here.*/
+		 
+		 bool mbArsenalDoorLockedBarkPlayed = false;
+		 	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any functions that are only used in Scene 3, Event D here.*/
+		 
+		 //-------------------------------------------------------
+		
+		 void LevelDoor_Arsenal_OnPlayerInteract(const tString &in asEntity)
+		 {
+			 if (LevelDoor_GetLocked(asEntity))
+			 {
+				 if (mbArsenalDoorLockedBarkPlayed == false)
+				 {
+					 mbArsenalDoorLockedBarkPlayed = true;
+					 Voice_PlayDelayed("Misc_Locked", 1.f);
+				 }			
+				 return;
+			 }
+			
+			 if (cScript_GetGlobalVarBool("Outpost_VisitedArsenal")==false)
+			 {
+				 cScript_SetGlobalVarBool("Outpost_VisitedArsenal", true);
+			 	 LoadScreen_ProgressStory();
+			 }
+		 }
+		 		
+		 //-------------------------------------------------------
+		 
+		 bool CanUse_ArsenalKey(const tString &in asItemType, const tString &in asItemID, const tString &in asPickedEntity)
+		 {
+			 return asPickedEntity == "LevelDoor_Arsenal" || asPickedEntity == "Arsenal_Lock" || asPickedEntity == "InteractAux_ArsenalLevelDoor";
+		 }
+		
+		 //-------------------------------------------------------
+		
+		 bool OnUse_ArsenalKey(const tString &in asItemType, const tString &in asItemID, const tString &in asTargetEntity, const tString &in asItemEntity, float afTimeElapsed, float afTimeStep)
+		 {
+			 LevelDoor_SetLocked("LevelDoor_Arsenal", false);
+			 
+			 Item_RemoveFromInventory(ItemType_GetFirstInInventory("ArsenalKey"));
+			 
+			 Entity_SetActive("ArsenalKey_Attached", true);
+			 Prop_AlignRotation("ArsenalKey_Attached", "ArsenalKey_AttachedRotated", 10.f, 5.f, 0.25f, true);
+			 
+			 Sound_CreateAtEntity("Sound_DoorUnlock", "level_entity_shared/doors/relic_door/relic_door_unlock", asTargetEntity);			 
+			 return false;
+		 }
+	 
+		 //-------------------------------------------------------
+	 
+		 //} END Event D *Unlock the Arsenal*
+		 
+		 /////////////////////////////////////////
+		 // Event E *Interact with the LQ doors*
+		 //{//////////////////////////////////////
+	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any variables that are only used in Scene 3, Event E here.*/
+		 
+		 bool mbQuarterMasterDoorLockedBarkPlayed = false;
+		 	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any functions that are only used in Scene 3, Event E here.*/
+		 
+		 //-------------------------------------------------------
+		 
+		 void LevelDoor_LQ_Front_OnPlayerInteract(const tString &in asEntity)
+		 {
+			 if (cScript_GetGlobalVarBool("Outpost_VisitedLQ")==false)
+			 {
+				 cScript_SetGlobalVarBool("Outpost_VisitedLQ", true);
+				 LoadScreen_ProgressStory();
+			 }
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnInteract_QuarterMasterDoor(const tString &in asEntity)
+		 {
+			 if (LevelDoor_GetLocked(asEntity) && mbQuarterMasterDoorLockedBarkPlayed == false)
+			 {
+				 mbQuarterMasterDoorLockedBarkPlayed = true;
+				 Voice_PlayDelayed("Misc_Locked", 1.f);
+			 }
+		 }
+	 
+		 //-------------------------------------------------------
+	 
+		 //} END Event E *Unlock the Arsenal*
+		 
+		 /////////////////////////////////////////
+		 // Event F *Find HANK'S DOSSIER*
+		 //{//////////////////////////////////////
+	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any variables that are only used in Scene 3, Event F here.*/
+		 	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any functions that are only used in Scene 3, Event F here.*/
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnInteractLeave_HanksNote(const tString &in asEntity)
+		 {
+			 Map_AddTimer("Timer_PlayDossierMicroflash", 1.f, "OnTimer_PlayDossierMicroflash");
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnTimer_PlayDossierMicroflash(const tString &in asTimer)
+		 {
+			 if (Voice_SceneInvolvingCharacterIsActive("Player") || 
+				 Sketchbook_IsMicroflashActive() || 
+				 Sketchbook_IsFlashbackActive())
+				 return;
+				
+			 Sketchbook_Microflash("Microflash_HankNote_Malick");
+		 }
+		 
+		 //-------------------------------------------------------
+	 
+		 //} END Event F *Find HANK'S DOSSIER*
+	 
+	 //} END SCENE 3
+	 
+	/////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 4 THE PLAYER RETURNS FROM THE LIVING QUARTERS
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+ 
+		 /////////////////////////////////////////
+		 // General
+		 //{//////////////////////////////////////
+		 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are used by many events in Scene 4 here.*/
+				
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are used in more than one event in Scene 4 here.*/
+		 
+		 void OnTimer_ShowRemindersHint(const tString &in asTimer)
+		 {
+			 if (Map_GetTimerUserVarInt(asTimer) == 1)
+			 {
+				 if (Entity_GetCollide("player", "Area_QuarterMasters"))
+					 return;
+			 }
+			 else
+			 {
+				 if (mbPickedUpArsenalKey || 
+					 mbInsideTank || 
+					 LevelDoor_GetLocked("LevelDoor_Arsenal") == false ||
+					 Entity_GetCollide("player", "Area_ArsenalEntrance"))
+					 return;
+			 }
+			 
+			 if (mbTankFired)
+				 return;
+				 
+			 // this is triggered dynamically now
+			 //Hint_ShowHint_Hold("Hints", "HintReminders", true, 1.5f, true, 10.f);
+		 }
+	 
+		//-------------------------------------------------------
+		
+		//} END General	
+	 
+		 /////////////////////////////////////////
+		 // Event A *Get a flashback of fleeing the Outpost (DIALOG)*
+		 //{//////////////////////////////////////
+	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any variables that are only used in Scene 4, Event A here.*/
+		
+		 bool mbEscapedGhoulDialoguePlayed = false;
+		 bool mbFrustratedGhoulSoundsPlayed = false;
+		
+		 //-------------------------------------------------------
+	 
+		 /*Put any functions that are only used in Scene 4, Event A here.*/
+		 
+		 bool OnTrigger_Player_PlayFrustratedGhoulSounds(const tString &in asParent, const tString &in asChild, int alState)
+		 {
+			 if (cScript_GetGlobalVarBool("Outpost_QuartermasterScarePlayed"))
+				 return false;
+			 
+			 Map_RemoveTimer("Timer_PlayFrustratedGhoulSounds");
+			 Map_AddTimer("Timer_PlayFrustratedGhoulSounds", alState == 1 ? 3.f : 0.f, "OnTimer_PlayFrustratedGhoulSounds");
+			 return true;
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnTimer_PlayFrustratedGhoulSounds(const tString &in asTimer)
+		 {
+			 if (cScript_GetGlobalVarBool("Outpost_QuartermasterScarePlayed"))
+				 return;
+			 
+			 cScript_SetGlobalVarBool("Outpost_QuartermasterScarePlayed", true);
+			 
+			 Entity_SetActive("Trigger_ForceEscapedGhoulDialogue", true);
+			 
+			 Sound_Play("Sound_FrustratedGhoul", 0.f);
+			 FearHandler_SetForcedAddFearRate(0.3f, 5.f, false, -1.f, 0.05f, 0.3f);
+			 Music_Play("A2_2_2_Ghoul_Door.ogg", 0.75f, false, eMusicPrio_MinorEvent);
+			 
+			 Map_AddTimer("Timer_PlayEscapedGhoulDialogue", 5.f, "OnTimer_PlayEscapedGhoulDialogue");
+			 
+			 Seq_QuarterMasterDoorBang("");
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 cSequenceStatesData mSeqDataQuarterMasterDoorBang;
+		 void Seq_QuarterMasterDoorBang(const tString &in asTimer)
+		 {
+			 Sequence_Begin("Seq_QuarterMasterDoorBang", mSeqDataQuarterMasterDoorBang);
+			 if (Sequence_DoStepAndWait(1.f))		ParticleSystem_SetActive("PS_DoorBang_1", true);
+			 else if (Sequence_DoStepAndWait(1.f))	ParticleSystem_SetActive("PS_DoorBang_2", true);
+			 else if (Sequence_DoStepAndWait(1.f))	ParticleSystem_SetActive("PS_DoorBang_3", true);
+			 Sequence_End();
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 bool OnTrigger_Player_ForceEscapedGhoulDialogue(const tString &in asParent, const tString &in asChild, int alState)
+		 {
+			 if (mbEscapedGhoulDialoguePlayed == false)
+			 {
+				 Map_RemoveTimer("Timer_PlayEscapedGhoulDialogue");
+				 Map_AddTimer("Timer_PlayEscapedGhoulDialogue", 0.f, "OnTimer_PlayEscapedGhoulDialogue");
+			 }
+			 
+			 return false;
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnTimer_PlayEscapedGhoulDialogue(const tString &in asTimer)
+		 {
+			 if (cLux_GetPlayer().GetCharacterBody().IsOnGround() == false)
+			 {
+				 Map_AddTimer("Timer_PlayEscapedGhoulDialogue", 0.1f, "OnTimer_PlayEscapedGhoulDialogue");
+				 return;
+			 }
+			 
+			 mbEscapedGhoulDialoguePlayed = true;
+			 
+			 Entity_SetActive("Trigger_ForceEscapedGhoulDialogue", false);
+			 
+			 Entity_SetInteractionDisabled("LevelDoor_LQ_Back", false);
+			 
+			 Voice_StopAll();
+			 Voice_Play("Dialogue_EscapedGhoul");
+			 
+			 Player_ChangeStateToNormal();
+			 PlayerBody_PlayCutsceneAnimation("player_exhausted", false, 0.3f);
+			 
+			 Achievement_Unlock(eAchievement_Communicator);
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 bool OnTrigger_Player_PlayDoorMemory(const tString &in asParent, const tString &in asChild, int alState)
+		 {
+			 Map_AddTimer("Timer_TriggerMemoryFlee", 0.5f, "OnTimer_TriggerMemoryFlee");
+			 return false;
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnTimer_TriggerMemoryFlee(const tString &in asTimer)
+		 {
+			 if (cScript_GetGlobalVarBool("Outpost_DoorPostLQPlayed") || 
+				 Entity_IsInPlayerFOV("Trigger_PlayDoorMemory") == false) 
+				 return;
+
+			 if (AllowMicroflashAndRadioVoice(true) == false || Player_GetCurrentStateName() != "State_Normal")
+			 {
+				 Map_AddTimer("Timer_TriggerMemoryFlee", 1.f, "OnTimer_TriggerMemoryFlee");
+				 return;
+			 }
+			 
+			 Sketchbook_UnlockMemory("TheDoor");
+			 
+			 Entity_SetActive("Trigger_PlayDoorMemory", false);
+			 cScript_SetGlobalVarBool("Outpost_DoorPostLQPlayed", true);
+			 
+			 Map_AddTimer("Timer_PlayRanFromGhoulDialogue", 5.f, "OnTimer_PlayRanFromGhoulDialogue");
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnTimer_PlayRanFromGhoulDialogue(const tString &in asTimer)
+		 {
+			 Voice_PlayWhenPossible("Dialogue_RanFromGhoul", "", 40.f, 2.f);
+			 Map_AddTimer("Timer_ShowRemindersHint", 60.f * 2.f, "OnTimer_ShowRemindersHint");
+		 }
+	 
+		 //-------------------------------------------------------
+	 
+		 //} END Event A *Get a flashback of fleeing the Outpost (DIALOG)*
+		 
+		 /////////////////////////////////////////
+		 // Event B *Get spooked by the TANK VULTURE*
+		 //{//////////////////////////////////////
+	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any variables that are only used in Scene 4, Event B here.*/
+		 
+		 //-------------------------------------------------------
+	 
+		 /*Put any functions that are only used in Scene 4, Event B here.*/
+		 
+		 bool OnTrigger_Player_VultureScare(const tString &in asParent, const tString &in asChild, int alState)
+		 {
+			 StartVultureScare();
+			 return false;
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnLookAt_Vulture(const tString &in asEntity, int alState)
+		 {
+			 StartVultureScare();
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void StartVultureScare()
+		 {
+			 Entity_SetActive("Trigger_VultureScare_*", false);
+			 Seq_VultureScare("");
+			 
+			 cScript_SetGlobalVarBool("Outpost_VultureScarePlayed", true);
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 cSequenceStatesData mSeqDataVultureScare;
+		 void Seq_VultureScare(const tString &in asTimer)
+		 {
+			 Sequence_Begin("Seq_VultureScare", mSeqDataVultureScare);
+			 if (Sequence_DoStepAndWait(1.f))
+			 {
+				 Sound_Stop("Sound_VultureInsideLoop", 0.5f);
+				 Sound_Play("Sound_VultureScare", 1.0f);
+				 
+				 Music_Play("A2_2_2_Vulture.ogg", 0.25f, false, eMusicPrio_MinorEvent);
+				 
+				 Map_AddTimer("Timer_DistantVocals", 9.0f, "OnTimer_VultureDistantVocals");
+				 
+				 Entity_SetActive("Vulture", true);
+				 Entity_PlayAnimation("Vulture", "tank_fly_way", 0.f, false, false, "OnAnimEnd_Vulture");
+				 Map_GetEntity("vulture").GetMeshEntity().GetAnimationStateFromName("tank_fly_way").SetSpeed(1.f);
+				 
+				 FearHandler_SetForcedAddFearRate(0.3f, 4.f, false, -1.f, 0.5f);
+			 }
+			 Sequence_End();
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnTimer_VultureDistantVocals(const tString &in asTimer)
+		 {			
+			 Sound_Play("Sound_VultureVocalDistant", 1.0f);
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnAnimEnd_Vulture(const tString &in asEntity, const tString &in asAnim)
+		 {
+			 Entity_SetActive(asEntity, false);
+		 }
+		 
+		 //-------------------------------------------------------
+	 
+		 //} END Event B *Get spooked by the TANK VULTURE*
+	 
+	 //} END SCENE 4
+	 
+	/////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 5 THE PLAYER RETURNS FROM THE ARSENAL
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+ 
+		 /////////////////////////////////////////
+		 // General
+		 //{//////////////////////////////////////
+		 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are used by many events in Scene 5 here.*/
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are used in more than one event in Scene 5 here.*/
+	 
+		//-------------------------------------------------------
+		
+		//} END General	
+	 
+		 /////////////////////////////////////////
+		 // Event A *Suffer a ghoul silhouette scare (optional)*
+		 //{//////////////////////////////////////
+	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any variables that are only used in Scene 5, Event A here.*/
+		 
+		 float mfPrevTurbineMul = 0.f;
+		 bool mbSpottedSilhouetteGhoul = false;
+	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any functions that are only used in Scene 5, Event A here.*/
+		 
+		 bool OnTrigger_Player_WindowScareStart(const tString &in asParent, const tString &in asChild, int alState)
+		 {
+			 cScript_SetGlobalVarBool("Outpost_SilhouetteScarePlayed", true);
+			 
+			 if (Entity_PlayerIsInFront(asParent))
+				 return false;
+			 
+			 Entity_SetActive("Trigger_StartSeqSilhouetteScare", true);			
+			 Entity_SetActive("Ghoul_SilhouetteScare", true);
+			 
+			 Entity_PlayAnimation("Ghoul_SilhouetteScare", "courtyard_window_idle", 0.f, true, true);
+						
+			 Light_FadeTo("Light_SilhouetteScare", cColor(0.608,0.435,0.275,0.102), 5.f, 1.f);
+			 
+			 Map_AddTimer("Timer_PlaySilhouetteSound", 0.5f, "OnTimer_PlaySilhouetteSound");
+			 Map_AddTimer("Timer_ForceSilhouetteScareEnd", 5.f, "OnTimer_ForceSilhouetteScareEnd");
+			 return false;
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnTimer_PlaySilhouetteSound(const tString &in asTimer)
+		 {
+			 Sound_CreateAtEntity("Sound_SilhouetteScareStart", "02_04_living_quarters/ghoul_scare_events/grate/grate_grab", "Trigger_StartSeqSilhouetteScare");
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnTimer_ForceSilhouetteScareEnd(const tString &in asTimer)
+		 {
+			 if (mbSpottedSilhouetteGhoul == false)
+			 {
+				 Entity_SetActive("Trigger_StartSeqSilhouetteScare", false);
+				 
+				 if (Entity_IsInPlayerFOV("Trigger_StartSeqSilhouetteScare"))
+				 {
+					 Seq_SilhouetteScare("");
+				 }
+				 else
+				 {
+					 Entity_SetActive("Ghoul_SilhouetteScare", false);
+					 Light_FadeTo("Light_SilhouetteScare", cColor(0.f), 5.f, 5.f);
+				 }
+			 }
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnLookAt_StartSeqSilhouetteScare(const tString &in asEntity, int alState)
+		 {
+			 mbSpottedSilhouetteGhoul = true;
+			 
+			 Map_RemoveTimer("Timer_PlaySilhouetteSound");
+			 Map_RemoveTimer("Timer_ForceSilhouetteScareEnd");
+			 
+			 Seq_SilhouetteScare("");
+			 Entity_SetActive("Trigger_StartSeqSilhouetteScare", false);
+		 }
+	 
+		 //-------------------------------------------------------
+		 
+		 cSequenceStatesData mSeqDataSilhouetteScare;
+		 void Seq_SilhouetteScare(const tString &in asTimer)
+		 {
+			 Sequence_Begin("Seq_SilhouetteScare", mSeqDataSilhouetteScare);
+			 if (Sequence_DoStepAndWait(0.4f))
+			 {
+				 Entity_PlayAnimation("Ghoul_SilhouetteScare", "courtyard_bang_on_window", 0.f, false);
+				 
+				 FearHandler_SetForcedAddFearRate(0.5f, 6.f, false, -1.f, 0.1f, 0.5f);
+				 Music_Stop(1.f, eMusicPrio_BgAmb);
+				 
+				 Map_AddTimer("Timer_GhoulWindowSweet", 10.0f, "OnTimer_PlayGhoulWindowSweet");				 
+			 }
+			 else if (Sequence_DoStepAndWait(2.f))
+			 {
+				 Sound_Play("Sound_WindowScare", 1.0f);
+				 Sound_PlayGui("02_02_courtyard/window_scare/window_stinger", 1.0);
+				 
+				 ParticleSystem_SetActive("PS_WindowBang", true);
+			 }
+			 else if (Sequence_DoStepAndWait(10.f))
+			 {
+				 Entity_SetActive("Ghoul_SilhouetteScare", false);
+				 Light_FadeTo("Light_SilhouetteScare", cColor(0.f), 5.f, 5.f);
+			 }
+			 else if (Sequence_DoStepAndWait(1.f))
+			 {
+				 Music_PlayExt("A2_2_2_Courtyard_Ambience.ogg", true, 0.6f, 1.0f, 5.0f, 1.0f, eMusicPrio_BgAmb, true);
+			 }
+			 Sequence_End();
+		 }
+		 
+		 //-------------------------------------------------------
+	
+		void OnTimer_UpdateTurbine(const tString &in asTimer)
+		{
+			float fMul = cMath_RandRectf(0.05f, 1.f);
+			if (fMul > 0.6f && mfPrevTurbineMul > 0.6f)
+				fMul -= 0.5f;
+			
+			mfPrevTurbineMul = fMul;
+			
+			float fTime = cMath_RandRectf(2.f, 4.f);			
+			float fSpeed = fMul * 9.f;
+			Map_GetEntity("WindTurbine").GetMeshEntity().GetAnimationStateFromName("wind_turbine_animated_spin").FadeSpeed(fSpeed, fTime);
+			
+			Light_FadeBrightnessTo("Light_Flicker_1", cMath_Easing(eEasing_QuadIn, fMul / 1.f) * 5.f, fTime);		
+			Light_FadeBrightnessTo("Light_Flicker_2", cMath_Easing(eEasing_QuadIn, fMul / 1.f), fTime);		
+			Light_FadeBrightnessTo("Light_Flicker_3", cMath_Easing(eEasing_QuadIn, fMul / 1.f) * 5.f, fTime);
+			Light_FadeBrightnessTo("Light_Flicker_4", cMath_Easing(eEasing_QuadIn, fMul / 1.f) * 5.f, fTime);
+			
+			Map_AddTimer("Timer_UpdateTurbine", fTime + cMath_RandRectf(1.f, 4.f), "OnTimer_UpdateTurbine");
+		}
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnTimer_PlayGhoulWindowSweet(const tString &in asTimer)
+		 {
+			 Sound_Play("Sound_WindowScareSweet", 1.f);
+		 }
+		 
+		 //-------------------------------------------------------
+	 
+		 //} END Event A *Suffer a ghoul silhouette scare (optional)*
+	 
+	 //} END SCENE 5
+	 
+	/////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// SCENE 6 THE PLAYER FIRES THE TANK AND FALLS DOWN INTO THE CISTERN
+	// ==============
+	//{//////////////////////////////////////////////////////////////////////////////////////
+ 
+		 /////////////////////////////////////////
+		 // General
+		 //{//////////////////////////////////////
+		 
+		//-------------------------------------------------------
+	 
+		/*Put any variables that are used by many events in Scene 6 here.*/
+		
+		bool mbPlacedBullet = false;
+	 
+		//-------------------------------------------------------
+	 
+		/*Put any functions that are used in more than one event in Scene 6 here.*/
+		
+		void OnTakeOutItem(const tString &in asItemType, const tString &in asItemID)
+		{
+			if (asItemType != "Bullet") return;
+			
+			Entity_SetActive("InteractArea_Cannon_*", false);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnPutAwayItem(const tString &in asItemType, const tString &in asItemID)
+		{
+			if (asItemType != "Bullet") return;
+			
+			Entity_SetActive("InteractArea_Cannon_*", true);
+			
+			if (mbPlacedBullet)
+				Map_AddTimer("Timer_RemoveBullet", 0.1f, "OnTimer_RemoveBullet");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_RemoveBullet(const tString &in asTimer)
+		{
+			ItemType_RemoveFromInventory("Bullet");
+		}
+	 
+		//-------------------------------------------------------
+		
+		//} END General	
+	 
+		 /////////////////////////////////////////
+		 // Event A *Load the FRENCH TANK’S cannon*
+		 //{//////////////////////////////////////
+	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any variables that are only used in Scene 6, Event A here.*/
+		 	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any functions that are only used in Scene 6, Event A here.*/
+		 
+		 bool CanUse_Bullet(const tString &in asItemType, const tString &in asItemID, const tString &in asPickedEntity)
+		 {
+			 return asPickedEntity == "InteractArea_LoadTank";
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 bool OnUse_Bullet(const tString &in asItemType, const tString &in asItemID, const tString &in asTargetEntity, 
+						   const tString &in asItemEntity, float afTimeElapsed, float afTimeStep)
+		 {
+			 mbPlacedBullet = true;
+			 
+			 Entity_SetActive("LoadedTankShellCartridge", true);
+			 Entity_SetActive("InteractArea_Cannon_*", true);
+			 Entity_SetActive(asTargetEntity, false);
+			 
+			 Item_Unequip(asItemID);
+			 Item_RemoveFromInventory(asItemID);
+			 
+			 Voice_PlayDelayed("Dialogue_LoadsShell", 0.5f);
+			 
+			 Sound_CreateAtEntity("Sound_TankLoaded", "02_03_arsenal/level_items/bullet_press/shell_add", asTargetEntity);
+			 
+			 Sketchbook_CompleteIdea("get_bullet");
+			 return true;
+		 }
+	 
+		 //-------------------------------------------------------
+	 
+		 //} END Event A *Load the FRENCH TANK’S cannon*
+		 
+		 /////////////////////////////////////////
+		 // Event B *Fire the FRENCH TANK’S cannon*
+		 //{//////////////////////////////////////
+	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any variables that are only used in Scene 6, Event B here.*/
+		 
+		 cVector3f mvCannonImpactPos = 0.f;
+		 tString msCannonImpactMat = "";
+	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any functions that are only used in Scene 6, Event B here.*/
+		 
+		 void FireTankCannon()
+		 {
+			 mbTankFired = true;
+			 cScript_SetGlobalVarBool("Outpost_TankLoaded", false);
+			 
+			 Entity_PlayAnimation("FiringMechanism", "tf17_trigger_fire", 0.f);	
+			 
+			 iLuxEntity@ pCamNode = Map_GetEntity("Area_TankCam", eLuxEntityType_Area);
+			 cVector3f vStart = pCamNode.GetPosition();
+			 cVector3f vDir = pCamNode.GetMatrix().GetTranspose().GetForward();	
+			 
+			 cVector3f vNormal = 0.f;
+			 float fDist = 0.f;
+			 
+			 iPhysicsBody@ pBody = cLux_GetClosestBody(vStart, vDir, 100.f, fDist, vNormal);
+			 if (pBody !is null)
+			 {
+				 mvCannonImpactPos = vStart + vDir * fDist;				 
+				 msCannonImpactMat = pBody.GetMaterial().GetName();
+				 cLux_AddDebugMessage("Impact material: " + msCannonImpactMat);
+				 
+				 Map_AddTimer("Timer_DoCannonImpactEffects", 0.05f, "OnTimer_DoCannonImpactEffects");
+				 
+				 iLuxEntity@ pEnt = cLux_GetBodyEntity(pBody);
+				 tString sEnt = pEnt !is null ? pEnt.GetName() : "";
+				 Map_SetTimerUserVarString("Timer_DoCannonImpactEffects", sEnt);
+			 }
+			 
+			 Entity_SetActive("LoadedTankShellCartridge", false);
+			 Entity_SetInteractionDisabled("InteractArea_ClimbOutTank", true);
+			 Entity_SetInteractionDisabled("InteractArea_ClimbIntoTank", true);
+			 Entity_SetActive("InteractArea_ClimbOutTank", false);
+			 Entity_SetActive("InteractArea_ClimbIntoTank", false);
+			 
+			 Sound_CreateAtEntity("Sound_TankFire", "02_02_courtyard/tank/tank_fire", "player");
+			 Sound_CreateAtEntity("Sound_TankInternalDebris", "02_02_courtyard/tank/tank_internal_debris", "player");
+			 Music_Stop(5.0f, eMusicPrio_BgAmb);
+			 
+			 ParticleSystem_CreateAtEntity("PS_CannonSmoke", "cannon_smoke.ps", "Area_CannonParticles", false).SetBrightness(0.3f);
+			 ParticleSystem_CreateAtEntity("PS_CannonDust", "dust_medium_long_onehsot.ps", "Area_TankCam", false).SetBrightness(0.5f);
+			 
+			 Voice_StopAll();
+			 //Voice_Play("Scene_TankFall");
+			 
+			 Seq_TankFire("");
+			 
+			 Effect_Rumble_Start(1.f, 1.f, 0.1f, 0.5f);
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnTimer_DoCannonImpactEffects(const tString &in asTimer)
+		 {
+			 tString sPS = msCannonImpactMat == "wood solid" ? "cannon_impact_wood.ps" : "cannon_impact_rock.ps";				 
+			 cParticleSystem @pPS = mBaseObj.GetWorld().CreateParticleSystem("PS_CannonImpact", sPS, cVector3f(1.f), true, false);
+			 pPS.SetWorldPosition(mvCannonImpactPos);
+			 
+			 tString sBreakEnt = Map_GetTimerUserVarString(asTimer);
+			 if (sBreakEnt == "MountainPassGate")
+			 {
+				 Sketchbook_CompleteIdea("smash_gates");
+				 
+				 Entity_SetActive("MountainPassGate", false);
+				 Entity_SetActive("MountainPassGate_Breakable", true);
+				 Prop_SetHealth("MountainPassGate_Breakable", 0.f);
+				 
+				 Map_AddTimer("Timer_BreakMountainPassGate", 0.1f, "OnTimer_BreakMountainPassGate");
+				
+				 Sound_Play("Sound_FireImpact", 1.0f);
+			 }
+			 
+			 mfTurretShakeMul = 10.f;
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 // TEMP: Remove this when we have a proper broken model for the gate
+		 void OnTimer_BreakMountainPassGate(const tString &in asTimer)
+		 {
+			 iLuxEntity@ pEnt = Map_GetEntity("MountainPassGate_Breakable_broken");
+			 for (int i = 0; i < pEnt.GetBodyNum(); ++i)
+			 {
+				 iPhysicsBody@ pBody = pEnt.GetBody(i);
+				 pBody.SetCollideFlags(cLux_GetCurrentMap().GetCollideFlag("+door"));
+				 pBody.AddImpulse(cVector3f(0.f, i * -1.f, (i + 1) * 3.f));
+			 }
+		 }
+	 
+		 //-------------------------------------------------------
+	 
+		 //} END Event B *Fire the FRENCH TANK’S cannon*
+		 
+		 /////////////////////////////////////////
+		 // Event C *Fall through the ground into the Cistern*
+		 //{//////////////////////////////////////
+	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any variables that are only used in Scene 6, Event C here.*/
+	 
+		 //-------------------------------------------------------
+	 
+		 /*Put any functions that are only used in Scene 6, Event C here.*/
+		 
+		 cSequenceStatesData mSeqDataTankFire;
+		 void Seq_TankFire(const tString &in asTimer)
+		 {
+			 Sequence_Begin("Seq_TankFire", mSeqDataTankFire);
+			 if (Sequence_DoStepAndWait(2.f))
+			 {				
+				 ///////////////////////////////
+				 // Disallow interactions
+				 Entity_SetActive("InteractAux_*", false);
+				 Entity_SetActive("InteractArea_*", false);
+				 Entity_SetActive("InteractArea_ClimbOutTankFake", true);
+				 
+				 Entity_SetInteractionDisabled("TurretHatch_*", true);
+				 Entity_SetInteractionDisabled("BreachLever", true);
+				 Entity_SetInteractionDisabled("TurretLever", true);
+				 Entity_SetInteractionDisabled("tank_key_locker_1", true);
+				 
+				 Player_SetAllowCheckBaby(false);
+				 
+				 SwingDoor_SetOpenAmount("TurretHatch_*", 1.f);
+				 
+				 Effect_Rumble_Start(0.4f, 6.5f, 0.5f, 0.5f);
+			 }
+			 else if (Sequence_DoStepAndWait(1.f))
+			 {
+				 if (mlTurretControlStage != -1)
+					 StopTurretControl();
+					 
+				 ParticleSystem_SetActive("PS_TankGround_*", true);
+				 
+				 Effect_Shake_Start(0.008f, 5.f, 1.f, 1.f);				 
+			 }
+			 else if (Sequence_DoStepAndWait(3.5f))
+			 {			 
+				 ///////////////////////////////
+				 // Line up the parts with the anim
+				 Wheel_SetJammed("Turret", false, -1.f, 1.f);
+				 Wheel_SetAngle("Turret", 0.f, true);
+				 
+				 Lever_SetAutoMoveTarget("TurretLever", 1);
+				 Lever_SetAutoMoveEnabled("TurretLever", true);
+				 
+				 Lever_SetStuckState("TurretLever", 0, true);
+				 Lever_SetAutoMoveTarget("TurretLever", 1);
+				 Lever_SetAutoMoveEnabled("TurretLever", true);
+			 }
+			 else if (Sequence_DoStepAndWait(1.f))
+			 {
+				 Seq_TankFall("");
+			 }
+			 Sequence_End();
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnInteract_ClimbOutTankFake(const tString &in asEntity)
+		 {
+			 Player_SetCrouching(false, true, true);
+			 
+			 Entity_SetActive(asEntity, false);
+			 
+			 if (SequenceStates_IsActive("Seq_TankFall") == false)
+			 {
+				Seq_TankFall("");
+				SequenceStates_Stop("Seq_TankFire");
+			 }			 		 
+		 }
+	 
+		 //-------------------------------------------------------
+		 
+		 cSequenceStatesData mSeqDataTankFall;
+		 void Seq_TankFall(const tString &in asTimer)
+		 {
+			 Sequence_Begin("Seq_TankFall", mSeqDataTankFall);
+			 if (Sequence_DoStepAndWait(7.07f))
+			 {
+				 Player_ChangeStateToNormal();
+				 
+				 Item_PutAway(eItemHandlerHand_Left);
+				 Item_PutAway(eItemHandlerHand_Right);
+				 
+				 Entity_SetActive("InteractArea_ClimbOutTankFake", false);				 
+				 Entity_SetActive("Tank", false);
+				 Entity_SetActive("Turret", false);
+				 Entity_SetActive("TurretHatch_*", false);
+				 Entity_SetActive("TurretHatch_*", false);
+				 Entity_SetActive("ft17_*", false);
+				 Entity_SetActive("TurretLever", false);
+				 Entity_SetActive("TurretLockMechanism", false);
+				 Entity_SetActive("Cannon", false);
+				 Entity_SetActive("BreachLever", false);
+				 Entity_SetActive("Breach", false);
+				 Entity_SetActive("FiringMechanism", false);
+				 Entity_SetActive("BlockBox_TankRamp_*", false);
+				 Entity_SetActive("Tank_SandSack_*", false);
+				 Entity_SetActive("sand_tank_pile_*", false);
+				 Entity_SetActive("TurretShelf", false);
+				 Entity_SetActive("ft17_tank_interior_screws_1", false);
+				 Entity_SetActive("workshop_hammer_1", false);
+				 Entity_SetActive("french_wrench_1", false);
+				 
+				 ///////////////////////
+				 // Attach locker
+				 cNode3D@ pSocket = Map_GetEntity("Tank_Animated", eLuxEntityType_Prop).GetMeshEntity().GetSocket("TurretSocket_Locker");
+				 cMatrixf mtxSocket = pSocket.GetWorldMatrix();
+				 mtxSocket.SetRotation(Map_GetEntity("tank_key_locker_1", eLuxEntityType_Prop).GetMatrix().GetRotation());
+				 pSocket.SetWorldMatrix(mtxSocket);
+				 
+				 Entity_RemoveEntityAttachment("tank_key_locker_1");
+				 Entity_AttachToSocket("tank_key_locker_1", "Tank_Animated", "TurretSocket_Locker", true, true);
+				 Prop_SetStaticPhysics("tank_key_locker_1", true);
+				 
+				 Map_AddTimer("Timer_SetupTankFall", 0.3f, "OnTimer_SetupTankFall");
+				 
+				 ///////////////////////
+				 // Play anim
+				 Entity_SetActive("Tank_Animated", true);
+				 Entity_PlayAnimation("Tank_Animated", "tf17_fall_through_ground", 0.3f, false, false, "", false, true);
+				 Entity_SetAnimationMessageEventCallback("Tank_Animated", "OnAnimMessage_Tank", false);
+				 
+				 bool bPlayClimbFallAnim = Entity_IsInPlayerFOV("InteractArea_ClimbOutTankFake");
+				 tString sAnim = bPlayClimbFallAnim ? "player_trying_to_escape_tf17_fall_through_ground" : 
+													  "player_not_trying_to_escape_tf17_fall_through_ground";
+				 tString sEnt = bPlayClimbFallAnim ? "Area_FallCutscene" : "Tank_Animated";
+				 PlayerBody_PlayCutsceneAtEntity(sAnim, sEnt, false, 0.3f);
+				 PlayerBody_SetCutsceneMaxPitch(5.f);
+				 PlayerBody_SetCutsceneMaxYaw(5.f);
+				 
+				 ///////////////////////
+				 // Effects
+				 FearHandler_SetForcedAddFearRate(0.7f, 7.3f, false, -1.f, 1000.f);
+				 
+				 Sound_PlayGui("02_02_courtyard/tank/tank_fall", 1.f);
+				 Sound_PlayGui("02_02_courtyard/tank/tank_fall_stinger", 0.7);
+				 
+				 Visibility_SetAreaActive("VisibilityArea_TankHole", true);
+				 ParticleSystem_SetActive("PS_TankHoleDust_*", true);
+				 
+				 ///////////////////////
+				 // Fall lights
+				 Light_FadeTo("Light_TankFall_1", cColor(0.811,0.679,0.611,0.102), 3.f, 2.f);
+				 Light_FadeBrightnessTo("Light_TankFall_1", 0.05f, 2.f);
+				 
+				 mBaseObj.GetWorld().GetLight("Light_TankFall_1").SetWorldPosition(0.f);
+				 Map_GetEntity("Tank_Animated").GetMeshEntity().GetSocket("TurretSocket_Bottom").AddEntity(mBaseObj.GetWorld().GetLight("Light_TankFall_1"));
+				 
+				 Light_FadeTo("Light_TankFall_2", cColor(0.811,0.679,0.611,0.102), 3.f, 2.f);
+				 Light_FadeBrightnessTo("Light_TankFall_2", 0.1f, 2.f);
+				 
+				 mBaseObj.GetWorld().GetLight("Light_TankFall_2").SetWorldPosition(0.f);
+				 Map_GetEntity("Tank_Animated").GetMeshEntity().GetSocket("TurretSocket_Top").AddEntity(mBaseObj.GetWorld().GetLight("Light_TankFall_2"));
+				 
+				 Map_AddTimer("Timer_DoTankFallRumble", 0.f, "OnTimer_DoTankFallRumble");
+			 }
+			 else if (Sequence_DoStepAndWait(6.5f))
+			 {
+				 FearArea_SetSafe("Fear_1", false);
+				 FearHandler_SetPaused(true);
+				 
+				 Effect_Fade_Out(0.05f);
+				 Sound_FadeGlobalVolume(0.f, 0.05f, eSoundEntryType_World);
+				 
+				 cLux_GetPlayer().GetCharacterBody().SetActive(false);
+				 
+				 Player_SetAllowCheckBaby(true);
+				 
+				 Effect_Rumble_Start(1.f, 0.5f, 0.f, 0.3f);
+				 
+				 Map_AddTimer("Timer_StopTankRumble", 1.f, "OnTimer_StopTankRumble");
+			 }
+			 else if (Sequence_DoStepAndWait(1.f))
+			 {
+				 Map_ChangeMap("02_05_cistern.hpm", "", "", "", true);
+			 }
+			 Sequence_End();
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnTimer_DoTankFallRumble(const tString &in asTimer)
+		 {
+			 Effect_Rumble_Start(0.7f, 1.f, 0.25f, 0.5f);
+			 Map_RestartCurrentTimer(1.f);
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnTimer_StopTankRumble(const tString &in asTimer)
+		 {
+			 Map_RemoveTimer("Timer_DoTankFallRumble");
+			 Effect_Rumble_Stop(-1);
+			 Effect_Shake_FadeOut(-1, 0.1f);
+			 Effect_FOV_Shake_FadeOut(-1, 0.1f);
+		 }
+		 
+		 //-------------------------------------------------------
+		 
+		 void OnTimer_SetupTankFall(const tString &in asTimer)
+		 {
+			 Entity_SetActive("oil_flask_modern_1", false);
+			 Entity_SetActive("FrenchCorpse", false);
+			 Entity_SetActive("FallCorpse", true);
+			 Entity_AttachToSocket("FallCorpse", "Tank_Animated", "TurretSocket_Root", true, false);
+		 }
+		 
+		 //-------------------------------------------------------
+	 
+		 //} END Event C *Fall through the ground into the Cistern*
+	 
+	 //} END SCENE 6
+}

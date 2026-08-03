@@ -1,0 +1,752 @@
+////////////////////////////////////////////////////////
+// Projected UV - Fragment Shader
+//
+//
+////////////////////////////////////////////////////////
+
+@include helper_normal_packing.hpsl
+
+// This contains all constant buffers and chooses the correct one based on MaterialType
+@include helper_type_arguments.hpsl
+	
+@ifdef UseParallax_R || UseParallax_G || UseParallax_B
+	@include helper_parallax.hpsl
+@endif
+
+uniform cTextureBuffer aInstanceBuffer : 15;
+
+////////////////////
+// Material Textures
+@ifdef UseDiffuse_R
+	uniform cTexture2D aDiffuseMap_R : 0;
+@endif
+@ifdef UseSpecular_R
+	uniform cTexture2D aSpecularMap_R : 1;
+@endif
+@ifdef UseNormalMap_R
+	uniform cTexture2D aNormalMap_R : 2;
+@endif
+@ifdef UseParallax_R
+	uniform cTexture2D aHeightMap_R : 3;
+@endif
+
+@ifdef UseDiffuse_G
+	uniform cTexture2D aDiffuseMap_G : 4;
+@endif
+@ifdef UseSpecular_G
+	uniform cTexture2D aSpecularMap_G : 5;
+@endif
+@ifdef UseNormalMap_G
+	uniform cTexture2D aNormalMap_G : 6;
+@endif
+@ifdef UseParallax_G
+	uniform cTexture2D aHeightMap_G : 7;
+@endif
+
+@ifdef UseDiffuse_B
+	uniform cTexture2D aDiffuseMap_B : 8;
+@endif
+@ifdef UseSpecular_B
+	uniform cTexture2D aSpecularMap_B : 9;
+@endif
+@ifdef UseNormalMap_B
+	uniform cTexture2D aNormalMap_B : 10;
+@endif
+@ifdef UseParallax_B
+	uniform cTexture2D aHeightMap_B : 11;
+@endif
+
+@ifdef UseDissolve
+@ifdef UseTextureBuffer
+@else
+	uniform float afDissolveAmount;
+@endif
+	uniform cTexture3D aDissolveMap : 14;
+@endif
+
+//-----------------------------------------------------------------------
+
+cVector4f PlanarProjection(	in cVector2f avUVx, in cVector2f avUVy, in cVector2f avUVz, 
+							in cVector4f avDeltaUVx, in cVector4f avDeltaUVy, in cVector4f avDeltaUVz,
+							in cVector3f avBlendWeight, cTexture2D aTexture)
+{
+	cVector4f vSum = cVector4f(0,0,0,0);
+	if(avBlendWeight.z > 0.0) vSum += sampleGrad(aTexture, avUVz, avDeltaUVz.xy, avDeltaUVz.zw) * avBlendWeight.z;
+	if(avBlendWeight.y > 0.0) vSum += sampleGrad(aTexture,  avUVy, avDeltaUVy.xy, avDeltaUVy.zw) * avBlendWeight.y;
+	if(avBlendWeight.x > 0.0) vSum += sampleGrad(aTexture, avUVx, avDeltaUVx.xy, avDeltaUVx.zw) * avBlendWeight.x;
+
+	return vSum;
+}
+
+//-----------------------------------------------------------------------
+
+@ifdef UseNormalMap_R || UseNormalMap_G || UseNormalMap_B || UseParallax_R || UseParallax_G || UseParallax_B
+
+//-----------------------------------------------------------------------
+
+cVector3f PlanarProjectionNMap(	in cVector2f avUVx, in cVector2f avUVy, in cVector2f avUVz, 
+								in cVector4f avDeltaUVx, in cVector4f avDeltaUVy, in cVector4f avDeltaUVz,
+								in cVector3f avBlendWeight, cTexture2D aTexture)
+{
+	cVector3f vSum = cVector3f(0, 0, 0);
+	
+	if(avBlendWeight.z > 0.0) vSum += UnpackNormalmapYW(sampleGrad(aTexture, avUVz, avDeltaUVz.xy, avDeltaUVz.zw)) * avBlendWeight.z;
+	if(avBlendWeight.y > 0.0) vSum += UnpackNormalmapYW(sampleGrad(aTexture, avUVy, avDeltaUVy.xy, avDeltaUVy.zw)) * avBlendWeight.y;
+	if(avBlendWeight.x > 0.0) vSum += UnpackNormalmapYW(sampleGrad(aTexture, avUVx, avDeltaUVx.xy, avDeltaUVx.zw)) * avBlendWeight.x;
+
+	return vSum;
+}
+
+@endif
+
+//------------------------------------------------
+
+void CotangentFrame(in cVector3f avDeltaView1Perp, in cVector3f avDeltaView2Perp, in cVector2f avTangentUV, in cVector2f avBinormalUV, out cVector3f avTangent, out cVector3f avBinormal)
+{
+	avTangent	=	avDeltaView2Perp * avTangentUV.x + 
+					avDeltaView1Perp * avTangentUV.y;
+	avBinormal	=	avDeltaView2Perp * avBinormalUV.x + 
+					avDeltaView1Perp * avBinormalUV.y;
+			
+	////////////
+	// Construct a scale-invariant frame 
+	float fInvMax = inversesqrt( max( dot(avTangent,avTangent), dot(avBinormal,avBinormal) ) );
+	avTangent = avTangent * fInvMax;
+	avBinormal = avBinormal * fInvMax;
+}
+
+cVector3f GetMaskedWeight(in cVector3f avColorWeight, in cVector3f avColorMask, float afBlendTest)
+{
+	cVector3f vColorWeight = avColorWeight * avColorMask;
+	vColorWeight = max(cVector3f(0.0, 0.0, 0.0), vColorWeight - max(vColorWeight.x, max(vColorWeight.y, vColorWeight.z)) * afBlendTest);
+	return vColorWeight;
+}
+
+//------------------------------------------------
+
+///////////////////////////////
+// Main program
+void main(in cVector4f px_vPosition,
+@ifdef UseUv
+		  in cVector4f px_vTexCoord0,
+@endif
+@ifdef UseNormalUv_R || UseNormalUv_G || UseNormalUv_B
+		  in cVector2f px_vNormalTexCoord,
+@ifdef UseNormalMapping || UseParallax || UseNormalMap_R || UseNormalMap_G || UseNormalMap_B || UseParallax_R || UseParallax_G || UseParallax_B
+		  in cVector3f px_vNormalTangent,
+		  in cVector3f px_vNormalBinormal,
+@endif
+@endif
+@ifdef UseLinearDepth
+		  in float px_fLinearDepth,
+@endif
+@ifdef UseColor
+		  in cVector4f px_vColor,
+@endif
+@ifdef UseDissolve && UseTextureBuffer
+		  in float afDissolveAmount,
+@endif
+@ifdef UseNormals
+		  in cVector3f px_vNormal,
+@endif
+@ifdef UseNormalMap_R || UseNormalMap_G || UseNormalMap_B || UseParallax_R || UseParallax_G || UseParallax_B
+		  in cVector3f px_vViewPos,
+@endif
+		  out cVector4f out_vDiffuse : 0,		//diffuse rgb, translucency a
+		  out cVector4f out_vNormal : 1,		//normal xyz
+		  out cVector4f out_vSpecular : 2,		//spec color rgb, spec power a
+		  out cVector4f out_vDepth : 3)			//depth x
+{
+	@ifdef UseDissolve
+		cVector2f vDissolveCoords = px_vPosition.xy * (1.0/128.0);//128 = size of dissolve texture.
+		float fDissolve = sample(aDissolveMap, cVector3f(vDissolveCoords, 0.625)).w * (255.0 / 256.0) + (0.5 / 256.0);
+		if(afDissolveAmount < fDissolve) discard;
+	@endif
+
+	//////////////////
+	// Setup uv and gradients
+	cVector3f vNormal = normalize(px_vNormal);
+
+	@ifdef UseNormalUv_R || UseNormalUv_G || UseNormalUv_B
+		cVector2f vNormalUV = px_vNormalTexCoord;
+		cVector4f vDeltaNormalUV = cVector4f(dFdx(px_vNormalTexCoord), dFdy(px_vNormalTexCoord));
+	@endif
+
+	@ifdef UseNormalUv_R && UseNormalUv_G && UseNormalUv_B
+		// Skip planar uv calucalations if all of the blend weights use normal
+	@else
+		cVector3f vUVW = px_vTexCoord0.xyz * cVector3f(1, -1, 1); //invert y
+
+		cVector3f vDeltaUVW1 = dFdx( vUVW );
+		cVector3f vDeltaUVW2 = dFdy( vUVW );
+
+		cVector2f vUVy = vUVW.xz;
+		cVector2f vUVz = vUVW.xy;
+		cVector2f vUVx = vUVW.zy;
+
+		cVector4f vDeltaUVx = cVector4f(vDeltaUVW1.zy, vDeltaUVW2.zy);
+		cVector4f vDeltaUVy = cVector4f(vDeltaUVW1.xz, vDeltaUVW2.xz);
+		cVector4f vDeltaUVz = cVector4f(vDeltaUVW1.xy, vDeltaUVW2.xy);
+	@endif
+	
+	////////////////
+	// XYZ and blend weight
+	cVector3f vBlendWeight;
+	vBlendWeight.x = dot(avBlendVecX, vNormal);
+	vBlendWeight.y = dot(avBlendVecY, vNormal);
+	vBlendWeight.z = dot(avBlendVecZ, vNormal);
+
+	vBlendWeight = abs(vBlendWeight);
+	vBlendWeight = max(cVector3f(0.0, 0.0, 0.0), vBlendWeight - max(vBlendWeight.x, max(vBlendWeight.y, vBlendWeight.z)) * afNormalBlendHardness);
+	vBlendWeight /= dot(cVector3f(1.0, 1.0, 1.0), vBlendWeight);
+
+	/////////////////
+	// Color blend
+	cVector3f vColorDirWeight = max(cVector3f(0.0, 0.0, 0.0), mul(a_mtxBlendBand, cVector4f(vNormal, 1.0)).xyz);
+
+	cVector3f vColorWeight = vColorDirWeight * px_vColor.xyz * avBlendMask + 2.0 / 255.0;
+	cVector3f vParallaxMask = cVector3f(0, 0, 0);
+	
+	@ifdef UseParallax_R
+		vParallaxMask.x = 1.0;
+	@endif
+	@ifdef UseParallax_G
+		vParallaxMask.y = 1.0;
+	@endif
+	@ifdef UseParallax_B
+		vParallaxMask.z = 1.0;
+	@endif
+
+	vParallaxMask = GetMaskedWeight(vColorWeight, vParallaxMask, afColorBlendHardness);
+	vParallaxMask /= 1e-5f + dot(cVector3f(1.0, 1.0, 1.0), vParallaxMask);
+
+	@ifdef UseNormalUv_R && UseNormalUv_G && UseNormalUv_B
+		// skip planar normal mapping if all use normal uv
+	@else
+		///////////////
+		// Normal mapping
+		@ifdef UseNormalMap_R || UseNormalMap_G || UseNormalMap_B || UseParallax_R || UseParallax_G || UseParallax_B
+			//////////////////
+			// Caluclate "tangent space"
+			// Get edge vectors of the pixel triangle
+			cVector3f vDeltaView1 = dFdx( px_vViewPos );
+			cVector3f vDeltaView2 = dFdy( px_vViewPos );
+ 
+			// Solve the linear system
+			cVector3f vDeltaView2Perp = cross( vDeltaView2, vNormal );
+			cVector3f vDeltaView1Perp = cross( vNormal, vDeltaView1 );
+
+			@ifdef UseNormalMap_R || UseNormalMap_G || UseNormalMap_B 
+				////////////////
+				// Calucalate tangent space based on blend weights
+				cVector3f px_vTangent, px_vBinormal;
+
+				CotangentFrame(	vDeltaView1Perp, vDeltaView2Perp,
+								cVector2f(	vDeltaUVW1.z * vBlendWeight.x + vDeltaUVW1.x * (vBlendWeight.y + vBlendWeight.z),
+											vDeltaUVW2.z * vBlendWeight.x + vDeltaUVW2.x * (vBlendWeight.y + vBlendWeight.z)),
+								cVector2f(-(vDeltaUVW1.y * (vBlendWeight.x + vBlendWeight.z) + vDeltaUVW1.z * vBlendWeight.y),
+										  -(vDeltaUVW2.y * (vBlendWeight.x + vBlendWeight.z) + vDeltaUVW2.z * vBlendWeight.y)),
+								px_vTangent, px_vBinormal);
+			@endif
+		@endif
+	@endif
+	
+	//////////////////
+	// Parallax
+	cVector3f vTangentEyePosX = cVector3f(0, 0, 0);
+	cVector3f vTangentEyePosY = cVector3f(0, 0, 0);
+	cVector3f vTangentEyePosZ = cVector3f(0, 0, 0);
+	cVector3f vTangentEyePosNormal = cVector3f(0, 0, 0);
+	
+	cVector2f vUVPos = cVector2f(0, 0);
+	
+	@ifdef UseParallax_R || UseParallax_G || UseParallax_B
+		cVector3f vTangent, vBinormal;
+		float fEyeZ = -(dot(px_vViewPos, vNormal));
+
+		@ifdef UseNormalUv_R || UseNormalUv_G || UseNormalUv_B
+			////////////////
+			// Get normal uv tangent pos
+			vTangentEyePosNormal = normalize(cVector3f(dot(px_vViewPos, px_vNormalTangent), -dot(px_vViewPos, px_vNormalBinormal), fEyeZ));
+
+			////////////////
+			// Get world direction and UV to world scale
+			cVector3f vWorldEyeDir = normalize(mul(a_mtxInvView, cVector4f(px_vViewPos, 0.0))).xyz;
+			
+			@ifdef UseNormalUv_R && UseNormalUv_G && UseNormalUv_B
+				// Skip this if all use normal uv
+			@else
+				// Scale the eye direction by the difference in uv and world space to be able to convert between uv space and world space
+				cVector4f vUVWorldScale;
+				vUVWorldScale.x = dot(vDeltaUVW1, vDeltaUVW1);
+				vUVWorldScale.y = dot(vDeltaUVW2, vDeltaUVW2);
+				vUVWorldScale.z = dot(vDeltaNormalUV.xy, vDeltaNormalUV.xy);
+				vUVWorldScale.w = dot(vDeltaNormalUV.zw, vDeltaNormalUV.zw);
+
+				vUVWorldScale = sqrt(vUVWorldScale);
+				vUVWorldScale.xy /= vUVWorldScale.zw;
+
+				vWorldEyeDir *= (vUVWorldScale.x + vUVWorldScale.y) * 0.5;
+			@endif
+		@endif
+		
+		@ifdef UseNormalUv_R && UseNormalUv_G && UseNormalUv_B
+			// skip planar parallax if all use normal uv
+		@else
+			if(vBlendWeight.x > 0.0) 
+			{
+				///////////////
+				// Get tangent space for X uv
+				CotangentFrame(	vDeltaView1Perp, vDeltaView2Perp,
+								cVector2f(vDeltaUVW1.z, vDeltaUVW2.z),
+								cVector2f(vDeltaUVW1.y, vDeltaUVW2.y),
+								vTangent, vBinormal);
+							
+				vTangentEyePosX = cVector3f(dot(px_vViewPos, vTangent), dot(px_vViewPos, vBinormal), fEyeZ);
+			}
+			if(vBlendWeight.y > 0.0)
+			{
+				///////////////
+				// Get tangent space for Y uv
+				CotangentFrame(	vDeltaView1Perp, vDeltaView2Perp,
+								cVector2f( vDeltaUVW1.x, vDeltaUVW2.x),
+								cVector2f( vDeltaUVW1.z, vDeltaUVW2.z),
+								vTangent, vBinormal);
+							
+				vTangentEyePosY = cVector3f(dot(px_vViewPos, vTangent), dot(px_vViewPos, vBinormal), fEyeZ);
+			}
+			if(vBlendWeight.z > 0.0) 
+			{
+				///////////////
+				// Get tangent space for Z uv
+				CotangentFrame(	vDeltaView1Perp, vDeltaView2Perp,
+								cVector2f(vDeltaUVW1.x, vDeltaUVW2.x),
+								cVector2f(vDeltaUVW1.y, vDeltaUVW2.y),
+								vTangent, vBinormal);
+							
+				vTangentEyePosZ = cVector3f(dot(px_vViewPos, vTangent), dot(px_vViewPos, vBinormal), fEyeZ);
+			}
+		@endif
+		
+		//////////////
+		// Get delta uv from each of blend
+		cVector3f vInvTextureScale = 1.0 / avTextureScale;
+		
+		//////////////
+		// Normal uv
+		@ifdef UseNormalUv_R
+			@ifdef UseParallax_R
+				if(vParallaxMask.x > 0.0) 
+				{
+					cVector3f vParallax = GetParallaxUV_Z(aHeightMap_R,3, vNormalUV * avTextureScale.x, vTangentEyePosNormal, cVector2f(avHeightmapScale.x * vParallaxMask.x, 0)) * vInvTextureScale.x;
+					vNormalUV = vParallax.xy;
+
+					@ifdef UseNormalUv_R && UseNormalUv_G && UseNormalUv_B
+						// Projected uv not used, so skip
+					@else
+						// Convert from uv to world and apply to auto uv coords
+						cVector3f vBumpOffset = vParallax.z * vWorldEyeDir;
+
+						vUVy += vBumpOffset.xz;
+						vUVz += vBumpOffset.xy;
+						vUVx += vBumpOffset.zy;
+					@endif
+				}
+			@endif
+		@endif
+		
+		@ifdef UseNormalUv_G
+			@ifdef UseParallax_G
+				if(vParallaxMask.y > 0.0)
+				{
+					cVector3f vParallax = GetParallaxUV_Z(aHeightMap_G,3, vNormalUV * avTextureScale.y, vTangentEyePosNormal, cVector2f(avHeightmapScale.y * vParallaxMask.y, 0)) * vInvTextureScale.y;
+					vNormalUV = vParallax.xy;
+					
+					@ifdef UseNormalUv_R && UseNormalUv_G && UseNormalUv_B
+						// Projected uv not used, so skip
+					@else
+						// Convert from uv to world and apply to auto uv coords
+						cVector3f vBumpOffset = vParallax.z * vWorldEyeDir;
+
+						vUVy += vBumpOffset.xz;
+						vUVz += vBumpOffset.xy;
+						vUVx += vBumpOffset.zy;
+					@endif
+				}
+			@endif
+		@endif
+
+		@ifdef UseNormalUv_B
+			@ifdef UseParallax_B
+				if(vParallaxMask.z > 0.0) 
+				{
+					cVector3f vParallax = GetParallaxUV_Z(aHeightMap_B,3, vNormalUV * avTextureScale.z, vTangentEyePosNormal, cVector2f(avHeightmapScale.z * vParallaxMask.z, 0)) * vInvTextureScale.z;
+					vNormalUV = vParallax.xy;
+
+					@ifdef UseNormalUv_R && UseNormalUv_G && UseNormalUv_B
+						// Projected uv not used, so skip
+					@else
+						// Convert from uv to world and apply to auto uv coords
+						cVector3f vBumpOffset = vParallax.z * vWorldEyeDir;
+
+						vUVy += vBumpOffset.xz;
+						vUVz += vBumpOffset.xy;
+						vUVx += vBumpOffset.zy;
+					@endif
+				}
+			@endif
+		@endif
+
+		/////////////////
+		// Projected uv
+		@ifdef UseParallax_R
+			@ifdef UseNormalUv_R
+			@else
+			if(vParallaxMask.x > 0.0)
+			{
+				if(vBlendWeight.x > 0.0) vUVx = GetParallaxUV(aHeightMap_R,3, vUVx * avTextureScale.x, vTangentEyePosX, cVector2f(avHeightmapScale.x * vBlendWeight.x * vParallaxMask.x, 0)) * vInvTextureScale.x; vUVy.y = vUVx.x;
+				if(vBlendWeight.y > 0.0) vUVy = GetParallaxUV(aHeightMap_R,3, vUVy * avTextureScale.x, vTangentEyePosY, cVector2f(avHeightmapScale.x * vBlendWeight.y * vParallaxMask.x, 0)) * vInvTextureScale.x; vUVz = cVector2f(vUVy.x, vUVx.y);
+				if(vBlendWeight.z > 0.0) vUVz = GetParallaxUV(aHeightMap_R,3, vUVz * avTextureScale.x, vTangentEyePosZ, cVector2f(avHeightmapScale.x * vBlendWeight.z * vParallaxMask.x, 0)) * vInvTextureScale.x; vUVx = cVector2f(vUVy.y, vUVz.y);
+			}
+			@endif
+		@endif
+
+		@ifdef UseParallax_G
+			@ifdef UseNormalUv_G
+			@else
+			if(vParallaxMask.y > 0.0)
+			{
+				if(vBlendWeight.x > 0.0) vUVx = GetParallaxUV(aHeightMap_G,3, vUVx * avTextureScale.y, vTangentEyePosX, cVector2f(avHeightmapScale.y * vBlendWeight.x * vParallaxMask.y, 0)) * vInvTextureScale.y; vUVy.y = vUVx.x;
+				if(vBlendWeight.y > 0.0) vUVy = GetParallaxUV(aHeightMap_G,3, vUVy * avTextureScale.y, vTangentEyePosY, cVector2f(avHeightmapScale.y * vBlendWeight.y * vParallaxMask.y, 0)) * vInvTextureScale.y; vUVz = cVector2f(vUVy.x, vUVx.y);
+				if(vBlendWeight.z > 0.0) vUVz = GetParallaxUV(aHeightMap_G,3, vUVz * avTextureScale.y, vTangentEyePosZ, cVector2f(avHeightmapScale.y * vBlendWeight.z * vParallaxMask.y, 0)) * vInvTextureScale.y; vUVx = cVector2f(vUVy.y, vUVz.y);
+			}
+			@endif
+		@endif
+
+		@ifdef UseParallax_B
+			@ifdef UseNormalUv_B
+			@else
+			if(vParallaxMask.z > 0.0)
+			{
+				if(vBlendWeight.x > 0.0) vUVx = GetParallaxUV(aHeightMap_B,3, vUVx * avTextureScale.z, vTangentEyePosX, cVector2f(avHeightmapScale.z * vBlendWeight.x * vParallaxMask.z, 0)) * vInvTextureScale.z; vUVy.y = vUVx.x;
+				if(vBlendWeight.y > 0.0) vUVy = GetParallaxUV(aHeightMap_B,3, vUVy * avTextureScale.z, vTangentEyePosY, cVector2f(avHeightmapScale.z * vBlendWeight.y * vParallaxMask.z, 0)) * vInvTextureScale.z; vUVz = cVector2f(vUVy.x, vUVx.y);
+				if(vBlendWeight.z > 0.0) vUVz = GetParallaxUV(aHeightMap_B,3, vUVz * avTextureScale.z, vTangentEyePosZ, cVector2f(avHeightmapScale.z * vBlendWeight.z * vParallaxMask.z, 0)) * vInvTextureScale.z; vUVx = cVector2f(vUVy.y, vUVz.y);
+			}
+			@endif
+		@endif
+	@endif
+	
+	///////////////
+	// Texture mask
+	@ifdef UseAlphaMask
+		cVector3f vMask = avBlendMask;
+
+		@ifdef UseDiffuse_R
+			@ifdef UseNormalUv_R
+				cVector4f vDiffuseR = sampleGrad(aDiffuseMap_R, vNormalUV * avTextureScale.x, vDeltaNormalUV.xy * avTextureScale.x, vDeltaNormalUV.zw * avTextureScale.x);
+			@else
+				cVector4f vDiffuseR = PlanarProjection(	vUVx * avTextureScale.x, vUVy * avTextureScale.x, vUVz * avTextureScale.x, 
+														vDeltaUVx * avTextureScale.x, vDeltaUVy * avTextureScale.x, vDeltaUVz * avTextureScale.x, vBlendWeight, aDiffuseMap_R);
+			@endif
+
+			vMask.r = vDiffuseR.a;
+		@endif
+		@ifdef UseDiffuse_G
+			@ifdef UseNormalUv_G
+				cVector4f vDiffuseG = sampleGrad(aDiffuseMap_G, vNormalUV * avTextureScale.y, vDeltaNormalUV.xy * avTextureScale.y, vDeltaNormalUV.zw * avTextureScale.y);
+			@else
+				cVector4f vDiffuseG = PlanarProjection(	vUVx * avTextureScale.y, vUVy * avTextureScale.y, vUVz * avTextureScale.y, 
+														vDeltaUVx * avTextureScale.y, vDeltaUVy * avTextureScale.y, vDeltaUVz * avTextureScale.y, vBlendWeight, aDiffuseMap_G);
+			@endif
+
+			vMask.g = vDiffuseG.a;
+		@endif
+		@ifdef UseDiffuse_B
+			@ifdef UseNormalUv_B
+				cVector4f vDiffuseB = sampleGrad(aDiffuseMap_B, vNormalUV * avTextureScale.z, vDeltaNormalUV.xy * avTextureScale.z, vDeltaNormalUV.zw * avTextureScale.z);
+			@else
+				cVector4f vDiffuseB = PlanarProjection(	vUVx * avTextureScale.z, vUVy * avTextureScale.z, vUVz * avTextureScale.z, 
+														vDeltaUVx * avTextureScale.z, vDeltaUVy * avTextureScale.z, vDeltaUVz * avTextureScale.z, vBlendWeight, aDiffuseMap_B);
+			@endif
+
+			vMask.b = vDiffuseB.a;
+		@endif
+
+		//////////////
+		// Apply texture mask to color weight
+		vColorWeight = (vColorDirWeight * px_vColor.xyz * avBlendMask + 2.0 / 255.0) * (4.0 / 255.0 + vMask);
+	@endif
+	
+	cVector3f vDiffuseMask = GetMaskedWeight(vColorWeight, avDiffuseMask, afColorBlendHardness);
+	cVector3f vSpecularMask = GetMaskedWeight(vColorWeight, avSpecularMask, afColorBlendHardness);
+	
+
+	@ifdef OverlayNormal
+		////////////////
+		// Separate color mask for normal and auto uv
+		cVector3f vMaskNormal = cVector3f(0,0,0);
+		cVector3f vMaskAuto = cVector3f(0,0,0);
+
+		@ifdef UseNormalUv_R
+			vMaskNormal.x = 1;
+		@else
+			vMaskAuto.x = 1;
+		@endif
+		@ifdef UseNormalUv_G
+			vMaskNormal.y = 1;
+		@else
+			vMaskAuto.y = 1;
+		@endif
+		@ifdef UseNormalUv_B
+			vMaskNormal.z = 1;
+		@else
+			vMaskAuto.z = 1;
+		@endif
+
+		cVector3f vNormalMask = GetMaskedWeight(vColorWeight, avNormalMask * vMaskNormal, afColorBlendHardness) + 
+								GetMaskedWeight(vColorWeight, avNormalMask * vMaskAuto, afColorBlendHardness);
+	@else
+		cVector3f vNormalMask = GetMaskedWeight(vColorWeight, avNormalMask, afColorBlendHardness);
+	@endif
+
+	cVector4f vDiffuseColor = cVector4f(0, 0, 0, 0);
+	cVector4f vSpecularColor = cVector4f(0, 0, 0, 0);
+
+	cVector3f vNormalMap = cVector3f(0, 0, 0);
+	cVector3f vNormalUvMap = cVector3f(0, 0, 0);
+
+	////////////////
+	// Red color blend
+	if(vDiffuseMask.x + vNormalMask.x + vSpecularMask.x > 0.0)
+	{
+		@ifdef UseNormalUv_R
+			//////////////////
+			// Normal uv
+			cVector2f vUV = vNormalUV * avTextureScale.x;
+			cVector4f vDeltaUV = vDeltaNormalUV * avTextureScale.x;
+
+			@ifdef UseDiffuse_R
+				@ifdef UseAlphaMask
+					vDiffuseColor += vDiffuseR * vDiffuseMask.x;
+				@else
+					vDiffuseColor += sampleGrad(aDiffuseMap_R, vUV, vDeltaUV.xy, vDeltaUV.zw) * vDiffuseMask.x;
+				@endif
+			@endif
+
+			@ifdef UseSpecular_R
+				vSpecularColor += sampleGrad(aSpecularMap_R, vUV, vDeltaUV.xy, vDeltaUV.zw) * vSpecularMask.x;
+			@endif
+
+			@ifdef UseNormalMap_R
+				cVector3f vNMap = UnpackNormalmapYW(sampleGrad(aNormalMap_R, vUV, vDeltaUV.xy, vDeltaUV.zw));
+				vNormalUvMap += vNMap * vNormalMask.x;
+			@endif
+		@else
+			/////////////////
+			// Planar projection
+			cVector2f vUVLx = vUVx * avTextureScale.x;
+			cVector2f vUVLy = vUVy * avTextureScale.x;
+			cVector2f vUVLz = vUVz * avTextureScale.x;
+
+			cVector4f vDeltaUVLx = vDeltaUVx * avTextureScale.x;
+			cVector4f vDeltaUVLy = vDeltaUVy * avTextureScale.x;
+			cVector4f vDeltaUVLz = vDeltaUVz * avTextureScale.x;
+	
+			@ifdef UseDiffuse_R
+				@ifdef UseAlphaMask
+					vDiffuseColor += vDiffuseR * vDiffuseMask.x;
+				@else
+					vDiffuseColor += PlanarProjection(vUVLx, vUVLy, vUVLz, vDeltaUVLx, vDeltaUVLy, vDeltaUVLz, vBlendWeight, aDiffuseMap_R) * vDiffuseMask.x;
+				@endif
+			@endif
+
+			@ifdef UseSpecular_R
+				vSpecularColor += PlanarProjection(vUVLx, vUVLy, vUVLz, vDeltaUVLx, vDeltaUVLy, vDeltaUVLz, vBlendWeight, aSpecularMap_R) * vSpecularMask.x;
+			@endif
+
+			@ifdef UseNormalMap_R
+				cVector3f vNMap = PlanarProjectionNMap(vUVLx, vUVLy, vUVLz, vDeltaUVLx, vDeltaUVLy, vDeltaUVLz, vBlendWeight, aNormalMap_R);
+				vNormalMap += vNMap * vNormalMask.x;
+			@endif
+		@endif
+	}
+	
+	////////////////
+	// Green color blend
+	if(vDiffuseMask.y + vNormalMask.y + vSpecularMask.y > 0.0)
+	{
+		@ifdef UseNormalUv_G
+			//////////////////
+			// Normal uv
+			cVector2f vUV = vNormalUV * avTextureScale.y;
+			cVector4f vDeltaUV = vDeltaNormalUV * avTextureScale.y;
+
+			@ifdef UseDiffuse_G
+				@ifdef UseAlphaMask
+					vDiffuseColor += vDiffuseG * vDiffuseMask.y;
+				@else
+					vDiffuseColor += sampleGrad(aDiffuseMap_G, vUV, vDeltaUV.xy, vDeltaUV.zw) * vDiffuseMask.y;
+				@endif
+			@endif
+
+			@ifdef UseSpecular_G
+				vSpecularColor += sampleGrad(aSpecularMap_G, vUV, vDeltaUV.xy, vDeltaUV.zw) * vSpecularMask.y;
+			@endif
+
+			@ifdef UseNormalMap_G
+				cVector3f vNMap = UnpackNormalmapYW(sampleGrad(aNormalMap_G, vUV, vDeltaUV.xy, vDeltaUV.zw));
+				vNormalUvMap += vNMap * vNormalMask.y;
+			@endif
+		@else
+			/////////////////
+			// Planar projection
+			cVector2f vUVLx = vUVx * avTextureScale.y;
+			cVector2f vUVLy = vUVy * avTextureScale.y;
+			cVector2f vUVLz = vUVz * avTextureScale.y;
+
+			cVector4f vDeltaUVLx = vDeltaUVx * avTextureScale.y;
+			cVector4f vDeltaUVLy = vDeltaUVy * avTextureScale.y;
+			cVector4f vDeltaUVLz = vDeltaUVz * avTextureScale.y;
+	
+			@ifdef UseDiffuse_G
+				@ifdef UseAlphaMask
+					vDiffuseColor += vDiffuseG * vDiffuseMask.y;
+				@else
+					vDiffuseColor += PlanarProjection(vUVLx, vUVLy, vUVLz, vDeltaUVLx, vDeltaUVLy, vDeltaUVLz, vBlendWeight, aDiffuseMap_G) * vDiffuseMask.y;
+				@endif
+			@endif
+
+			@ifdef UseSpecular_G
+				vSpecularColor += PlanarProjection(vUVLx, vUVLy, vUVLz, vDeltaUVLx, vDeltaUVLy, vDeltaUVLz, vBlendWeight, aSpecularMap_G) * vSpecularMask.y;
+			@endif
+
+			@ifdef UseNormalMap_G
+				cVector3f vNMap = PlanarProjectionNMap(vUVLx, vUVLy, vUVLz, vDeltaUVLx, vDeltaUVLy, vDeltaUVLz, vBlendWeight, aNormalMap_G);
+				vNormalMap += vNMap * vNormalMask.y;
+			@endif
+		@endif
+	}
+
+	////////////////
+	// Blue color blend
+	if(vDiffuseMask.z + vNormalMask.z + vSpecularMask.z > 0.0)
+	{
+		@ifdef UseNormalUv_B
+			//////////////////
+			// Normal uv
+			cVector2f vUV = vNormalUV * avTextureScale.z;
+			cVector4f vDeltaUV = vDeltaNormalUV * avTextureScale.z;
+
+			@ifdef UseDiffuse_B
+				@ifdef UseAlphaMask
+					vDiffuseColor += vDiffuseB * vDiffuseMask.z;
+				@else
+					vDiffuseColor += sampleGrad(aDiffuseMap_B, vUV, vDeltaUV.xy, vDeltaUV.zw) * vDiffuseMask.z;
+				@endif
+			@endif
+
+			@ifdef UseSpecular_B
+				vSpecularColor += sampleGrad(aSpecularMap_B, vUV, vDeltaUV.xy, vDeltaUV.zw) * vSpecularMask.z;
+			@endif
+
+			@ifdef UseNormalMap_B
+				cVector3f vNMap = UnpackNormalmapYW(sampleGrad(aNormalMap_B, vUV, vDeltaUV.xy, vDeltaUV.zw));
+				vNormalUvMap += vNMap * vNormalMask.z;
+			@endif
+		@else
+			///////////////////
+			// Planar uv
+			cVector2f vUVLx = vUVx * avTextureScale.z;
+			cVector2f vUVLy = vUVy * avTextureScale.z;
+			cVector2f vUVLz = vUVz * avTextureScale.z;
+
+			cVector4f vDeltaUVLx = vDeltaUVx * avTextureScale.z;
+			cVector4f vDeltaUVLy = vDeltaUVy * avTextureScale.z;
+			cVector4f vDeltaUVLz = vDeltaUVz * avTextureScale.z;
+	
+			@ifdef UseDiffuse_B
+				@ifdef UseAlphaMask
+					vDiffuseColor += vDiffuseB * vDiffuseMask.z;
+				@else
+					vDiffuseColor += PlanarProjection(vUVLx, vUVLy, vUVLz, vDeltaUVLx, vDeltaUVLy, vDeltaUVLz, vBlendWeight, aDiffuseMap_B) * vDiffuseMask.z;
+				@endif
+			@endif
+
+			@ifdef UseSpecular_B
+				vSpecularColor += PlanarProjection(vUVLx, vUVLy, vUVLz, vDeltaUVLx, vDeltaUVLy, vDeltaUVLz, vBlendWeight, aSpecularMap_B) * vSpecularMask.z;
+			@endif
+			 
+			@ifdef UseNormalMap_B
+				cVector3f vNMap = PlanarProjectionNMap(vUVLx, vUVLy, vUVLz, vDeltaUVLx, vDeltaUVLy, vDeltaUVLz, vBlendWeight, aNormalMap_B);
+				vNormalMap += vNMap * vNormalMask.z;
+			@endif
+		@endif
+	}
+		
+	@ifdef UseNormalMap_R || UseNormalMap_G || UseNormalMap_B 
+		float fNormalWeight = vNormalMask.x + vNormalMask.y + vNormalMask.z;
+		cVector3f vAutoNormal = cVector3f(0, 0, 0);
+		cVector3f vNormalNormal = cVector3f(0, 0, 0);
+
+		@ifdef UseNormalUv_R && UseNormalUv_G && UseNormalUv_B
+			// skip planar normal if not used
+		@else
+			vAutoNormal = vNormalMap.x * px_vTangent + vNormalMap.y * px_vBinormal + vNormalMap.z * vNormal;
+		@endif
+
+		@ifdef UseNormalUv_R || UseNormalUv_G || UseNormalUv_B
+			vNormalNormal = vNormalUvMap.x * px_vNormalTangent + vNormalUvMap.y * px_vNormalBinormal + vNormalUvMap.z * vNormal;
+		@endif
+		
+		@ifdef OverlayNormal
+			////////////
+			// Overlay the auto uv normal onto the normal normal			
+			cVector2f vDiv;
+			vDiv.x = length(vAutoNormal);
+			vDiv.y = length(vNormalNormal);
+			vDiv = 1.0 / (1e-4f + vDiv);
+
+			vAutoNormal *= vDiv.x;
+			vNormalNormal *= vDiv.y;
+
+			cVector3f vWorldNormal = vAutoNormal + vNormalNormal - abs(vNormalNormal) * vAutoNormal;					
+		@else
+			cVector3f vWorldNormal = vAutoNormal + vNormalNormal;
+		@endif
+
+		vNormal = fNormalWeight > 0.0 ? normalize(vWorldNormal) : vNormal;
+	@endif
+
+	//////////////////////////////////
+	//Diffuse color
+	@ifdef UseDiffuse_R || UseDiffuse_G || UseDiffuse_B
+		out_vDiffuse.xyz = vDiffuseColor.xyz / (vDiffuseMask.x + vDiffuseMask.y + vDiffuseMask.z);
+	@else
+		out_vDiffuse.xyz = cVector3f(1, 1, 1);
+	@endif
+
+	out_vDiffuse.w = 0.0;
+
+	// Hack to make sure px_vViewPos and px_vTexCoord0 doens't get optimized away
+	@ifdef UseNormalUv_R && UseNormalUv_G && UseNormalUv_B
+		cVector3f vTemp = px_vViewPos;
+		@ifdef UseUv
+			vTemp += px_vTexCoord0.xyz;
+		@endif
+
+		out_vDiffuse.xyz += vTemp * 0.000000001;
+	@endif
+
+	//////////////////////////////////
+	//Depth
+	out_vNormal.xyz = vNormal;
+	out_vDepth.x = px_fLinearDepth;
+		
+	/////////////////////////////////
+	//Specular
+	@ifdef UseDiffuse_R || UseDiffuse_G || UseDiffuse_B
+		out_vSpecular = vSpecularColor / (vSpecularMask.x + vSpecularMask.y + vSpecularMask.z);
+	@else
+		out_vSpecular = cVector4f(0,0,0,0.1);
+	@endif
+}		

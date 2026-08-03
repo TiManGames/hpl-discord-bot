@@ -1,0 +1,549 @@
+#include "helpers/helper_imgui.hps"
+#include "helpers/helper_modules.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+#include "InputHandler_Types.hps"
+
+//------------------------------------------------------------
+
+// Set to false to allow zoom areas and readables to work without holding interact
+const bool gbReadablesHoldInteract = false;
+
+const tString gsFont_ReadableOverlay = "work_56.fnt";
+const float gfFontSize_Readable = 24;
+const float gfFontSize_ReadableTitle = 28;
+
+const float gReadableBorderSize = 0.05f;
+const float gfReadableScrollingInputTick = 0.1f;
+const float gfReadableFadeTime = 0.5f;
+
+const float gfReadablePromptFontSize = 22.f;
+const float gfReadablePromptFadeTime = 0.2f;
+
+const tString gsReadablePromptViewText = "PromptToggleText";
+const tString gsReadablePromptNextPage = "PromptNextPage";
+const tString gsReadablePromptExit = "PromptExit";
+const tString gsReadablePromptRotate = "PromptRotate";
+
+//------------------------------------------------------------
+
+enum eTextSide
+{
+	eTextSide_None,
+	eTextSide_Front,
+	eTextSide_Back
+}
+
+//------------------------------------------------------------
+
+class cUtility_Readable
+{
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+		mState = eTextSide_None;
+		mfTextAlpha = 0;
+		mfTextFadeTimer=0.0f;
+		mlTextFade=0;
+		mfCalculatedHeight = 0.0f;
+		mlLinesPerPage = 0;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupReading(const tString& in asCategory, const tString& in asFront, const tString& in asBack, const tString& in asTitle = "", const tString& in asLogEntity = "", const tString& in asLogIconFile = "")
+	{
+		msCategory = asCategory;
+		msFront = asFront;
+		msBack = asBack;
+		msTitle = asTitle;
+		mAvailable = eTextSide_None;
+
+		if (asCategory == "" && asFront == "" && asBack == "")
+			return; //Return after setting cat, front and back to avoid carrying over data from previous readables
+					
+		Reset();
+	}
+	
+	//------------------------------------------------------------
+	
+	void StopReading()
+	{
+		mbShowPrompts = false;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetGuiFunction(const tString& in asFunction)
+	{
+		msGuiFunction = asFunction;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetupPrompts(bool abViewText, bool abExit, bool abRotate)
+	{
+		mlPromptNum = 0;
+		
+		if (abViewText) 	++mlPromptNum;
+		if (abExit) 		++mlPromptNum;
+		if (abRotate) 		++mlPromptNum;
+		
+		mbShowPrompts = mlPromptNum > 0;
+		mfPromptFrameTime = 0.f;
+		
+		for (int i = 0; i < mfPromptAlpha.length(); ++i)
+			mfPromptAlpha[i] = 0.f;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool CanShowText()
+	{
+		if (mAvailable==eTextSide_None)
+			return false;
+			
+		if (msCategory==""&&msGuiFunction=="")
+			return false;
+
+		if (mAvailable == eTextSide_Front && (msFront==""&&msGuiFunction==""))
+			return false;
+
+		if (mAvailable == eTextSide_Back && (msBack==""))
+			return false;
+
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetTextAvailable(eTextSide aSide)
+	{
+		mAvailable = aSide;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool ShowText()
+	{
+		if (!CanShowText())
+			return false;
+
+		Reset();
+		
+		mState = mAvailable;
+		mlTextFade=1;		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	void HideText()
+	{		
+		if (mlTextFade==-1)
+			return;
+			
+		mfTextAlpha = 1.0f;
+		mfTextFadeTimer = 0.0f;
+		mlTextFade = -1;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool IsShowingText()
+	{
+		return (mState!=eTextSide_None);
+	}
+	
+	//------------------------------------------------------------
+	
+	bool IsFading()
+	{
+		return (mlTextFade!=0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep)
+	{
+		if (mlTextFade!=0)
+		{
+			mfTextFadeTimer+=afTimeStep;
+			if (mlTextFade>0)
+			{
+				mfTextAlpha = cMath_Min(1.0f, mfTextFadeTimer/gfReadableFadeTime );
+				if (mfTextAlpha==1.0f)
+					mlTextFade=0;
+			}
+			else
+			{
+				mfTextAlpha = cMath_Max(0.0f, 1.0f-(mfTextFadeTimer/gfReadableFadeTime) );
+				if (mfTextAlpha==0.0f)
+				{
+					mlTextFade=0;
+					mState=eTextSide_None;
+				}
+			}
+		}
+		else
+		{
+			mfTextAlpha=1.0f;
+		}
+		
+		if ( (mState!=eTextSide_None) && (mState!=mAvailable) && !IsFading() )
+		{
+			HideText();
+		}
+	}
+		
+	//------------------------------------------------------------
+	
+	bool TextNeedsScrolling()
+	{
+		return false;
+	}
+	
+	void NextPage()
+	{
+		mlPage++;
+	}
+
+	int GetPage()
+	{
+		return mlPage;
+	}
+
+	int GetPageNum()
+	{
+		return mlPageNum;
+	}
+	
+	//------------------------------------------------------------
+	
+	void DrawGui(float afTimeStep)
+	{
+		///////////////////////////////
+		// Scrolling
+		/*mfScrollTimer+=afTimeStep;
+		if (TextNeedsScrolling() && (mfScrollTimer > gfReadableScrollingInputTick))
+		{
+			mfScrollTimer=0.0f;
+			
+			if ( (mlScrollAction==1) && (mfScrollOffset<mfOverlap) )
+			{
+				mfScrollOffset = cMath_Min(mfOverlap, mfScrollOffset+1.0f);
+			}
+			else if ( (mlScrollAction==-1) && (mfScrollOffset>0.0f) )
+			{
+				mfScrollOffset = cMath_Max(0.0f, mfScrollOffset-1.0f);
+			}
+		}*/		
+		
+		///////////////////////////////
+		// Prompts
+		if (mlPromptNum > 0)
+		{
+			/////////////////////
+			// Time
+			mfPromptFrameTime += afTimeStep;	
+			
+			/////////////////////
+			// Setup
+			cVector3f vPos = cVector3f_Zero;
+			vPos.x = -cLux_GetHudVirtualOffset().x;
+			vPos.y = -cLux_GetHudVirtualOffset().y;
+			vPos.z = 0.0f;
+			
+			cVector2f vScreenSize = ImGui_GetSize();
+			cVector2f vSize = vScreenSize;
+
+			vSize.x = vSize.y / 9.f * 16.f;
+			vPos.x -= (vSize.x - vScreenSize.x) / 2.f;
+			
+			cLuxScreenTextFormatParameters formatParams;
+			formatParams.mLabelText.mColorBase = cColor(1.f);
+			formatParams.mLabelText.mFontAlign = eFontAlign_Left;
+			formatParams.mLabelText.mFont.SetFile(FontHandler_GetFont(eFontType_Readable, 56));
+			formatParams.mLabelText.mFont.mvSize = cVector2f(gfReadablePromptFontSize);
+			formatParams.mfIconGamepadHeight = gfReadablePromptFontSize;
+			formatParams.mfIconKeyHeight = gfReadablePromptFontSize;
+			formatParams.mfIconMouseHeight = gfReadablePromptFontSize;
+			
+			bool bShowNextPagePrompt = mState == mAvailable && mlPageNum >= 1 && mlPage != mlPageNum;
+			tString sTextPromp = bShowNextPagePrompt ? gsReadablePromptNextPage : gsReadablePromptViewText;
+			tString[] sPrompts = { sTextPromp, gsReadablePromptExit, gsReadablePromptRotate };
+			
+			bool bGamepad  = cLux_GetInputHandler().GetGamepadWasLastDeviceUsed();
+			
+			/////////////////////
+			// Start group
+			ImGui_GroupBegin(vPos, vSize);
+			ImGui_SetTransCategory("");
+			
+			cVector3f vPromptPos = ImGui_NrmPosGroup(0.75f, 0.8f, 2.f);
+			cVector2f vPromptSize = ImGui_NrmSizeGroup(0.5f, 0.03f);		
+			
+			/////////////////////
+			// Iterate prompts		
+			for (int i = mlPromptNum - 1; i >= 0; --i)
+			{	
+				/////////////////////
+				// Determine category
+				tString sCategory = "ReadablePrompts";
+				if (bGamepad && cLux_HasTranslation("ReadablePromptsGamepad", sPrompts[i]))
+					sCategory = "ReadablePromptsGamepad";
+				
+				/////////////////////
+				// Alpha
+				float fAlphaGoal = mbShowPrompts ? 1.f : 0.f;			
+				if (i == 0 && CanShowText() == false)
+					fAlphaGoal = 0.f;
+				
+				mfPromptAlpha[i] = cMath_IncreaseTo(mfPromptAlpha[i], (1.f / gfReadablePromptFadeTime) * afTimeStep, fAlphaGoal);
+				
+				cColor color = formatParams.mLabelText.mColorBase;
+				color.a = mfPromptAlpha[i];
+				ImGui_SetModColorMul(color);
+				
+				/////////////////////
+				// Parse prompt
+				array<tWString> vCurrentPromptLines;
+				array<cLuxScreenTextIcon@> vCurrentPromptIcons;
+				array<array<int>> vCurrentPromptIconsPerLine;
+				
+				float fLineHeight = 0.f;
+				float fDisplayTime = 0.f;
+				cLux_ParseStringIntoScreenText(cLux_Translate(sCategory, sPrompts[i]), cLux_GetGameHudImGui(), formatParams, vCurrentPromptLines, 
+											   vCurrentPromptIcons, vCurrentPromptIconsPerLine, fLineHeight, fDisplayTime, bGamepad);
+				
+				/////////////////////
+				// If more than one prompt showing, draw it in parts for better spacing
+				int lPromptCount = 0;
+				for (int i = 0; i < mfPromptAlpha.length(); ++i)
+				{
+					if (mfPromptAlpha[i] > 0.f)
+						++lPromptCount;
+				}
+					
+				if (lPromptCount > 1)
+				{
+					tWString sLineOnly = vCurrentPromptLines[0];
+					tWString sSeparator = "-";
+					int lAdd = 1;
+					
+					int lPos = cString_GetFirstStringPosW(sLineOnly, sSeparator);
+					int lLineLength = sLineOnly.length();
+					
+					// simplified chinese fixes
+					if(lPos == -1)
+					{
+						sSeparator = cString_GetDecodedString("[u8212][u8212]");
+						lPos = cString_GetFirstStringPosW(sLineOnly, sSeparator);
+						lAdd++;
+					}
+
+					vCurrentPromptLines[0] = cString_SubW(vCurrentPromptLines[0], 0, lPos);
+
+					sLineOnly = cString_SubW(sLineOnly, lPos + lAdd, lLineLength);
+					//cLux_AddDebugMessage("LINE: "+sLineOnly);
+					
+					cVector3f vSeparatorPos = vPromptPos + ImGui_NrmPosGroup(0.075f, 0.f, 0.f);
+					ImGui_DoLabelExtW(sSeparator, formatParams.mLabelText, vSeparatorPos, vPromptSize);
+				
+					cVector3f vLineOnlyPos = vPromptPos + ImGui_NrmPosGroup(0.09f, 0.f, 0.f);
+					vLineOnlyPos.x += GetFontLengthW(formatParams.mLabelText.mFont, 1, sSeparator);
+					ImGui_DoLabelExtW(sLineOnly, formatParams.mLabelText, vLineOnlyPos, vPromptSize);
+				}
+				
+				/////////////////////
+				// Draw prompt!
+				cLux_DrawScreenText(cLux_GetGameHudImGui(), mfPromptFrameTime, formatParams.mLabelText, vPromptPos, vPromptSize.x, 1.f, 
+									vCurrentPromptLines, vCurrentPromptIcons, vCurrentPromptIconsPerLine);
+									
+				vPromptPos.y -= vPromptSize.y;
+			}		
+			
+			/////////////////////
+			// End group
+			ImGui_ResetModifiers();
+			ImGui_GroupEnd();
+		}
+		
+		///////////////////////////////
+		// Text
+		if (mState != eTextSide_None)
+		{
+			cVector3f vPos = cVector3f_Zero;
+			vPos.x = -cLux_GetHudVirtualOffset().x;
+			vPos.y = -cLux_GetHudVirtualOffset().y;
+			vPos.z = 0.0f;
+			
+			cVector2f vScreenSize = ImGui_GetSize();
+			cVector2f vSize = vScreenSize;
+			
+			if ( (msGuiFunction!="")&&(mState==eTextSide_Front) )
+			{
+				// Adjust so that everything is 16:9
+				vSize.x = vSize.y/9.0f*16.0f;
+				vPos.x-= (vSize.x-vScreenSize.x)/2.0f;
+				
+				ImGui_GroupBegin(vPos, vSize);
+		
+				cLuxMap @pMap = cLux_GetCurrentMap();
+				if(pMap.ScriptPrepare("void " + msGuiFunction + "(float afTimeStep, float afAlpha)" ) )
+				{
+					pMap.SetArgFloat(0, afTimeStep);
+					pMap.SetArgFloat(1, mfTextAlpha);
+					pMap.ScriptExecute();
+				}
+				
+				ImGui_ResetModifiers();
+				ImGui_GroupEnd();
+		
+			}
+			else
+			{
+				ImGui_GroupBegin(vPos, vSize);
+				DrawGuiText(afTimeStep);
+				ImGui_ResetModifiers();
+				ImGui_GroupEnd();
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+
+	void DrawGuiText(float afTimeStep)
+	{
+		ImGui_SetTransCategory(msCategory);
+		
+		cImGuiLabelData titleData;
+		titleData.mFont.mvSize = cVector2f(gfFontSize_ReadableTitle);
+		titleData.mFontAlign = eFontAlign_Center;
+
+		cImGuiTextFrameData textData = ImGui_GetDefaultTextFrame();
+		textData.mbUseBackgroundGfx = false;
+		textData.mFont.SetFile(FontHandler_GetFont(eFontType_Readable, 56));
+		textData.mFont.mvSize = cVector2f(gfFontSize_Readable);
+		textData.mFont.mColor = cColor_White;
+
+		tString sText = msFront;
+		if (mState == eTextSide_Back)
+			sText = msBack;
+				
+		ImGui_GroupBegin( ImGui_NrmPosGroup(cVector3f(0.3f, 0.14f, 0)), ImGui_NrmSizeGroup(cVector2f(0.4f,0.725f)) );
+		
+		float fTextWidth = 1.0f-gReadableBorderSize*2.0f;
+		float fTitleHeight = 0.0f;
+		float fRowSpace = textData.mFont.mvSize.y/4.8f;
+		if (msTitle!="")
+		{
+			fTitleHeight = 0.1f;
+		}
+		if (mfCalculatedHeight==0.0f)
+		{
+			float fMaxHeight = (1.0f-gReadableBorderSize*2.0f-fTitleHeight)*cLux_GetCurrentImGui().GetCurrentGroupSize().y;
+			array<tWString> vRows;
+			GetFontWordWrapRows(textData.mFont, 1, sText, fTextWidth*cLux_GetCurrentImGui().GetCurrentGroupSize().x, vRows);
+			
+			float fTotalHeight = vRows.length()*(textData.mFont.mvSize.y+fRowSpace);
+			cLux_AddDebugMessage("Total: "+fTotalHeight);
+			cLux_AddDebugMessage("Max: "+fMaxHeight);
+			
+			if (fTotalHeight > fMaxHeight)
+			{
+				mlLinesPerPage = fMaxHeight/(textData.mFont.mvSize.y+fRowSpace);
+				fMaxHeight = mlLinesPerPage*(textData.mFont.mvSize.y+fRowSpace); // reduce height to not fit any half-lines
+				mfCalculatedHeight = fMaxHeight/cLux_GetCurrentImGui().GetCurrentGroupSize().y;
+			
+				// Get number of pages
+				mlPage = 0;
+				mlPageNum = int(fTotalHeight/fMaxHeight);
+			}
+			else
+			{
+				mfCalculatedHeight = fTotalHeight/cLux_GetCurrentImGui().GetCurrentGroupSize().y;
+				mlLinesPerPage = vRows.length();
+				
+				mlPage = 0;
+				mlPageNum = 0;
+			}
+		}
+		
+		float fBGHeight = mfCalculatedHeight+gReadableBorderSize*2.0f+fTitleHeight;
+		if(mlPageNum > 0) fBGHeight += (textData.mFont.mvSize.y*2.0f)/cLux_GetCurrentImGui().GetCurrentGroupSize().y;
+		float fYOffset = (1.0f-fBGHeight)*0.5f;
+		
+		///////////////////////////////
+		// Draw background
+		ImGui_DrawReadableBackground(ImGui_NrmPosGroup(cVector3f(0.0f, fYOffset, 0)), 
+									ImGui_NrmSizeGroup(cVector2f(1.0f,fBGHeight)), mfTextAlpha);
+									
+		ImGui_SetModColorMul(cColor(1.0f,1.0f,1.0f,mfTextAlpha));
+		
+		///////////////////////////////
+		// Draw title
+		if (msTitle != "")
+		{
+			ImGui_DoLabelExt(msTitle, titleData, ImGui_NrmPosGroup(cVector3f(0.0f, fYOffset-0.025f, 1)), ImGui_NrmSizeGroup(cVector2f(1.0f,0.2f)), 1.0f);
+		}
+		
+		///////////////////////////////
+		// Draw Text
+		mfScrollOffset = mlPage * mlLinesPerPage;
+		ImGui_DoTextFrameExt(sText, cVector2f_Zero, fRowSpace, mfScrollOffset, textData, 
+			ImGui_NrmPosGroup(cVector3f(gReadableBorderSize, fYOffset+gReadableBorderSize+fTitleHeight, 10.0f)),
+			ImGui_NrmSizeGroup(cVector2f(fTextWidth,mfCalculatedHeight)));
+
+		if(mlPageNum > 0)
+		{
+			////////////
+			// Draw page num
+			ImGui_SetTransCategory("");
+			textData.mFontAlign = eFontAlign_Right;
+			ImGui_DoTextFrameExt("("+(mlPage + 1) + " / " + (mlPageNum + 1)+")", cVector2f_Zero, 5, 0, textData, 
+				ImGui_NrmPosGroup(cVector3f(0, fBGHeight+fYOffset-gReadableBorderSize, 0))-cVector3f(0, textData.mFont.mvSize.y, 0),
+				ImGui_NrmSizeGroup(cVector2f(1.0f - gReadableBorderSize ,0.1)));
+		}
+
+		ImGui_GroupEnd();	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////
+	// Base
+	tString msCategory;
+	tString msFront;
+	tString msBack;
+	tString msTitle;
+	eTextSide mState;
+	eTextSide mAvailable;	
+	tString msGuiFunction;
+	
+	/////////////////////////////
+	// Fading
+	float mfTextAlpha;
+	float mfTextFadeTimer;
+	int mlTextFade;
+	
+	//////////////////////////////////////
+	// Scrolling
+	int mlPageNum = 0;
+	int mlPage = 0;
+	float mfScrollOffset = 0;
+	
+	/////////////////////////////////////
+	// Display
+	float mfCalculatedHeight = 0.0f;
+	int mlLinesPerPage = 0;
+	
+	////////////////////////////////////
+	// Prompts
+	int mlPromptNum = 0;
+	bool mbShowPrompts = false;
+	float mfPromptFrameTime = 0.f;
+	float[] mfPromptAlpha = { 0.f, 0.f, 0.f };
+}
+
+//------------------------------------------------------------

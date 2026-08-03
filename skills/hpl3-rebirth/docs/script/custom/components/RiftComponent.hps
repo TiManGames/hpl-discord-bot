@@ -1,0 +1,985 @@
+#include "interfaces/UserComponent_Interface.hps"
+#include "custom/components/ComponentInterfaces_Custom.hps"
+#include "helpers/helper_items.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_audio.hps"
+
+//---------------------------------------------------
+
+const float gfAmuletStrength = 2.0f;
+const float gfRiftOpenCooldown = 1.4f;
+
+//---------------------------------------------------
+
+class cRiftLightData
+{
+	cRiftLightData() {}
+	cRiftLightData(tID a_id, const cVector3f &in avOrigPos, float afOrigRadius) 
+	{
+		m_id = a_id;
+		mvOrigPos = avOrigPos;
+		mfOrigRadius = afOrigRadius;
+	}
+	
+	float mfPulseCount = 0.f;
+	float mfOrigRadius = 0.f;
+	float mfAmuletMul = 0.f;
+	cVector3f mvOrigPos = 0.f;
+	tID m_id = tID_Invalid;
+	
+	float mfShakeTimer = 0;
+	float mfShakeRadiusMul = 1;
+	float mfShakeBrightnessMul = 1;
+	cVector3f mvShakeTarget = 0;
+}
+
+//---------------------------------------------------
+
+class cRiftDecalData
+{
+	tID m_Id;
+	cColor mOriginalColor;
+	float mfAlpha = 0.0f;
+	bool mbActiveOnOpen = true;
+}
+
+//---------------------------------------------------
+
+class cRiftBillboardData
+{
+	tID m_Id;
+	cColor mOriginalColor;
+	float mfOriginalBrightness = 0.0f;
+	float mfAlpha = 0.0f;
+	float mfAtMaxTime = 0.0f;
+	float mfFadeInTime = 0.0f;
+	bool mbTypeRim = false;
+	bool mbTypeRefraction = false;
+}
+
+//---------------------------------------------------
+
+class cScrRiftComponent : iScrUserComponent, iScrUserComponent_Interface, iScrRiftComponent_Interface
+{
+
+	////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		mfTrackingDist = 0.f;		
+		mlTransitionStage = 0;		
+		mfOpenSpeed = 2.f;
+		mfOpenAmount = 0.f;	
+		mbForceOpen = false;
+		mbForceClose = false;		
+		mvTrackingPoints.resize(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// SETUP
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{		
+		mfTrackingDist = apInstanceVars.GetVarFloat("TrackingDistance", 40.f);
+		
+		mfOpenDist = apInstanceVars.GetVarFloat("OpenDist", 3.f);
+		mfStartOpeningDist = apInstanceVars.GetVarFloat("StartOpenDist", 10.f);
+		
+		tString sOpeningStagesString = apInstanceVars.GetVarString("OpeningStages", "");
+		array<tString> vOpeningStageStrings;
+		cString_GetStringVec(sOpeningStagesString, vOpeningStageStrings, ", ");
+		for (int i = 0; i < vOpeningStageStrings.size(); ++i)
+			mvOpeningStages.push_back(cString_ToFloat(vOpeningStageStrings[i], 0.0f));
+		
+		msStageCallback = apInstanceVars.GetVarString("StageCallback", "");
+		
+		msActivateEntities = apInstanceVars.GetVarString("ActivateEntities", "");
+		msDeactivateEntities = apInstanceVars.GetVarString("DeactivateEntities", "");
+		msActivateDecals = apInstanceVars.GetVarString("ActivateDecals", "");
+		msDeactivateDecals = apInstanceVars.GetVarString("DeactivateDecals", "");
+		msActivateBillboards = apInstanceVars.GetVarString("ActivateBillboards", "");
+		msActivateRimBillboards = apInstanceVars.GetVarString("ActivateRimBillboards", "");
+		msActivateRefractionBillboards = apInstanceVars.GetVarString("ActivateRefractionBillboards", "");
+		msShakingLights = apInstanceVars.GetVarString("ShakingLights", "");	
+		msGuidingLights = apInstanceVars.GetVarString("GuidingLights", "");
+		msRimLights = apInstanceVars.GetVarString("RimLights", "");
+		msFloatingRocks = apInstanceVars.GetVarString("FloatingRocks", "");
+		msTransformEnts = apInstanceVars.GetVarString("TransformEnt", "");		
+		msTransformTarEnts = apInstanceVars.GetVarString("TransformTarEnt", "");
+		msBounds = apInstanceVars.GetVarString("Bounds", "");
+		msTrackingPoints = apInstanceVars.GetVarString("TrackingPoints", "");
+		mfVolumeMul = apInstanceVars.GetVarFloat("VolumeMul",1.0f);
+	}
+	
+	//------------------------------------------------------------
+	
+	void Setup()
+	{	
+		cLuxMap@ pMap = mBaseObj.GetEntity().GetMap();
+		
+		if (msActivateEntities != "") Entity_SetActive(msActivateEntities, false);
+		if (msDeactivateEntities != "") Entity_SetActive(msDeactivateEntities, true);
+		
+		if (msActivateDecals != "")
+		{
+			array<cMeshEntity@> vDecals;
+			Map_GetDecalArray(msActivateDecals, vDecals);
+			for (int i = 0; i < vDecals.size(); ++i)
+			{
+				cMeshEntity@ pDecal = vDecals[i];
+				
+				cRiftDecalData newDecal;
+				newDecal.m_Id = pDecal.GetID();
+				newDecal.mOriginalColor = pDecal.GetDiffuseColorMul();
+				newDecal.mbActiveOnOpen = true;
+				newDecal.mfAlpha = 0;
+				
+				mvDecals.push_back(newDecal);
+			}
+		}
+		
+		if (msDeactivateDecals != "")
+		{
+			array<cMeshEntity@> vDecals;
+			Map_GetDecalArray(msDeactivateDecals, vDecals);
+			for (int i = 0; i < vDecals.size(); ++i)
+			{
+				cMeshEntity@ pDecal = vDecals[i];
+				
+				cRiftDecalData newDecal;
+				newDecal.m_Id = pDecal.GetID();
+				newDecal.mOriginalColor = pDecal.GetDiffuseColorMul();
+				newDecal.mbActiveOnOpen = false;
+				newDecal.mfAlpha = 1;
+				
+				mvDecals.push_back(newDecal);
+			}
+		}
+		
+		if (msActivateBillboards != "")
+		{
+			array<cBillboard@> vBillboards;
+			Map_GetBillboardArray(msActivateBillboards, vBillboards);
+			for (int i = 0; i < vBillboards.size(); ++i)
+			{
+				cBillboard@ pBillboard = vBillboards[i];
+				
+				cRiftBillboardData newBillboard;
+				newBillboard.m_Id = pBillboard.GetID();
+				newBillboard.mOriginalColor = pBillboard.GetColor();
+				newBillboard.mfAlpha = 0;
+				newBillboard.mfOriginalBrightness = pBillboard.GetBrightness();
+				newBillboard.mbTypeRim = false;
+				newBillboard.mbTypeRefraction = false;
+				
+				mvBillboards.push_back(newBillboard);
+			}
+		}
+		
+		if (msActivateRimBillboards != "")
+		{
+			array<cBillboard@> vBillboards;
+			Map_GetBillboardArray(msActivateRimBillboards, vBillboards);
+			for (int i = 0; i < vBillboards.size(); ++i)
+			{
+				cBillboard@ pBillboard = vBillboards[i];
+				
+				cRiftBillboardData newBillboard;
+				newBillboard.m_Id = pBillboard.GetID();
+				newBillboard.mOriginalColor = pBillboard.GetColor();
+				newBillboard.mfAlpha = 0;
+				newBillboard.mfOriginalBrightness = pBillboard.GetBrightness();
+				newBillboard.mbTypeRim = true;
+				newBillboard.mbTypeRefraction = false;
+				
+				mvBillboards.push_back(newBillboard);
+			}
+		}
+		
+		if (msActivateRefractionBillboards != "")
+		{
+			array<cBillboard@> vBillboards;
+			Map_GetBillboardArray(msActivateRefractionBillboards, vBillboards);
+			for (int i = 0; i < vBillboards.size(); ++i)
+			{
+				cBillboard@ pBillboard = vBillboards[i];
+				
+				cRiftBillboardData newBillboard;
+				newBillboard.m_Id = pBillboard.GetID();
+				newBillboard.mOriginalColor = pBillboard.GetColor();
+				newBillboard.mfAlpha = 0;
+				newBillboard.mfOriginalBrightness = pBillboard.GetBrightness();
+				newBillboard.mbTypeRim = false;
+				newBillboard.mbTypeRefraction = true;
+				
+				mvBillboards.push_back(newBillboard);
+			}
+		}
+		
+		if (msShakingLights != "")
+		{
+			array<iLight@> vLights;
+			Map_GetLightArray(msShakingLights, vLights);
+			for (int i = 0; i < vLights.size(); i++)
+			{
+				iLight@ pLight = vLights[i];
+				mvShakingLights.push_back(cRiftLightData(pLight.GetID(), pLight.GetWorldPosition(), pLight.GetRadius()));
+				
+				pLight.SetBrightness(0.f);
+			}
+		}
+		
+		if (msGuidingLights != "")
+		{
+			array<iLight@> vLights;
+			Map_GetLightArray(msGuidingLights, vLights);
+			for (int i = 0; i < vLights.size(); i++)
+			{
+				iLight@ pLight = vLights[i];
+				mvGuidingLights.push_back(cRiftLightData(pLight.GetID(), pLight.GetWorldPosition(), pLight.GetRadius()));
+				
+				pLight.SetBrightness(0.f);
+			}
+		}
+		
+		if (msRimLights != "")
+		{
+			array<iLight@> vLights;
+			Map_GetLightArray(msRimLights, vLights);
+			for (int i = 0; i < vLights.size(); i++)
+			{
+				iLight@ pLight = vLights[i];
+				mvRimLights.push_back(pLight.GetID());
+			}
+		}
+		
+		if (msFloatingRocks != "")
+		{
+			Prop_SetStaticPhysics(msFloatingRocks, true);
+			
+			array<iLuxEntity@> vEnts;
+			Map_GetEntityArray(msFloatingRocks, vEnts);
+			for (int i = 0; i < vEnts.size(); ++i)
+			{
+				iLuxEntity@ pEnt = vEnts[i];
+				mvFloatingRocks.push_back(pEnt.GetID());
+			}
+		}
+		
+		if (msRimLights != "") Light_SetBrightness(msRimLights, 0);
+		
+		if (msTransformEnts != "")
+			pMap.GetEntityArrayID(msTransformEnts, eLuxEntityType_Prop, "", mvTransformEntIds);
+		if (msTransformTarEnts != "")
+			pMap.GetEntityArrayID(msTransformTarEnts, eLuxEntityType_Prop, "", mvTransformTarEntIds);
+		
+		if (msBounds != "")
+		{
+			iLuxEntity@ pBounds = pMap.GetEntityByName(msBounds, eLuxEntityType_Area);
+			if (pBounds !is null) m_idBoundsId = pBounds.GetID();
+		}
+		
+		if (mvTrackingPoints.size() == 0)
+		{
+			mvTrackingPoints.push_back(mBaseObj.GetEntity().GetPosition());
+			
+			if (msTrackingPoints != "")
+			{
+				array<iLuxEntity@> vOpenAreas;
+				pMap.GetEntityArray(msTrackingPoints, eLuxEntityType_Area, "", vOpenAreas);
+				
+				for (int i = 0; i < vOpenAreas.size(); ++i)
+					mvTrackingPoints.push_back(vOpenAreas[i].GetPosition());
+			}
+		}
+		
+		for (int i = 0; i < mvTrackingPoints.size(); ++i)
+		{
+			cVector3f vPoint = mvTrackingPoints[i];
+			
+			cSoundEntity@ pOpenLoop = mBaseObj.GetEntity().GetMap().GetWorld().CreateSoundEntity("RiftClosedLoop_" + mBaseObj.GetEntity().GetName() + "_" + i, "level_entity_shared/portal/darkworld_object", true);
+			pOpenLoop.SetPosition(vPoint);
+			pOpenLoop.SetCustomMinDistance(1);
+			pOpenLoop.SetCustomMaxDistance(mfStartOpeningDist);
+			pOpenLoop.SetUseCustomProperties(true);	
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INTERFACE
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	float GetTrackingDistance()
+	{
+		return mfTrackingDist;
+	}
+	
+	//------------------------------------------------------------
+	
+	float GetOpenAmount()
+	{
+		return mfOpenAmount;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetForceOpen(bool abX)
+	{
+		mbForceOpen = abX;
+		
+		if (mbForceOpen)
+			mbForceClose = false;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetForceOpen()
+	{
+		return mbForceOpen;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetForceClose(bool abX)
+	{
+		mbForceClose = abX;
+		
+		if (mbForceClose) 
+			mbForceOpen = false;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetForceClose()
+	{
+		return mbForceClose;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetAmuletHeld(bool abX)
+	{
+		mbAmuletHeld = abX;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetOpenSpeed(float afX)
+	{
+		mfOpenSpeed = afX;
+	}
+	
+	//------------------------------------------------------------
+	
+	float GetStartOpeningDistance()
+	{
+		return mfStartOpeningDist;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetPlayerIsInside()
+	{
+		bool bInside = false;		
+		cLuxArea@ pBounds = cLux_ID_Area(m_idBoundsId);
+		
+		if (pBounds !is null)
+			bInside = pBounds.CheckCharacterCollision(cLux_GetPlayer().GetCharacterBody(), mBaseObj.GetEntity().GetMap());
+		
+		return bInside;
+	}
+	
+	//------------------------------------------------------------
+	
+	cVector3f GetClosestTrackingPoint()
+	{
+		cVector3f vPoint = 10000.0f; 
+
+		if (mbSetup == false)
+			return vPoint;
+
+		cVector3f vPlayerPos = cLux_GetPlayer().GetCamera().GetPosition();
+		float fMinDistSqr = 10000.f * 10000.f;	
+	
+		for (int i = 0; i < mvTrackingPoints.size(); ++i)
+		{
+			float fDistSqr = (mvTrackingPoints[i] - vPlayerPos).SqrLength();
+			if (fDistSqr < fMinDistSqr)
+			{
+				fMinDistSqr = fDistSqr;
+				vPoint = mvTrackingPoints[i];
+			}
+		}
+		
+		return vPoint;
+	}
+	
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+
+	void Update(float afTimeStep)
+	{		
+		/////////////////////////////
+		// Setup
+		if (mbSetup == false)
+		{
+			Setup();
+			mbSetup = true;
+		}
+		
+		/////////////////////////////
+		// Setup vars
+		iScrRiftHandler_Interface @pHandler = cast<iScrRiftHandler_Interface>(cLux_GetUserModuleFromID(eModuleType_Custom_RiftHandler));
+		bool bIsActiveRift = pHandler.GetActiveRiftId() == mBaseObj.GetEntity().GetID();
+		
+		////////////////////////////
+		// Handle opening
+		float fDistToTar = (GetClosestTrackingPoint() - cLux_GetPlayer().GetCamera().GetPosition()).Length();
+		float fDistanceMul = cMath_Clamp(1.f - (fDistToTar - mfOpenDist) / cMath_Max(mfStartOpeningDist - mfOpenDist, 0.0001f), 0.f, 1.f);
+				
+		float fOpenAmountTar = mbForceOpen ? 1.f : 0.f;
+		if (mbOpen && (GetPlayerIsInside() || mfOpenTime <= gfRiftOpenCooldown)) fOpenAmountTar = 1.0f;
+		else if (mbForceOpen == false && mbForceClose == false && bIsActiveRift) fOpenAmountTar = fDistanceMul;
+				
+		mfOpenAmount = cMath_IncreaseTo(mfOpenAmount, afTimeStep * mfOpenSpeed, fOpenAmountTar);
+		
+		if (mbOpen) mfOpenTime += afTimeStep;
+		else 		mfOpenTime = 0;
+				
+		mfLightDistanceMul = cMath_Easing(eEasing_QuadIn, mfOpenAmount >= 1.0f ? 1.0f : fDistanceMul, 0, 1);
+				
+		////////////////////////////
+		// Handle stage transitions
+		for (int i = 0; i < mvOpeningStages.size(); ++i)
+		{
+			// pause stage transitions to allow effects to play out
+			if (mbOpen && mfOpenTime <= gfRiftOpenCooldown) break;
+			
+			float fThreshold = mvOpeningStages[i];
+			
+			// Go up a stage
+			if (i == mlTransitionStage && mfOpenAmount >= fThreshold)
+			{
+				mlTransitionStage = i + 1;
+				StageCallback(mlTransitionStage, true, mfOpenAmount);
+				
+				// open rift
+				if (mlTransitionStage == mvOpeningStages.size())
+				{
+					mbOpen = true;
+					DoRiftOpenEffects();
+				}
+			}
+			
+			// Go down a stage
+			if (i == (mlTransitionStage - 1) && mfOpenAmount <= (fThreshold - 0.05f))
+			{
+				mlTransitionStage = i;
+				StageCallback(mlTransitionStage, false, mfOpenAmount);
+				
+				// close rift
+				if (mlTransitionStage == mvOpeningStages.size() - 1)
+				{
+					mbOpen = false;
+					DoRiftCloseEffects();
+					cLux_AddDebugMessage("WE CLOSE RIFT " + mfOpenAmount);
+				}
+			}
+		}
+		
+		////////////////////////////
+		// Count
+		if (mfFadingEntityCount > 0.f)
+			mfFadingEntityCount -= afTimeStep;
+			
+		////////////////////////////
+		// Effects	
+		UpdateShakingLights(afTimeStep);
+		UpdateGuidingLights(afTimeStep);
+		UpdateRimLights(afTimeStep);
+		UpdateDecals(afTimeStep);
+		UpdateBillboards(afTimeStep, fDistToTar);
+		UpdateTransformEnts(afTimeStep);
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateShakingLights(float afTimeStep)
+	{
+		for (int i = 0; i < mvShakingLights.size(); i++)
+		{
+			cRiftLightData@ pRiftLight = mvShakingLights[i];
+			iLight@ pLight = cLux_ID_Light(mvShakingLights[i].m_id);
+			if (pLight is null) continue;
+						
+			// periodically move and change brightness and radius
+			pRiftLight.mfShakeTimer -= afTimeStep;
+			if (pRiftLight.mfShakeTimer <= 0)
+			{
+				float fShakeOpenMul = 1.0f + 0.6 * (1.0 - mfOpenAmount);
+				pRiftLight.mfShakeTimer = cMath_RandRectf(0.05, 0.1) * fShakeOpenMul;
+				pRiftLight.mvShakeTarget = mvShakingLights[i].mvOrigPos + cMath_RandRectVector3f(cVector3f_One, cVector3f_One * -1) * 1.2f;
+				pRiftLight.mfShakeRadiusMul = cMath_RandRectf(1.0f, 2.0f);
+				pRiftLight.mfShakeBrightnessMul = cMath_RandRectf(1.0f, 2.0f);
+			}
+			
+			float fShakeSpeed = cMath_Clamp(afTimeStep * 5.0, 0.0f, 1.0f);
+			cVector3f vNewPos = pLight.GetWorldPosition() * (1.0 - fShakeSpeed) + pRiftLight.mvShakeTarget * (fShakeSpeed);
+			pLight.SetPosition(vNewPos);
+			
+			float fRadiusOpenMul = mfOpenAmount >= 1.0f ? 2.0f : 1.0f;
+			float fRadiusTarget = pRiftLight.mfOrigRadius * pRiftLight.mfShakeRadiusMul * fRadiusOpenMul;
+			float fRadiusSpeed = cMath_Clamp(afTimeStep * 5.0, 0.0f, 1.0f);
+			float fNewRadius = pLight.GetRadius() * (1.0f - fRadiusSpeed) + fRadiusTarget * (fRadiusSpeed);
+			pLight.SetRadius(fNewRadius);
+			
+			float fBrightnessAmuletMul = mbAmuletHeld ? 1.0f : 0.0f;
+			float fBrightnessTarget = pLight.GetDefaultBrightness() * mfLightDistanceMul * fBrightnessAmuletMul * pRiftLight.mfShakeBrightnessMul;
+			float fBrightnessSpeed = cMath_Clamp(afTimeStep * 5.0f, 0.0f, 1.0f);
+			float fNewBrightness = pLight.GetBrightness() * (1.0f - fBrightnessSpeed) + fBrightnessTarget * (fBrightnessSpeed);
+			pLight.SetBrightness(fNewBrightness);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateGuidingLights(float afTimeStep)
+	{
+		for (int i = 0; i < mvGuidingLights.size(); i++)
+		{
+			cRiftLightData@ pData = mvGuidingLights[i];
+			iLight@ pLight = cLux_ID_Light(pData.m_id);
+			if (pLight is null) continue;
+			
+			// pulse
+			pData.mfPulseCount += 4.0 * afTimeStep;
+			float fPulseMul = 0.8 + 0.2 * cMath_Sin(pData.mfPulseCount);
+			
+			// amulet increases brightness
+			pData.mfAmuletMul = cMath_IncreaseTo(pData.mfAmuletMul, afTimeStep, mbAmuletHeld ? 1 : 0);
+			float fAmuletMul = cMath_InterpolateLinear(1, gfAmuletStrength, pData.mfAmuletMul);
+			
+			// final brightness
+			float fBrightness = fPulseMul * fAmuletMul * mfLightDistanceMul * pLight.GetDefaultBrightness();
+			pLight.SetBrightness(fBrightness);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateRimLights(float afTimeStep)
+	{
+		for (int i = 0; i < mvRimLights.size(); i++)
+		{
+			iLight@ pLight = cLux_ID_Light(mvRimLights[i]);
+			
+			float fAlphaTarget = 0.0f;
+			float fFadeSpeed = 0.75f;
+			if (mfOpenAmount >= 1.0f)
+			{
+				fFadeSpeed = 20;
+				
+				// fade in
+				float fFadeInDelay = 0.4f;
+				float fFadeInTime = 0.5f;
+				float fFadeInMul = cMath_Clamp((mfOpenTime - fFadeInDelay) / fFadeInTime, 0.0f, 1.0f);
+				fFadeInMul = cMath_Easing(eEasing_QuadIn, fFadeInMul, 0.0f, 1.0f);
+				
+				// after fading in slowly fade back a bit
+				float fAtMaxFadeTime = 0.5f;
+				float fAtMaxFadeMul = 1.0f - cMath_Clamp((mfOpenTime - fFadeInDelay - fFadeInTime) / fAtMaxFadeTime, 0.0f, 1.0f);
+				fAtMaxFadeMul = cMath_Easing(eEasing_SineOut, fAtMaxFadeMul, 0.0f, 1.0f);
+				
+				fAlphaTarget = fFadeInMul * (1.0f + 1.0f * fAtMaxFadeMul);
+			}
+			
+			mfRimLightAlpha = cMath_IncreaseTo(mfRimLightAlpha, fFadeSpeed * afTimeStep, fAlphaTarget);
+			float fNewBrightness = pLight.GetDefaultBrightness() * cMath_Easing(eEasing_SineIn, mfRimLightAlpha);
+			pLight.SetBrightness(fNewBrightness);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateDecals(float afTimeStep)
+	{
+		for (int i = 0; i < mvDecals.size(); ++i)
+		{
+			cRiftDecalData@ pDecalData = mvDecals[i];
+			cMeshEntity@ pDecal = cLux_ID_MeshEntity(pDecalData.m_Id);
+			if (pDecal is null) continue;
+			
+			bool bActive = mfOpenAmount >= 1 == pDecalData.mbActiveOnOpen;
+			pDecalData.mfAlpha = cMath_IncreaseTo(pDecalData.mfAlpha, 2.0f * afTimeStep, bActive ? 1.0f : 0.0f);
+			cColor newColor = pDecalData.mOriginalColor * cMath_Easing(eEasing_SineIn, pDecalData.mfAlpha, 0.0f, 1.0f);
+			pDecal.SetDiffuseColorMul(newColor);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateBillboards(float afTimeStep, float afDistToTar)
+	{
+		for (int i = 0; i < mvBillboards.size(); ++i)
+		{
+			cRiftBillboardData@ pBillboardData = mvBillboards[i];
+			cBillboard@ pBillboard = cLux_ID_Billboard(pBillboardData.m_Id);
+			if (pBillboard is null) continue;
+									
+			float fTargetBrightness = 0;
+			float fFadeSpeed = 0.5;
+			if (mfOpenAmount >= 1)
+			{
+				fFadeSpeed = 10;
+				pBillboardData.mfAtMaxTime += afTimeStep;
+				
+				// fade in
+				float fFadeInTime = 0.75f;
+				float fFadeInMul = cMath_Clamp(pBillboardData.mfAtMaxTime / fFadeInTime, 0.0f, 1.0f);
+				fFadeInMul = cMath_Easing(eEasing_SineIn, fFadeInMul, 0.0f, 1.0f);
+				
+				// after fading in slowly fade back a bit
+				float fMaxFadeTime = 1.0f;
+				float fFinalMaxFadeAlpha = pBillboardData.mbTypeRim ? 0.0f : 0.25f;
+				float fMaxFadeMul = 1.0f - cMath_Clamp((pBillboardData.mfAtMaxTime - fFadeInTime) / fMaxFadeTime, 0.0f, 1.0f) * (1.0f - fFinalMaxFadeAlpha);
+				fMaxFadeMul = cMath_Easing(eEasing_QuadIn, fMaxFadeMul, 0.0f, 1.0f);
+				
+				fTargetBrightness = fFadeInMul < 1.0f ? fFadeInMul : fMaxFadeMul;
+			}
+			else
+			{
+				pBillboardData.mfAtMaxTime = 0;
+			}
+			
+			if (pBillboardData.mbTypeRefraction)
+			{
+				fFadeSpeed = 1.f;
+				float fAlphaMul = cMath_Clamp(afDistToTar / cMath_Max(mfOpenDist + 1.f, 0.0001f), 0.f, 1.f);
+				float fAlphaGoal = mfOpenAmount * fAlphaMul;
+				
+				if (mfFadingEntityCount > 0.f)
+				{
+					fAlphaGoal = 1.f;
+					fFadeSpeed = 2.f;
+				}	
+				
+				pBillboardData.mfAlpha = cMath_IncreaseTo(pBillboardData.mfAlpha, fFadeSpeed * afTimeStep, fAlphaGoal);
+				float fT = cMath_Easing(eEasing_CubicIn, pBillboardData.mfAlpha);
+				
+				cColor color = pBillboardData.mOriginalColor;
+				color.a = fT;
+				pBillboard.SetColor(color);
+			}
+			else
+			{
+				pBillboardData.mfAlpha = cMath_IncreaseTo(pBillboardData.mfAlpha, fFadeSpeed * afTimeStep, fTargetBrightness);
+				float fNewBrightness = pBillboardData.mfOriginalBrightness * pBillboardData.mfAlpha;
+				pBillboard.SetBrightness(fNewBrightness);
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void UpdateTransformEnts(float afTimeStep)
+	{
+		for (int i = 0; i < mvTransformEntIds.size(); i++)
+		{
+			iLuxEntity @pEnt = cLux_ID_Prop(mvTransformEntIds[i]);
+			if (pEnt is null) continue;
+			pEnt.SetActive(true);
+			
+			if (i >= mvTransformTarEntIds.size()) break;
+			iLuxEntity @pTarEnt = cLux_ID_Prop(mvTransformTarEntIds[i]);
+			if (pTarEnt is null) continue;
+			
+			float fTransformTime = cMath_Easing(eEasing_QuartInOut, mfOpenAmount);
+			
+			cVector3f vScale = pEnt.GetOnLoadScale() * (1.f - fTransformTime) + pTarEnt.GetOnLoadScale() * fTransformTime;
+			pEnt.SetMeshScaleMul(vScale);
+			
+			cMatrixf mtxStart = pEnt.GetOnLoadTransform();		
+			cMatrixf mtxGoal = pTarEnt.GetMatrix();	
+			cMatrixf mtxNew = cMath_MatrixSlerp(fTransformTime, mtxStart, mtxGoal, true);
+			pEnt.SetMatrix(mtxNew);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void StageCallback(int alStage, bool abOpen, float afOpenAmount)
+	{
+		cLuxMap@ pMap = mBaseObj.GetEntity().GetMap();
+		tString sMethod = "void  " + msStageCallback + "(const tString &in asRift, int alStage, bool abOpening, float afOpenAmount)";
+		if (pMap.ScriptMethodExists(sMethod) && pMap.ScriptPrepare(sMethod))
+		{
+			tString sRift = mBaseObj.GetEntity().GetName();
+			pMap.SetArgString(0, sRift);
+			pMap.SetArgInt(1, alStage);
+			pMap.SetArgBool(2, abOpen);
+			pMap.SetArgFloat(3, afOpenAmount);
+			pMap.ScriptExecute();
+		}
+	}
+
+	//------------------------------------------------------------
+	
+	void OnSetActive(bool abX) 
+	{
+		cLuxProp@ pProp = cLux_ToProp(mBaseObj.GetEntity());
+		
+		for (int i = 0; i < pProp.GetSoundEntityNum(); i++)
+		{
+			if (abX)	pProp.GetSoundEntity(i).FadeIn(0.f, 0.15f);
+			else		pProp.GetSoundEntity(i).Stop(false);
+		}
+		
+		if (abX)
+		{
+			
+		}
+		else
+		{
+			if (mlConstantShakeID != -1)
+			{
+				Effect_Shake_FadeOut(mlConstantShakeID, 0.5f);
+				mlConstantShakeID = -1;
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// RIFT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void DoRiftOpenEffects()
+	{
+		mBaseObj.Timer_Remove("RiftClose_Entities");
+		mBaseObj.Timer_Add("RiftOpen_Entities", 0.0f, "OnTimer_OpenEntities");
+		
+		mfFadingEntityCount = 1.5f;
+		
+		////////////////
+		// play sounds at all tracking points
+		for (int i = 0; i < mvTrackingPoints.size(); ++i)
+		{
+			cVector3f vPoint = mvTrackingPoints[i];
+			
+			cSoundEntity@ pCloseSound = mBaseObj.GetEntity().GetMap().GetWorld().GetSoundEntity("RiftClose_" + mBaseObj.GetEntity().GetName() + "_" + i);
+			if (pCloseSound !is null) pCloseSound.FadeOut(2);
+			
+			cSoundEntity@ pOpenSound = mBaseObj.GetEntity().GetMap().GetWorld().CreateSoundEntity("RiftOpen_" + mBaseObj.GetEntity().GetName() + "_" + i, "level_entity_shared/portal/portal_open", true);
+			pOpenSound.SetPosition(vPoint);
+			pOpenSound.SetCustomMinDistance(mfOpenDist);
+			pOpenSound.SetCustomMaxDistance(mfStartOpeningDist);
+			pOpenSound.SetUseCustomProperties(true);
+			pOpenSound.FadeVolumeMul(mfVolumeMul,0.0f);
+			
+			cSoundEntity@ pOpenLoop = mBaseObj.GetEntity().GetMap().GetWorld().CreateSoundEntity("RiftOpenLoop_" + mBaseObj.GetEntity().GetName() + "_" + i, "level_entity_shared/portal/portal_open_loop", true);
+			pOpenLoop.SetPosition(vPoint);
+			pOpenLoop.SetCustomMinDistance(mfOpenDist);
+			pOpenLoop.SetCustomMaxDistance(mfStartOpeningDist);
+			pOpenLoop.SetUseCustomProperties(true);
+			pOpenSound.FadeVolumeMul(mfVolumeMul,0.0f);
+
+			cSoundEntity@ pClosedLoop = mBaseObj.GetEntity().GetMap().GetWorld().GetSoundEntity("RiftClosedLoop_" + mBaseObj.GetEntity().GetName() + "_" + i);
+			pClosedLoop.FadeVolumeMul(0, 2);	
+		}
+		
+		Effect_Shake_Start(0.025f, 0.5f, 0.75f, 0.5f);
+		if (mlConstantShakeID == -1) mlConstantShakeID = Effect_Shake_Start(0.002f, -1.f, 0.5f, 0.5f);
+		
+		mvFallingFloatingRocks = mvFloatingRocks;
+		for (int i = 0; i < mvFallingFloatingRocks.size(); ++i)
+		{
+			mBaseObj.Timer_Add("RockFall_" + i, cMath_RandRectf(0.2, 1.5), "OnTimer_ActivateFloatingRock");
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void DoRiftCloseEffects()
+	{
+		mBaseObj.Timer_Remove("RiftOpen_Entities");
+		mBaseObj.Timer_Add("RiftClose_Entities", 0.25f, "OnTimer_CloseEntities");
+		
+		mfFadingEntityCount = 1.75f;
+		
+		////////////////
+		// play sounds at all tracking points
+		for (int i = 0; i < mvTrackingPoints.size(); ++i)
+		{
+			cVector3f vPoint = mvTrackingPoints[i];
+			
+			cSoundEntity@ pOpenLoop = mBaseObj.GetEntity().GetMap().GetWorld().GetSoundEntity("RiftOpenLoop_" + mBaseObj.GetEntity().GetName() + "_" + i);
+			if (pOpenLoop !is null) pOpenLoop.FadeOut(2);
+			
+			cSoundEntity@ pOpenSound = mBaseObj.GetEntity().GetMap().GetWorld().GetSoundEntity("RiftOpen_" + mBaseObj.GetEntity().GetName() + "_" + i);
+			if (pOpenSound !is null) pOpenSound.FadeOut(2);
+			
+			cSoundEntity@ pCloseSound = mBaseObj.GetEntity().GetMap().GetWorld().CreateSoundEntity("RiftClose_" + mBaseObj.GetEntity().GetName() + "_" + i, "level_entity_shared/portal/portal_close", true);
+			pCloseSound.SetPosition(vPoint);
+			pCloseSound.SetCustomMinDistance(mfOpenDist);
+			pCloseSound.SetCustomMaxDistance(mfStartOpeningDist);
+			pCloseSound.SetUseCustomProperties(true);
+			
+			cSoundEntity@ pClosedLoop = mBaseObj.GetEntity().GetMap().GetWorld().GetSoundEntity("RiftClosedLoop_" + mBaseObj.GetEntity().GetName() + "_" + i);
+			pClosedLoop.FadeVolumeMul(mfVolumeMul, 2);
+		}
+		
+		Effect_Shake_Start(0.02f, 0.5f, 0.5f, 0.5f);
+		if (mlConstantShakeID != -1)
+		{
+			Effect_Shake_FadeOut(mlConstantShakeID, 0.5f);
+			mlConstantShakeID = -1;
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnTimer_OpenEntities(uint64 aTimerID)
+	{
+		if (msActivateEntities != "") Prop_SetActiveAndFade(msActivateEntities, true, 0.75f);
+		if (msDeactivateEntities != "") Prop_SetActiveAndFade(msDeactivateEntities, false, 0.75f);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnTimer_CloseEntities(uint64 aTimerID)
+	{
+		if (msActivateEntities != "") Prop_SetActiveAndFade(msActivateEntities, false, 1.5f);
+		if (msDeactivateEntities != "") Prop_SetActiveAndFade(msDeactivateEntities, true, 1.5f);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnTimer_FadeInRimLights(uint64 aTimerID)
+	{
+		if (msRimLights != "") Light_FadeBrightnessToDefault(msRimLights, 0.2f, eEasing_QuadIn);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnTimer_FadeOutRimLights(uint64 aTimerID)
+	{
+		if (msRimLights != "") Light_FadeBrightnessTo(msRimLights, 0, 0.3f, eEasing_SineOut);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnTimer_ActivateFloatingRock(uint64 aTimerID)
+	{
+		int lIndex = cMath_RandRectl(0, mvFallingFloatingRocks.size() - 1);
+		iLuxEntity@ pEnt = cLux_ID_Entity(mvFallingFloatingRocks[lIndex]);
+		mvFallingFloatingRocks.removeAt(lIndex);
+		if (pEnt is null) return;
+		
+		Prop_SetStaticPhysics(pEnt.GetName(), false);
+		Entity_AddImpulse(pEnt.GetName(), cVector3f_Down * 0.25, true, true);
+	}
+	
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// HELPERS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	int mlTransitionStage;
+
+	float mfOpenSpeed;
+	float mfOpenAmount = 0;
+	float mfOpenTime = 0;
+	float mfLightDistanceMul = 0;
+	
+	float mfRimLightAlpha = 0.0f;
+	float mfRimLightAtMaxTime = 0.0f;
+	
+	bool mbOpen = false;
+	bool mbForceOpen;	
+	bool mbForceClose;
+	bool mbAmuletHeld = false;
+	
+	float mfFadingEntityCount = 0.f;
+	
+	int mlConstantShakeID = -1;
+	array<tID> mvFallingFloatingRocks;
+	
+	float mfTrackingDist;
+	
+	float mfOpenDist;
+	float mfStartOpeningDist;
+	
+	bool mbSetup = false;	
+	
+	tString msStageCallback;
+	tString msActivateEntities;
+	tString msDeactivateEntities;
+	tString msActivateDecals;
+	tString msDeactivateDecals;
+	tString msActivateBillboards;
+	tString msActivateRimBillboards;
+	tString msActivateRefractionBillboards;
+	tString msShakingLights;
+	tString msGuidingLights;
+	tString msRimLights;
+	tString msFloatingRocks;
+	tString msTransformEnts;
+	tString msTransformTarEnts;
+	tString msBounds;
+	tString msTrackingPoints;
+	float mfVolumeMul;
+	
+	tID m_idBoundsId;
+	array<cRiftLightData> mvShakingLights;
+	array<cRiftLightData> mvGuidingLights;
+	array<tID> mvRimLights;
+	array<tID> mvFloatingRocks;
+	array<cRiftDecalData> mvDecals;
+	array<cRiftBillboardData> mvBillboards;
+	array<tID> mvTransformEntIds;
+	array<tID> mvTransformTarEntIds;
+	array<float> mvOpeningStages;
+	array<cVector3f> mvTrackingPoints;
+	
+	//------------------------------------------------------------
+}

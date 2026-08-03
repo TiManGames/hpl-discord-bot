@@ -1,0 +1,291 @@
+////////////////////////////////////////////////////////
+// Deferred G-Buffer Solid - Fragment Shader
+//
+//
+////////////////////////////////////////////////////////
+
+@ifdef UseNormalMapping
+	@include helper_normal_packing.hpsl
+@endif
+	
+@ifdef UseEnvMap
+	@include helper_reflection.hpsl
+@endif
+
+@ifdef UseParallax
+	@include helper_parallax.hpsl
+@endif
+
+@ifdef UseLiquid
+	@include helper_liquid_trickle.hpsl
+@endif
+
+// This contains all constant buffers and chooses the correct one based on MaterialType
+@include helper_type_arguments.hpsl
+
+////////////////////
+// Material Textures
+uniform cTexture2D aDiffuseMap : 0;
+
+@ifdef UseNormalMapping
+	uniform cTexture2D aNormalMap : 1;
+@endif
+@ifdef UseSpecular
+	uniform cTexture2D aSpecularMap : 2;
+@endif
+
+uniform cTexture2D aHeightMap : 3;
+
+@ifdef UseEnvMap
+	uniform cTextureCube aEnvMap : 5;
+@endif
+
+@ifdef UseCubeMapAlpha
+	uniform cTexture2D aEnvMapAlphaMap : 6;
+@endif
+
+@ifdef UseAlpha
+	uniform cTexture2D aAlphaMap : 7;
+@endif
+
+@ifdef UseDetailDiffuse
+	uniform cTexture2D aDetailColorMap : 8;
+@endif
+
+@ifdef UseDetailNormal
+	uniform cTexture2D aDetailNormalMap : 9;
+@endif
+
+@ifdef UseTranslucency
+	uniform cTexture2D aTranslucenyMap : 10;
+@endif
+
+@ifdef UseLiquid
+	uniform cTexture2D aLiquidMap : 11;
+@endif
+
+@ifdef UseDissolve
+	uniform cTexture3D aDissolveMap : 14;
+@endif
+
+///////////////////////
+// Instancing
+uniform cTextureBuffer aInstanceBuffer : 15;
+
+//------------------------------------------------
+
+///////////////////////////////
+// Main program
+void main(in cVector4f px_vPosition,
+		  in cVector4f px_vTexCoord0,
+@ifdef UseNormals
+		  in cVector3f px_vNormal,
+@endif
+@ifdef UseNormalMapping || UseLiquid
+		  in cVector3f px_vTangent,
+		  in cVector3f px_vBinormal,
+@endif
+@ifdef UseColor || UseAngleFade
+		  in cVector4f px_vColor,
+@endif
+@ifdef UseLinearDepth || UseSoftParticle
+		  in float px_fLinearDepth,
+@endif
+@ifdef UseEnvMap
+		  in cVector3f px_vVertexPos,
+@endif
+@ifdef UseScrollingNoise
+		  in cVector3f px_vScrollingNoiseCoord,
+@endif
+@ifdef UseParallax
+		  in cVector3f px_vTangentEyePos,
+@endif
+@ifdef UseLiquid
+		  in cVector4f px_vLiquidFade,
+@endif
+@ifdef UseDissolve
+		  in float afDissolveAmount,
+@endif
+		  out cVector4f out_vDiffuse : 0,		//diffuse rgb, translucency a
+		  out cVector4f out_vNormal : 1,		//normal xyz
+		  out cVector2f out_vSpecular_RG : 2,		//spec color rgb, spec power a
+		  out cVector2f out_vSpecular_B_Pow : 3,	//spec color rgb, spec power a
+		  out cVector4f out_vDepth : 4)			//depth x
+{
+	//////////////////////////////////
+	// Get UV coords
+	@ifdef UseParallax
+		cVector2f vTexCoord = GetParallaxUV(aHeightMap,3, px_vTexCoord0.xy, px_vTangentEyePos, avHeightMapScaleAndBias);
+	@else
+		cVector2f vTexCoord = px_vTexCoord0.xy;
+	@endif
+	
+	cVector2f vUVDx = dFdx(px_vTexCoord0.xy);
+	cVector2f vUVDy = dFdy(px_vTexCoord0.xy);
+	
+	//////////////////////////////////
+	// Alpha
+	@ifdef UseDissolve
+		cVector2f vDissolveCoords = px_vPosition.xy * (1.0/128.0);//128 = size of dissolve texture.
+		float fDissolveAlpha = abs(afDissolveAmount);
+		float fDissolveSign = afDissolveAmount < 0.0 ? -1.0 : 1.0;
+
+		float fDissolve = sample(aDissolveMap, cVector3f(vDissolveCoords, abs(afDissolveLayer))).w * (255.0 / 256.0) + (0.5 / 256.0);
+		fDissolve = (afDissolveLayer * fDissolveSign) < 0 ? (1 - fDissolve) : fDissolve; 	// Invert if layer is negative
+
+		@ifdef UseAlpha
+			fDissolveAlpha *= min(sample(aAlphaMap, vTexCoord).w * afAlphaCutoffThreshold, 1.0);
+		@endif
+
+		if(fDissolveAlpha < fDissolve) discard;
+	@elseif UseAlpha
+		float fAlpha = sampleGrad(aAlphaMap, vTexCoord, vUVDx, vUVDy).w * afAlphaCutoffThreshold;
+		if(fAlpha < 1.0) discard;
+	@endif
+	
+	//////////////////////////////////
+	//Detail map fade
+	@ifdef UseDetailDiffuse || UseDetailNormal
+		cVector3f avDetailDiffSpecNrmMul = avDetailWeights;
+		avDetailDiffSpecNrmMul *= clamp(1 - (px_fLinearDepth * afFarPlane-avDetailProperties.x) / avDetailProperties.y, 0.0, 1.0);
+		cVector2f vDetailUvMul = avDetailProperties.zw;
+	@endif
+
+	@ifdef UseLiquid
+		float fLiquidAmount = GetLiquidAmount(aLiquidMap, vTexCoord, vUVDx, vUVDy, px_vLiquidFade.rgb);
+		cVector4f vLiquidNormal = cVector4f(0,0,0,1); 
+
+		@ifdef ShaderModel_4
+		if(fLiquidAmount > 0.0) //Branch if shader model  4
+		{
+		@endif
+			////////////
+			// Get the normal of the liquid	
+			vLiquidNormal = GetLiquidNormal(aLiquidMap, vTexCoord, vUVDx, vUVDy, px_vLiquidFade, afLiquidInvTextureSize);
+		@ifdef ShaderModel_4
+		}
+		@endif
+	@endif
+	
+	//////////////////////////////////
+	//Diffuse color
+	cVector3f vDiffuseColor = sampleGrad(aDiffuseMap, vTexCoord, vUVDx, vUVDy).xyz;
+	
+	//////////////////////////////////////
+	//Detail Color
+	@ifdef UseDetailDiffuse
+		if(avDetailDiffSpecNrmMul.x > 0)
+		{
+			cVector3f vDetailColor = sampleGrad(aDetailColorMap, vTexCoord*vDetailUvMul, vUVDx * vDetailUvMul, vUVDy * vDetailUvMul).xyz - cVector3f(0.5, 0.5, 0.5);
+			vDiffuseColor *= mix(cVector3f(1.0, 1.0, 1.0), vDetailColor*2, avDetailDiffSpecNrmMul.x);
+		}
+	@endif
+	
+	//////////////////////////////////////
+	//Vertex color blend
+	@ifdef UseColor
+		vDiffuseColor *= px_vColor.xyz;
+	@endif
+	
+	//////////////////////////////////
+	//Opacity
+	@ifdef UseTranslucency
+		float fTransluceny = sampleGrad(aTranslucenyMap, vTexCoord, vUVDx, vUVDy).a;
+
+		@ifdef UseSkinShading
+			out_vDiffuse.w = 128.0 / 255.0 + 127.0 / 255.0 * clamp(fTransluceny, 0.0, 1.0);
+		@else
+			out_vDiffuse.w = 0.0 + 127.0 / 255.0 * clamp(fTransluceny, 0.0, 1.0);
+		@endif
+	@else
+		out_vDiffuse.w = 0.0;
+	@endif
+		
+	//////////////////////////////////
+	//Normal
+	@ifdef UseNormalMapping
+		cVector3f vNormal = UnpackNormalmapYW(sampleGrad(aNormalMap,vTexCoord, vUVDx, vUVDy));
+		
+		@ifdef UseDetailNormal
+			if(avDetailDiffSpecNrmMul.z > 0)
+			{
+				cVector3f vNormalDetail = UnpackNormalmapYW(sampleGrad(aDetailNormalMap, vTexCoord*vDetailUvMul, vUVDx * vDetailUvMul, vUVDy * vDetailUvMul));
+
+				// Overlay
+				vNormalDetail = vNormalDetail + vNormal - sign(vNormal) * vNormalDetail * vNormal;
+				vNormal = mix(vNormal, vNormalDetail, avDetailDiffSpecNrmMul.z);				
+			}
+		@endif
+
+		@ifdef UseLiquid
+			vNormal = mix(vLiquidNormal.xyz, vNormal, max(vLiquidNormal.w, step(fLiquidAmount, 0)));
+		@endif
+				
+		cVector3f vScreenNormal = normalize(vNormal.x * px_vTangent + vNormal.y * px_vBinormal + vNormal.z * px_vNormal);
+	@else
+		@ifdef UseLiquid
+			/////////
+			// Fade liquid normal and transform into world space
+			cVector3f vNormal = mix(vLiquidNormal.xyz, cVector3f(0, 0, 1), max(vLiquidNormal.w, step(fLiquidAmount, 0)));
+			cVector3f vScreenNormal = normalize(vNormal.x * px_vTangent + vNormal.y * px_vBinormal + vNormal.z * px_vNormal);
+		@else
+			cVector3f vScreenNormal = normalize(px_vNormal);
+		@endif
+	@endif
+	out_vNormal.xyz = vScreenNormal * 0.5 + 0.5;
+		
+	//////////////////////////////////
+	//Environment Map
+	@ifdef UseEnvMap
+		cVector3f vCameraSpaceEyeVec = normalize(px_vVertexPos);	
+		
+		cVector3f vEnvUv = reflect(vCameraSpaceEyeVec, vScreenNormal);
+		vEnvUv = mul(a_mtxInvView, cVector4f(vEnvUv,0)).xyz;
+					
+		cVector4f vReflectionColor = sample(aEnvMap, vEnvUv);
+	
+		float afEDotN = max(dot(-vCameraSpaceEyeVec, vScreenNormal),0.0);
+		float fFresnel = Fresnel(afEDotN, avFrenselBiasPow.x, avFrenselBiasPow.y);
+		
+		@ifdef UseCubeMapAlpha
+			float fEnvMapAlpha = sample(aEnvMapAlphaMap, vTexCoord).w;
+			vReflectionColor *= fEnvMapAlpha;
+		@endif
+		
+		vDiffuseColor += vReflectionColor.rgb * fFresnel;
+	@endif
+
+	@ifdef UseLiquid
+		vDiffuseColor = BlendWithLiquid(vDiffuseColor, avLiquidColor.rgb, avLiquidColor.a,  fLiquidAmount);
+	@endif
+	
+	//////////////////////////////////
+	//Final Diffuse color
+	out_vDiffuse.xyz = vDiffuseColor;
+	
+	//////////////////////////////////
+	//Depth
+	out_vDepth.x = px_fLinearDepth;
+	
+	/////////////////////////////////
+	//Specular
+	@ifdef UseSpecular
+		cVector4f vSpec = sampleGrad(aSpecularMap, vTexCoord, vUVDx, vUVDy);
+	
+		@ifdef UseDetailDiffuse
+			if(avDetailDiffSpecNrmMul.y > 0)
+			{
+				vSpec.xyz *= mix(cVector3f(1.0, 1.0, 1.0), vDetailColor*2, avDetailDiffSpecNrmMul.y);
+			}
+		@endif
+	@else
+		cVector4f vSpec = cVector4f(0.0, 0.0, 0.0, 0.3);
+	@endif
+
+	@ifdef UseLiquid
+		vSpec = mix(vSpec, avLiquidSpecular, fLiquidAmount * avLiquidColor.a * step(0.0001, dot(avLiquidSpecular, avLiquidSpecular)));
+	@endif
+
+	out_vSpecular_RG = vSpec.rg;
+	out_vSpecular_B_Pow = vSpec.ba;
+}		

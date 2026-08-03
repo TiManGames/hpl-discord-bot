@@ -1,0 +1,830 @@
+#include "player/PlayerState_Interact.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_player.hps"
+#include "utilities/Utility_ModEventTracker.hps"
+
+/////////////////////////////////////////
+// SETTINGS
+/////////////////////////////////////////
+
+//------------------------------------------------------------
+
+const float gfWalkMaxSpeed = 2.5f;
+const float gfWalkForce = 100.0f;
+	
+const float gfRunMaxSpeed = 3.5f;
+const float gfRunForce = 150.0f;
+	
+const float gfCrouchMaxSpeed = 1.5f;
+const float gfCrouchForce = 100.0f;
+	
+const float gfYawRange = (50.0f / 360.0f) * cMath_PiMul2;
+const float gfPitchRange = (20.0f / 360.0f) * cMath_PiMul2;
+
+const float gfMaxMass = 30.f;
+const float gfMaxForce = 1000.f;
+
+//------------------------------------------------------------
+
+class cScrPlayerState_Interact_Push : iScrPlayerState_Interact, iScrPlayerState_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		iScrPlayerState_Interact::Init();
+		
+		mVelocityPid.SetErrorNum(20);
+		mVelocityPid.p = 12;
+		mVelocityPid.i = 0;
+		mVelocityPid.d = 0.2;
+		
+		mLookPushPid.SetErrorNum(20);
+		mLookPushPid.p = 10;
+		mLookPushPid.i = 0;
+		mLookPushPid.d = 4;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// USER SETTINGS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void LoadUserConfig() override
+	{
+		iScrPlayerState_Interact::LoadUserConfig();
+	}
+	
+	void SaveUserConfig() override
+	{
+		iScrPlayerState_Interact::SaveUserConfig();
+	}	
+		
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ENTER MAP
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap)
+	{
+	
+	}
+	void OnMapLeave(cLuxMap @apMap)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void CreateWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	void DestroyWorldEntities(cLuxMap @apMap)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL FUNCTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupPush()
+	{
+		////////////////////////////////
+		// Get basic params & setup
+		SetupInteractVars();
+				
+		////////////////////////////////
+		// Get specific params
+		mbPushAtPoint =	cScript_GetGlobalArgBool(3); 
+		mfForceMul = cScript_GetGlobalArgFloat(4);
+		mfThrowImpulse = cScript_GetGlobalArgFloat(5);
+		mbLookPushActive =	cScript_GetGlobalArgBool(6);
+		mfMaxPlayerSpeedMul = cScript_GetGlobalArgFloat(7);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnEnterState(int alPrevStateId)
+	{
+		EnterInteractState(alPrevStateId);
+		
+		/////////////////////////////////
+		//Set up variables
+		ClearMoveVars();
+
+		mLookPushPid.Reset();
+		mVelocityPid.Reset();
+		
+		mvPushDir = 0.f;
+		mfMaxPlayerSpeed = 0.f;
+		mfPrevSpeed = 0.f;
+		mvPrevPushDir = 0.f;
+		mvLastForceApplied = 0.f;
+		
+		iPhysicsBody@ pBody = cLux_ID_Body(mBodyID);
+		iCharacterBody@ pCharBody = mBaseObj.mpPlayer.GetCharacterBody();
+		cCamera@ pCam = mBaseObj.mpPlayer.GetCamera();
+		
+		/////////////////////////////////
+		// Body
+		pBody.SetAutoDisable(false);
+		
+		/////////////////////////////////
+		//Set up camera
+		mvYawLimits.x = pCharBody.GetYaw() - gfYawRange;
+		mvYawLimits.y = pCharBody.GetYaw() + gfYawRange;
+		mvPitchLimits.x = pCam.GetPitch() - gfPitchRange;
+		mvPitchLimits.y = pCam.GetPitch() + gfPitchRange;
+
+		/////////////////////////////////
+		// Calculate distance and local attach pos
+		float fDist = cMath_Vector3Dist(mvFocusPos, pCam.GetPosition());
+		mfInteractDist = fDist;		
+		
+		cVector3f vAttachPos = pCam.GetPosition() + pCam.GetForward() * fDist;
+		cMatrixf mtxInvWorld = cMath_MatrixInverse(pBody.GetLocalMatrix());
+		mvLocalAttachPos = cMath_MatrixMul(mtxInvWorld, vAttachPos);	
+		
+		fDist = cMath_Vector3Dist(pCharBody.GetFeetPosition(), vAttachPos);
+		mfMaxAttachPointDist = fDist * 1.2f + 0.3f;
+		
+		/////////////////////////////////
+		//Movestate
+		mBaseObj.mpPlayer.GetCurrentMoveState().SetAutoUpdateSpeedSettings(false);
+		mModEvent_PushHeavy.Reset();
+		
+		cScript_SetGlobalArgBool(0, false);
+		cScript_RunGlobalFunc("LuxPlayer", "", "_Global_SetCanRun");
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnLeaveState(int alNextStateId)
+	{
+		LeaveInteractState();
+		
+		/////////////////////////////////
+		// Body
+		iPhysicsBody@ pBody = cLux_ID_Body(mBodyID);
+		if (pBody !is null)
+		{
+			pBody.SetAutoDisable(true);
+			pBody.SetThrownByPlayer(true);
+			cScript_RunGlobalFunc("LuxPlayer", "", "_Global_ResetTimeSinceThrow");
+		}
+		
+		///////////////////////
+		// Camera		
+		float fPrevLookSpeedMul = Player_GetLookSpeedMulTarget();
+		Player_SetLookSpeedMul(mfLookSpeedMul);
+		Player_FadeLookSpeedMulTo(fPrevLookSpeedMul, 0.5f);
+
+		///////////////////////
+		// General
+		ResetPropInteractVars();		
+		
+		/////////////////////////////////
+		// Movestate
+		mBaseObj.mpPlayer.GetCurrentMoveState().SetAutoUpdateSpeedSettings(true);
+		
+		cScript_SetGlobalArgBool(0, true);
+		cScript_RunGlobalFunc("LuxPlayer", "", "_Global_SetCanRun");
+	}
+	
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep)
+	{
+		if (CheckShouldUpdate()==false) return;
+		
+		//////////////
+		// Hints
+		UpdateHints(afTimeStep);
+		
+		//////////////
+		// Check so interact is still pressed
+		if (mbToggleModeActive==false)
+		{
+			if (mbCanLeaveState && cInput_IsTriggered(eAction_Interact)==false)
+			{
+				mBaseObj.mpPlayer.ChangeState(mlPreviousState);					
+				return;
+			}
+		}
+		
+		//////////////
+		// Show no crosshair!
+		Player_SetCrossHairState(eCrossHairState_None);
+	}
+	
+	//------------------------------------------------------------
+	
+	void PhysicsUpdate(float afTimeStep)
+	{		
+		if (CheckShouldUpdate()==false) return;
+		
+		/////////////////////////////
+		//Set up variables
+		iPhysicsWorld@ pPhysicsWorld = cLux_GetCurrentMap().GetPhysicsWorld();
+		iCharacterBody@ pCharBody = mBaseObj.mpPlayer.GetCharacterBody();
+		iPhysicsBody@ pBody = cLux_ID_Body(mBodyID);
+		cCamera@ pCam = mBaseObj.mpPlayer.GetCamera();
+
+		///////////////////////////////////////
+		// Get the attach point
+		cVector3f vAttachPos = cMath_MatrixMul(pBody.GetLocalMatrix(), mvLocalAttachPos);
+		
+		// Move the attach point towards the body center if it shouldn't push at point
+		if (mbLookPushActive && mbPushAtPoint == false && pBody.GetLinearVelocity().SqrLength() > 1.f)
+			mvLocalAttachPos = mvLocalAttachPos * (1.f - afTimeStep) + cVector3f(0.f) * afTimeStep;		
+
+		///////////////////////////////////////
+		// Check so not too far away from body
+		float fDistance = cMath_Vector3Dist(pCharBody.GetFeetPosition(), vAttachPos);
+		if (mbCanLeaveState && fDistance > mfMaxAttachPointDist)
+		{
+			mBaseObj.mpPlayer.ChangeState(mlPreviousState);
+			return;
+		}
+		
+		///////////////////////////////////////
+		// Check so not right above/below prop
+		cVector3f vDirToAttachPos = cMath_Vector3Normalize(vAttachPos - pCam.GetPosition());
+		float fDot = cMath_Abs(cMath_Vector3Dot(vDirToAttachPos, cVector3f_Up));
+		if (mbCanLeaveState && fDot >= 0.999f)
+		{
+			mBaseObj.mpPlayer.ChangeState(mlPreviousState);
+			return;
+		}
+
+		///////////////////////////////////////
+		// Get the direction to move in
+		cVector3f[] vDirAdd = { pCharBody.GetForward(), pCharBody.GetRight() };
+		mvPushDir = 0.f;
+		for(int i = 0; i < 2; ++i)
+		{
+			if (mbMoving[i]) mvPushDir += vDirAdd[i] * mfTotalMoveMul[i];
+		}
+		
+		bool bMoving = mvPushDir != 0.f;
+		
+		///////////////////////////
+		// Look push
+		cVector3f vForceApplied = 0.f;
+		mvPushDir.Normalize();
+		
+		if (mbLookPushActive)
+		{	
+			cVector3f vWantedPos = pCam.GetPosition() + pCam.GetForward() * mfInteractDist;			
+			cVector3f vPosError = vWantedPos - vAttachPos;			
+			vPosError.y = 0.f;
+			
+			float fMass = pBody.GetMass();
+			float fMassMul = cMath_Clamp(1.f - (fMass / gfMaxMass) * 0.5f, 0.f, 1.f);
+			
+			cVector3f vForce = mLookPushPid.Output(vPosError, afTimeStep) * fMass * fMassMul;
+			vForce = cMath_Vector3MaxLength(vForce, gfMaxForce);
+			
+			if (mbPushAtPoint)
+				pBody.AddForceAtPosition(vForce, vAttachPos);
+			else
+				pBody.AddForce(vForce);
+				
+			vForceApplied += vForce;
+			
+			///////////////////////////////
+			// Update push dir to look dir!
+			if (bMoving == false)
+			{
+				cVector3f vLookDir = pCam.GetUp() * -mvLookAdd.y + pCam.GetRight() * mvLookAdd.x;
+				vLookDir.y = 0.f;
+				mvLookAdd = 0.f;
+				mvPushDir = cMath_Vector3Normalize(vLookDir);
+			}	
+		}			
+		
+		///////////////////////////////////////
+		// Get max speed and force
+		float fMaxSpeed = gfWalkMaxSpeed;
+		float fPushForce = gfWalkForce;
+		if (cLux_GetPlayer().GetCurrentMoveStateId() == eMoveState_Normal)
+		{
+			if (Player_GetRunning())
+			{
+				fMaxSpeed = gfRunMaxSpeed;
+				fPushForce = gfRunForce;
+			}
+			else if (Player_GetCrouching())
+			{
+				fMaxSpeed = gfCrouchMaxSpeed;
+				fPushForce = gfCrouchForce;
+			}
+		}
+		
+		// Special max speed if look pushing
+		if (mbLookPushActive)
+		{
+			float fMassMul = 1.f - cMath_Clamp((pBody.GetMass() / gfMaxMass), 0.f, 0.95f);
+			fMaxSpeed = gfWalkMaxSpeed * fMassMul * mfForceMul;
+			
+			// Adjust max speed if high ang vel (like a rolling barrel)
+			float fLinSqrLength = pBody.GetAngularVelocity().SqrLength();
+			float fAngSqrLength = pBody.GetLinearVelocity().SqrLength();
+			
+			if (fLinSqrLength > fAngSqrLength && fLinSqrLength > 0.5f * 0.5f)
+				fMaxSpeed = cMath_Clamp(gfWalkMaxSpeed * fMassMul * 1.4f, 0.05f, gfWalkMaxSpeed);
+		}
+		
+		///////////////////////////
+		// Movement push
+		cVector3f vBodyVel = mbPushAtPoint ?  pBody.GetVelocityAtPosition(vAttachPos) : pBody.GetLinearVelocity();
+		cVector3f vVelInDir = mvPushDir * cMath_Vector3Dot(mvPushDir, vBodyVel);
+		
+		if (bMoving)
+		{			
+			///////////////////////////////////////
+			// Update the box force			
+			if (mbLookPushActive == false)
+			{
+				cVector3f vVelError = vVelInDir - vBodyVel;
+				
+				vVelError.y = 0.f;
+				
+				cVector3f vCorrectForce = mVelocityPid.Output(vVelError, afTimeStep) * pBody.GetMass();
+				vCorrectForce = cMath_Vector3MaxLength(vCorrectForce, gfMaxForce);
+
+				if (mbPushAtPoint)
+					pBody.AddForceAtPosition(vCorrectForce, vAttachPos);    
+				else
+					pBody.AddForce(vCorrectForce);
+			}
+			
+			if (vVelInDir.Length() < fMaxSpeed * mfMaxPlayerSpeedMul || cMath_Vector3Dot(vVelInDir, mvPushDir) < 0.f)
+			{
+				float fMassMul = cMath_Clamp((pBody.GetMass() / gfMaxMass) * 1.5f, 0.1f, 1.f);
+				cVector3f vForce = mvPushDir * fPushForce * mfForceMul * fMassMul;				
+				vForce = cMath_Vector3MaxLength(vForce, gfMaxForce);
+
+				if(mbPushAtPoint)
+					pBody.AddForceAtPosition(vForce, vAttachPos);
+				else
+					pBody.AddForce(vForce);
+					
+				vForceApplied += vForce;
+			}
+		}
+		
+		mvLastForceApplied = vForceApplied;
+		
+		//////////////////////////////////////////
+		// Check mod event signal	
+		if (vBodyVel.SqrLength() > 0.1f)
+		{
+			float fEffort = vForceApplied.Length();
+			mModEvent_PushHeavy.Update(afTimeStep, fEffort);
+		}
+		
+		///////////////////////////
+		// Special speed handling if look pushing
+		bool bProjectSpeed = false;			
+		if (mbLookPushActive)
+		{				
+			if (bMoving)	mfMaxPlayerSpeed += afTimeStep * 5.f;
+			else			mfMaxPlayerSpeed = Player_GetSpeed();
+
+			///////////////////////////
+			// Check if move dir changed
+			for (int i = 0; i < 2; i++)
+			{
+				if (cMath_Sign(mfPrevTotalMoveMul[i]) != cMath_Sign(mfTotalMoveMul[i]))
+					mfMoveDirChangeCount = 0.25f;
+			
+				mfPrevTotalMoveMul[i] = mfTotalMoveMul[i];
+			}
+		
+			if (mfMoveDirChangeCount > 0.f)
+				mfMoveDirChangeCount -= afTimeStep;
+			
+			///////////////////////////
+			// Match speed with body vel if sudden stop
+			float fSpeed = vVelInDir.Length();
+			
+			if (bMoving && fSpeed < mfPrevSpeed * 0.7f && mfMoveDirChangeCount <= 0.f)
+				bProjectSpeed = true;
+			
+			if (bProjectSpeed == false || bMoving == false || cMath_Vector3Angle(mvPrevPushDir, mvPushDir) > 0.25f)
+			{
+				mfPrevSpeed = fSpeed;	
+				mvPrevPushDir = mvPushDir;	
+			}		
+		
+			mfMaxPlayerSpeed = cMath_Clamp(mfMaxPlayerSpeed, 0.f, fMaxSpeed);
+		}
+		
+		if (bMoving)
+		{
+			///////////////////////////////////////
+			// Check if the body will collide with the player!
+			cCollideData collideData; collideData.SetMaxSize(1);
+			cMatrixf mtxNextTransform = cMath_MatrixMul(cMath_MatrixTranslate(mvPushDir * 0.1f), pBody.GetLocalMatrix());
+			
+			bool bWillCollideWithPlayer = pPhysicsWorld.CheckShapeCollision(
+												pCharBody.GetCurrentShape(), cMath_MatrixTranslate(pCharBody.GetPosition()),
+												pBody.GetShape(), mtxNextTransform,
+												collideData, 1, false);
+												
+			/////////////////////
+			// TEMP fix to stop things getting stuck when the player is moving forward
+			if (pCharBody.GetMoveSpeed(eCharDir_Forward) > 0.f)
+				bWillCollideWithPlayer = false;
+
+			///////////////////////////////////////
+			// Get the max right and forward speeds allowed.
+			// Skip it if the body is about to collide with player!
+			// Note: This will only work if move state is update before the player state!
+			if (bWillCollideWithPlayer == false || mbLookPushActive)
+			{	
+				float fSpeed = 0.f;
+				
+				for (int i = 0; i < 2; ++i)
+				{	
+					if (mbLookPushActive && bProjectSpeed == false)
+					{
+						fSpeed = mfMaxPlayerSpeed;
+					}
+					else
+					{
+						fSpeed = cMath_Vector3Project(vBodyVel, vDirAdd[i]).Length();
+						fSpeed = cMath_Min(fSpeed, fMaxSpeed);
+					}
+			
+					pCharBody.SetMaxPositiveMoveSpeed(eCharDir(i), fSpeed);
+					pCharBody.SetMaxNegativeMoveSpeed(eCharDir(i), -fSpeed);
+				}
+			}
+		}
+		
+		///////////////////////////
+		// Update look speed
+		{			
+			float fMass = pBody.GetMass();
+			float fSpeed = vBodyVel.Length();
+			
+			float fMassMul = 1.f - cMath_Clamp((fMass / gfMaxMass) * 1.25f, 0.f, 0.95f);
+			float fVelMul = cMath_Clamp(fSpeed / (7.f * fMassMul), 0.f, 1.f);
+			
+			float fLookMul = fMassMul - (fVelMul * fMassMul);
+			mfLookSpeedMul = cMath_Clamp(fLookMul, 0.05f, 1.f);
+		}
+		
+		///////////////////////////
+		// Update camera limits
+		if (mbLookPushActive)
+		{
+			cVector3f vDirToAttachPos = cMath_Vector3Normalize(vAttachPos - pCam.GetPosition());
+			cVector3f vAngles = cMath_GetAngleFromPoints3D(0.f, vDirToAttachPos);
+			
+			float fYaw = pCharBody.GetYaw();
+			float fYawDiff = cMath_GetAngleDistanceRad(fYaw, vAngles.y);
+			float fYawGoal = fYaw + fYawDiff;
+			float fYawRange = gfYawRange * 1.5f;
+			
+			mvYawLimits.x = fYawGoal - fYawRange;
+			mvYawLimits.y = fYawGoal + fYawRange;
+			
+			pCharBody.SetYaw(cMath_Clamp(fYaw, mvYawLimits.x, mvYawLimits.y));
+			
+			float fPitch = pCam.GetPitch();
+			float fPitchDiff = cMath_GetAngleDistanceRad(fPitch, vAngles.x);
+			float fPitchGoal = fPitch + fPitchDiff;
+			float fPitchRange = gfPitchRange * 1.5f;
+			
+			mvPitchLimits.x = cMath_Max(fPitchGoal - fPitchRange, -1.5f);
+			mvPitchLimits.y = cMath_Min(fPitchGoal + fPitchRange, 1.5f);
+			
+			pCam.SetPitch(cMath_Clamp(fPitch, mvPitchLimits.x, mvPitchLimits.y));
+		}
+		
+		//////////////////////////
+		// Flag as used by the player
+		if (pBody !is null)
+		{
+			pBody.SetThrownByPlayer(true);
+			cScript_RunGlobalFunc("LuxPlayer", "", "_Global_ResetTimeSinceThrow");
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void PostUpdate(float afTimeStep)
+	{
+		if(CheckShouldUpdate()==false) return;
+		
+		ClearMoveVars();
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetPropID()
+	{
+		cScript_SetGlobalReturnID(mPropID);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetForceMul()
+	{
+		mfForceMul = cScript_GetGlobalArgFloat(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetLastForceApplied()
+	{
+		cScript_SetGlobalReturnVector3f(mvLastForceApplied);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetCanLeaveState()
+	{
+		mbCanLeaveState = cScript_GetGlobalArgBool(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SimulateMovement()
+	{
+		OnAnalogInput(eAnalogType_Move, cScript_GetGlobalArgVector3f(0));
+	}
+	
+	//------------------------------------------------------------
+		
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool OnAction(int alAction, bool abPressed)
+	{
+		if(abPressed==false) return true;
+		
+		////////////////////////
+		// Throw
+		if (alAction == eAction_Throw)
+		{
+			iCharacterBody@ pCharBody = mBaseObj.mpPlayer.GetCharacterBody();
+			iPhysicsBody@ pBody = cLux_ID_Body(mBodyID);
+			
+			if(mbPushAtPoint)
+			{
+				cVector3f vAttachPos = cMath_MatrixMul(pBody.GetLocalMatrix(), mvLocalAttachPos);
+				pBody.AddImpulseAtPosition(mvPushDir * mfThrowImpulse,vAttachPos);
+			}
+			else
+			{
+				pBody.AddImpulse(mvPushDir * mfThrowImpulse);
+			}
+			
+			//////////////////////////
+			// Flag as used by the player
+			if (pBody !is null)
+			{
+				pBody.SetThrownByPlayer(true);
+				cScript_RunGlobalFunc("LuxPlayer", "", "_Global_ResetTimeSinceThrow");
+			}
+			
+			if (mbCanLeaveState)
+				mBaseObj.mpPlayer.ChangeState(mlPreviousState);
+				
+			return false;
+		}
+		
+		//////////////////////
+		// Accessibility mode
+		if (mbToggleModeActive)
+		{
+			if (alAction == eAction_Interact && abPressed == true)
+			{
+				cLux_GetPlayer().ChangeState(mlPreviousState);
+				return false;
+			}
+		}
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnAnalogInput(int alAnalogId, const cVector3f &in avAmount)
+	{
+		////////////////////////////////////
+		// Move
+		if(alAnalogId == eAnalogType_Move || alAnalogId == eAnalogType_GamepadMove)
+		{
+			float fLength = avAmount.Length();
+
+			if(fLength > 0.1f)
+			{
+				iCharacterBody@ pCharBody = mBaseObj.mpPlayer.GetCharacterBody();
+				
+				if(cMath_Abs(avAmount.y) > 0.001f)
+				{
+					mfTotalMoveMul[eCharDir_Forward] += avAmount.y;
+					mbMoving[eCharDir_Forward] = true;
+					
+				}
+				if(cMath_Abs(avAmount.x) > 0.001f)
+				{
+					mfTotalMoveMul[eCharDir_Right] += avAmount.x;
+					mbMoving[eCharDir_Right] = true;
+				}
+			}
+				
+			return true;
+		}
+		
+		////////////////////////////////////
+		// Look
+		if(alAnalogId == eAnalogType_Look)
+		{
+			/////////////////
+			// Setup vars
+			mvLookAdd = avAmount;
+	
+			cCamera@ pCam = mBaseObj.mpPlayer.GetCamera();			
+			iCharacterBody@ pCharBody = mBaseObj.mpPlayer.GetCharacterBody();
+			
+			/////////////////
+			// Yaw			
+			float fYaw = pCharBody.GetYaw();						
+			fYaw += avAmount.x * -1.f * mfLookSpeedMul;
+			pCharBody.SetYaw(cMath_Clamp(fYaw, mvYawLimits.x, mvYawLimits.y));
+			
+			/////////////////
+			// Pitch
+			float fPitch = pCam.GetPitch();			
+			fPitch += avAmount.y * -1.f * mfLookSpeedMul;
+			pCam.SetPitch(cMath_Clamp(fPitch, mvPitchLimits.x, mvPitchLimits.y));			
+			return false;
+		}
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnExitPressed()
+	{
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// BODY CALLBACKS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool AllowBuoyancy(iPhysicsBody @apBody)
+	{
+		return true;
+	}
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// CHARACTER CALLBACK
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void CharBody_GravityCollide(iCharacterBody@ apCharBody, iPhysicsBody@ apBody, cCollideData @apCollideData)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	void CharBody_HitGround(iCharacterBody@ apCharBody,const cVector3f &in avVel)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPER METHODS
+	/////////////////////////////////////////
+	
+	//-----------------------------------------------------------------------
+
+	void ClearMoveVars()
+	{
+		for(int i=0; i<2; ++i)
+		{
+			mfTotalMoveMul[i] = 0;
+			mbMoving[i] = false;
+		}
+	}
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		//apSet.DrawFont(tWString("Something:"+mBaseObj.mpPlayer.GetCamera().GetPitch()), apFont, cVector3f(5,afStartY,0), cVector2f(14), cColor(1,1) );
+		//afStartY += 14;
+						
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool mbPushAtPoint;
+	bool mbCanLeaveState = true;
+	float mfForceMul;
+	float mfThrowImpulse;
+	bool mbLookPushActive = true;
+	float mfMaxPlayerSpeedMul = 1.0f;
+	float mfMaxPlayerSpeed = 0.f;
+	float mfMoveDirChangeCount = 0.f;
+	
+	float[] mfMaxSpeedInDir={0,0};
+	float[] mfTotalMoveMul={0,0};
+	float[] mfPrevTotalMoveMul={0,0};
+	bool[] mbMoving={false, false};
+	
+	cVector3f mvLocalAttachPos;
+	cVector3f mvPushDir;
+	cVector3f mvPrevPushDir;
+	cVector3f mvLookAdd;
+	cVector3f mvLastForceApplied;
+	cVector2f mvYawLimits = 0.f;
+	cVector2f mvPitchLimits = 0.f;
+	
+	float mfMaxAttachPointDist;
+	float mfInteractDist;
+	
+	float mfLookSpeedMul;
+	float mfPrevSpeed = 0.f;
+	
+	//------------------------------------------------------------
+	
+	cPidControllerVec3 mVelocityPid;
+	cPidControllerVec3 mLookPushPid;
+	
+	cUtility_ModEventAverageTracker mModEvent_PushHeavy(eModEvent_Push_Heavy, /* Time before signalling*/ 0.5f, /* Effort threshold */ 50.0f, /* Settle time */ 0.5f);
+	
+	//------------------------------------------------------------
+		
+}

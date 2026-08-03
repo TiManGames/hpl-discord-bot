@@ -1,0 +1,1805 @@
+#include "interfaces/Map_Interface.hps"
+#include "base/Inputhandler_Types.hps"
+
+#include "helpers/helper_map.hps"
+#include "helpers/helper_props.hps"
+#include "helpers/helper_areas.hps"
+#include "helpers/helper_effects.hps"
+#include "helpers/helper_audio.hps"
+#include "helpers/helper_imgui.hps"
+#include "helpers/helper_sequences.hps"
+#include "helpers/helper_game.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_ai.hps"
+#include "helpers/helper_agent.hps"
+#include "helpers/helper_player.hps"
+#include "helpers/helper_imgui.hps"
+#include "custom/helpers/helper_gun.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+#include "custom/helpers/helper_props_custom.hps"
+
+//--------------------------------------------------
+ 
+/*Place any global values here. These must be const variables as they will not be saved*/
+/*This is also the place for enums and classes, but these should be avoided whenever possible*/
+ 
+//--------------------------------------------------
+ 
+class cScrMap : iScrMap
+{
+	//--------------------------------------------
+ 
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN CALLBACKS
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+ 
+	////////////////////////////
+	// Set up map environment
+	void Setup()
+	{
+		// Put display name entry in english.lang / Levels
+		GetBase().SetDisplayNameEntry("maintenance");
+		
+		Map_Preset_SetupFog("GeneratorOn", true, 0, 40, 0.5, cColor(0.143,0.088,0.033,0.784), 1.f, false, false);
+		Map_Preset_SetupFog("GeneratorOff", false, 0, 40, 0.5, cColor(0.143,0.088,0.033,0.784), 1.f, false, false);
+	}
+	
+	//-------------------------------------------------------
+		
+	void PreloadData()
+	{
+		///////////////
+		// Preload particles
+		ParticleSystem_Preload("bullet_impact_rock_bright.ps");
+
+		//////////////
+		// Preload entity
+		Entity_Preload("player_bunker.ent");
+		Entity_Preload("doll_rabbit_pickup.ent");
+	}
+	
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run first time starting map
+	void OnStart()
+	{
+		// Any general setup of script / entities
+		
+		/////////////////////////
+		// Debug
+		if(cLux_ScriptDebugOn())
+		{
+			if (ItemType_GetCountInInventory("Gun") == 0)
+			{
+				Item_AddToInventory("Gun");
+				Item_AddManyToInventory("Ammunition", 2);
+			}
+			
+			if (ItemType_GetCountInInventory("DynamoLantern") == 0)
+				Item_AddToInventory("DynamoLantern");
+			
+			//if (ItemType_GetCountInInventory("PocketWatch") == 0)
+			//	Item_AddToInventory("PocketWatch");
+			Item_AddToInventory("Fuel");
+			//Item_AddToInventory("Grenade");
+			//Item_AddToInventory("GasMask");
+			//Item_AddToInventory("GasGrenade");
+			//Item_AddToInventory("Flare");
+			//Item_AddToInventory("Cutters");
+			//Item_AddToInventory("Wrench");
+			Item_AddToInventory("Fuse");
+			Item_AddToInventory("Lighter");
+			Item_AddToInventory("MolotovCocktail");
+			//Item_AddToInventory("DynamiteBundle");
+			//Item_AddToInventory("Wrench");
+			Item_AddToInventory("Shotgun");
+			Item_AddToInventory("Grenade");
+			//Item_AddToInventory("GasGrenade", eInventoryInstance_Auxiliary);
+			//Item_AddToInventory("GasMask", eInventoryInstance_Auxiliary);
+			
+			//Light_SetBrightness("_Debug_Light_Box", 0.5f);
+		}
+		
+		/////////////
+		// Activate pillbox plank wall block box
+		Entity_SetActive("PlankWallBlockBox", true);
+		
+		/////////////////////////////
+		// Activate fuel storage lock
+		if (GameDifficulty_GetSettingValueByID_Bool(eGameDifficultySetting_FuelStorageCodeLock))
+		{
+			Entity_SetActive("FuelStorageLock", true);
+			Entity_SetActive("FuelStorageLock_Aux", true);
+			Entity_SetActive("Note_FuelStorageLocked", true);
+			Light_SetBrightness("FuelStorageLock_Light", 0.125);
+			SwingDoor_SetBlocked("metal_door_window_2", true, false);
+			Entity_SetActive("FuelStorageLock_Plate_*", true);
+			Entity_SetActive("FuelStorageNoteNail", true);
+		}
+		
+		/////////////////////////
+		// Disable rat event in ng+
+		if (GameDifficulty_GetNewGamePlusActive())
+		{
+			Entity_SetActive("Rat_Scripted", false);
+			Entity_SetActive("Trigger_RatTrapCollision", false);
+			Entity_SetActive("Trap_Scripted", false);
+			Entity_SetActive("Trap_Scripted*", false);
+		}
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when entering map
+	void OnEnter()
+	{
+		////////////////////////
+		// Set rich presence
+		RichPresence_SetCurrent(eRichPresence_Maintenance);
+
+		///////////////////////
+		// Setup player body
+		if (PlayerBody_IsActive() == false)
+		{
+			PlayerBody_SetActive(true);
+			PlayerBody_SetModel("player_bunker.ent");
+		}
+		
+		/////////////////////
+		// Enable rats
+		RatHandler_SetActive(true);
+		
+		///////////////////////
+		// Setup generator
+		SetupGenerator();
+		Entity_StopAnimation("FuelTap");
+		
+		iLuxEntity@ pFuelTap = Map_GetEntity("FuelTap", eLuxEntityType_Prop);
+		m_idFuelTap = pFuelTap !is null ? pFuelTap.GetID() : tID_Invalid;
+		
+		///////////////////////////////
+		// Setup low height auto-teleport
+		Player_SetAutoTeleportWhenBelowAltitude(-20.f);
+		
+		////////////////
+		// Setup map fog preset
+		tString sMapPreset = Generator_GetState(true) == eGeneratorState_On ? "GeneratorOn" : "GeneratorOff";
+		Map_Preset_Fade(sMapPreset, 0.1f);
+		
+		///////////////////////
+		// Setup stalker
+		Blackboard_DoStalkerMapTransfer("stalker_1");
+		
+		if (cScript_GetGlobalVarBool("StalkerPickedUpRabbit"))
+		{
+			Map_RemoveTimer("Timer_SpawnRabbitInChapel");
+			Map_AddTimer("Timer_SpawnRabbitInChapel", 1.f, "OnTimer_SpawnRabbitInChapel");
+		}
+		
+		/////////////////////////
+		// Update the in game map
+		InGameMap_UpdateGlobalMapState();
+		
+		////////////////
+		// Setup bombing effect
+		BombingHandler_SetActive(true);
+		
+		///////////////////////
+		// Audio
+		Sound_Play("Sound_HallCreak_*", 1.0f);
+		Sound_Play("Sound_WarGuns", 1.0f);
+
+		if (Sound_Exists("Sound_HallCreak_*"))
+			{
+				Sound_Stop("Sound_HallCreak_*", 5.0f);
+				Sound_Stop("Sound_WarGuns", 5.0f);
+
+				Sound_Play("Sound_HallCreak_*", 1.0f);
+				Sound_Play("Sound_WarGuns", 1.0f);
+			}
+			
+		////////////////////////
+		// Randomize the sniper re-apperance
+		OnEnter_ResetTheSniper();
+		
+		///////////////////
+		// Setup save game info hint
+		SaveRoom_SetSaveHintActive(true);
+		
+		///////////////////
+		// Setup save lamp
+		SaveRoom_SetupSaveLamp(true, "SaveLamp_Easy_Lamp");
+		
+		///////////////////////
+		// Setup Trap Rat
+		if (GameDifficulty_GetNewGamePlusActive() == false)
+		{
+			iLuxEntity@ pFeed = Map_GetEntity("FeedArea_07");
+			//pRat.GetCharBody().SetYaw(fYaw);
+			Rat_Eat("Rat_Scripted", pFeed.GetID());
+			Rat_SetEatTimeoutActive("Rat_Scripted", false);
+			Entity_SetActive("Rat_Scripted", true);
+		}
+		
+		BulletHandler_AddGlobalIgnoredEntity("PlankWallBlockBox");
+		
+		////////////////
+		// Setup shortcut door lock
+		WoodenBreakable_SetIsBreakable("padlock_2", false);
+		
+		////////////////
+		// Setup dead rats in rat room
+		Entity_SetCollide("dark_world_rat_*", false);
+		Entity_SetCollideCharacter("dark_world_rat_*", false);
+		
+		////////////
+		// Map change
+		Game_SetupAfterMapChange();
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// Run when leaving map
+	void OnLeave()
+	{
+	
+		/////////////////////////
+		// Audio
+		Sound_Stop("Sound_HallCreak_*", 5.0f);
+		Sound_Stop("Sound_WarGuns", 5.0f);
+	
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// To get when player makes input (mostly used for debug)
+	void OnAction(int alAction, bool abPressed) 
+	{
+		if (abPressed == false) return;
+		
+		if (alAction == eAction_Test0)
+		{
+			Entity_SetActive("stalker_1", !Entity_IsActive("stalker_1"));
+			//BombingHandler_TriggerBombEffect();
+		}
+		
+		if(alAction == eAction_Test1)
+		{
+			if (Generator_GetState() == eGeneratorState_On)
+			{
+				Generator_SetRunForever(false);
+				Generator_ChangeState(eGeneratorState_Off);
+			}
+			else
+			{
+				Generator_AddFuel(2);
+				Generator_ChangeState(eGeneratorState_On);
+				Generator_SetRunForever(true);
+			}
+		}
+		
+		if (alAction == eAction_Test2)
+		{
+			////////////////
+			// Broadcast shot message
+			array<iLuxEntity@> vAgents;
+			cLux_GetCurrentMap().GetEntityArray("*", eLuxEntityType_Agent, "", vAgents);
+			
+			for (int i = 0; i < vAgents.size(); ++i)
+			{
+				vAgents[i].BroadcastMessage(40, null, Player_GetPosition(), -1);
+			}
+		}
+		
+		if (alAction ==eAction_Test3)
+		{
+			////////////////
+			// Disable all agents
+			RatHandler_SetActive(false);
+			
+			array<iLuxEntity@> vAgents;
+			cLux_GetCurrentMap().GetEntityArray("*", eLuxEntityType_Agent, "", vAgents);
+			
+			for (int i = 0; i < vAgents.size(); ++i)
+			{
+				vAgents[i].SetActive(false);
+			}
+		}
+		
+		if (alAction == eAction_Test4)
+		{
+			////////////////
+			// Disable all traps
+			array<iLuxEntity@> vTraps;
+			cLux_GetCurrentMap().GetEntityArray("*", eLuxEntityType_Prop, "cScrPropTrap", vTraps);
+			
+			for (int i = 0; i < vTraps.size(); ++i)
+			{
+				tString sName = vTraps[i].GetName();
+				Entity_SetActive(sName, false);
+				Entity_SetActive(sName+"_*", false);
+			}
+		}
+		
+		if (alAction == eAction_Test5)
+		{
+			//Player_GiveDamage(0.1, 0., 0, "");
+			//Player_Teleport("Start_Pillbox", true);
+			//Item_AddToInventory("PillboxKey");
+			
+			Prop_SetHealth("bench_*", 0.f);
+		}
+		
+		if (alAction == eAction_Test6)
+		{
+			//Item_AddToInventory("PocketBag");
+			//Item_AddToInventory("GasMask");
+			//Item_AddToInventory("EmptyBottle", eInventoryInstance_Auxiliary);
+			Item_AddToInventory("PillboxKey", eInventoryInstance_Player);
+			Sketchbook_CollectAllNotes();
+			Sketchbook_AddAllPhotos();
+		}
+		
+		if (alAction == eAction_Test7)
+		{
+			Entity_SetActive("stalker_1", true);
+			Agent_TeleportFeetToEntity("stalker_1", "player");
+			cScript_RunGlobalFunc("stalker_1", "", "_Global_Debug");
+			
+			RatHandler_SetActive(false);
+		}
+		
+		if (alAction == eAction_Test8)
+		{	
+			for (int i = 1; i <= 23; i++)
+			{
+				Entity_SetActive("rat_"+i, true);
+			}
+		}
+		
+		if (alAction == eAction_Test9)
+		{
+			for (int i = 1; i <= 23; i++)
+			{
+				Entity_SetActive("rat_"+i, i >= 11 && i <= 11);
+			}
+		}
+		
+		if (alAction == eAction_TestPlus)
+		{
+			Lamp_SetLit("*", true, false);
+			
+			array<iLight@> vLights;
+			Map_GetLightArray("*", vLights);
+			for (int i = 0; i < vLights.length(); i++)
+			{
+				iLight@ pLight = vLights[i];
+				pLight.SetBrightness(cMath_Max(1.0f, pLight.GetBrightness()*2.0f));
+			}
+		}
+	}
+
+	//-------------------------------------------------------
+
+	////////////////////////////
+	// This only used for pure debug purposes when info needs to printed.
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afY)
+	{
+		//afY = cLux_DrawDebugText("My Debug value:"+..., afY);
+		return afY;
+	}
+ 
+	//-------------------------------------------------------
+ 
+	//} END MAIN CALLBACKS
+	
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAIN FUNCTIONS 
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+	
+	//-------------------------------------------------------
+	
+	tID m_idFuelTap = tID_Invalid;
+	float mfFuelTapGlowCount = 0.f;
+	float mfFuelTapGlowMul = 0.f;
+	
+	//-------------------------------------------------------
+	
+	void OnBreak_BreakOtherEntityAboveIt(const tString &in asEntity)
+	{
+		//////////////////
+		// making sure this entity breaks if the one below it breaks so it doesn't float in the air.
+		if (asEntity=="crate_military_exupery_2")
+			Prop_SetHealth("military_wooden_crate_4", 0.f);
+		else if (asEntity=="military_wooden_crate_64")
+			Prop_SetHealth("military_wooden_crate_65", 0.f);
+		else if (asEntity=="military_wooden_crate_48")
+			Prop_SetHealth("military_wooden_crate_46", 0.f);
+		else if (asEntity=="military_wooden_crate_70")
+			Prop_SetHealth("military_wooden_crate_71", 0.f);
+		else if (asEntity=="military_wooden_crate_50")
+			Prop_SetHealth("military_wooden_crate_49", 0.f);
+		else if (asEntity=="military_wooden_crate_2" || asEntity=="military_wooden_crate_1")
+			Prop_SetHealth("military_wooden_crate_3", 0.f);
+		else if (asEntity=="military_wooden_crate_43")
+			Prop_SetHealth("military_wooden_crate_42", 0.f);
+		else if (asEntity=="military_wooden_crate_15")
+			Prop_SetHealth("military_wooden_crate_14", 0.f);
+		else if (asEntity=="military_wooden_crate_32")
+			Prop_SetHealth("military_wooden_crate_33", 0.f);
+		else if (asEntity=="military_wooden_crate_6")
+			Prop_SetHealth("military_wooden_crate_7", 0.f);
+		else if (asEntity=="military_wooden_crate_12")
+			Prop_SetHealth("military_wooden_crate_13", 0.f);
+		else if (asEntity=="military_wooden_crate_16")
+			Prop_SetHealth("military_wooden_crate_17", 0.f);
+		else if (asEntity=="military_wooden_crate_37")
+			Prop_SetHealth("military_wooden_crate_36", 0.f);
+		else if (asEntity=="military_wooden_crate_18")
+			Prop_SetHealth("military_wooden_crate_19", 0.f);
+		else if (asEntity=="military_wooden_crate_24")
+			Prop_SetHealth("military_wooden_crate_25", 0.f);
+		else if (asEntity=="military_wooden_crate_39")
+			Prop_SetHealth("military_wooden_crate_38", 0.f);
+		else if (asEntity=="military_wooden_crate_35")
+			Prop_SetHealth("military_wooden_crate_34", 0.f);
+		else if (asEntity=="military_wooden_crate_23")
+			Prop_SetHealth("military_wooden_crate_21", 0.f);
+		else if (asEntity=="military_wooden_crate_66")
+			Prop_SetHealth("military_wooden_crate_67", 0.f);
+		else if (asEntity=="military_wooden_crate_57")
+			Prop_SetHealth("military_wooden_crate_58", 0.f);
+		else if (asEntity=="military_wooden_crate_56")
+			Prop_SetHealth("military_wooden_crate_55", 0.f);
+		else if (asEntity=="military_wooden_crate_60" || asEntity=="military_wooden_crate_59")
+			Prop_SetHealth("military_wooden_crate_61", 0.f);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnBreak_MoveItemsToTheFloor(const tString &in asEntity)
+	{
+		if (asEntity=="french_table_messhall_01_10")
+		{
+			Decal_SetDynamicVisible("debris_dropped_letters2_5", false);
+			Decal_SetDynamicVisible("debris_dropped_letters2_4", false);
+		}
+		else if (asEntity=="french_table_messhall_01_11")
+		{
+			Prop_MoveLinearTo("Note_ItCanHearMe_1", "Note_ItCanHearMe_1_Floor", 4, 4, 0, false);
+		}
+		else if (asEntity=="Door_Sideroom")
+		{
+			Tear_ForceTear("scaffolding_plank_wall_4");
+			Tear_ForceTear("scaffolding_plank_wall_5");
+		}
+		else if (asEntity=="military_wooden_crate_52")
+		{
+			Prop_MoveLinearTo("Note_ChanardSawItsFace", "Note_ChanardSawItsFace_Floor", 4, 4, 0, false);
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	int mlRabbitPickupCount = 1;
+		
+	//-------------------------------------------------------
+	
+	void OnBreak_DisableSlideLock(const tString &in asEntity)
+	{
+		const tString sLockEnt = "Lock_"+asEntity;
+		if (Entity_Exists(sLockEnt)==false) return;
+		Entity_SetActive(sLockEnt, false);
+	}
+	
+	//-------------------------------------------------------
+		
+	bool OnTrigger_LockDoor(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		SwingDoor_SetBlocked(Entity_GetVarString(asChild, ""), alState == 1, true);
+		return true;
+	}
+	
+	//-------------------------------------------------------
+		
+	void OnTimer_StartStalkerReaction(const tString &in asTimer)
+	{
+		Sound_CreateAtEntity("Sound_StalkerReact", "creatures/stalker/spot", asTimer, 0.0f, false, 0.5f);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnBreak_DescriptionAttachment(const tString &in asEntity)
+	{
+		Entity_SetActive(asEntity+"_Description", false);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_SpawnRabbitInChapel(const tString &in asTimer)
+	{
+		cScript_SetGlobalVarBool("StalkerPickedUpRabbit", false);
+		
+		iLuxEntity@ pEnt = Map_GetEntity("RabbitSpawn", eLuxEntityType_Prop);
+		cMatrixf mtxRabbit = pEnt !is null ? pEnt.GetOnLoadTransform() : cMatrixf_Identity;
+		
+		mBaseObj.CreateEntity("respawn_rabbit_pickup_" + mlRabbitPickupCount, "doll_rabbit_pickup.ent", mtxRabbit, cVector3f(1.f));
+		++mlRabbitPickupCount;
+		
+		cLuxProp@ pProp = cLux_ToProp(mBaseObj.GetLatestEntity());
+		if (pProp !is null)
+		{
+			pProp.SetStaticPhysics(true);
+		}
+		
+		cLux_AddDebugMessage("Spawned rabbit in Chapel!");
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnBreak_Padlock(const tString &in asEntity)
+	{
+		Entity_SetCollide(Entity_GetVarString(asEntity, ""), true);
+	}
+	
+	//-------------------------------------------------------
+	
+	void VariableUpdate(float afDeltaTime)
+	{
+		///////////////////
+		// Fuel tap highlight
+		cLuxProp@ pProp = cLux_ID_Prop(m_idFuelTap);
+		cMeshEntity@ pMeshEnt = pProp !is null ? pProp.GetMeshEntity() : null;
+		
+		if (pProp is null) return;
+		if (pMeshEnt is null) return;
+		
+		bool bGlow = true;
+		float fDistToPlayerSqr = (cLux_GetPlayer().GetCharacterBody().GetPosition() - pProp.GetPosition()).SqrLength();
+		
+		if (fDistToPlayerSqr > 4.f * 4.f)
+			bGlow = false;
+		if (cLux_GetPlayer().GetCurrentStateId() == ePlayerState_CutsceneAnimation)
+			bGlow = false;
+		
+		float fGlowMulGoal = bGlow ? 1.f : 0.f;
+		mfFuelTapGlowMul = cMath_IncreaseTo(mfFuelTapGlowMul, afDeltaTime * 2.f, fGlowMulGoal);
+		
+		if (mfFuelTapGlowMul <= 0.f)
+		{
+			mfFuelTapGlowCount = 0.f;
+		}
+		else
+		{
+			mfFuelTapGlowCount += afDeltaTime;
+			if (mfFuelTapGlowCount >= 4.f)
+				mfFuelTapGlowCount = 0.f;
+		}		
+		
+		float fY = cMath_Min(mfFuelTapGlowCount, 1.f);
+		float fGlow = 1.f - cMath_Abs(2.f * fY - 1.f);
+		fGlow = cMath_Easing(eEasing_QuadInOut, fGlow) * mfFuelTapGlowMul;
+		fY = cMath_Easing(eEasing_SineInOut, fY);
+		
+		float fColorMul = 3.f;
+		cColor color = cColor(0.35f * fColorMul, 0.15f * fColorMul, 0.f, fGlow);
+		
+		if (fGlow > 0.f)
+		{
+			for (int i = 0; i < pMeshEnt.GetSubMeshEntityNum(); ++i)
+			{
+				cSubMeshEntity@ pSubMesh = pMeshEnt.GetSubMeshEntity(i);
+				if (pSubMesh is null) continue;
+				
+				cLux_GetEffectHandler().AddGlowObject(pSubMesh, color, fY);
+			}
+		}
+	}
+		
+	//-------------------------------------------------------
+	
+	void OnCombinationLock_Unlocked(const tString&in asEntityName)
+	{
+		tString sName = Entity_GetVarString(asEntityName, "");
+		
+		const tString sPickupName = "LockerPickup_" + sName + "_*";
+		
+		Pickup_SetCanPickup("RandomLocker_Pickup_*", true);
+		Pickup_SetIsLockerItem("RandomLocker_Pickup_*", false);
+		HighlightEffect_RemoveIgnoreLosEntity("RandomLocker_Pickup_*");
+		
+		Achievement_IncreaseUnlockedLockerCount();
+	
+		///////////////
+		// Deactivate aux areas
+		Entity_SetActive("RandomLocker_InteractAux_*", false);
+	}
+		
+	//-------------------------------------------------------
+	
+	void OnInteract_Player_PrepareGun(const tString &in asEntity)
+	{
+		Map_AddTimer("Timer_GunEquipHint", 9.f, "OnTimer_GunEquipHint");
+	}
+		
+	//-------------------------------------------------------
+	
+	void OnTimer_GunEquipHint(const tString&in asTimer)
+	{
+		if (ItemType_GetCountInInventory("Gun") == 0) return;
+		
+		Hint_StopHint();
+		Hint_ShowHint_Hold("Hints", "HintEquipGun", true, 1.5f, true, 15.f, true, true);
+	}
+	
+	//-------------------------------------------------------
+ 
+	//} END MAIN FUNCTIONS
+		
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// MAP STREAMING
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+ 
+	//-------------------------------------------------------
+
+	bool OnTrigger_Player_SwitchMap_Hub(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		Blackboard_SetupStalkerMapTransfer("stalker_1");
+		Game_DoMapChange("officer_hub.hpm", "MapTransfer_Hub_Nest");
+		return true;
+	}
+
+	//-------------------------------------------------------
+ 
+	//} END MAP STREAMING
+	
+	//-------------------------------------------------------
+	
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// GENERATOR
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+	
+	//-------------------------------------------------------
+	
+	void SetupGenerator()
+	{
+		Generator_SetupEntities("", "", "", "", "Lamp_Generator_Nest*", "Lamp_GeneratorBackup_Nest*");
+
+		Generator_AddPowerSwitch("PowerSwitch_Nest_2", "", "", "Lamp_PowerSwitch_Nest_2_*", true);
+		Generator_AddPowerSwitch("PowerSwitch_Nest_3", "", "", "Lamp_PowerSwitch_Nest_3_*", false);
+		Generator_AddPowerSwitch("PowerSwitch_Nest_4", "", "", "Lamp_PowerSwitch_Nest_4_*",true);
+		Generator_AddPowerSwitch("PowerSwitch_Nest_5", "", "", "Lamp_PowerSwitch_Nest_5_*", true);
+		Generator_AddPowerSwitch("PowerSwitch_Nest_6", "", "", "Lamp_PowerSwitch_Nest_6_*", false);
+		Generator_AddPowerSwitch("PowerSwitch_Nest_7", "", "", "Lamp_PowerSwitch_Nest_7_*", false);
+        Generator_AddPowerSwitch("PowerSwitch_Nest_8", "", "", "Lamp_PowerSwitch_Nest_8_*", false);
+		Generator_AddPowerSwitch("PowerSwitch_Nest_10", "", "", "Lamp_PowerSwitch_Nest_10_*", false);
+		
+		Generator_SetupFuseBox("FuseBox", "FuseBox_Lamp", "FuseBox_BackupLamp", "FuseBox_Lever", "FuseBox_Socket", 
+							   "FuseBox_Grating", "FuseBox_Fuse_Pickup", "FuseBox_Note", "FuseBox_NoteNail", 
+							   "FuseBox_NoteInteractAux", "FuseBox_InteractArea", "Sound_FuseBoxLoop", "Lamp_PowerSwitch_Nest_2_63");
+		
+		Generator_EndSetup();
+		
+		if (GameDifficulty_GetSettingValueByID_Bool(eGameDifficultySetting_FusesAndFuseBoxes) == false)
+		{
+			Light_SetBrightness("Light_Point_60", 0.f);
+			Light_SetBrightness("Light_FuseBox_BackupLamp", 0.f);
+			Light_SetBrightness("Light_FuseBox_Lamp", 0.f);
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnConnectionState_PowerSwitch(const tString &in asEntity, int alState)
+	{
+		if (alState == 0) return;
+		if (cLux_GetCurrentMap() is null) return;
+		if (cLux_IsChangingMap()) return;
+		if (Generator_GetIsSetupDone() == false) return;
+		
+		Generator_SetPowerSwitchOn(asEntity, alState == 1);
+		
+		//////////////////////////////////////
+		// Keep the fuel backup lights on when the switch is off.
+		if (asEntity == "PowerSwitch_Nest_4")
+		{
+			Lamp_SetLit("Lamp_GeneratorBackup_Nest_4_Fuel_*", alState==-1, true);
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnStateChange_Generator(int alState)
+	{
+		///////////////////
+		// Generator Sounds
+		if (alState!=1)
+			Sound_Play("Sound_GeneratorOff", 0.f);
+		
+		///////////////////
+		// Fog
+		UpdateMapFog(alState == 1);
+	}	
+	
+	//-------------------------------------------------------
+	
+	void OnTimer_SetMapPresetForGeneratorOff(const tString&in asTimer)
+	{
+		Map_Preset_Fade(asTimer, 0.1f);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnInteract_FuseBoxFuse(const tString &in asEntity)
+	{
+		Entity_SetActive(Generator_GetFuseInteractArea(), true);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnConnectionStateChange_FuseBoxLever(const tString &in asEntity, int alState)
+	{
+		if (alState != 1) return;
+		if (cLux_GetCurrentMap() is null) return;
+		if (cLux_IsChangingMap()) return;
+		if (Generator_GetIsSetupDone() == false) return;
+		
+		Generator_ActivateFuseBox();
+		UpdateMapFog(Generator_GetState(true) == eGeneratorState_On);
+	}
+	
+	//-------------------------------------------------------
+	
+	void OnLookAt_FuseBoxNote(const tString &in asEntity, int alState)
+	{
+		Generator_SetFuseBoxNoteDiscovered(alState == 1);
+	}
+	
+	//-------------------------------------------------------
+	
+	void UpdateMapFog(bool abOn)
+	{
+		if (abOn)
+		{
+			Map_AddTimer("GeneratorOn", 0.5f, "OnTimer_SetMapPresetForGeneratorOff");
+		}
+		else
+		{
+			Map_Preset_Fade("GeneratorOff", 0.1f);
+		}
+	}
+	
+	//-------------------------------------------------------
+	
+	//} END GENERATOR
+	
+	//-------------------------------------------------------
+	
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// OBJECTIVES
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+	
+	//-------------------------------------------------------
+	
+	void dogtag_foreman_1_OnAddCode(const tString &in asEntity, const tString &in asNameID, const tString &in asCombination)
+	{
+		InGameMap_SetObjectiveCompleted("Obj_GetWrench_Foreman");
+		InGameMap_SetObjectiveCompleted("Obj_GetWrench_Chapel");
+		InGameMap_SetObjectiveCompleted("Obj_GetWrench_Pillbox_A");
+		InGameMap_SetObjectiveCompleted("Obj_GetWrench_Pillbox_B");		
+		InGameMap_AddObjective("Obj_GetWrench_Locker", 1.f);
+		
+		Achievement_Unlock(eAchievement_Memorialist);
+		
+		//////////////
+		// Increase stalker escalation
+		bool bFullStep = GameDifficulty_GetSettingValueByID_Int(eGameDifficultySetting_StalkerAggressiveness) > eDifficultySettingValue_StalkerAggressiveness_Default;
+		Blackboard_IncreaseStalkerEscalation(bFullStep);
+		cScript_SetGlobalVarInt("LevelProgression", cScript_GetGlobalVarInt("LevelProgression") + 1);
+	}
+	
+	//-------------------------------------------------------
+	
+	//} END GENERATOR
+	
+	//////////////////////////////////////////////////////////////////////////////////////////
+	// ==============
+	// OBJECTIVES
+	// ==============
+	//{///////////////////////////////////////////////////////////////////////////////////////
+  	
+	//-------------------------------------------------------
+	
+	int mlShortcutPadlockBrekableCount = 0;
+	
+	bool OnTrigger_SetPadlockUnbrekable(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		///////////////
+		// Break shortcut padlock only from the right side of the door
+		
+		mlShortcutPadlockBrekableCount = cMath_Max(0, mlShortcutPadlockBrekableCount + alState);
+		cLux_AddDebugMessage("mlShortcutPadlockBrekableCount: " + mlShortcutPadlockBrekableCount);
+		
+		const tString sLockEnt = "padlock_2";
+		bool bBreakable = mlShortcutPadlockBrekableCount > 0;
+		WoodenBreakable_SetIsBreakable(sLockEnt, bBreakable);
+		cLux_AddDebugMessage("shortcut door breakable: " + bBreakable);
+		return true;
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnTrigger_Player_ActivateRatsInHub(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		cScript_SetGlobalVarBool("RatsInHub", true);
+		return false;
+	}
+  	
+	//-------------------------------------------------------
+	
+	bool OnTrigger_Player_EnterShortcut(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		if (alState == -1) return true;
+		if (Player_GetCurrentStateName() != "State_Ladder") return true;
+		
+		bool bBlocked = false;
+		if (SwingDoor_GetClosed("tth_metal_hatch_1"))
+		{
+			iLuxEntity@ pArea = Map_GetEntity("Trigger_ShortcutBlockageDetector", eLuxEntityType_Area);
+			cBoundingVolume boundingVolume = pArea.GetBody(0).GetBoundingVolume();
+			array<iPhysicsBody@> vBodies;
+			cLux_GetCurrentMap().GetPhysicsWorld().GetBodiesInAABB(boundingVolume.GetMin(), boundingVolume.GetMax(), false, false, vBodies);
+			
+			for (int i = 0; i < vBodies.length(); i++)
+			{
+				iPhysicsBody @pBody = vBodies[i];
+				
+				
+				if(pBody.IsActive() && pBody.GetMass() > 10 && cString_GetFirstStringPos(pBody.GetName(), "tth_metal_hatch_1") < 0)
+				{
+	/*				iLuxEntity @pEntity = cLux_GetBodyEntity(pBody);
+					if(pEntity == null || Entity_GetCollide(pEntity.GetName(), asArea)==false)
+					{
+						avOutVector.removeAt(i);
+						i--;
+					}*/
+					bBlocked = true;
+					break;
+				}
+			}
+		
+			if (bBlocked)
+			{
+				Sound_CreateAtEntity("ShortcutLockedSound", "level_entity_shared/doors/ladder_hatch/locked", "tth_metal_hatch_1");
+			}
+			else
+			{
+				SwingDoor_PushOpen("tth_metal_hatch_1", 5.f, 3.f, 0.1f);
+			}
+		}
+		
+		return true;
+	}
+		
+	//-------------------------------------------------------
+	
+	bool OnTrigger_Shortcut_OpenStateChange(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		Entity_SetActive("hatch_blocker", alState==1);
+		return true;
+	}
+	
+	//-------------------------------------------------------
+		
+		//-------------------------------------------------------
+		
+		/////////////////////////////////////////
+		// START Event: The player is using the cutters to unlock map room
+		//{//////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_Player_ChainRattle(const tString &in asEntity)
+		{
+			const tString sChain = asEntity + "_Chainlock";
+			if (ChainLock_GetIsBroken(sChain))
+			{
+				OnInteractLeave_Player_ChainStopRattle(sChain);
+				return;
+			}
+			
+			OnTimer_RepeatChainRattle(sChain);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_RepeatChainRattle(const tString&in asTimer)
+		{
+			Entity_PlayAnimation(asTimer, "chain_rattle", 0.1f, false);
+			Map_AddTimer(asTimer, 1.f, "OnTimer_RepeatChainRattle");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnInteractLeave_Player_ChainStopRattle(const tString &in asEntity)
+		{
+			const tString sChain = asEntity + "_Chainlock";
+			Map_RemoveTimer(sChain);
+			if (ChainLock_GetIsBroken(sChain)) return;
+			Entity_PlayAnimation(sChain, "chain_idle", 0.1f, true);
+		}
+		//-------------------------------------------------------
+		
+		void OnInteract_ShowNestMap(const tString &in asEntity)
+		{
+			InGameMap_SetMapFound("nest");
+		}
+		 
+		//-------------------------------------------------------
+		
+		void OnGui_Map(float afTimeStep, float afAlpha)
+		{
+			bool bZoomed = ZoomArea_GetIsZoomedIn();
+			
+			cImGuiLabelData labelData = ImGui_GetDefaultLabel();
+			labelData.mFont.SetFile(FontHandler_GetFont(eFontType_Readable,96));
+			labelData.mFont.mvSize = bZoomed ? 24 : 18;
+			labelData.mColorBase = cColor_White;
+			labelData.mGfxBackground.mColor = cColor(0, afAlpha);
+			labelData.mbUseBackgroundGfx = true;
+			
+			ImGui_SetModColorMul(cColor(1, afAlpha));
+			ImGui_SetAlignment(eImGuiAlign_CenterCenter);
+			ImGui_SetTransCategory("MapOverlay");
+			
+			DrawMapPins("Map_Nest_Pin_*", labelData, bZoomed);		
+			if (bZoomed) DrawMapPins("Map_Nest_ZoomPin_*", labelData, bZoomed);
+			
+			ImGui_SetAlignment(eImGuiAlign_TopLeft);
+			ImGui_SetModColorMul(cColor_White);
+		}
+		
+		//-------------------------------------------------------
+		
+		void DrawMapPins(const tString &in asName, cImGuiLabelData@ apLabelData, bool abZoomed)
+		{
+			array<iLuxEntity@> vPins;
+			Map_GetEntityArray(asName, vPins, eLuxEntityType_Area);
+			
+			for (int i = 0; i < vPins.length(); i++)
+			{
+				iLuxEntity@ pEnt = vPins[i];
+				tString sText = pEnt.GetVarString("");
+				ImGui_DoLabelExt(sText, apLabelData, GetHudPosFromWorldPos(pEnt.GetPosition(), abZoomed));
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		cVector3f GetHudPosFromWorldPos(const cVector3f &in avWorldPos, bool abZoomed)
+		{
+			cVector3f vMagicOffset = abZoomed ? cVector3f(25, 25, 0) : cVector3f(12, 12, 0);
+			cVector2f vScreenSize = cGraphics_GetLowLevel().GetScreenSizeFloat();
+			cRect2l rect = cMath_GetClipRectFromSphere(avWorldPos, 0.01, cLux_GetViewport().GetCamera().GetFrustum(), cVector2l(vScreenSize.x, vScreenSize.y), false, false);
+			cVector2f vHudPos = (cVector2f(rect.x, rect.y) * cLux_GetHudVirtualSize()) / vScreenSize;
+			
+			return cLux_GetHudVirtualStartPos() + cVector3f(vHudPos.x, vHudPos.y, 1) - ImGui_GetCurrentGroupPos() + vMagicOffset;
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event: The player is using the cutters to unlock map room
+		
+		/////////////////////////////////////////
+		// START Event: The player fills bottles with fuel
+		//{//////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		tString msUsedBottleItemID = "";
+		tString msUsedBottleItemType = "";
+		
+		//-------------------------------------------------------
+			
+		void OnLookAt_ShowFuelTankHint(const tString &in asEntity, int alState)
+		{
+			Hint_StopHint();
+			Hint_ShowHint_Hold("Hints", "HintFuelTank", false, 1.5f);
+		}	
+		
+		//-------------------------------------------------------
+		
+		bool CanUse_EmptyBottle(const tString &in asItemType, const tString &in asItemID, const tString &in asPickedEntity)
+		{
+			return asPickedEntity == "Trigger_FuelBottleFiller";
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnUse_EmptyBottle(const tString &in asItemType, const tString &in asItemID, const tString &in asTargetEntity, const tString &in asItemEntity, float afTimeElapsed, float afTimeStep)
+		{			
+			/////////////////
+			// Play anims
+			tString sPlayerAnim;
+			tString sTapAnim;
+			
+			bool bCrouching = Player_GetCrouching();
+			
+			if (bCrouching)
+			{
+				sPlayerAnim = "player_fuel_storage_refill_crouched";
+				sTapAnim = "faucet_fuel_storage_refill_crouched";
+			}
+			else
+			{
+				sPlayerAnim = "player_fuel_storage_refill_stand";
+				sTapAnim = "faucet_fuel_storage_refill_stand";
+			}
+			
+			cVector3f vPos(-35.994f, 4.648f, -18.800f);
+			float fAngle = 0.f;
+			
+			PlayerBody_SetUnequipItemsOnCutscene(true, false);
+			PlayerBody_PlayCutsceneAnimation(sPlayerAnim, false, 0.3f, "OnAnimEnd_FillBottle", 1.f, 0.f, true, vPos, fAngle);
+			PlayerBody_SetArmAnimationPitch(true, true, false);
+			PlayerBody_SetArmAnimationYaw(false, true, true);
+			PlayerBody_SetCutsceneMaxPitch(0.f);
+			PlayerBody_SetCutsceneMaxYaw(0.f);
+			
+			Entity_PlayAnimation("FuelTap", sTapAnim, 0.3f, false);
+						
+			/////////////////
+			// Store item data
+			msUsedBottleItemID = asItemID;
+			msUsedBottleItemType = asItemType;
+			
+			/////////////////
+			// Update items timer
+			Map_AddTimer("Timer_UpdateFillBottleItems", bCrouching ? 2.4f : 2.8f, "OnTimer_UpdateFillBottleItems");
+			return false;
+		}	
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_UpdateFillBottleItems(const tString &in asTimer)
+		{
+			///////////////////
+			// Remove from inventory
+			Item_RemoveFromInventory(msUsedBottleItemID, eInventoryInstance_Player, false, true);
+			
+			///////////////////
+			// Add to inventory
+			tString sItemTypeToAdd = "";
+			if (msUsedBottleItemType == "EmptyBottle")
+				sItemTypeToAdd = "FuelBottle";
+			else if (msUsedBottleItemType == "EmptyMolotovCocktail")
+				sItemTypeToAdd = "MolotovCocktail";
+				
+			Item_AddToInventory(sItemTypeToAdd, eInventoryInstance_Player, true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnAnimEnd_FillBottle(const tString &in asAnim)
+		{
+			///////////////////
+			// Setup player
+			Player_SetCrouching(true, true, true);
+			
+			///////////////////
+			// Auto equip
+			bool bEquip = false;
+			if (ItemType_GetCountInInventory(msUsedBottleItemType) > 0)
+			{
+				bEquip = true;
+				Item_Equip(ItemType_GetFirstInInventory(msUsedBottleItemType));
+			}
+			else
+			{
+				tString sOtherType = msUsedBottleItemType == "EmptyBottle" ? "EmptyMolotovCocktail" : "EmptyBottle";
+				
+				if (ItemType_GetCountInInventory(sOtherType) > 0)
+				{
+					bEquip = true;
+					Item_Equip(ItemType_GetFirstInInventory(sOtherType));
+				}
+			}
+			
+			if (bEquip == false)
+			{
+				PlayerBody_SetArmAnimationPitch(false, true, true);
+				PlayerBody_SetArmAnimationYaw(false, true, true);
+			}
+		}		
+		
+		//-------------------------------------------------------
+		
+		//} END Event: The player fills bottles with fuel
+		
+		/////////////////////////////////////////
+		// START Event: The player breaks the plank wall
+		//{//////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		void OnBreak_PillboxPlankWall(const tString &in asEntity)
+		{
+			iLuxEntity@ pEnt = Map_GetEntity(asEntity + "_broken", eLuxEntityType_Prop);
+			if (pEnt is null) return;
+			
+			for (int i = 0; i < pEnt.GetBodyNum(); ++i)
+			{
+				iPhysicsBody@ pBody = pEnt.GetBody(i);
+				if (pBody is null) continue;
+				
+				pBody.SetCollideFlags(mBaseObj.GetCollideFlag("-agent"));
+			}
+			
+			Entity_SetActive("PlankWallBlockBox", false);
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event: The player breaks the plank wall		
+		
+		/////////////////////////////////////////
+		// START Event: Sniper encounder
+		//{//////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		cSequenceStatesData mSeqBulletRicochet;
+		int mlSniperShotsFired = 0;
+		bool mbTheresATargetToShootAt = false;
+		tString msSniperImpactEntity;
+		bool mbRandomizeTheSniper = false;
+		tString msAimEntity;
+		
+		int mlSniperMaxWarningShots = 2; // How many times the player should be shot before randomizing the sniper.
+		float mfTimeAwayFromPillboxBeforeRandomization = 60.0; // How much time after being shot we can randomize the sniper's re-appearance.
+		
+		//-------------------------------------------------------
+		
+		void OnEnter_ResetTheSniper()
+		{
+			OnTimer_ResetTheSniper("");
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_SetPlayerCovered(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			if (alState!=1) return true;
+			mbTheresATargetToShootAt = false;
+			cLux_AddDebugMessage("[Nest - Sniper] Failsafe: The player is under cover.");
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_SniperStartShooting(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			/////////////////////////////////////
+			// if visited the pillbox and the sniper already shot the player a few times
+			if (mbRandomizeTheSniper)
+			{
+				//////////////////////////////
+				// this time the sniper has a 1/3 chances to show up.
+				cLux_AddDebugMessage("[Nest - Sniper] The sniper is now being randomized.");
+				int lChance = cMath_RandRectl(0,2);
+				if (lChance>0)
+				{
+					Entity_SetActive(asParent, false);
+					return true;
+				}
+			}
+			
+			/////////////////////////////
+			// The player visits the pillbox for the first time.
+			cLux_AddDebugMessage("[Nest - Sniper] A sniper is outside the pillbox.");
+			Entity_SetActive("Trigger_SniperTracer_1", true);
+			Entity_SetActive(asParent, false);
+			
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_SetPlayerCanBeShot(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			mbTheresATargetToShootAt = alState==1;
+			
+			if (alState!=1) return true;
+			
+			cLux_AddDebugMessage("[Nest - Sniper] A sniper is still outside the pillbox.");
+			
+			msAimEntity = asChild;
+			SniperPrepareNextShot();
+			
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void SniperPrepareNextShot()
+		{
+			int lChance = cMath_RandRectl(0,2);
+			
+			float fShotDelay = lChance==0 ? cMath_RandRectf(1.5, 2.5) : cMath_RandRectf(5.0, 8.0);
+			if (mbTheresATargetToShootAt && Map_TimerExists("Timer_SniperShootThePlayer")==false)
+				Map_AddTimer("Timer_SniperShootThePlayer", fShotDelay, "Seq_BulletRicochet");
+		}
+		
+		//-------------------------------------------------------
+		
+		void Seq_BulletRicochet(const tString &in asTimer)
+		{
+			Sequence_Begin("Seq_BulletRicochet", mSeqBulletRicochet);
+			
+			///////////////////////
+			// Play shooting sound
+			if (Sequence_DoStepAndWait(0.5))
+			{
+				mlSniperShotsFired++;
+				Sound_Play("Sound_BulletSniper", 0.0f);
+			}
+			
+			//////////////////
+			//  Actually shoot
+			if (Sequence_DoStepAndWait(0.6))
+			{
+				Sound_CreateAtEntity("Sound_BulletWhizz", "nest/sniper/whizz", msAimEntity);
+				
+				iLuxEntity@ pBulletStart = Map_GetEntity("Area_SniperSource", eLuxEntityType_Area);
+				iLuxEntity@ pBulletAim = Map_GetEntity(msAimEntity);
+				
+				cLux_AddDebugMessage("msAimEntity "+ msAimEntity);
+				
+				if (pBulletStart !is null && pBulletAim !is null)
+				{
+					bool bWarningShots = mlSniperShotsFired <= mlSniperMaxWarningShots;
+					
+					cVector3f vShotAim = msAimEntity=="Player" ? cLux_GetPlayer().GetCharacterBody().GetCamera().GetPosition() : pBulletAim.GetPosition();
+					
+					//////////////////////////////////////////
+					// Do a couple of warning shots and make sure they are visible
+					if (bWarningShots)
+					{
+						array<iLuxEntity@> vSniperImpactEntities;
+						iLuxEntity@ pWarningShotImpactEnt = null;
+						Map_GetEntityArray("Area_SniperImpact_*", vSniperImpactEntities, eLuxEntityType_Area);
+						
+						float fClosestDistToPlayer = 9999999.0;
+						for (int i=0; i<vSniperImpactEntities.size(); i++)
+						{
+							iLuxEntity@ pImpactEnt = vSniperImpactEntities[i];
+							if (pImpactEnt is null) continue;
+							
+							float fDistToPlayer = cMath_Vector3DistSqr(vShotAim, pImpactEnt.GetPosition());
+							if (fDistToPlayer < fClosestDistToPlayer)
+							{
+								fClosestDistToPlayer = fDistToPlayer;
+								vShotAim = pImpactEnt.GetPosition();
+							}
+						}
+					}
+					
+					//////////////
+					// Shoot
+					cVector3f vOffset = cMath_RandomSphereSurfacePoint(0.15f);
+					vOffset.y = 0.f;
+					cVector3f vStart = pBulletStart.GetPosition();
+					
+					vShotAim += cVector3f(0,-0.02,0) + vOffset;
+					cVector3f vDir = vShotAim - vStart;
+					
+					BulletHandler_SetCustomImpactEffectsForEntity(tID_Invalid, "bullet_impact_rock_bright.ps", "nest/sniper/impact");
+					BulletHandler_AddBullet(vStart, vDir, eBulletType_Revolver, tID_Invalid, "OnSniperShot");
+				}
+			}
+			
+			//////////////////////
+			// Bullet bounce sound
+			if (Sequence_DoStepAndWait(cMath_RandRectf(1.0, 2.0)))
+			{
+				int lChance = cMath_RandRectl(0,3);
+
+				cLux_AddDebugMessage("[Nest - Sniper] The sniper took a shot and hit " + msSniperImpactEntity);
+				if (msSniperImpactEntity!="player" && lChance!=0)
+					Sound_Play("Sound_BulletBounce", 0.0f);
+			}
+			
+			///////////////////////
+			// Can the sniper shoot again?
+			else if (Sequence_DoStepAndContinue())
+			{
+				if (mbTheresATargetToShootAt)
+					SniperPrepareNextShot();
+			}
+			
+			Sequence_End();
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnSniperShot(const tString &in asEntity, const tString &in asBody)
+		{
+			msSniperImpactEntity = asEntity;
+			
+			//////////////////////////////////
+			// Special case for shooting the military helm item found in the pillbox
+			if (asEntity == "SniperHelm_1" || asEntity == "SniperHelm_2" )
+			{
+				Sound_CreateAtEntity("Sound_BulletImpactOnHelm", "nest/sniper/helmet_hit", asEntity);
+				
+				///////////////////
+				// Release the item held (might be a better way to do this)
+				cLux_GetPlayer().ChangeState(ePlayerState_Normal);
+			}
+			
+			///////////////////////////////////////
+			// Reset the sniper impact effects back to normal for revolver to sound properly
+			BulletHandler_SetCustomImpactEffectsForEntity(tID_Invalid, "", "");
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnCollide_PlayerLeftTheSniperArea(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			/////////////////////////////////
+			// If the sniper made his presence known once in the pillbox then:
+			// 1. Every time the player leaves the pilbox area start a timer and check if we should randomize the sniper's re-appearance.
+			// 2. Stop the timer when back in the pillbox. 
+			if (alState == -1 && mbRandomizeTheSniper==false)
+			{
+				bool bSniperShotThePlayer = mlSniperShotsFired > mlSniperMaxWarningShots;
+				if (bSniperShotThePlayer)
+				{
+					if (Map_TimerExists("Timer_RandomizeTheSniper"))
+						Map_RemoveTimer("Timer_RandomizeTheSniper");
+					
+					cLux_AddDebugMessage("[Nest - Sniper] A sniper attacked the player and the player is now leaving the pillbox.");
+					Map_AddTimer("Timer_RandomizeTheSniper", mfTimeAwayFromPillboxBeforeRandomization, "OnTimer_RandomizeTheSniper");
+				}
+			}
+			
+			//////////////////////////////////////
+			// If the sniper is already randomized 
+			else
+			{
+				if (Map_TimerExists("Timer_ResetTheSniper"))
+					Map_RemoveTimer("Timer_ResetTheSniper");
+				
+				//////////////////////////////////////////
+				// if the player is leaving
+				if (alState == -1)
+				{
+					////////////////////////////////////////////
+					//  if the sniper didn't show up, randomize again right away)
+					if (Entity_IsActive("Trigger_SniperTracer_1")==false)
+					{
+						cLux_AddDebugMessage("[Nest - Sniper] The sniper didn not show up and the player is now leaving the pillbox.");
+						Entity_SetActive("Trigger_SniperStartShooting", true);
+						return true;
+					}
+					
+					//////////////////////////////////
+					// If the sniper did show up don't remove right away
+					Map_AddTimer("Timer_ResetTheSniper", mfTimeAwayFromPillboxBeforeRandomization, "OnTimer_ResetTheSniper");
+				}
+			}
+			
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_RandomizeTheSniper(const tString&in asTimer)
+		{
+			cLux_AddDebugMessage("[Nest - Sniper] From now on the sniper will be randomized if the player goes back to the pillbox.");
+			
+			mbRandomizeTheSniper = true;
+			OnTimer_ResetTheSniper("");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_ResetTheSniper(const tString&in asTimer)
+		{
+			Entity_SetActive("Trigger_SniperTracer_1", false);
+			Entity_SetActive("Trigger_SniperStartShooting", true);
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event: Sniper encounder
+		
+		/////////////////////////////////////////
+		// START Event: Find chapel
+		//{//////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		bool mbChapelEncounterStarted = false;
+		
+		//-------------------------------------------------------
+		
+		bool OnDoorway_EnterChapel(const tString &in asArea, const tString &in asEntity, int alState)
+		{
+			Achievement_Unlock(eAchievement_Chaplain);
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_PriestDoor(const tString &in asEntity)
+		{
+			StartChapelEncounter();
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_Player_StartChapelEncounter(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			StartChapelEncounter();
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void StartChapelEncounter()
+		{
+			if (mbChapelEncounterStarted) return;
+			
+			mbChapelEncounterStarted = true;
+			
+			if (Entity_IsActive("stalker_1") == false)
+			{
+				Entity_SetActive("stalker_1", true);
+				Stalker_GoToHole("stalker_1", "GhoulHole_16", true, true);
+			}
+			
+			Map_AddTimer("Timer_AttractStalkerToChapel", 1.f, "OnTimer_AttractStalkerToChapel");
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_AttractStalkerToChapel(const tString &in asTimer)
+		{
+			Sound_CreateAIEventAtEntity("Area_ChapelEncounterGoal", 100.f, 7);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_PickUpPillboxKey(const tString &in asEntity)
+		{
+			InGameMap_SetObjectiveCompleted("Obj_GetWrench_Foreman");
+			InGameMap_SetObjectiveCompleted("Obj_GetWrench_Chapel");
+			InGameMap_AddObjective("Obj_GetWrench_Pillbox_B", 1.f);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnBreak_BenchChapel(const tString &in asEntity)
+		{
+			tString sDecal = Entity_GetVarString(asEntity, "");
+			if (sDecal != "")
+			{
+				Decal_SetDynamicVisible(sDecal, false);
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event: Find chapel
+		
+		/////////////////////////////////////////
+		// START Event: Rat Trap
+		//{//////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		bool OnTrigger_StartRatTrapEvent(const tString &in asParent, const tString &in asChild, int alState)
+		{
+			Rat_Retreat("Rat_Scripted", true, false, false, "GhoulHole_2");
+			Trap_SetCanBeTriggeredByRats("Trap_Scripted", true);
+			Rat_SetEatTimeoutActive("Rat_Scripted", true);
+			return false;
+		}
+		
+		//} END Event: Rat Trap
+		
+		/////////////////////////////////////////
+		// START Event: Unlock pillbox
+		//{//////////////////////////////////////
+		
+		//-------------------------------------------------------
+		
+		void OnStateChange_PillboxLock(const tString &in asEntity, int alState)
+		{
+			bool bLock = alState==1;
+			
+			MovingButton_SetSwitchedOn("Lock_PillboxDoor", bLock, true);
+			MovingButton_SetSwitchedOn("Lock_PillboxDoor_Back", bLock, true);
+		}
+			
+		//-------------------------------------------------------
+		
+		bool CanUse_PillboxKey(const tString &in asItemType, const tString &in asItemID, const tString &in asPickedEntity)
+		{
+			return asPickedEntity == "Lock_PillboxDoor_Proxy_1" || asPickedEntity == "Lock_PillboxDoor_Proxy_2";
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnUse_PillboxKey(const tString &in asItemType, const tString &in asItemID, const tString &in asTargetEntity, const tString &in asItemEntity, float afTimeElapsed, float afTimeStep)
+		{	
+			PlayerBody_SetArmAnimationPitch(false, true, true);
+			PlayerBody_SetArmAnimationYaw(false, true, true);
+			
+			int lId = cString_GetNumericSuffixInt(asTargetEntity);
+			
+			PlayerBody_SetUnequipItemsOnCutscene(true, false);
+			PlayerBody_PlayCutsceneAtEntity("tool_key_use", "Lock_PillboxDoor_AnimPos_" + lId, false, 0.3);
+			
+			Map_AddTimer("Timer_PillboxKeyUnlock", 1.75, "OnTimer_PillboxKeyUnlock");
+			Map_AddTimer("Timer_PillboxKeyRelease", 2.65, "OnTimer_PillboxKeyRelease");
+			
+			Entity_SetActive("Lock_PillboxDoor_Proxy_" + lId, false);			
+			return false;
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PillboxKeyUnlock(const tString &in asTimer)
+		{
+			SwingDoor_SetBlocked("PillboxDoor", false, true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_PillboxKeyRelease(const tString &in asTimer)
+		{
+			tString sHeld = Item_GetHeldEntity(eItemHandlerHand_Right);
+			Entity_SetActive("UsedKey", true);
+			Entity_PlaceAtEntity("UsedKey", sHeld, 0.f, true);
+			
+			Item_RemoveFromInventory(ItemType_GetFirstInInventory("PillboxKey"), eInventoryInstance_Player, false, true);
+		}
+			
+		//-------------------------------------------------------
+
+		void OnAnimEnd_PillboxKeyUsed(const tString &in asAnim)
+		{
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnPlayerLookAt_PillboxLock(const tString &in asEntity, int alState)
+		{
+		}
+
+		//-------------------------------------------------------
+		
+		void OnLookAt_SaveLamp(const tString &in asEntity, int alState)
+		{
+			tString sHint = GameDifficulty_GetSaveHint();
+			if(alState == 1)
+			{
+				if (Hint_GetCurrentEntry() != sHint)
+				{
+					Hint_StopHint();
+					Hint_RemoveFromGiven("Hints", sHint);
+					Hint_ShowHint_Hold("Hints", sHint, true, 1.5f, true, 15.f, true, true);
+				}
+			}
+			else
+			{
+				if (Hint_GetCurrentEntry() == sHint)
+					Hint_StopHint();
+					
+				Entity_SetPlayerLookAtCallback(asEntity, "");
+			}
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnInteract_SaveLamp(const tString &in asEntity)
+		{
+			////////////////
+			// About to get lit!
+			if (Lamp_GetLit(asEntity) == false)
+				SaveGameProgress();
+			else
+				Map_AddTimer(asEntity, 1.f, "OnTimer_SaveGameProgress");
+		
+			////////////////
+			// Add impulse
+			Entity_AddImpulse("SaveLamp_Easy_Chain", cMath_RandomSphereSurfacePoint(0.5f), true, true);
+		}
+		
+		//-------------------------------------------------------
+		
+		void OnTimer_SaveGameProgress(const tString&in asTimer)
+		{
+			Lamp_SetLit(asTimer, true, true);
+			SaveGameProgress();
+		}
+		
+		//-------------------------------------------------------
+		
+		void SaveGameProgress()
+		{
+			/////////////////
+			// Save game
+			SaveRoom_SaveGame(true, true);
+			
+			////////////////
+			// Hints
+			if (Hint_GetCurrentEntry() == GameDifficulty_GetSaveHint())
+				Hint_StopHint();
+			
+			GameStats_IncreaseEntryAmount(eHeroStats_TimesSaved);
+		}
+		
+		//-------------------------------------------------------
+			 
+		bool CanUse_Fuel(const tString &in asItemType, const tString &in asItemID, const tString &in asPickedEntity)
+		{
+			return asPickedEntity == "SaveLamp_SavingCostsFuel_Aux" && GameDifficulty_GetSettingValueByID_Int(eGameDifficultySetting_SaveSystem) == eDifficultySettingValue_SaveSystem_SavingCostsFuel;
+		}
+			
+		//-------------------------------------------------------
+			 
+		bool CanUse_FuelBottle(const tString &in asItemType, const tString &in asItemID, const tString &in asPickedEntity)
+		{
+			return CanUse_Fuel(asItemType, asItemID, asPickedEntity);
+		}
+		
+		//-------------------------------------------------------
+		
+		bool OnUse_FuelBottle(const tString &in asItemType, const tString &in asItemID, const tString &in asTargetEntity, const tString &in asItemEntity, float afTimeElapsed, float afTimeStep)
+		{
+			return OnUse_Fuel(asItemType, asItemID, asTargetEntity, asItemEntity, afTimeElapsed, afTimeStep);
+		}
+	
+		//-------------------------------------------------------
+
+		bool OnUse_Fuel(const tString &in asItemType, const tString &in asItemID, const tString &in asTargetEntity, const tString &in asItemEntity, float afTimeElapsed, float afTimeStep)
+		{
+			//////////////////
+			// Save
+			OnInteract_SaveLamp("SaveLamp_Easy_Lamp");
+			Lamp_SetLit("SaveLamp_Easy_Lamp", !Lamp_GetLit("SaveLamp_Easy_Lamp"), true);
+		
+			Sound_PlayGui("update/lantern_fill/fill", 1.f, eSoundEntryType_Gui);
+			
+			//////////////////
+			// Unequip & remove item
+			Item_RemoveFromInventory(asItemID);
+			Player_ChangeStateToNormal();
+			PlayerBody_StopAnimationLayer(ePlayerBodyAnimationLayer_LeftArm, 0.5);
+			PlayerBody_PlayLayerIdleAnimation(ePlayerBodyAnimationLayer_LeftArm, 0.5);
+			return true;
+		}
+		
+		//-------------------------------------------------------
+		
+		//} END Event: Unlock pillbox
+		
+	//} END EVENTS
+		
+	/////////////////////////////////////////
+	// START AUDIO SWEET
+	/////////////////////////////////////////
+	
+	//-------------------------------------------------------
+	
+	bool OnTrigger_PlayAirplaneSweet(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		Entity_SetActive("Trigger_AirplaneSweet",false);
+		Sound_Play("Sound_Airplane_*", 0.0f);
+		Sound_Play("Sound_AirplaneWood", 0.0f);
+		Sound_Play("Sound_AirplaneDebris", 0.0f);
+		return false;
+	}
+	
+	//-------------------------------------------------------
+	
+	void Trigger_SoundStinger_OnPlayerLookAt(const tString &in asEntity, int alState)
+	{
+		Music_PlayExt("Bunker_ChurchReveal.ogg", false, 0.06f, 1.0f, 2.0f, 1.0f, eMusicPrio_MinorEvent, false);
+		//Sound_PlayGui("nest/amb/sweet/church_stinger", 1.0);
+	}
+
+	//-------------------------------------------------------
+	
+	bool OnTrigger_PlayStairSweet(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		Entity_SetActive("Trigger_SoundStair",false);
+		Sound_Play("Sound_StairSweet", 0.0f);
+		return false;
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnTrigger_PlaySweetDebris(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		Sound_CreateAtEntity("Sound_LadderDebris", "nest/amb/sweet/ladder_debris", "Player");
+		Entity_SetActive("Trigger_SoundLadderDebris",false);
+		return false;
+	}
+	
+	//-------------------------------------------------------
+	
+	bool OnTrigger_PlaySweetDescend(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		Sound_Play("Sound_LadderDescend", 0.0f);
+		Entity_SetActive("Trigger_SoundLadderDescend",false);
+		return false;
+	}
+	
+	//-------------------------------------------------------
+	
+	void dogtag_monet_1_OnPlayerInteract(const tString &in asEntity)
+	{
+		Entity_SetActive("Trigger_SoundLadderDescend",true);
+	}
+	
+	//-------------------------------------------------------
+
+	// AUDIO SWEET END
+	
+	/////////////////////////////////////////
+	// START MUSIC
+	/////////////////////////////////////////
+	
+	//-------------------------------------------------------
+
+	bool OnTrigger_PlayNestMusic(const tString &in asParent, const tString &in asChild, int alState)
+	{
+		Music_Stop(15.0f, eMusicPrio_BgAmb);
+		Map_RemoveTimer("Timer_HubMusic");
+		Map_RemoveTimer("Timer_MusicStartRand");
+		Map_AddTimer("Timer_LevelMusic", 25.0f, "OnTimer_PlayNestMusic");
+		return false;
+	}
+	
+	//-------------------------------------------------------
+
+	void OnTimer_PlayNestMusic(const tString &in asTimer)
+	{
+		Map_AddTimer("Timer_MusicStop", cMath_RandRectf(240.f, 300.f), "OnTimer_StopMusic");
+		Music_PlayExt("Bunker_Nest.ogg", true, 0.14f, 1.0f, 15.0f, 1.0f, eMusicPrio_SceneAmb, true);
+	}
+
+	//-------------------------------------------------------
+
+	void OnTimer_StopMusic(const tString &in asTimer)
+	{
+		Music_Stop(15.0f, eMusicPrio_SceneAmb);
+		Map_AddTimer("Timer_MusicRand", cMath_RandRectf(240.f, 270.f), "OnTimer_PlayNestMusic");
+	}
+
+	//-------------------------------------------------------
+	
+	//MUSIC_END
+
+	//-------------------------------------------------------
+}

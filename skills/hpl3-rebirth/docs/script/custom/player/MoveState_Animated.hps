@@ -1,0 +1,304 @@
+//------------------------------------------------------------
+// the player movement is animated but interaction remains as in the normal move state
+//------------------------------------------------------------
+#include "interfaces/MoveState_Interface.hps"
+#include "base/InputHandler_Types.hps"
+#include "player/Player_Types.hps"
+
+#include "helpers/helper_player.hps"
+#include "helpers/helper_player_custom.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_items.hps"
+
+//------------------------------------------------------------
+
+const float gfYawMaxAngle = 60.f;
+const float gfPitchMaxAngle = 60.f;
+
+//------------------------------------------------------------
+
+class cScrMoveState_Animated : iScrMoveState, iScrMoveState_Interface
+{	
+	//------------------------------------------------------------
+	
+	void Init(){}
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap @apMap){}
+	
+	//------------------------------------------------------------
+	
+	void OnEnterState(int alPrevStateId)
+	{
+        mbFocused = false;
+        Player_SetDisableCrawling(true);
+		Player_SetCrouching(false);
+		Player_CancelJump();
+		Player_SetCrouchDisabled(true);
+		Player_SetCrouchActionDisabled(true);
+		Player_SetJumpDisabled(true);
+        Player_SetAllowCheckBaby(false);
+        
+        Item_PutAway(eItemHandlerHand_Left);
+        Item_PutAway(eItemHandlerHand_Right);
+		
+		iCharacterBody@ pBody = cLux_GetPlayer().GetCharacterBody();
+		if (pBody!=null)
+		{
+			pBody.StopMovement();
+            pBody.SetGravityActive(false);
+            pBody.SetPhysicsBodyActive(false);
+            pBody.SetTestCollision(false);
+            mvStartPosition = pBody.GetFeetPosition();
+		}
+        
+        cCamera @pCam = cLux_GetPlayer().GetCamera();
+		if (pCam!=null)
+            mfTargetPitch = pCam.GetPitch();
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnLeaveState(int alNextStateId)
+	{
+        Player_SetDisableCrawling(false);
+		Player_SetCrouchDisabled(false);
+		Player_SetCrouchActionDisabled(false);
+		Player_SetJumpDisabled(false);
+        Player_SetAllowCheckBaby(true);
+        
+        iCharacterBody@ pBody = cLux_GetPlayer().GetCharacterBody();
+		if (pBody!=null)
+		{
+            pBody.SetGravityActive(true);
+            pBody.SetTestCollision(true);
+            pBody.SetPhysicsBodyActive(true);
+		}
+        
+        mbFocused = false;
+	}
+	
+	//------------------------------------------------------------
+	
+	void Reset(){}
+
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep)
+	{
+		iCharacterBody@ pBody = cLux_GetPlayer().GetCharacterBody();
+		if (pBody==null) return;
+		
+		cCamera @pCam = cLux_GetPlayer().GetCamera();
+		if (pCam==null) return;
+        
+        iLuxEntity@ pPosEnt = cLux_GetCurrentMap().GetEntityByName(msPositionEntity);
+        if (pPosEnt==null) return;
+        
+        cMatrixf mtxEnt = pPosEnt.GetMatrix();
+        
+        ///////////////
+        // Set Position
+        cVector3f fPosEntPos = mtxEnt.GetTranslation();
+        cVector3f vPosDist = cMath_Vector3DistSqr(cLux_GetPlayer().GetCharacterBody().GetFeetPosition(), fPosEntPos);
+        cVector3f vMoveSpeed = vPosDist / mfBlendInTime;
+		
+		int xDir = mvStartPosition.x > fPosEntPos.x ? -1 : 1;
+		int yDir = mvStartPosition.y > fPosEntPos.y ? -1 : 1;
+		int zDir = mvStartPosition.z > fPosEntPos.z ? -1 : 1;
+		
+		mvStartPosition.x += xDir * vMoveSpeed.x * afTimeStep;
+		mvStartPosition.y += yDir * vMoveSpeed.y * afTimeStep;
+		mvStartPosition.z += zDir * vMoveSpeed.z * afTimeStep;
+		
+        pBody.SetFeetPosition(mvStartPosition, true);
+        
+        ///////////////
+        // Set Rotation
+        if (mbFocused==false)
+        {
+            ///////
+            // Yaw
+            cVector3f vFwd = mtxEnt.GetTranspose().GetForward();
+            float fPosEntRotYaw = 0.f;
+            fPosEntRotYaw -= cMath_ATan2(vFwd.x, -vFwd.z);
+            float fCurrentYaw = pBody.GetYaw();
+            float fYawRotDist = cMath_GetAngleDistanceRad(fCurrentYaw, fPosEntRotYaw);
+            float fDesiredYaw = fCurrentYaw + fYawRotDist;
+            float fYawRotToAdd = (fYawRotDist / mfBlendInTime) * afTimeStep;
+            
+            mfTargetYaw = fDesiredYaw;
+            pBody.AddYaw(fYawRotToAdd);
+            
+            //////////////////////////////
+            // Rotate the body yaw accordingly
+            PlayerBody_SetAnimatedMoveBodyYaw(fDesiredYaw);
+            
+            ////////
+            // Pitch
+            float fCurrentPitch = pCam.GetPitch();
+            float fPitchRotDist = cMath_GetAngleDistanceRad(fCurrentPitch, 0.f);
+            float fDesiredPitch = 0.f;
+            float fPitchRotToAdd = (fPitchRotDist / mfBlendInTime) * afTimeStep;
+            mfTargetPitch = fDesiredPitch;
+            pCam.AddPitch(fPitchRotToAdd);
+			
+			/////////////////////
+            // If player is trying to break free stop pulling the camera earlier.
+            float fDestReachedDist = mbPlayerRotating ? 0.25f : 0.05f; 
+            
+            /////////////////////
+            // Is player focused?
+            mbFocused = cMath_Abs(cLux_GetPlayer().GetCharacterBody().GetYaw() - mfTargetYaw) < fDestReachedDist;
+        }
+		
+		////////////////
+        // Check whether the player is trying to break free per frame
+        mbPlayerRotating=false;
+	}
+    
+	//------------------------------------------------------------
+	
+	bool OnAction(int alAction, bool abPressed)
+	{
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	bool OnAnalogInput(int alAnalogId, const cVector3f &in avAmount)
+	{
+        ///////
+        // Look
+		if(alAnalogId == eAnalogType_Look || alAnalogId == eAnalogType_GamepadRotate)
+		{
+			//////////////////
+			// Limited cam rot
+			iCharacterBody @pBody = cLux_GetPlayer().GetCharacterBody();
+			cCamera @pCam = cLux_GetPlayer().GetCamera();
+            
+			if (pBody!=null && pCam!=null)
+			{
+				float fCamSpeedMul = Player_GetLookSpeedMul();
+				fCamSpeedMul*=0.5f;
+				
+				///////
+				// Yaw
+				float fYaw = GetCameraMaxAngleMultiplier(avAmount.x, pBody.GetYaw(), mfTargetYaw, gfYawMaxAngle) * fCamSpeedMul;
+				pBody.AddYaw(fYaw);
+				
+				////////
+				// Pitch
+				float fPitch = GetCameraMaxAngleMultiplier(avAmount.y, pCam.GetPitch(), mfTargetPitch, gfPitchMaxAngle) * fCamSpeedMul;
+				pCam.AddPitch(fPitch);
+			}
+			
+            mbPlayerRotating = true;
+			return false;
+		}
+        
+        ////////
+		// Don't Move
+		if(alAnalogId == eAnalogType_Move || alAnalogId == eAnalogType_GamepadMove)
+		{
+			return false;	
+		}
+		
+		return true;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// CHARACTER CALLBACK
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void CharBody_GravityCollide(iCharacterBody@ apCharBody, iPhysicsBody@ apBody, cCollideData @apCollideData)
+	{
+	
+	}
+	
+	//------------------------------------------------------------
+	
+	void CharBody_HitGround(iCharacterBody@ apCharBody,const cVector3f &in avVel)
+	{
+		
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL FUNCTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetupAnimatedMove()
+	{
+        msPositionEntity = cScript_GetGlobalArgString(0);
+        mfBlendInTime = cScript_GetGlobalArgFloat(1);
+    }
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		return afStartY;
+	}
+
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// FUNCTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	float GetCameraMaxAngleMultiplier(float afInputAmount, const float afCurAngle, const float afAngleToTarget, float afMaxAngle)
+	{
+		afInputAmount*=-1;
+		float fDistanceFromInitAngle = cMath_GetAngleDistanceRad(afAngleToTarget, afCurAngle);
+		bool bRotatingTowardsTarget = cMath_Sign(afInputAmount) == cMath_Sign(fDistanceFromInitAngle);
+		float fAngleSpeedMul = 1;
+		
+		if (bRotatingTowardsTarget)
+		{
+			float fMaxAngle = cMath_ToRad(cMath_Max(0.f, afMaxAngle));
+			fAngleSpeedMul = 1 - cMath_Abs(fDistanceFromInitAngle / fMaxAngle);
+			fAngleSpeedMul = cMath_Clamp(fAngleSpeedMul, 0.f, 1.f);
+		}
+		
+		return afInputAmount * fAngleSpeedMul;
+	}
+    
+    //------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+    
+	float mfTargetYaw = 0.f;
+	float mfTargetPitch = 0.f;
+    
+    bool mbFocused=true;
+	bool mbPlayerRotating = false;
+    
+    tString msPositionEntity="";
+    
+    float mfBlendInTime = 0.3f;
+
+    cVector3f mvStartPosition;
+    
+	//------------------------------------------------------------
+}

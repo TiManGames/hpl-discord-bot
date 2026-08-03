@@ -1,0 +1,426 @@
+#include "interfaces/UserModule_Interface.hps"
+#include "custom/modules/ModuleInterfaces_Custom.hps"
+#include "base/Base_Types.hps"
+#include "base/Inputhandler_Types.hps"
+#include "helpers/helper_imgui.hps"
+#include "helpers/helper_modules.hps"
+#include "helpers/helper_modules_custom.hps"
+#include "helpers/helper_game.hps"
+#include "custom/helpers/helper_menu.hps"
+
+//----------------------------------------------------------------------------------------
+
+const float gfSaveRoom_ShowSaveIconTime = 1.5f;
+const float gfSaveRoom_SaveLampAutoTurnOffTime = 60.f * 5.f; // 5 min
+const float gfSaveHintTime = 60.f * 10.f; // 10 min
+
+//----------------------------------------------------------------------------------------
+
+class cScrSaveRoomHandler : iScrUserModule, iScrUserModule_Interface, iScrSaveRoomHandler_Interface
+{
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+	}
+		
+	//------------------------------------------------------------
+	
+	void LoadUserConfig() {}
+	void SaveUserConfig() {}
+	
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// MAP LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnMapEnter(cLuxMap@ apMap)
+	{
+		UpdateIsInSaveRoomMap();
+	}
+
+	//------------------------------------------------------------
+
+	void OnMapLeave(cLuxMap@ apMap)
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	void PreloadData(cLuxMap@ apMap) {}
+	void CreateWorldEntities(cLuxMap@ apMap) {}
+	void DestroyWorldEntities(cLuxMap@ apMap) {}
+	void OnEnterContainer(const tString&in asOldContainer) {}
+	void OnLeaveContainer(const tString&in asNewContainer) {}
+	
+	//------------------------------------------------------------
+	
+	void Reset()
+	{
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////	
+	
+	//------------------------------------------------------------
+	
+	void VariableUpdate(float afDeltaTime)
+	{
+		//////////////////
+		// Turn off lamp after a while!
+		if (mbLampAutoTurnOff && mfLampAutoTurnOffCount >= 0.f)
+		{
+			mfLampAutoTurnOffCount += afDeltaTime;
+			
+			if (mbSaveRoomIsInCurrentMap &&
+				mfLampAutoTurnOffCount >= gfSaveRoom_SaveLampAutoTurnOffTime)
+			{
+				mfLampAutoTurnOffCount = -1.f;				
+				Lamp_SetLit(msLamp, false, true);
+			}
+		}
+		
+		/////////////////
+		// Update player in save room
+		mfUpdatePlayerInSaveRoomMessageCount -= afDeltaTime;
+		if (mfUpdatePlayerInSaveRoomMessageCount <= 0.f)
+		{
+			mfUpdatePlayerInSaveRoomMessageCount = 1.f;
+			
+			bool bPrevPlayerIsInSaveRoom = mbPlayerIsInSaveRoom;
+			mbPlayerIsInSaveRoom = GetPlayerIsInSaveRoom();
+			
+			if (mbPlayerIsInSaveRoom != bPrevPlayerIsInSaveRoom)
+			{				
+				/////////////////
+				// Broadcast message
+				int lMessage = mbPlayerIsInSaveRoom ? eCustomEntityMessage_PlayerEnterSaveRoom : eCustomEntityMessage_PlayerLeaveSaveRoom;
+
+				array<iLuxEntity@> vAgents;
+				cLux_GetCurrentMap().GetEntityArray("*", eLuxEntityType_Agent, "", vAgents);
+				for (int i = 0; i < vAgents.size(); ++i)
+				{
+					vAgents[i].BroadcastMessage(lMessage, null, cVector3f(0.f), 0);
+				}
+			}
+		}
+
+		///////////////////////
+		// Update the save hint
+		if (mbShowSaveGameHint)
+		{
+			mfShowSaveGameHintTimer += afDeltaTime;
+			
+			if (mfShowSaveGameHintTimer >= gfSaveHintTime)
+			{
+				mfShowSaveGameHintTimer = 0.f;
+				cLux_AddDebugMessage("show save hint");
+				
+				//Hint_ShowHint("Hints", "HintSaveHint", false, 1.5f, false);
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void Update(float afTimeStep) {}
+	void PostUpdate(float afTimeStep) {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnAction(int alAction, bool abPressed) 
+	{
+		if (abPressed == false)
+			return;
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnAnalogInput(int alAnalogId, const cVector3f &in avAmount) {}	
+	void OnExitPressed() {}
+	
+	//------------------------------------------------------------
+	
+	void AppGotInputFocus() {}
+	void AppLostInputFocus() {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPERS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void UpdateIsInSaveRoomMap()
+	{
+		mbSaveRoomIsInCurrentMap = (cLux_GetCurrentMap().GetEntityByName(msLamp, eLuxEntityType_Prop) !is null);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INTERFACE
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------	
+	
+	void Setup(const tString &in asLamp, const tString &in asRoomArea)
+	{
+		msLamp = asLamp;
+		msRoomArea = asRoomArea;
+		
+		UpdateIsInSaveRoomMap();
+	}
+	
+	//------------------------------------------------------------
+	
+	void SaveGame(bool abShowIcon, bool abManualSave)
+	{
+		//////////////
+		// Save
+		PauseMenu_ResetBlur();
+		
+		cLux_GetSaveHandler().AutoSave(false, true);		
+		
+		if (abManualSave)
+		{
+			mlManualSaveCount++;
+			
+			///////////////////
+			// After saving twice start updtating the time between saves.
+			if (mlManualSaveCount > 1)
+				GameStats_UpdateTimeBetweenSaves();
+		}
+
+		//////////////
+		// Reset count
+		mfLampAutoTurnOffCount = 0.f;
+		
+		//////////////
+		// Draw stuff
+		if (abShowIcon)
+		{
+			mfShowSaveIconCount = gfSaveRoom_ShowSaveIconTime;		
+			mBaseObj.Timer_Add("Timer_ShowSavedMessage", 0.5f, "OnTimer_ShowSavedMessage", false, false);
+		}
+		
+		/////////////////////////
+		// Reset the save game hint timer
+		mfShowSaveGameHintTimer = 0.f;
+		
+		GameStats_Save();
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnTimer_ShowSavedMessage(uint64 alId)
+	{
+		Hint_ShowPrompt("Hints", "HintGameSaved", false, 1.f, false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void LoadLastSave()
+	{
+		cLux_GetSaveHandler().LoadLastSave();
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetPlayerIsInSaveRoom()
+	{
+		if (msRoomArea == "") return false;
+		if (mbSaveRoomIsInCurrentMap == false) return false;
+		
+		/////////////////
+		// Setup vars
+		cLuxMap@ pMap = cLux_GetCurrentMap();
+		iCharacterBody@ pCharBody = cLux_GetPlayer().GetCharacterBody();
+		
+		if (pMap is null) return false;
+		if (pCharBody is null) return false;
+		
+		/////////////////
+		// Player inside area?
+		array<iLuxEntity@> vEnts;
+		pMap.GetEntityArray(msRoomArea, eLuxEntityType_Area, "", vEnts);
+		
+		for (int i = 0; i < vEnts.size(); ++i)
+		{
+			cLuxArea@ pArea = cLux_ToArea(vEnts[i]);
+			if (pArea is null) continue;
+			if (pArea.IsActive() == false) continue;
+			if (pArea.CheckCharacterCollision(pCharBody, pMap))
+				return true;
+		}
+		
+		return false;
+	}
+	
+	//------------------------------------------------------------
+	
+	int GetManualSaveCount()
+	{
+		return mlManualSaveCount;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetSaveHintActive(bool abX)
+	{
+		if (abX==false)
+			mfShowSaveGameHintTimer = 0;
+			
+		mbShowSaveGameHint = abX;
+	}
+
+	//------------------------------------------------------------
+	
+	void SetupSaveLamp(bool abSubLevel, const tString &in asLampEntity)
+	{
+		if (GameDifficulty_GetSettingValueByID_Int(eGameDifficultySetting_SaveSystem) == eDifficultySettingValue_SaveSystem_NoSaving)
+			return;
+			
+		if (abSubLevel && GameDifficulty_GetSettingValueByID_Int(eGameDifficultySetting_SaveLampLocations) != eDifficultySettingValue_SaveLampLocations_EverySubLevel)
+			return;
+			
+		if (abSubLevel)
+			Entity_SetActive("SaveLamp_Easy_*", true);
+		
+		//////////////////////////////
+		// Setup Saving Costs Fuel
+		if (GameDifficulty_GetSettingValueByID_Int(eGameDifficultySetting_SaveSystem) == eDifficultySettingValue_SaveSystem_SavingCostsFuel)
+		{
+			Entity_SetPlayerInteractCallback(asLampEntity, "", false);
+			Entity_SetActive("SaveLamp_SavingCostsFuel_Aux", true);
+		}
+	}
+
+	//------------------------------------------------------------
+
+	/////////////////////////////////////////
+	// GUI
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+
+	void OnGui(float afTimeStep) 
+	{
+		//////////////////
+		// Save icon/label
+		{
+			//////////////////
+			// Time
+			mfShowSaveIconCount -= afTimeStep;
+			if (mfShowSaveIconCount < 0.f)
+				mfShowSaveIconCount = 0.f;
+			
+			//////////////////
+			// Alpha
+			float fAlphaGoal = mfShowSaveIconCount > 0.f ? 1.f : 0.f;
+			mfSaveIconAlpha = cMath_IncreaseTo(mfSaveIconAlpha, afTimeStep, fAlphaGoal);
+			
+			//////////////////
+			// Draw label
+			// TODO: Use icon for this instead
+			cImGuiLabelData data = ImGui_GetDefaultLabel();
+			data.mFont.SetFile(FontHandler_GetFont(eFontType_Hints, 56));
+			data.mColorBase = cColor(1.f, 1.f, 1.f, mfSaveIconAlpha);
+			data.mFontAlign = eFontAlign_Center;
+			data.mFont.mvSize = cVector2f(36.f);
+			
+			//ImGui_DoLabelExt("Saving...", data, ImGui_NrmPos(0.475f, 0.925f, 1.f));
+		}
+		
+		//////////////////
+		// Loading icon/label
+		{
+			if (cLux_IsStreamingMap() && cLux_IsReadyToChangeMap() == false)
+				mfShowLoadIconCount = 1.f; 
+			
+			//////////////////
+			// Time
+			mfShowLoadIconCount -= afTimeStep;
+			if (mfShowLoadIconCount < 0.f)
+				mfShowLoadIconCount = 0.f;
+			
+			//////////////////
+			// Alpha
+			float fAlphaGoal = mfShowLoadIconCount > 0.f ? 1.f : 0.f;
+			mfLoadIconAlpha = cMath_IncreaseTo(mfLoadIconAlpha, afTimeStep, fAlphaGoal);
+			
+			//////////////////
+			// Draw label
+			// TODO: Use icon for this instead
+			cImGuiLabelData data = ImGui_GetDefaultLabel();
+			data.mFont.SetFile(FontHandler_GetFont(eFontType_Hints, 56));
+			data.mColorBase = cColor(1.f, 1.f, 1.f, mfLoadIconAlpha);
+			data.mFontAlign = eFontAlign_Center;
+			data.mFont.mvSize = cVector2f(24.f);
+			
+			ImGui_DoLabelExt("Loading...", data, ImGui_NrmPos(0.925f, 0.95f, 1.f));
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnDraw(float afFrameTime) {}
+	void OnPostRender(float afFrameTime) {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	float DrawDebugOutput(cGuiSet@ apSet, iFontData@ apFont, float afStartY)
+	{
+		return afStartY;
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// VARIABLES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	bool mbSaveRoomIsInCurrentMap = false;
+	float mfShowSaveIconCount = -1.f;
+	float mfShowLoadIconCount = -1.f;
+	float mfSaveIconAlpha = 0.f;
+	float mfLoadIconAlpha = 0.f;
+	float mfLampAutoTurnOffCount = -1.f;
+	bool mbLampAutoTurnOff = true;
+	float mfUpdatePlayerInSaveRoomMessageCount = 1.f;
+	bool mbPlayerIsInSaveRoom = false;
+	tString msLamp = "";
+	tString msRoomArea = "";
+	int mlManualSaveCount = 0;
+	bool mbShowSaveGameHint = false;
+	float mfShowSaveGameHintTimer = 0.f;
+	
+	//------------------------------------------------------------
+}

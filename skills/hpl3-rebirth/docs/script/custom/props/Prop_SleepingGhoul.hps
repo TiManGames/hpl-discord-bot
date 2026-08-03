@@ -1,0 +1,702 @@
+#include "props/Prop_Rigid.hps"
+#include "custom/helpers/helper_agent.hps"
+#include "custom/helpers/helper_modules_custom.hps"
+#include "custom/helpers/helper_items.hps"
+#include "helpers/helper_audio.hps"
+
+//------------------------------------------------------------
+
+enum eSleepingGhoulProximity
+{
+	eSleepingGhoulProximity_Touching,
+	eSleepingGhoulProximity_Close,
+    eSleepingGhoulProximity_Near,
+    eSleepingGhoulProximity_OldNear
+}
+
+//------------------------------------------------------------
+
+enum eSleepingGhoulType
+{
+	eSleepingGhoulType_Alert,
+	eSleepingGhoulType_Screamer,
+	eSleepingGhoulType_Old
+}
+
+//------------------------------------------------------------
+
+class cScrPropSleepingGhoul : iScrProp, iScrProp_Interface
+{
+    //------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INIT
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		mlDisturbanceCount = 0;
+		mlDisturbanceThreshold = 4;
+		mbManualReact = false;
+		mbIsReacting = false;
+		mbIsAwake = false;
+		mbSensesActive = true;
+		mbRandDeafness = false;
+		mbForceReact = false;
+		
+		msWakeUpAnim = "";
+		msAgentEntity = "";
+		msWakeUpCallback = "";
+		msCustomStirAnim = "";
+		mType = eSleepingGhoulType_Alert;
+		
+		@mpSoundListener = null;
+		@mpLightSensor = null;
+		@mpProximitySensor = null;
+		@mpFearThreat = null;
+		
+		mBaseObj.SetScriptCollisionCallbackActive(true);
+		mBaseObj.SetAutoSleep(true);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// LOADING
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject@ apVars, cResourceVarsObject@ apInstanceVars)
+	{
+		/////////////////////////////
+		// Setup vars
+		tString sType = apInstanceVars.GetVarString("SleeperType", "Alert");
+		if (sType == "Screamer") 	mType = eSleepingGhoulType_Screamer;
+		else if (sType == "Alert")	mType = eSleepingGhoulType_Alert;
+		else if (sType == "Old")	mType = eSleepingGhoulType_Old;
+		
+		msWakeUpAnim = apVars.GetVarString("WakeUpAnim", "wakeup_lean");
+		msAgentEntity = apInstanceVars.GetVarString("AgentEntity", "");
+		msWakeUpCallback = apInstanceVars.GetVarString("WakeUpCallback", "");
+        mlDisturbanceThreshold = apInstanceVars.GetVarInt("DisturbanceThreshold", 4);
+		bool bPlayIdleSound = apInstanceVars.GetVarBool("PlayIdleSound", false);
+		mbRandDeafness = apInstanceVars.GetVarBool("RandDeafness", false);
+		
+		/////////////////////////////
+		// Setup components
+		@mpSoundListener = cLux_CreateEntityComponent_SoundListener(mBaseObj);
+		mpSoundListener.LoadFromInstanceVariables(apInstanceVars);
+		mpSoundListener.SetHearRadius(1.f);
+		mpSoundListener.SetSoundRadiusMul(0.75f);
+
+        @mpProximitySensor = cLux_CreateEntityComponent_ProximitySensor(mBaseObj);
+        mpProximitySensor.AddState(eSleepingGhoulProximity_Touching, 1.f, 1.2f, true, false);
+        mpProximitySensor.AddState(eSleepingGhoulProximity_Close, 1.8f, 2.f, true, false);
+        mpProximitySensor.AddState(eSleepingGhoulProximity_Near, 2.1f, 2.3f, true, false);
+        mpProximitySensor.AddState(eSleepingGhoulProximity_OldNear, 3.9f, 4.f, true, false);
+		
+		@mpLightSensor = cLux_CreateEntityComponent_LightSensor(mBaseObj);
+		
+		if (apInstanceVars.GetVarBool("Threat_Enabled", false))
+		{
+			@mpFearThreat = UserComponent_FearThreat_Create(mBaseObj);
+			mpFearThreat.SetupAfterLoad(apWorld, apVars, apInstanceVars);
+		}
+		
+		////////////////////////////
+		// Setup behaviour
+		mBaseObj.PlayAnimation("idle", 0.3f, true);
+		
+		if (apInstanceVars.GetVarBool("RepetetiveIdle", false))
+			mBaseObj.Timer_Add("Timer_PlayRepetitiveIdle", cMath_RandRectf(2.5f, 4.f), "OnTimer_PlayRepetitiveIdle");
+		
+		if (bPlayIdleSound)
+		{
+			mBaseObj.Timer_Remove("Timer_PlayIdleSound");
+			mBaseObj.Timer_Add("Timer_PlayIdleSound", cMath_RandRectf(10.f, 20.f), "OnTimer_PlayIdleSound");
+		}	
+		
+		mBaseObj.GetMeshEntity().SetVariableAnimationUpdate(true);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GENERAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void ResetProperties() {}	
+	void BeforeEntityDestruction() {}
+	
+	//------------------------------------------------------------
+	
+	void OnRecieveMessage(int alMessageId, cLuxEntityMessageData @apData)
+	{    
+		mBaseObj.WakeUp();
+		
+		/////////////////////////////
+		// Player dead
+		if (alMessageId == eLuxEntityMessage_PlayerDead)
+		{
+			if (mbIsAwake)
+			{				
+				//////////////////////////
+				// Reset screamers and oldies
+				if (mType == eSleepingGhoulType_Screamer || mType == eSleepingGhoulType_Old)
+				{
+					mlDisturbanceCount = 0;
+					mbIsReacting = false;
+					mbIsAwake = false;
+
+					mBaseObj.PlayAnimation("idle", 0.3f, true);
+					return;
+				}
+				
+				/////////////////////
+				// Deactivate alert ones
+				mBaseObj.SetActive(false);
+			}
+			else
+				mlDisturbanceCount = 0;
+		}
+        
+        if (mbIsAwake) return;
+
+        /////////////////////////////
+        // Stop stir
+        if (alMessageId == eLuxEntityMessage_AnimationOver)
+        {			
+			if (mbIsReacting || mBaseObj.Timer_Exists("Timer_ReactCD") || mBaseObj.Timer_Exists("Timer_HitByLightCD"))
+			{
+				 mBaseObj.PlayAnimation("idle", 0.3f, true);
+				 mbIsReacting = false;
+			}
+        }
+		
+		if (mbSensesActive == false || mbManualReact) return;
+        
+		///////////////////////
+		// Proximity
+        if (alMessageId == eLuxEntityMessage_EnterProximity)
+        {			
+			if (mType == eSleepingGhoulType_Old && apData.mlX == eSleepingGhoulProximity_OldNear)
+			{
+				ForceWakeUp(0.1f, 0.2f);
+				return;
+			}
+			
+            if (apData.mlX == eSleepingGhoulProximity_Touching)
+            {
+                ForceWakeUp(0.1f, 0.1f);
+            }
+            else if (apData.mlX == eSleepingGhoulProximity_Close)
+            {
+				React();
+            }
+            else if (apData.mlX == eSleepingGhoulProximity_Near)
+            {				
+                if (Item_IsLightSourceActive() || ItemType_GetFirstInInventory("Lighter") == Item_GetHeld(eItemHandlerHand_Left))
+					React();
+            }
+        }
+        else if (alMessageId == eLuxEntityMessage_LeaveProximity)
+        {			
+            if (apData.mlX == eSleepingGhoulProximity_Close || apData.mlX == eSleepingGhoulProximity_Near)
+				mBaseObj.Timer_Remove("Timer_React");
+        }
+		
+		if (mType == eSleepingGhoulType_Old) return;
+        
+		////////////////////////
+		// Sound heard
+        if (alMessageId == eLuxEntityMessage_SoundHeard)
+        {						
+            if (mbIsReacting || mBaseObj.Timer_Exists("Timer_ReactCD")) return;
+			if (mbRandDeafness && cMath_RandRectl(0, 3) != 1) return;
+			
+			//////////////////////////
+			// Don't react to every single footstep!
+			if (apData.msX == "Footstep")
+			{
+				if (mBaseObj.Timer_Exists("Timer_FootstepCD")) return;				
+				mBaseObj.Timer_Add("Timer_FootstepCD", cMath_RandRectf(2.f, 4.f));
+			}
+            
+            //////////////////////////////
+            // Iterate ghouls, if sound made by them don't bother
+            cLuxEntityComponentIterator @pIt = cLux_GetCurrentMap().GetEntityComponentIterator(eLuxEntityComponentType_AttackDamage);
+            while (pIt.HasNext())
+            {
+                iLuxEntityComponent @pComp = pIt.Next();
+                cLuxAgent @pAgent = cLux_ToAgent(pComp.GetEntity());
+				
+				if (pAgent.IsActive() == false) continue;
+                if ((pAgent.GetCharBody().GetFeetPosition() - apData.mvX).SqrLength() < 2.5f * 2.5f) return;
+            }
+            
+            React(0.5f, 1.5f);
+        }
+		
+		////////////////////////
+		// Hit by lantern
+        if (alMessageId == eCustomEntityMessage_HitByFlashlight)
+        {
+			if (mbRandDeafness && cMath_RandRectl(0, 2) != 1) return;
+			
+			float fDistSqr = (mBaseObj.GetPosition() - cLux_GetPlayer().GetCharacterBody().GetFeetPosition()).SqrLength();
+            if (mbIsReacting || mBaseObj.Timer_Exists("Timer_HitByLightCD") || fDistSqr > 9.f * 9.f) return;
+            
+            React(0.5f, 1.5f, true);
+        }
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnPhysicsCollision(iPhysicsBody @apBody, iPhysicsBody @apCollideBody, cPhysicsContactData&in aContactData)
+	{        
+        if (mbIsAwake) return;    
+        
+		/////////////////////////////////
+		// Wake up if hit hard!
+		if (aContactData.mfMaxContactNormalSpeed > 4.f)
+        {            
+            ForceWakeUp(0.1f, 0.3f);
+            return;
+        }
+        
+        if (mbIsReacting) return;
+		
+		React(0.1f, 0.2f);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// SPECIFIC
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+    
+	void React(float afMinDelay = 0.5f, float afMaxDelay = 2.f, bool bHitByLight = false)
+	{
+		if (mbForceReact == false && (mbIsReacting || mbIsAwake || mBaseObj.Timer_Exists("Timer_ReactCD"))) 
+			return;
+		
+		mbForceReact = false;
+		mbIsReacting = bHitByLight == false;
+		
+		if (bHitByLight) mBaseObj.Timer_Add("Timer_HitByLightCD", cMath_RandRectf(3.f, 5.f));
+		else			 mBaseObj.Timer_Add("Timer_ReactCD", cMath_RandRectf(3.f, 4.f));
+        
+		/////////////////////////////
+        // Only disturb if player is not hunted, or reason is light!
+		if (Blackboard_GetHuntingAgentCount() == 0 && bHitByLight == false)
+		{
+			mlDisturbanceCount++;
+			mBaseObj.Timer_Remove("Timer_ReduceDisturbance");
+			mBaseObj.Timer_Add("Timer_ReduceDisturbance", cMath_RandRectf(15.f, 20.f), "OnTimer_ReduceDisturbance");
+		}
+					
+		/////////////////////////////
+		// Stir or wake up!
+		if (mlDisturbanceCount < mlDisturbanceThreshold)
+			mBaseObj.Timer_Add("Timer_Stir", cMath_RandRectf(afMinDelay, afMaxDelay), "OnTimer_Stir");
+		else
+			ForceWakeUp();
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnTimer_ReduceDisturbance(uint64 alId)
+	{
+		///////////////////////////////////
+		// Decrease disturbance level if not bothered by player
+		if (mbIsAwake || mbIsReacting || mBaseObj.Timer_Exists("Timer_Stir")) return;
+
+		mlDisturbanceCount--;
+		if (mlDisturbanceCount == 0) return;
+		
+		mBaseObj.Timer_Add("Timer_ReduceDisturbance", cMath_RandRectf(15.f, 20.f), "OnTimer_ReduceDisturbance");
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnTimer_Stir(uint64 alId)
+	{
+		tString sAnim = msCustomStirAnim == "" ? "stir" : msCustomStirAnim;
+		msCustomStirAnim = "";
+		
+		mBaseObj.PlayAnimation(sAnim);
+	}
+		
+	//------------------------------------------------------------
+	
+	void ForceWakeUp(float afMinDelay = 0.5f, float afMaxDelay = 1.5f)
+	{
+		if (mbIsAwake) return;
+		
+		////////////////////////////
+		// If many are already awake, just scream
+		if (mType == eSleepingGhoulType_Alert && Blackboard_GetAgentCount() >= 4)
+		{			
+			mbIsReacting = true;			
+			mBaseObj.PlayAnimation("scream", 0.3f, true);
+			
+			mBaseObj.GetMap().BroadcastSoundHeardEvent("ScriptedEvent", mBaseObj.GetPosition(), 25.f, 5);
+			mBaseObj.Timer_Add("Timer_UpdateScreamer", 6.f, "OnTimer_UpdateScreamer");
+			return;
+		}
+		
+		////////////////////////////
+		// Setup awake
+		mbIsAwake = true;
+		
+		mBaseObj.Timer_Remove("Timer_React");
+		mBaseObj.Timer_Remove("Timer_Stir");
+		
+		mBaseObj.Timer_Add("Timer_ForceWakeUp", cMath_RandRectf(afMinDelay, afMaxDelay), "OnTimer_ForceWakeUp");
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnTimer_ForceWakeUp(uint64 alId)
+	{		
+		if (mType == eSleepingGhoulType_Screamer)
+		{
+			////////////////////////////
+			// Scream!
+			mbIsReacting = true;			
+			mBaseObj.PlayAnimation("scream", 0.3f, true);
+			
+			mBaseObj.GetMap().BroadcastSoundHeardEvent("ScriptedEvent", mBaseObj.GetPosition(), 25.f, 5);
+			
+			if (mlDisturbanceThreshold > -1)
+				mBaseObj.Timer_Add("Timer_UpdateScreamer", 6.f, "OnTimer_UpdateScreamer");
+            
+			/////////////////////////////
+			// Map callback
+			tString sMethodName = "void " + msWakeUpCallback + "(const tString &in asEntity)";
+			cLuxMap@ pMap = mBaseObj.GetMap();
+			if (pMap.ScriptMethodExists(sMethodName) && pMap.ScriptPrepare(sMethodName))
+			{	
+				tString sSleeper = mBaseObj.GetName();
+				pMap.SetArgString(0, sSleeper);
+				pMap.ScriptExecute();
+			}
+		}
+		else if (mType == eSleepingGhoulType_Alert)
+		{        
+			///////////////////////////
+			// Wake up agent
+			mBaseObj.PlayAnimation(msWakeUpAnim, 0.1f, false, false);
+			
+			iLuxEntity@ pEnt = mBaseObj.GetMap().GetEntityByName(msAgentEntity);			
+			if (pEnt is null)
+			{
+				Error("No agent with name '" + msAgentEntity + "' found to wake up for '" + mBaseObj.GetName() + "'");
+				return;
+			}
+			
+			cLuxAgent@ pAgent = cLux_ToAgent(pEnt);		
+			pAgent.SetActive(true);
+			pAgent.GetMeshEntity().SetVisible(false);
+			pAgent.GetCharBody().SetTestCollision(false);
+			pAgent.GetCharBody().SetPhysicsBodyActive(false);			
+			
+			Ghoul_CommandWakeUp_Execute(msAgentEntity, msWakeUpAnim, true, msWakeUpCallback);
+			
+			mBaseObj.Timer_Add("Timer_SwapToAgent", 0.1f, "OnTimer_SwapToAgent");		
+		}
+		else if (mType == eSleepingGhoulType_Old)
+		{
+			////////////////////////////
+			// Oldie waves its arms!
+			mBaseObj.PlayAnimation("stir", 0.5f, true);			
+			mBaseObj.Timer_Add(0, 0.25f, "OnTimer_UpdateOld");
+			
+			/////////////////////////////
+			// Map callback
+			tString sMethodName = "void " + msWakeUpCallback + "(const tString &in asEntity)";
+			cLuxMap@ pMap = mBaseObj.GetMap();
+			if (pMap.ScriptMethodExists(sMethodName) && pMap.ScriptPrepare(sMethodName))
+			{	
+				tString sSleeper = mBaseObj.GetName();
+				pMap.SetArgString(0, sSleeper);
+				pMap.ScriptExecute();
+			}
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnTimer_SwapToAgent(uint64 alId)
+	{
+		///////////////////////////
+		// Align agent anim with sleeper and do the swap
+		cLuxAgent@ pAgent = cLux_ToAgent(mBaseObj.GetMap().GetEntityByName(msAgentEntity));
+		cAnimationState@ pState = mBaseObj.GetMeshEntity().GetAnimationStateFromName(msWakeUpAnim);
+		
+		pAgent.GetMeshEntity().GetAnimationStateFromName(msWakeUpAnim).SetRelativeTimePosition(pState.GetRelativeTimePosition());		
+		pAgent.GetMeshEntity().SetVisible(true);
+		
+		mBaseObj.SetActive(false); 
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnTimer_UpdateOld(uint64 alId)
+	{
+		///////////////////////////////
+		// Keep waving?
+		if ((mbManualReact == false && 
+			(mBaseObj.GetPosition() - mBaseObj.GetMap().GetPlayerEntity().GetPosition()).SqrLength() > 4.5f * 4.5f) ||
+			(mbManualReact && mbSensesActive == false))
+		{
+			mBaseObj.PlayAnimation("idle", 0.3f, true);
+			mbIsAwake = false;
+			mbIsReacting = false;			
+			return;
+		}
+		
+		cMeshEntity@ pMeshEntity = mBaseObj.GetMeshEntity();	
+		
+		cVector3f vDir = cLux_GetPlayer().GetCharacterBody().GetFeetPosition() - mBaseObj.GetPosition();
+		vDir.y = 0.f;
+		vDir.Normalize();
+		
+		cVector3f vFwd = mBaseObj.GetMatrix().GetTranspose().GetForward() * -1.f;		
+		float fDot = cMath_Vector3Dot(vFwd, vDir);
+			
+		if (cMath_Abs(fDot) < 0.3f)
+		{
+			if (pMeshEntity.GetAnimationStateFromName("stir").IsActive() == false)
+				mBaseObj.PlayAnimation("stir", 0.5f, true);
+		}			
+		else if (fDot >= 0.3f)
+		{
+			if (pMeshEntity.GetAnimationStateFromName("stir_up").IsActive() == false)
+				mBaseObj.PlayAnimation("stir_up", 0.5f, true);
+		}			
+		else if (fDot <= -0.3f)
+		{
+			if (pMeshEntity.GetAnimationStateFromName("stir_down").IsActive() == false)
+				mBaseObj.PlayAnimation("stir_down", 0.5f, true);
+		}		
+		
+		// TODO: Remove temp Hank stuff
+		if (cMath_RandRectl(0, 3) == 3 && mBaseObj.GetVarBool("IsHank") == false && mBaseObj.GetSoundEntityFromName("OldStir") == null)
+		{
+			tString sSound = "creatures/vocalisations/creature/ghoul/ghoul_sick_idle";
+			mBaseObj.PlaySound("OldStir", sSound, true, false);
+		}
+			
+		mBaseObj.Timer_Add(0, 0.5f, "OnTimer_UpdateOld");
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnTimer_UpdateScreamer(uint64 alId)
+	{
+		///////////////////////////////
+		// Keep screaming?
+        bool bLoS = cLux_CheckLineOfSight(mBaseObj.GetPosition() + cVector3f(0.f, 1.f, 0.f), 
+                    cLux_GetPlayer().GetCharacterBody().GetPosition() + cVector3f(0.f, 1.f, 0.f), false, false, mBaseObj);
+					
+		if (bLoS && cMath_Vector3DistSqr(mBaseObj.GetPosition(), cLux_GetCurrentMap().GetPlayerEntity().GetPosition()) < 3.f * 3.f)
+		{
+			//////////////////////////////
+            // Iterate active ghouls and attract them
+            cLuxEntityComponentIterator @pIt = cLux_GetCurrentMap().GetEntityComponentIterator(eLuxEntityComponentType_AttackDamage);
+            while (pIt.HasNext())
+            {
+                iLuxEntityComponent @pComp = pIt.Next();
+                cLuxAgent @pAgent = cLux_ToAgent(pComp.GetEntity());				
+				if (pAgent.IsActive() == false) continue;
+				
+				pAgent.RevealPlayerPos();		
+            }
+			
+			mBaseObj.Timer_Add("Timer_UpdateScreamer", 3.f, "OnTimer_UpdateScreamer");
+			return;
+		}
+		
+		///////////////////////////////
+		// Player not in los or is far away -- reset!
+		mlDisturbanceCount = 0;
+		mbIsReacting = false;
+        mbIsAwake = false;
+
+		mBaseObj.PlayAnimation("idle", 0.3f, true);		
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnTimer_PlayIdleSound(uint64 alId)
+	{
+		mBaseObj.Timer_Add("Timer_PlayIdleSound", cMath_RandRectf(10.f, 20.f), "OnTimer_PlayIdleSound");
+		mBaseObj.PlaySound("Sound_Idle", "creatures/foley/creature/ghoul/ghoul_sleep_twitch", true, false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void OnTimer_PlayRepetitiveIdle(uint64 alId)
+	{
+		if (mbIsAwake == false && mbIsReacting == false)
+			mBaseObj.PlayAnimation("idle_repetitive", 0.3f, false);
+		
+		mBaseObj.Timer_Add("Timer_PlayRepetitiveIdle", cMath_RandRectf(2.5f, 4.f), "OnTimer_PlayRepetitiveIdle");
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void OnSetActive(bool abX) {}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// INTERACTION
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	bool CanInteract(int alType, iPhysicsBody@ apBody) { return false; }
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// GLOBAL
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void _Global_ForceWakeUp()
+	{
+		ForceWakeUp(0.f, 0.f);
+	}
+    
+    //------------------------------------------------------------
+	
+	void _Global_IsAwake()
+	{
+        cScript_SetGlobalReturnBool(mbIsAwake);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetSensesActive()
+	{
+		mbSensesActive = cScript_GetGlobalArgBool(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_ForceReact()
+	{
+		mBaseObj.Timer_Remove("Timer_ReactCD");		
+		mbIsReacting = false;
+		mbForceReact = true; // Have to use this flag since Timer_Remove doesn't update until next frame
+		
+		float fMinDelay = cScript_GetGlobalArgFloat(0);
+		float fMaxDelay = cScript_GetGlobalArgFloat(1);
+		msCustomStirAnim = cScript_GetGlobalArgString(2);
+		
+		React(fMinDelay, fMaxDelay);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_ChangeToAlert()
+	{
+		mType = eSleepingGhoulType_Alert;
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_Reset()
+	{
+		mBaseObj.Timer_Remove("Timer_Stir");
+		mBaseObj.Timer_Remove("Timer_ForceWakeUp");
+		mBaseObj.Timer_Remove("Timer_UpdateScreamer");
+		mBaseObj.Timer_Remove("Timer_UpdateOld");
+		
+		mlDisturbanceCount = 0;
+		mbIsReacting = false;
+        mbIsAwake = false;
+
+		mBaseObj.PlayAnimation("idle", 0.3f, true);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetType()
+	{
+		tString sType = "";
+		switch (mType)
+		{
+			case eSleepingGhoulType_Alert: sType = "Alert"; break;
+			case eSleepingGhoulType_Screamer: sType = "Screamer"; break;
+			case eSleepingGhoulType_Old: sType = "Old"; break;
+		}
+		
+		cScript_SetGlobalReturnString(sType);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_SetManualReact()
+	{
+		mbManualReact = cScript_GetGlobalArgBool(0);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+	float DrawDebugOutput(cGuiSet @apSet, iFontData @apFont, float afStartY) { return afStartY; }
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	int mlDisturbanceCount;
+    int mlDisturbanceThreshold;
+	bool mbManualReact;
+	bool mbIsReacting;
+    bool mbIsAwake;
+	bool mbSensesActive;
+	bool mbForceReact;
+	[nosave] bool mbRandDeafness;
+	
+	tString msCustomStirAnim;	
+	[nosave] tString msWakeUpAnim;
+	[nosave] tString msAgentEntity;
+	[nosave] tString msWakeUpCallback;
+	eSleepingGhoulType mType;
+	
+	[nosave] cLuxSoundListener@ mpSoundListener;
+	[nosave] cLuxLightSensor@ mpLightSensor;
+    [nosave] cLuxProximitySensor@ mpProximitySensor;
+	
+	[volatile] iScrFearThreatComponent_Interface@ mpFearThreat = null;
+	
+	//------------------------------------------------------------
+}	

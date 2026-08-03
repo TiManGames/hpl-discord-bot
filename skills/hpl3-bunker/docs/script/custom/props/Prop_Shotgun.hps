@@ -1,0 +1,279 @@
+#include "custom/props/Prop_Weapon_Base.hps"
+#include "custom/helpers/helper_items.hps"
+
+//------------------------------------------------------------
+
+const int glShotgun_MagazineCapacity = 6;
+
+const tString gsShotgun_ChamberShellMesh_Unspent = "m_Shotgun_Shell_01";
+const tString gsShotgun_ChamberShellMesh_Spent = "m_Shotgun_Shell_Spent_01";
+const tString gsShotgun_MagazineShell = "m_Shotgun_Shell_Static";
+const tString gsShotgun_ReloadShell = "m_Shotgun_Shell_02";
+
+//------------------------------------------------------------
+
+class cScrPropShotgun : cScrPropWeapon_Base
+{
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// INIT
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void Init()
+	{
+		cScrPropWeapon_Base::Init();
+	}
+	
+	//------------------------------------------------------------
+	
+	///////////////////////////////
+	// SAVE/LOAD
+	///////////////////////////////
+	
+	//------------------------------------------------------------
+
+	void Save()
+	{
+		MapTransfer_SaveState_Shotgun(mlMagazineCount, mbChamberedShell);
+	}
+	
+	//------------------------------------------------------------
+	
+	void Load()
+	{
+		/////////////////
+		// Load vars
+		int lTempAmmo;
+		bool mbTempChamber;
+		MapTransfer_LoadState_Shotgun(lTempAmmo, mbTempChamber);
+
+		mlMagazineCount = lTempAmmo;
+		mbChamberedShell = mbTempChamber;
+		
+		/////////////////
+		// Fix for disappearing shell if player was reloading while moving between maps
+		if (cScript_GetGlobalVarBool("Shotgun_ChamberShell"))
+		{
+			if (mlMagazineCount > 0)
+			{
+				mlMagazineCount--;
+				mbChamberedShell = true;
+				
+				Save();
+			}
+			
+			cScript_SetGlobalVarBool("Shotgun_ChamberShell", false);
+		}
+		
+		/////////////////
+		// Update 
+		UpdateBulletVisibility();
+	}
+
+	//------------------------------------------------------------
+
+	///////////////////////////////
+	// GLOBAL
+	///////////////////////////////
+
+	//------------------------------------------------------------
+
+	void _Global_CopyFromItemEntity() override
+	{
+		cScrPropPickup::_Global_CopyFromItemEntity();
+		tString sSource = cScript_GetGlobalArgString(0);
+
+		cScript_SetGlobalArgInt(0, mlMagazineCount);
+		cScript_SetGlobalArgBool(1, mbChamberedShell);
+		cScript_RunGlobalFunc(sSource, "cScrPropWeapon_Base", "_Global_CopyValues");
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_CopyValues() override
+	{
+		mlMagazineCount = cScript_GetGlobalArgInt(0);
+		mbChamberedShell = cScript_GetGlobalArgBool(1);
+
+		cScrPropWeapon_Base::_Global_CopyValues();
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetCanFire() override
+	{
+		cScript_SetGlobalReturnBool(mbChamberedShell);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetHasSpentBullets() override
+	{
+		cScript_SetGlobalReturnBool(false);
+	}
+	
+	//------------------------------------------------------------
+	
+	void _Global_GetShellIsChambered()
+	{
+		cScript_SetGlobalReturnBool(mbChamberedShell);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// ACTIONS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void HandleEvent(eGunEvent aEvent) override
+	{
+		cScrPropWeapon_Base::HandleEvent(aEvent);
+		
+		//////////////////
+		// Fire anim started!
+		if (aEvent == eGunEvent_FireStart)
+		{
+			mbChamberedShell = false;
+		}
+		
+		//////////////////
+		// Feed new shell
+		else if (aEvent == eGunEvent_ShotgunFeedNewShell)
+		{
+			SetSubmeshVisible(gsShotgun_ReloadShell, true);
+			SetSubmeshVisible(gsShotgun_MagazineShell, mlMagazineCount>1);
+		}
+		
+		//////////////////
+		// Hide reload bullet and enable real one
+		else if (aEvent == eGunEvent_HideReloadBullet)
+		{
+			mlMagazineCount = cMath_Min(mlMagazineCount+1, glShotgun_MagazineCapacity);
+			UpdateBulletVisibility();
+			
+			if (mbChamberedShell == false)
+				cScript_SetGlobalVarBool("Shotgun_ChamberShell", true);
+			
+			//////////////////
+			// Remove from inventory
+			tString sItem = ItemType_GetFirstInInventory("ShotgunAmmunition");	
+			if (sItem != "")
+				Item_RemoveFromInventory(sItem);
+		}
+		
+		//////////////////
+		// Ejected shell
+		else if (aEvent == eGunEvent_HideEjectedBullet)
+		{	
+			SetSubmeshVisible(gsShotgun_ChamberShellMesh_Unspent, false);
+			SetSubmeshVisible(gsShotgun_ChamberShellMesh_Spent, false);
+		}
+		else if (aEvent == eGunEvent_ShowEjectedBullet)
+		{	
+			SetSubmeshVisible(gsShotgun_ChamberShellMesh_Unspent, true);
+			SetSubmeshVisible(gsShotgun_ChamberShellMesh_Spent, true);
+		}		
+		
+		//////////////////
+		// Chamber new shell
+		else if (aEvent == eGunEvent_ShotgunPumpAction)
+		{
+			if (mlMagazineCount > 0)
+			{
+				mlMagazineCount--;
+				mbChamberedShell = true;
+			}
+			
+			UpdateBulletVisibility();	
+		
+			cScript_SetGlobalVarBool("Shotgun_ChamberShell", false);
+		}
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// HELPERS
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	void UpdateBulletVisibility() override
+	{
+		SetSubmeshVisible(gsShotgun_ChamberShellMesh_Unspent, mbChamberedShell);
+		SetSubmeshVisible(gsShotgun_MagazineShell, mlMagazineCount > 0);
+		
+		SetSubmeshVisible(gsShotgun_ChamberShellMesh_Spent, false);
+		SetSubmeshVisible(gsShotgun_ReloadShell, false);
+	}
+	
+	//------------------------------------------------------------
+	
+	bool GetFullyLoaded() override
+	{	
+		return mlMagazineCount >= glShotgun_MagazineCapacity;
+	}
+	
+	//------------------------------------------------------------
+	
+	void SetSubmeshVisible(const tString &in asSubmesh, bool abX)
+	{
+		cSubMeshEntity@ pMeshEnt = mBaseObj.GetMeshEntity().GetSubMeshEntityName(asSubmesh);
+		if (pMeshEnt !is null)
+			pMeshEnt.SetVisible(abX);
+	}
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// DEBUG
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+		
+/*	float DrawDebugOutput(cGuiSet @apSet,iFontData @apFont,float afStartY)
+	{
+		cMeshEntity@ pMesh = mBaseObj.GetMeshEntity();
+		for (int i = 0; i < pMesh.GetAnimationStateNum(); i++)
+		{
+			cAnimationState@ state = pMesh.GetAnimationState(i);
+			if (state.GetWeight() <= 0) continue;
+			if (state.IsActive() == false) continue;
+			tString sName = state.GetName();
+			cColor col = cColor_White;
+			float fSize = 14;
+			afStartY = cLux_DrawDebugText("!!    '" + sName + "'", afStartY, fSize, col);
+		}
+		
+		return afStartY;
+	}*/
+	
+	//------------------------------------------------------------
+	
+/*	void OnRenderSolid(cRendererCallbackFunctions@ apFunctions)
+	{
+		iPhysicsBody@ pBody = mBaseObj.GetBodyFromName("Body_BulletStart");
+		
+		cVector3f vControlPoint = cLux_GetPlayer().GetCamera().GetPosition() + cLux_GetPlayer().GetCamera().GetForward()*6;
+		cVector3f vAimPos = pBody.GetWorldPosition()+pBody.GetWorldMatrix().GetTranspose().GetForward()*5;
+		
+		apFunctions.GetLowLevelGfx().DrawLine(pBody.GetWorldPosition(),  vAimPos,  cColor(10,0,0,1));
+		apFunctions.GetLowLevelGfx().DrawLine(cLux_GetPlayer().GetCamera().GetPosition(),  vControlPoint,  cColor(0,10,0,1));
+	}*/
+	
+	//------------------------------------------------------------
+	
+	/////////////////////////////////////////
+	// PROPERTIES
+	/////////////////////////////////////////
+	
+	//------------------------------------------------------------
+	
+	int mlMagazineCount = 0;
+	bool mbChamberedShell = false;
+}
