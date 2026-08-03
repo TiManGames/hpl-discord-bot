@@ -446,7 +446,11 @@ function loadSystemPrompt(skillDir: string, docsRoot: string): string {
     `joining the directory header and the filename, e.g. header ` +
     `"wiki/HPL3/Areas/" + file "Doors.md" → read_file("wiki/HPL3/Areas/Doors.md"). ` +
     `Files with no header are at the docs root (use the bare filename). Read ` +
-    `multiple files in parallel in a single step when you need several.\n\n` +
+    `multiple files in parallel in a single step when you need several.\n` +
+    `For large files (marked with «size, lines» after the name — that annotation ` +
+    `is NOT part of the path), do not read the whole file: use the search_files ` +
+    `tool (ripgrep regex over the docs, returns "path:line: text") to locate the ` +
+    `relevant lines, then read a slice with read_file({ path, offset, limit }).\n\n` +
     `${manifest}\n` +
     `</available_files>`
   );

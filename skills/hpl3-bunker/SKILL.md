@@ -36,6 +36,11 @@ Follow this workflow every time.
 - Read relevant `.hps` files (mostly under `/maps`) before writing script code.
 - Do not start coding before this source pass is complete.
 
+## KNOWLEDGE-BASE PRIORITY:
+1. The game's `hps_api.hps`, the `/script` folder and the `/maps` folder
+2. Wiki articles
+3. User's own provided code/Question
+
 ## 3) Scripting task rules
 
 - Base script answers on local source files first.
@@ -51,7 +56,7 @@ Follow this workflow every time.
   - Register the module in the mod's `config/Modules.cfg` with a unique ID, and ensure the mod's `resources.cfg` includes `/script`.
   - Expose map-facing calls through a helper file, conventionally `script/helpers/helper_*.hps`, instead of calling raw `cScript_*` functions directly from maps.
   - Keep map edits limited to intentional per-map configuration or helper calls; do not embed reusable module state/update logic in `.hps` map files.
-- When changing behavior for an existing entity, area, item, or copied map, trace the complete existing behavior for the exact object names across `.map`, `.hps`, and references before simplifying it.
+- When changing behavior for an existing entity, area, item, or copied map, trace the complete existing behavior for the exact object names across `.hpm`, `.hps`, and references before simplifying it.
 - Prefer proven local behavior sequences over single API calls when existing scripts use timers, forces, impulses, state variables, helper callbacks, sounds, effects, or map/user-variable setup to make the behavior work.
 - If a script callback appears to fire but the visible result may depend on physics, animation, entity variables, or saved map state, verify those dependencies before calling the task complete.
 - If local sources do not settle behavior, consult wiki documentation.
