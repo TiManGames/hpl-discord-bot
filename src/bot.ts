@@ -188,6 +188,28 @@ export const UNMAPPED_CHANNEL_RESPONSE =
 
 export const SIMPLE_GREETING_RESPONSE = 'Hey! Ask me anything about HPL modding.';
 
+// Shown whenever the bot itself must report a failure: the agent threw (SAP
+// timeout, shutdown, network, rate-limit exhaustion), or returned no usable
+// text. This is a bot message, never the model's.
+export const AGENT_ERROR_RESPONSE = 'Sorry, I ran into an error. Please try again.';
+
+/**
+ * Send a bot-authored error notice to a channel/thread, tagging the user. This
+ * is the last line of defence, so it must never throw: if even this send fails
+ * (the thread was deleted, Discord is down), we only log.
+ */
+async function sendErrorReply(
+  channel: { send: (content: string) => Promise<unknown> },
+  userId: string,
+  context: string,
+): Promise<void> {
+  try {
+    await channel.send(withUserMention(userId, AGENT_ERROR_RESPONSE));
+  } catch (err) {
+    log('ERROR', `Failed to deliver error notice for ${context}`, err);
+  }
+}
+
 export function isSimpleGreeting(text: string): boolean {
   const normalized = text
     .toLowerCase()
@@ -210,6 +232,21 @@ export function findMunshiEmoji(content: string): MunshiEmoji | null {
 
 export function withUserMention(userId: string, content: string): string {
   return `<@${userId}> ${content}`;
+}
+
+/**
+ * Remove any Discord user/role mentions and @everyone/@here from model output.
+ * Conversation history stores clean assistant text, but the model can still
+ * echo a mention from the user's own quoted text or a hallucination. Stripping
+ * them here means the bot controls tagging entirely — no double tags, and never
+ * a ping aimed at a different (or unknown) participant.
+ */
+export function stripUserMentions(content: string): string {
+  return content
+    .replace(/<@[!&]?\d+>/g, '')
+    .replace(/@(?:everyone|here)\b/g, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
 }
 
 export function renderMunshiHappyEmoji(message: Message, content: string): string {
@@ -269,19 +306,31 @@ export function startBot(token: string): void {
 
     log('INFO', `MessageCreate: author=${message.author.tag} channel=${message.channelId} isThread=${message.channel.isThread()}`);
 
-    // Handle replies inside tracked threads
-    if (message.channel.isThread()) {
-      await handleThreadMessage(message);
-      return;
-    }
+    try {
+      // Handle replies inside tracked threads
+      if (message.channel.isThread()) {
+        await handleThreadMessage(message, client.user!.id);
+        return;
+      }
 
-    // Handle @-mentions in regular channels
-    if (!message.mentions.has(client.user!)) {
-      return;
-    }
+      // Handle @-mentions in regular channels
+      if (!message.mentions.has(client.user!)) {
+        return;
+      }
 
-    log('INFO', `Bot mentioned by ${message.author.tag} in channel ${(message.channel as { name?: string }).name ?? message.channelId}`);
-    await handleChannelMention(message, client.user!.id);
+      log('INFO', `Bot mentioned by ${message.author.tag} in channel ${(message.channel as { name?: string }).name ?? message.channelId}`);
+      await handleChannelMention(message, client.user!.id);
+    } catch (err) {
+      // Last-resort guard for anything that escapes a handler's own error path
+      // (e.g. a failure before the agent's try/catch). Never leave the user with
+      // silence — best-effort notify, and never let this throw.
+      log('ERROR', `Unhandled error while handling message ${message.id}`, err);
+      try {
+        await message.reply(withUserMention(message.author.id, AGENT_ERROR_RESPONSE));
+      } catch (replyErr) {
+        log('ERROR', `Failed to deliver fallback error notice for message ${message.id}`, replyErr);
+      }
+    }
   });
 
   client.on(Events.Error, (err) => {
@@ -385,15 +434,18 @@ export async function handleChannelMention(message: Message, botId: string): Pro
   setSession(thread.id, {
     gameId: game.gameId,
     docsRoot: game.docsRoot,
+    authorId: message.author.id,
     attachmentsRoot,
     messages: initialMessages,
     evidenceLedger: emptyEvidenceLedger(),
   });
 
   if (!hasContent || simpleGreeting) {
-    const greeting = withUserMention(message.author.id, SIMPLE_GREETING_RESPONSE);
-    appendAssistantMessage(thread.id, greeting);
-    await thread.send(greeting);
+    // Store the clean assistant text in history; tag the user only on the wire.
+    // Persisting the "<@id> …" form teaches the model to emit mentions itself,
+    // which then get double-tagged (and can echo a different participant's id).
+    appendAssistantMessage(thread.id, SIMPLE_GREETING_RESPONSE);
+    await thread.send(withUserMention(message.author.id, SIMPLE_GREETING_RESPONSE));
     log('INFO', `Answered simple greeting in thread ${thread.id} without calling the agent`);
     return;
   }
@@ -422,18 +474,29 @@ export async function handleChannelMention(message: Message, botId: string): Pro
     } = await runAgent(systemPrompt, game.docsRoot, initialMessages, emptyEvidenceLedger(), attachmentsRoot);
     const session = getSession(thread.id);
     if (session) session.evidenceLedger = mergeEvidenceLedger(session.evidenceLedger, evidenceLedgerDelta);
-    const renderedReply = renderMunshiHappyEmoji(message, reply);
-    const taggedReply = withUserMention(message.author.id, renderedReply);
-    appendAssistantMessage(thread.id, taggedReply);
     log('INFO', `Agent replied (${reply.length} chars, steps=${stepCount}, toolCalls=${toolCallCount}, duplicateToolCalls=${duplicateToolCallCount}, forcedFinal=${forcedFinal}, inputTokens=${inputTokens}, uncachedInputTokens=${uncachedInputTokens}, completionTokens=${outputTokens}, cacheReadTokens=${cacheReadTokens}, cacheWriteTokens=${cacheWriteTokens}) to thread ${thread.id}`);
-    await sendLongMessage(thread, taggedReply);
+
+    // The agent can return successfully but empty (SAP timed out mid-stream, the
+    // model produced no text, etc.). An empty reply would send nothing at all,
+    // leaving the user with a silent thread — surface it as a bot error instead.
+    if (reply.trim().length === 0) {
+      log('WARN', `Agent returned an empty reply for thread ${thread.id} — sending error notice`);
+      await sendErrorReply(thread, message.author.id, `thread ${thread.id}`);
+      return;
+    }
+
+    const renderedReply = renderMunshiHappyEmoji(message, stripUserMentions(reply));
+    // Persist the clean assistant text; add the user mention only when sending.
+    // Storing the tagged form makes the model imitate the mention in later turns.
+    appendAssistantMessage(thread.id, renderedReply);
+    await sendLongMessage(thread, withUserMention(message.author.id, renderedReply));
   } catch (err) {
     log('ERROR', `Agent error for thread ${thread.id}`, err);
-    await thread.send('Sorry, I ran into an error. Please try again.');
+    await sendErrorReply(thread, message.author.id, `thread ${thread.id}`);
   }
 }
 
-export async function handleThreadMessage(message: Message): Promise<void> {
+export async function handleThreadMessage(message: Message, botId: string): Promise<void> {
   const threadId = message.channelId;
 
   if (!hasSession(threadId)) {
@@ -441,10 +504,27 @@ export async function handleThreadMessage(message: Message): Promise<void> {
     return;
   }
 
+  const session = getSession(threadId)!;
+
+  // The thread author may talk freely; anyone else must @-mention the bot to be
+  // heard. This keeps unrelated cross-talk between other thread participants out
+  // of the conversation history and the LLM.
+  const isAuthor = session.authorId !== undefined && message.author.id === session.authorId;
+  const mentionsBot = message.mentions.has(botId);
+  if (!isAuthor && !mentionsBot) {
+    log('INFO', `Ignoring message from non-author ${message.author.tag} in thread ${threadId} (bot not tagged)`);
+    return;
+  }
+
   log('INFO', `Thread reply from ${message.author.tag} in tracked thread ${threadId}`);
   log('INFO', `Thread user text: ${JSON.stringify(message.content)}`);
 
-  const session = getSession(threadId)!;
+  // Strip the @-mention (present when a non-author tags the bot) so it never
+  // reaches moderation, history, or the LLM.
+  const userText = message.content
+    .replace(new RegExp(`<@!?${botId}>`, 'g'), '')
+    .trim();
+
   const attachmentParts = await extractAttachments(message);
   const hasTextFiles = attachmentParts.textFiles.length > 0;
 
@@ -452,11 +532,11 @@ export async function handleThreadMessage(message: Message): Promise<void> {
   // block, the offending message is NOT appended to history (so it can't poison
   // later context). The classifier sees only text + images + body-free notes.
   const moderationContent = buildUserContent(
-    message.content,
+    userText,
     attachmentParts.imageParts,
     moderationNoteParts(attachmentParts.textFiles),
   );
-  const outcome = await moderateAndMaybePenalize(message.author.id, message.content, moderationContent);
+  const outcome = await moderateAndMaybePenalize(message.author.id, userText, moderationContent);
   if (outcome.action === 'block') {
     try {
       await message.reply(withUserMention(message.author.id, outcome.replyText));
@@ -475,7 +555,7 @@ export async function handleThreadMessage(message: Message): Promise<void> {
       setAttachmentsRoot(threadId, attachmentsRootFor(threadId));
     }
   }
-  appendUserMessage(threadId, buildUserContent(message.content, attachmentParts.imageParts, noteParts));
+  appendUserMessage(threadId, buildUserContent(userText, attachmentParts.imageParts, noteParts));
 
   const systemPrompt = loadSystemPrompt(
     skillDirFromGameId(session.gameId),
@@ -488,6 +568,7 @@ export async function handleThreadMessage(message: Message): Promise<void> {
   } catch { /* ignore */ }
 
   log('INFO', `Calling agent for thread ${threadId}…`);
+  const channel = message.channel as unknown as TextChannel;
   try {
     const {
       text: reply,
@@ -503,14 +584,24 @@ export async function handleThreadMessage(message: Message): Promise<void> {
       evidenceLedgerDelta,
     } = await runAgent(systemPrompt, session.docsRoot, session.messages, session.evidenceLedger, session.attachmentsRoot);
     session.evidenceLedger = mergeEvidenceLedger(session.evidenceLedger, evidenceLedgerDelta);
-    const renderedReply = renderMunshiHappyEmoji(message, reply);
-    const taggedReply = withUserMention(message.author.id, renderedReply);
-    appendAssistantMessage(threadId, taggedReply);
     log('INFO', `Agent replied (${reply.length} chars, steps=${stepCount}, toolCalls=${toolCallCount}, duplicateToolCalls=${duplicateToolCallCount}, forcedFinal=${forcedFinal}, inputTokens=${inputTokens}, uncachedInputTokens=${uncachedInputTokens}, completionTokens=${outputTokens}, cacheReadTokens=${cacheReadTokens}, cacheWriteTokens=${cacheWriteTokens}) to thread ${threadId}`);
-    await sendLongMessage(message.channel as unknown as TextChannel, taggedReply);
+
+    // A successful-but-empty reply (SAP timeout mid-stream, no model text) would
+    // send nothing — surface it as a bot error rather than a silent thread.
+    if (reply.trim().length === 0) {
+      log('WARN', `Agent returned an empty reply for thread ${threadId} — sending error notice`);
+      await sendErrorReply(channel, message.author.id, `thread ${threadId}`);
+      return;
+    }
+
+    const renderedReply = renderMunshiHappyEmoji(message, stripUserMentions(reply));
+    // Persist the clean assistant text; add the user mention only when sending.
+    // Storing the tagged form makes the model imitate the mention in later turns.
+    appendAssistantMessage(threadId, renderedReply);
+    await sendLongMessage(channel, withUserMention(message.author.id, renderedReply));
   } catch (err) {
     log('ERROR', `Agent error for thread ${threadId}`, err);
-    await (message.channel as unknown as TextChannel).send('Sorry, I ran into an error. Please try again.');
+    await sendErrorReply(channel, message.author.id, `thread ${threadId}`);
   }
 }
 

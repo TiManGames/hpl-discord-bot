@@ -4,6 +4,8 @@ import type { EvidenceLedger } from './evidence.js';
 export interface Session {
   gameId: string;
   docsRoot: string;
+  /** Discord user ID of whoever opened the thread; they may talk without tagging the bot. */
+  authorId?: string;
   /** Per-thread workspace holding user-attached files, once any have been saved. */
   attachmentsRoot?: string;
   messages: ModelMessage[];
