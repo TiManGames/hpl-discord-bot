@@ -16,7 +16,9 @@ Additional wiki guides can be found int:
 `Wiki/hpl3/SOMA/Scripting/**/Scripting Api` - low priority
 
 ## important note
-It is important to read the AgnelScript Fundementals Guide and Scripting Guide under wiki/hpl3/scripting
+
+- It is important to read the AgnelScript Fundementals Guide and Scripting Guide under wiki/hpl3/scripting
+- It is important to read alias-mapping.md prior to work.
 
 ## Game script locations
 

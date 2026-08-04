@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { findMalformedHpsStatements, findUnsupportedCodeIdentifiers } from './grounding.js';
+import { findUnsupportedCodeIdentifiers } from './grounding.js';
 
-const known = ['cScrMap', 'iScrMap', 'OnStart', 'Entity_SetActive'];
+const known = [
+  'cScrMap',
+  'iScrMap',
+  'OnStart',
+  'Entity_SetActive',
+  'cScript_GetGlobalVarBool',
+  // Deliberately polluted to prove control flow cannot be treated as a call.
+  'if',
+];
 
 describe('findUnsupportedCodeIdentifiers', () => {
   it('rejects an invented derivative of a documented map class', () => {
@@ -19,29 +27,18 @@ describe('findUnsupportedCodeIdentifiers', () => {
     expect(findUnsupportedCodeIdentifiers(answer, known)).toEqual([]);
   });
 
+  it('allows valid framework declarations with HPScript handle parameters', () => {
+    const answer = `\`\`\`cpp
+void SetupAfterLoad(cWorld @apWorld, cResourceVarsObject @apVars, cResourceVarsObject @apInstanceVars)
+{
+  OnStart();
+}
+\`\`\``;
+    expect(findUnsupportedCodeIdentifiers(answer, known)).toEqual([]);
+  });
+
   it('allows identifiers supplied by the user', () => {
     const answer = '`cScrMap_Custom`';
     expect(findUnsupportedCodeIdentifiers(answer, known, 'My class is cScrMap_Custom')).toEqual([]);
-  });
-});
-
-describe('findMalformedHpsStatements', () => {
-  it('rejects a return type combined with call arguments', () => {
-    const answer = `\`\`\`cpp\nvoid Entity_SetActive("Door_01", true)\n\`\`\``;
-    expect(findMalformedHpsStatements(answer, known)).toEqual([
-      'declaration/call mixture: void Entity_SetActive("Door_01", true)',
-    ]);
-  });
-
-  it('rejects a standalone call without a semicolon', () => {
-    const answer = `\`\`\`cpp\nEntity_SetActive("Door_01", true)\n\`\`\``;
-    expect(findMalformedHpsStatements(answer, known)).toEqual([
-      'standalone call missing semicolon: Entity_SetActive("Door_01", true)',
-    ]);
-  });
-
-  it('accepts a declaration signature and a terminated call', () => {
-    const answer = `\`\`\`cpp\nvoid OnStart()\nEntity_SetActive("Door_01", true);\n\`\`\``;
-    expect(findMalformedHpsStatements(answer, known)).toEqual([]);
   });
 });

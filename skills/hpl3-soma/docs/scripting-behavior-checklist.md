@@ -4,6 +4,7 @@ Use this checklist before editing or proposing HPL3 `.hps` behavior.
 
 ## Trace the target behavior
 
+- Read alias-mapping.md
 - Search exact entity, area, item, timer, and callback names in the relevant `.hpm_Entity`, `.hpm_Area`, and `.hps` files.
 - If the map was copied from base game content, read the source map's matching `.hps` implementation for the same object names.
 - Treat callbacks as entry points, not full behavior. Follow timers, helper functions, global/local variables, effects, physics calls, and callback removal.

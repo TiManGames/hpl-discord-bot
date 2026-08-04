@@ -1,9 +1,11 @@
 import type { ModelMessage, UserContent } from 'ai';
+import type { EvidenceLedger } from './evidence.js';
 
 export interface Session {
   gameId: string;
   docsRoot: string;
   messages: ModelMessage[];
+  evidenceLedger?: EvidenceLedger;
 }
 
 const sessions = new Map<string, Session>();

@@ -1,5 +1,7 @@
 const CONTROL_WORDS = new Set([
-  'if', 'for', 'while', 'switch', 'return', 'cast', 'array', 'dictionary',
+  'if', 'else', 'for', 'while', 'do', 'switch', 'case', 'default',
+  'break', 'continue', 'return', 'try', 'catch', 'throw',
+  'cast', 'array', 'dictionary', 'is', 'nosave', 'null'
 ]);
 
 /**
@@ -61,41 +63,6 @@ export function findUnsupportedCodeIdentifiers(
   return [...unsupported].sort();
 }
 
-/** Reject obvious declaration/invocation hybrids and unterminated standalone calls. */
-export function findMalformedHpsStatements(
-  answer: string,
-  knownIdentifiers: Iterable<string>,
-): string[] {
-  const known = new Set(
-    [...knownIdentifiers].filter(Boolean).map((identifier) => identifier.toLowerCase()),
-  );
-  const issues = new Set<string>();
-  for (const block of [...answer.matchAll(/```[^\n]*\n([\s\S]*?)```/g)].map((match) => match[1])) {
-    const masked = maskCommentsAndStringsPreservingLiterals(block);
-    const originalLines = block.split('\n');
-    const maskedLines = masked.split('\n');
-    for (let index = 0; index < maskedLines.length; index++) {
-      const line = maskedLines[index].trim();
-      const original = originalLines[index]?.trim() ?? line;
-      if (!line) continue;
-      const typed = line.match(
-        /^(?:void|bool|int|float|double|string|tString|tWString)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\((.*)\)\s*;?$/,
-      );
-      if (typed && known.has(typed[1].toLowerCase()) && containsArgumentExpression(typed[2])) {
-        issues.add(`declaration/call mixture: ${original}`);
-        continue;
-      }
-      const call = line.match(
-        /^(?:[A-Za-z_][A-Za-z0-9_]*\s*\.\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*\(.*\)\s*$/,
-      );
-      if (call && known.has(call[1].toLowerCase()) && !line.endsWith(';')) {
-        issues.add(`standalone call missing semicolon: ${original}`);
-      }
-    }
-  }
-  return [...issues];
-}
-
 function extractCode(answer: string): string {
   const fenced = [...answer.matchAll(/```[^\n]*\n([\s\S]*?)```/g)].map((match) => match[1]);
   const inline = [...answer.matchAll(/`([^`\n]+)`/g)].map((match) => match[1]);
@@ -128,39 +95,4 @@ function maskCommentsAndStrings(value: string): string {
     .replace(/\/\*[\s\S]*?\*\//g, (match) => match.replace(/[^\n]/g, ' '))
     .replace(/\/\/[^\n]*/g, '')
     .replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g, ' ');
-}
-
-function maskCommentsAndStringsPreservingLiterals(value: string): string {
-  return value
-    .replace(/\/\*[\s\S]*?\*\//g, (match) => match.replace(/[^\n]/g, ' '))
-    .replace(/\/\/[^\n]*/g, '')
-    .replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g, '"literal"');
-}
-
-function containsArgumentExpression(parameters: string): boolean {
-  if (!parameters.trim()) return false;
-  return splitTopLevel(parameters).some((parameter) => {
-    const value = parameter.trim();
-    return (
-      /"literal"|\b(?:true|false|null)\b/.test(value) ||
-      /^[-+]?\d/.test(value) ||
-      !/^(?:const\s+)?[A-Za-z_][A-Za-z0-9_:]*(?:\s*<[^>]+>)?(?:\s*\[\s*\])?\s*[@&]?(?:in|out|inout)?\s+[A-Za-z_][A-Za-z0-9_]*(?:\s*=.*)?$/.test(value)
-    );
-  });
-}
-
-function splitTopLevel(value: string): string[] {
-  const result: string[] = [];
-  let start = 0;
-  let depth = 0;
-  for (let index = 0; index < value.length; index++) {
-    if ('<([{'.includes(value[index])) depth++;
-    else if ('>)]}'.includes(value[index])) depth = Math.max(0, depth - 1);
-    else if (value[index] === ',' && depth === 0) {
-      result.push(value.slice(start, index));
-      start = index + 1;
-    }
-  }
-  result.push(value.slice(start));
-  return result;
 }

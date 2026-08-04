@@ -10,11 +10,13 @@ import {
   DEFAULT_RETRY_AFTER_S,
 } from './retry.js';
 import { cacheMessageTail } from './cache.js';
+import { findUnsupportedCodeIdentifiers } from './grounding.js';
+import { getCorpusIndex } from './corpus-index.js';
 import {
-  findMalformedHpsStatements,
-  findUnsupportedCodeIdentifiers,
-} from './grounding.js';
-import { getResearchIndex } from './research-index.js';
+  emptyEvidenceLedger,
+  formatEvidenceLedger,
+  type EvidenceLedger,
+} from './evidence.js';
 
 // Model name resolved by SAP's orchestration path.
 const MODEL_ID = process.env.AICORE_MODEL ?? 'anthropic--claude-4.6-sonnet';
@@ -42,13 +44,7 @@ const THINKING_MAX_OUTPUT_TOKENS =
     : 8192;
 
 const RESEARCH_CHECKPOINT =
-  'Evidence boundary checkpoint: the index ranks and locates evidence; it does not authorize ' +
-  'unstated facts. Compare every claim and code identifier you intend to include with the exact ' +
-  'excerpts above. If the answer can stay strictly inside those excerpts, answer now and omit ' +
-  'unrequested examples or architecture. If you intend to add lifecycle behavior, inheritance, ' +
-  'naming rules, setup steps, or an example not shown there, verify that exact claim using the ' +
-  'returned path/range or one narrow search. A settled corpus gap should be stated, not retried. ' +
-  'Do not mention this checkpoint in the answer.';
+  'Continue from the complete tool results above. Reuse verified stable IDs; inspect or search only unresolved claims. Do not mention this instruction.';
 
 // How many times to retry the whole call on a 429, honouring x-retry-after.
 const MAX_RATE_LIMIT_RETRIES = 5;
@@ -150,6 +146,7 @@ export interface AgentResult {
   toolCallCount: number;
   duplicateToolCallCount: number;
   forcedFinal: boolean;
+  evidenceLedgerDelta?: EvidenceLedger;
 }
 
 export function isVerificationChallenge(value: string): boolean {
@@ -165,13 +162,14 @@ export async function runAgent(
   systemPrompt: string,
   docsRoot: string,
   messages: ModelMessage[],
+  evidenceLedger?: EvidenceLedger,
 ): Promise<AgentResult> {
   let rateLimitRetries = 0;
   let authRetries = 0;
 
   while (true) {
     try {
-      return await generateOnce(systemPrompt, docsRoot, messages);
+      return await generateOnce(systemPrompt, docsRoot, messages, evidenceLedger);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
 
@@ -202,6 +200,7 @@ async function generateOnce(
   systemPrompt: string,
   docsRoot: string,
   messages: ModelMessage[],
+  evidenceLedger?: EvidenceLedger,
 ): Promise<AgentResult> {
   let stepNum = 0;
   let toolCallCount = 0;
@@ -212,8 +211,12 @@ async function generateOnce(
   let cacheReadTokens = 0;
   let cacheWriteTokens = 0;
   const seenToolCalls = new Set<string>();
-  const transcript: ModelMessage[] = [...messages];
-  const tools = fileTools(docsRoot);
+  const priorEvidence = formatEvidenceLedger(evidenceLedger);
+  const transcript: ModelMessage[] = priorEvidence
+    ? [{ role: 'system', content: priorEvidence }, ...messages]
+    : [...messages];
+  const evidenceLedgerDelta = emptyEvidenceLedger();
+  const tools = fileTools(docsRoot, evidenceLedgerDelta);
   const corpusIdentifiers = knownCorpusIdentifiers(docsRoot);
   const userText = messages
     .filter((message) => message.role === 'user')
@@ -247,10 +250,9 @@ async function generateOnce(
     providerOptions: { 'sap-ai': { cacheControl: { type: 'ephemeral' } } }, // 5m default TTL
   };
 
-  // Run exactly one model step at a time so the checkpoint becomes a real,
-  // persistent user message after every tool result. This gives the model an
-  // explicit sufficiency decision and gives SAP a legal cache breakpoint after
-  // the complete tool transcript (tool messages themselves cannot be marked).
+  // Run one model step at a time so the short continuation message gives SAP a
+  // legal cache breakpoint after the complete tool transcript (tool messages
+  // themselves cannot be marked) without injecting a retrieval policy layer.
   for (let researchStep = 0; researchStep < MAX_STEPS; researchStep++) {
     if (pendingGroundingInstruction) {
       transcript.push({ role: 'user', content: pendingGroundingInstruction });
@@ -318,65 +320,51 @@ async function generateOnce(
     );
 
     if (step.toolCalls.length === 0) {
-      const unsupported = findUnsupportedCodeIdentifiers(
-        result.text,
-        corpusIdentifiers,
-        userText,
-      );
-      const malformed = findMalformedHpsStatements(result.text, corpusIdentifiers);
-      if ((unsupported.length > 0 || malformed.length > 0) && groundingFailures < 2) {
-        groundingFailures++;
-        const reasons = [
-          unsupported.length > 0
-            ? `unsupported identifiers=[${unsupported.join(', ')}]`
-            : '',
-          malformed.length > 0
-            ? `malformed HPScript=[${malformed.join(' | ')}]`
-            : '',
-        ].filter(Boolean);
-        log(
-          `Grounding check rejected draft — ${reasons.join('; ')}; ` +
-            `requesting a corrected draft (${groundingFailures}/2)`,
-        );
-        transcript.push(...result.response.messages);
-        pendingGroundingInstruction = unsupported.length > 0
-          ? `The previous draft was rejected because these code identifiers are absent from both ` +
-            `the active game corpus and the user's input: ${unsupported.join(', ')}. Do not rename ` +
-            `or defend them from memory. Use a tool now to verify the exact structural claim, or ` +
-            `remove it and answer only with already verified facts.${malformed.length > 0
-              ? ` Also correct these HPScript syntax errors: ${malformed.join(' | ')}.`
-              : ''}`
-          : `The previous draft was rejected because it contains malformed HPScript: ` +
-            `${malformed.join(' | ')}. Rewrite the answer without another lookup. A declaration ` +
-            `includes its return and parameter types; an invocation omits the return type, uses ` +
-            `argument expressions, and ends with a semicolon.`;
-        forceToolNextStep = unsupported.length > 0;
-        continue;
-      }
-      if (unsupported.length > 0 || malformed.length > 0) {
-        const safeText =
-          unsupported.length > 0
-            ? `I could not verify these identifiers in the active game sources: ` +
-              `${unsupported.map((identifier) => `\`${identifier}\``).join(', ')}. ` +
-              `I will not present that code as valid.`
-            : 'I could not produce a syntactically valid HPScript statement, so I will not present the malformed code as valid.';
-        log(`Blocked final draft after repeated grounding failures — ${[
-          ...unsupported,
-          ...malformed,
-        ].join(', ')}`);
-        return {
-          text: safeText,
-          inputTokens,
-          uncachedInputTokens,
-          outputTokens,
-          cacheReadTokens,
-          cacheWriteTokens,
-          stepCount: stepNum,
-          toolCallCount,
-          duplicateToolCallCount,
-          forcedFinal: true,
-        };
-      }
+      // Keep runtime grounding source-based. Regex statement-shape checks cannot
+      // reliably distinguish HPScript declarations, handles, callbacks, and
+      // expressions, so they must never trigger paid rewrite turns.
+      // const unsupported = findUnsupportedCodeIdentifiers(
+      //   result.text,
+      //   corpusIdentifiers,
+      //   userText,
+      // );
+      // if (unsupported.length > 0 && groundingFailures < 2) {
+      //   groundingFailures++;
+      //   const reasons = [`unsupported identifiers=[${unsupported.join(', ')}]`];
+      //   log(
+      //     `Identifier grounding rejected draft — ${reasons.join('; ')}; ` +
+      //       `requesting a corrected draft (${groundingFailures}/2)`,
+      //   );
+      //   transcript.push(...result.response.messages);
+      //   pendingGroundingInstruction =
+      //     `The previous draft was rejected because these code identifiers are absent from both ` +
+      //     `the active game corpus and the user's input: ${unsupported.join(', ')}. Do not rename ` +
+      //     `or defend them from memory. Use a tool now to verify the exact structural claim, or ` +
+      //     `remove it and answer only with already verified facts.`;
+      //   forceToolNextStep = true;
+      //   continue;
+      // }
+      // if (unsupported.length > 0) {
+      //   const safeText = `I could not verify these identifiers in the active game sources: ` +
+      //     `${unsupported.map((identifier) => `\`${identifier}\``).join(', ')}. ` +
+      //     `I will not present that code as valid.`;
+      //   log(`Blocked final draft after repeated identifier-grounding failures — ${[
+      //     ...unsupported,
+      //   ].join(', ')}`);
+      //   return {
+      //     text: safeText,
+      //     inputTokens,
+      //     uncachedInputTokens,
+      //     outputTokens,
+      //     cacheReadTokens,
+      //     cacheWriteTokens,
+      //     stepCount: stepNum,
+      //     toolCallCount,
+      //     duplicateToolCallCount,
+      //     forcedFinal: true,
+      //     evidenceLedgerDelta,
+      //   };
+      // }
       log(
         `Done — ${stepNum} step(s), finishReason=${result.finishReason}, ` +
           `toolCalls=${toolCallCount}, duplicateToolCalls=${duplicateToolCallCount}, ` +
@@ -393,6 +381,7 @@ async function generateOnce(
         toolCallCount,
         duplicateToolCallCount,
         forcedFinal: false,
+        evidenceLedgerDelta,
       };
     }
 
@@ -438,14 +427,11 @@ async function generateOnce(
     corpusIdentifiers,
     userText,
   );
-  const finalMalformed = findMalformedHpsStatements(finalResult.text, corpusIdentifiers);
-  const finalText = finalUnsupported.length === 0 && finalMalformed.length === 0
+  const finalText = finalUnsupported.length === 0
     ? finalResult.text
-    : finalUnsupported.length > 0
-      ? `I could not verify these identifiers in the active game sources: ` +
-        `${finalUnsupported.map((identifier) => `\`${identifier}\``).join(', ')}. ` +
-        `I will not present that code as valid.`
-      : 'I could not produce a syntactically valid HPScript statement, so I will not present the malformed code as valid.';
+    : `I could not verify these identifiers in the active game sources: ` +
+      `${finalUnsupported.map((identifier) => `\`${identifier}\``).join(', ')}. ` +
+      `I will not present that code as valid.`;
   log(
     `Final answer produced — text=${finalText.length}c, input=${finalInput.total}, ` +
       `uncachedInput=${finalInput.uncached}, providerInput=${finalInput.reported}, ` +
@@ -463,6 +449,7 @@ async function generateOnce(
     toolCallCount,
     duplicateToolCallCount,
     forcedFinal: true,
+    evidenceLedgerDelta,
   };
 }
 
@@ -478,7 +465,7 @@ function modelMessageText(message: ModelMessage): string {
 }
 
 function knownCorpusIdentifiers(docsRoot: string): string[] {
-  const index = getResearchIndex(docsRoot);
+  const index = getCorpusIndex(docsRoot);
   return index.symbols.flatMap((symbol) => [
     symbol.name,
     symbol.container ?? '',

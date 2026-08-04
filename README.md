@@ -7,10 +7,10 @@ A Discord bot that answers **HPL2 / HPL3 engine modding** questions (Frictional 
 1. A user @-mentions the bot in a mapped channel (e.g. `hpl2`, `hpl3-soma`, `hpl3-rebirth`, `hpl3-bunker`).
 2. The bot reacts with 👀 and creates a **thread** under the message.
 3. A simple greeting is answered locally; a real question is sent to the configured model with a compact game-specific prompt from `skills/<game>/SKILL.md`.
-4. The model uses `lookup_symbol` for fuzzy HPS API/script identifiers or `research_topic` for cross-source wiki/game/config/editor evidence. Sandboxed `find_files`, `search_files`, and `read_file` remain available for one concrete gap.
+4. The model navigates the complete game corpus with neutral `list_corpus`, `search_corpus`, and `inspect_corpus` tools. Precise `search_files` and `read_file` tools remain available for literal verification.
 5. Any further replies **in that thread** continue the conversation — no @-mention needed.
 
-Conversation history is kept **in memory**, keyed by thread ID (it resets when the bot restarts).
+Conversation history and a bounded evidence-locator ledger are kept **in memory**, keyed by thread ID (both reset when the bot restarts).
 
 ## Prerequisites
 
@@ -81,6 +81,8 @@ Mention the bot in a mapped channel to test.
 | `npm run list-deployments` | List RUNNING SAP AI Core deployments in your resource group |
 | `npm run cache-probe` | Verify stable-system and rolling message-tail caching through SAP |
 | `npm run thinking-probe` | Probe adaptive thinking across dependent tool calls; does not change production settings |
+| `npm run eval:search` | Run corpus-derived retrieval contracts across every game index |
+| `npm run benchmark:search` | Record cold index time and heap use for all game corpora |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm test` | Run the Vitest suite |
 | `npm run test:watch` | Vitest in watch mode |
@@ -95,9 +97,9 @@ src/
   agent.ts            # Model/tool loop via Vercel AI SDK + SAP AI Core, with 429 retry
   cache.ts            # Rolling message-tail cache breakpoint; preserves the full research transcript
   grounding.ts        # Rejects undocumented engine-like identifiers before Discord delivery
-  research-index.ts   # Lazy HPS symbol/usage + MiniSearch cross-source index
-  research-tools.ts   # Evidence profiles, sufficiency contracts, lookup/research reports
-  tools.ts            # Indexed research tools plus sandboxed raw file escape hatches
+  corpus-index.ts     # Neutral file/symbol/content indexes and generic relationships
+  evidence.ts         # Bounded cross-turn evidence locator ledger
+  tools.ts            # Corpus navigation plus sandboxed exact file search/read tools
   retry.ts            # Pure retry-decision helpers (429 / auth-timeout)
   channels.ts         # Channel -> game resolution
   history.ts          # In-memory per-thread conversation store
@@ -108,20 +110,25 @@ skills/
   <game>/docs/        # Per-game documentation the bot can read
 ```
 
+The search evaluation derives deterministic samples from the bundled corpora. It covers exact symbols,
+paths, documentation content, identifier typo recovery, caller/callee edges, class members, and inheritance;
+new files and declarations become eligible automatically without maintaining a product-specific query list.
+
 ## How the SAP AI Core connection works
 
 The bot uses [`@jerome-benoit/sap-ai-provider`](https://www.npmjs.com/package/@jerome-benoit/sap-ai-provider) with the Vercel AI SDK, configured with only a **resource group** (`createSAPAIProvider({ resourceGroup })`). This routes requests through your provisioned resource group's quota. Do **not** pin a `deploymentId` — doing so makes the provider ignore the resource group and fall back to the shared, rate-limited `default` bucket.
 
-The agent loop honours SAP's `x-retry-after` header on 429s (the SDK's built-in backoff ignores it). It retains every search and file result for the whole run. Normal retrieval goes through two structured tools:
-
-- `lookup_symbol` normalizes CamelCase/underscores and HPL synonyms, ranks declarations from `hps_api.hps` plus `script/`/`scripts/`, and attaches representative call sites.
-- `research_topic` applies a question-specific evidence profile across wiki guides/API pages, engine declarations, stock scripts/maps, config registrations, and editor definitions. It returns required, covered, missing, and unavailable evidence categories plus detected feature facets.
+The agent loop honours SAP's `x-retry-after` header on 429s (the SDK's built-in backoff ignores it). It retains every tool result for the current run and carries compact stable locators—not raw excerpts—into later Discord turns.
 
 The HPS declaration extractor follows the production `indexScript` design from [`hpl3-language-tools`](https://github.com/TiManGames/hpl3-language-tools). That project uses Tree-sitter for live syntax/semantic analysis and a focused error-tolerant extractor for its workspace symbol index; the bot uses the latter for static corpus retrieval. [`MiniSearch`](https://github.com/lucaong/minisearch) supplies the in-process BM25/prefix/fuzzy document index.
 
+Retrieval has no question profiles, domain seeds, evidence quotas, or source-family gates. The model supplies independent lexical variants; exact symbols, paths, and BM25 content results are fused with reciprocal-rank fusion (`k=60`). Prefix/fuzzy recovery is restricted to identifier-shaped input and two edits. Wiki pages, scripts, configuration, editor data, language files, materials, and shaders are searchable together, while binary files remain discoverable through the path catalog. Alias documents are ordinary searchable content: an identifier discovered there must be searched and inspected like any other candidate.
+
+`list_corpus` exposes stable paginated paths, `search_corpus` returns deterministic `file:`, `symbol:`, and `chunk:` IDs, and `inspect_corpus` returns exact context, relationships, references, and neighboring symbols. Class members, siblings, bases, derived types, callers, callees, registrations, includes, dispatched global calls, and representative usages form the generic relationship layer. `search_files` searches exact text/regex content. Empty results support only the printed lexical terms and scope.
+
 Adapted third-party code and its license are recorded in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
-After each tool batch the agent persists an evidence-boundary checkpoint. Indexed results locate and quote relevant evidence, but do not authorize claims outside those excerpts. A narrow exact answer can stop immediately; behavior, inheritance, naming rules, setup, and additional examples require an exact source read or focused search. User disputes force a fresh tool verification. Before delivery, a grounding check rejects undocumented engine-like identifiers and sends the draft back through source verification instead of exposing invented code. Indexed not-found or unavailable categories remain settled gaps rather than triggers for synonym loops. The checkpoint also places an Anthropic cache breakpoint after the complete tool transcript without annotating tool messages, whose content SAP requires to remain a string. Raw ripgrep results are compacted when used. The bot logs cumulative input, uncached input, cache reads/writes, steps, tool calls, duplicates, forced-final state, and surfaced reasoning. The 20-step ceiling remains an emergency fallback, not a convergence mechanism.
+After each tool batch the agent receives one short continuation checkpoint, which also gives SAP a legal text boundary for prompt caching. User disputes force a fresh exact inspection. Before delivery, grounding rejects undocumented engine-like identifiers and sends the draft back through source verification instead of exposing invented code. Raw ripgrep results are compacted when broad. The bot logs token/cache usage, steps, tool calls, duplicates, forced-final state, and surfaced reasoning. The 20-step ceiling remains an emergency fallback.
 
 SAP's harmonized usage fields differ by model family, so `inputTokens` is normalized to include cached slices for both Claude and Gemini. `uncachedInputTokens` is the fresh input; per-step `providerInput` preserves SAP's raw prompt-token value for diagnosis.
 

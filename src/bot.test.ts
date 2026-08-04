@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { Message } from 'discord.js';
-import { setSession } from './history.js';
+import { getSession, setSession } from './history.js';
 
 vi.mock('./agent.js', () => ({ runAgent: vi.fn() }));
 
@@ -147,6 +147,38 @@ describe('handleChannelMention', () => {
     expect(send).toHaveBeenCalledWith(
       '<@second-user> That follow-up belongs to the second user.',
     );
+  });
+
+  it('passes earlier evidence locators into a follow-up and merges the new delta', async () => {
+    const threadId = 'thread-evidence-ledger';
+    const prior = {
+      references: [{ id: 'symbol:hps_api.hps:2:CreateEntity', kind: 'symbol' as const,
+        label: 'cLuxMap::CreateEntity', path: 'hps_api.hps', line: 2 }],
+      searches: [],
+    };
+    setSession(threadId, { gameId: 'hpl2', docsRoot: 'missing-test-docs', messages: [], evidenceLedger: prior });
+    vi.mocked(runAgent).mockResolvedValue({
+      text: 'Use the wrapper.', inputTokens: 1, uncachedInputTokens: 1, outputTokens: 1,
+      cacheReadTokens: 0, cacheWriteTokens: 0, stepCount: 1, toolCallCount: 1,
+      duplicateToolCallCount: 0, forcedFinal: false,
+      evidenceLedgerDelta: {
+        references: [{ id: 'symbol:hps_api.hps:4:Entity_CreateAtEntity', kind: 'symbol',
+          label: 'Entity_CreateAtEntity', path: 'hps_api.hps', line: 4 }],
+        searches: [],
+      },
+    });
+    const message = {
+      content: 'Is there a helper for your last example?', channelId: threadId,
+      channel: { send: vi.fn().mockResolvedValue(undefined), sendTyping: vi.fn().mockResolvedValue(undefined) },
+      author: { id: 'user', tag: 'user' },
+    } as unknown as Message;
+
+    await handleThreadMessage(message);
+
+    expect(vi.mocked(runAgent).mock.calls[0][3]).toEqual(prior);
+    expect(getSession(threadId)?.evidenceLedger?.references.map((value) => value.label)).toEqual([
+      'cLuxMap::CreateEntity', 'Entity_CreateAtEntity',
+    ]);
   });
 
   it('answers a simple greeting locally without moderation or agent tokens', async () => {
@@ -371,10 +403,19 @@ describe('loadSystemPrompt', () => {
   it('uses on-demand discovery without injecting the documentation tree', () => {
     const prompt = loadSystemPrompt('skills/hpl3-soma', 'skills/hpl3-soma/docs');
 
-    expect(prompt).toContain('no full directory listing is preloaded');
+    expect(prompt).toContain('complete documentation corpus is available on demand');
+    expect(prompt).toContain('Wiki pages are first-class evidence');
     expect(prompt).not.toContain('<available_files>');
     expect(prompt).not.toContain('maps/chapter01/01_02_upsilon_inside');
     expect(prompt).toContain('selected game corpus defines the scripting dialect');
+    expect(prompt).toContain('Prefer verified public helpers and stock wrappers');
+    expect(prompt).toContain('Search with `search_corpus`');
+    expect(prompt).toContain('Inspect the leading exact result and close alternatives with `inspect_corpus`');
+    expect(prompt).toContain(
+      'Present the final response as the answer, code, or actionable steps rather than a research report',
+    );
+    expect(prompt).toContain('Include source names or file paths only when the user explicitly asks');
+    expect(prompt).not.toContain('Cite exact local file paths used for script conclusions');
     expect(prompt).not.toContain('AddEntityCollideCallback');
     expect(prompt.length).toBeLessThan(20_000);
   });
