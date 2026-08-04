@@ -1,0 +1,1 @@
+#REDIRECT [[HPL3/Amnesia: The Bunker/Scripting/eParallaxQuality]]
