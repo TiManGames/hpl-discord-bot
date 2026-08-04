@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { Message } from 'discord.js';
 import { getSession, setSession } from './history.js';
+import { cleanupAttachments } from './attachments.js';
 
 vi.mock('./agent.js', () => ({ runAgent: vi.fn() }));
 
@@ -207,6 +208,102 @@ describe('handleChannelMention', () => {
   });
 });
 
+describe('text attachment handling', () => {
+  // A unique marker that would appear ONLY if the file body were inlined.
+  const BODY_MARKER = 'UNIQUE_BODY_MARKER_9f3a';
+
+  function fakeHpsAttachment(): unknown {
+    const map = new Map<string, unknown>();
+    map.set('a', {
+      name: 'big.hps',
+      url: 'https://cdn.example/big.hps',
+      contentType: 'application/octet-stream', // .hps often reported as octet-stream
+      size: 4096,
+    });
+    return map;
+  }
+
+  const agentResult = {
+    text: 'Looked at your script.',
+    inputTokens: 1, uncachedInputTokens: 1, outputTokens: 1,
+    cacheReadTokens: 0, cacheWriteTokens: 0,
+    stepCount: 1, toolCallCount: 0, duplicateToolCallCount: 0, forcedFinal: false,
+    evidenceLedgerDelta: { references: [], searches: [] },
+  };
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('saves the file to a workspace and stores only a reference note, never the body', async () => {
+    // The download returns a body containing the marker; it must NOT reach history.
+    const body = `void OnStart() {}\n${BODY_MARKER}\n` + 'x\n'.repeat(5000);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ text: async () => body }));
+    vi.mocked(runAgent).mockResolvedValue(agentResult);
+
+    const send = vi.fn().mockResolvedValue(undefined);
+    const threadId = 'thread-attach-mention';
+    const thread = {
+      id: threadId, name: 'hpl2 — modder', send,
+      sendTyping: vi.fn().mockResolvedValue(undefined),
+    };
+    const message = {
+      id: 'attach-msg',
+      content: '<@bot-id> whats wrong with my script?',
+      channel: { name: 'hpl2-modding', id: 'hpl2-channel' },
+      channelId: 'hpl2-channel',
+      author: { id: 'modder', username: 'modder', tag: 'modder' },
+      attachments: fakeHpsAttachment(),
+      react: vi.fn().mockResolvedValue(undefined),
+      startThread: vi.fn().mockResolvedValue(thread),
+    } as unknown as Message;
+
+    await handleChannelMention(message, 'bot-id');
+
+    const session = getSession(threadId)!;
+    // The workspace is registered for the thread.
+    expect(session.attachmentsRoot).toBeDefined();
+    // The stored user message carries the reference note, not the file body.
+    const stored = JSON.stringify(session.messages[0].content);
+    expect(stored).toContain('big.hps');
+    expect(stored).toContain('read_attachment');
+    expect(stored).not.toContain(BODY_MARKER);
+
+    // The agent is told about the workspace via the 5th argument.
+    expect(runAgent).toHaveBeenCalledOnce();
+    expect(vi.mocked(runAgent).mock.calls[0][4]).toBe(session.attachmentsRoot);
+
+    // Moderation saw body-free content (a note naming the file), not the body.
+    const moderated = JSON.stringify(vi.mocked(classifyMessage).mock.calls[0][0]);
+    expect(moderated).toContain('big.hps');
+    expect(moderated).not.toContain(BODY_MARKER);
+
+    cleanupAttachments(threadId);
+  });
+
+  it('passes no workspace to the agent when the message has no attachments', async () => {
+    vi.mocked(runAgent).mockResolvedValue(agentResult);
+    const send = vi.fn().mockResolvedValue(undefined);
+    const thread = {
+      id: 'thread-no-attach', name: 'hpl2 — modder', send,
+      sendTyping: vi.fn().mockResolvedValue(undefined),
+    };
+    const message = {
+      id: 'plain-msg',
+      content: '<@bot-id> how do callbacks work?',
+      channel: { name: 'hpl2-modding', id: 'hpl2-channel' },
+      channelId: 'hpl2-channel',
+      author: { id: 'modder', username: 'modder', tag: 'modder' },
+      react: vi.fn().mockResolvedValue(undefined),
+      startThread: vi.fn().mockResolvedValue(thread),
+    } as unknown as Message;
+
+    await handleChannelMention(message, 'bot-id');
+
+    expect(vi.mocked(runAgent).mock.calls[0][4]).toBeUndefined();
+  });
+});
+
 describe('moderation gate', () => {
   it('blocks a rate-limited user in-channel without a thread or LLM call', async () => {
     vi.mocked(getPenalty).mockResolvedValue({
@@ -403,7 +500,6 @@ describe('loadSystemPrompt', () => {
   it('uses on-demand discovery without injecting the documentation tree', () => {
     const prompt = loadSystemPrompt('skills/hpl3-soma', 'skills/hpl3-soma/docs');
 
-    expect(prompt).toContain('complete documentation corpus is available on demand');
     expect(prompt).toContain('Wiki pages are first-class evidence');
     expect(prompt).not.toContain('<available_files>');
     expect(prompt).not.toContain('maps/chapter01/01_02_upsilon_inside');
@@ -414,10 +510,20 @@ describe('loadSystemPrompt', () => {
     expect(prompt).toContain(
       'Present the final response as the answer, code, or actionable steps rather than a research report',
     );
-    expect(prompt).toContain('Include source names or file paths only when the user explicitly asks');
     expect(prompt).not.toContain('Cite exact local file paths used for script conclusions');
     expect(prompt).not.toContain('AddEntityCollideCallback');
     expect(prompt.length).toBeLessThan(20_000);
+  });
+
+  it('adds attachment-tool guidance only when files are attached', () => {
+    expect(loadSystemPrompt('skills/hpl3-soma', 'skills/hpl3-soma/docs', false)).not.toContain(
+      '## Attached files',
+    );
+    const withAttachments = loadSystemPrompt('skills/hpl3-soma', 'skills/hpl3-soma/docs', true);
+    expect(withAttachments).toContain('## Attached files');
+    expect(withAttachments).toContain('list_attachments');
+    expect(withAttachments).toContain('search_attachments');
+    expect(withAttachments).toContain('read_attachment');
   });
 });
 

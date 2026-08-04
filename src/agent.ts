@@ -163,13 +163,14 @@ export async function runAgent(
   docsRoot: string,
   messages: ModelMessage[],
   evidenceLedger?: EvidenceLedger,
+  attachmentsRoot?: string,
 ): Promise<AgentResult> {
   let rateLimitRetries = 0;
   let authRetries = 0;
 
   while (true) {
     try {
-      return await generateOnce(systemPrompt, docsRoot, messages, evidenceLedger);
+      return await generateOnce(systemPrompt, docsRoot, messages, evidenceLedger, attachmentsRoot);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
 
@@ -201,6 +202,7 @@ async function generateOnce(
   docsRoot: string,
   messages: ModelMessage[],
   evidenceLedger?: EvidenceLedger,
+  attachmentsRoot?: string,
 ): Promise<AgentResult> {
   let stepNum = 0;
   let toolCallCount = 0;
@@ -216,7 +218,7 @@ async function generateOnce(
     ? [{ role: 'system', content: priorEvidence }, ...messages]
     : [...messages];
   const evidenceLedgerDelta = emptyEvidenceLedger();
-  const tools = fileTools(docsRoot, evidenceLedgerDelta);
+  const tools = fileTools(docsRoot, evidenceLedgerDelta, attachmentsRoot);
   const corpusIdentifiers = knownCorpusIdentifiers(docsRoot);
   const userText = messages
     .filter((message) => message.role === 'user')

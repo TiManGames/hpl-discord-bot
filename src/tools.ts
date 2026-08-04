@@ -16,6 +16,7 @@ import {
   type SymbolRecord,
 } from './corpus-index.js';
 import type { EvidenceLedger, EvidenceReference, SearchEvent } from './evidence.js';
+import { listAttachmentsDir } from './attachments.js';
 
 const MAX_FILE_BYTES = 64 * 1024;
 const MAX_RANGE_LINES = 300;
@@ -42,7 +43,13 @@ function toolLog(message: string): void {
   console.log(`[${new Date().toISOString()}] [TOOL] ${message}`);
 }
 
-export const fileTools = (docsRoot: string, ledgerDelta?: EvidenceLedger) => ({
+// When the user has uploaded files to the current thread, `attachmentsRoot`
+// points at their per-thread workspace and three attachment-scoped tools are
+// added. They reuse the same sandboxed read/search helpers as the corpus tools,
+// just rooted at the workspace, so a huge script is searched/paged on demand
+// instead of being dumped into the model context.
+export const fileTools = (docsRoot: string, ledgerDelta?: EvidenceLedger, attachmentsRoot?: string) => {
+  const corpusTools = {
   list_corpus: tool({
     description:
       'Browse the active game corpus. With no path, returns top-level corpus sections and counts. ' +
@@ -171,7 +178,69 @@ export const fileTools = (docsRoot: string, ledgerDelta?: EvidenceLedger) => ({
       return result;
     },
   }),
-});
+  };
+
+  if (!attachmentsRoot?.length) return corpusTools;
+
+  // ─── Attachment-scoped tools (user uploads for THIS thread) ────────────────
+  // Same sandboxed read/search helpers as the corpus tools, rooted at the
+  // per-thread workspace. Descriptions make clear these are the user's own
+  // files, not the game corpus, so the model does not confuse the two.
+  const attachmentTools = {
+    list_attachments: tool({
+      description:
+        'List the files the user uploaded to THIS conversation (not the game corpus). ' +
+        'Returns their relative paths in the attachments workspace. Call this first to see ' +
+        'what the user attached, then search_attachments or read_attachment to inspect a file.',
+      inputSchema: zodSchema(z.object({})),
+      execute: async () => {
+        const result = listAttachmentsDir(attachmentsRoot);
+        toolLog(`list_attachments() -> ${result.length} chars`);
+        return result;
+      },
+    }),
+
+    read_attachment: tool({
+      description:
+        'Read a file the user uploaded to THIS conversation, by its path from list_attachments. ' +
+        'These files can be very large (thousands of lines), so prefer search_attachments to ' +
+        'locate the relevant lines first, then read a slice with a 1-based offset and a line ' +
+        'limit. Only text files are supported.',
+      inputSchema: zodSchema(z.object({
+        path: z.string().describe('Relative path of the uploaded file (from list_attachments).'),
+        offset: z.number().int().min(1).optional().describe('1-based start line.'),
+        limit: z.number().int().min(1).optional().describe(`Maximum lines, capped at ${MAX_RANGE_LINES}.`),
+      })),
+      execute: async ({ path, offset, limit }) => {
+        const result = readFile(path, attachmentsRoot, { offset, limit });
+        toolLog(`read_attachment(${JSON.stringify({ path, offset, limit })}) -> ${result.length} chars`);
+        return result;
+      },
+    }),
+
+    search_attachments: tool({
+      description:
+        'Search the files the user uploaded to THIS conversation with a ripgrep regex or literal ' +
+        'string. Use this to find the relevant lines in a large uploaded script instead of reading ' +
+        'the whole file. Returns matches as "path:line: text".',
+      inputSchema: zodSchema(z.object({
+        query: z.string().describe('Ripgrep regex, or fixed text when literal=true.'),
+        path: z.string().optional().describe('Optional workspace-relative scope.'),
+        glob: z.string().optional().describe('Optional filename glob, e.g. "*.hps".'),
+        context: z.number().int().min(0).max(5).optional().describe('Surrounding lines. Default 0.'),
+        caseInsensitive: z.boolean().optional(),
+        literal: z.boolean().optional().describe('Treat query as fixed text.'),
+      })),
+      execute: async (input) => {
+        const result = await searchFiles(input, attachmentsRoot);
+        toolLog(`search_attachments(${JSON.stringify(input)}) -> ${result.length} chars`);
+        return result;
+      },
+    }),
+  };
+
+  return { ...corpusTools, ...attachmentTools };
+};
 
 interface ListInput { path?: string; glob?: string; depth?: 1 | 2; limit?: number; cursor?: string }
 

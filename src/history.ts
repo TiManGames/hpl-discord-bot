@@ -4,6 +4,8 @@ import type { EvidenceLedger } from './evidence.js';
 export interface Session {
   gameId: string;
   docsRoot: string;
+  /** Per-thread workspace holding user-attached files, once any have been saved. */
+  attachmentsRoot?: string;
   messages: ModelMessage[];
   evidenceLedger?: EvidenceLedger;
 }
@@ -20,6 +22,13 @@ export function getSession(threadId: string): Session | undefined {
 
 export function setSession(threadId: string, session: Session): void {
   sessions.set(threadId, session);
+}
+
+/** Record the attachments workspace on a live session (mid-thread uploads). */
+export function setAttachmentsRoot(threadId: string, root: string): void {
+  const session = sessions.get(threadId);
+  if (!session) return;
+  session.attachmentsRoot = root;
 }
 
 export function appendUserMessage(threadId: string, content: string | UserContent): void {

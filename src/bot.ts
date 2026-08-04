@@ -11,9 +11,15 @@ import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join, resolve } from 'path';
 import { resolveGame } from './channels.js';
-import { getSession, setSession, hasSession, appendUserMessage, appendAssistantMessage } from './history.js';
+import { getSession, setSession, hasSession, setAttachmentsRoot, appendUserMessage, appendAssistantMessage } from './history.js';
 import { emptyEvidenceLedger, mergeEvidenceLedger } from './evidence.js';
 import { runAgent } from './agent.js';
+import {
+  attachmentsRootFor,
+  classifyAttachment,
+  persistTextAttachment,
+  type TextAttachmentDescriptor,
+} from './attachments.js';
 import {
   getPenalty,
   addPenalty,
@@ -25,64 +31,91 @@ import {
 import { containsHardWord, formatRemaining, classifyMessage } from './moderation.js';
 
 const IMAGE_MAX_BYTES = 4 * 1024 * 1024;  // 4 MB
-const TEXT_MAX_BYTES  = 128 * 1024;        // 128 KB
-const SUPPORTED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 
 interface AttachmentParts {
   imageParts: ImagePart[];
-  textParts: TextPart[];
+  /** Text/script uploads — descriptors only; bodies are persisted to disk later. */
+  textFiles: TextAttachmentDescriptor[];
 }
 
-/** Extract supported image and text/hps attachments from a Discord message. */
+/**
+ * Inspect a Discord message's attachments. Images are fetched inline (they are
+ * multimodal input and stay small). Text/script files are NOT downloaded here —
+ * they can be huge, so we only collect descriptors and persist the bodies to a
+ * per-thread workspace once the thread exists (see persistTextAttachments).
+ */
 async function extractAttachments(message: Message): Promise<AttachmentParts> {
   const imageParts: ImagePart[] = [];
-  const textParts: TextPart[] = [];
+  const textFiles: TextAttachmentDescriptor[] = [];
 
-  if (!message.attachments?.size) return { imageParts, textParts };
+  if (!message.attachments?.size) return { imageParts, textFiles };
 
   for (const att of message.attachments.values()) {
-    const name = att.name ?? 'unknown';
-    const ct = att.contentType ?? '';
-    const size = att.size ?? 0;
-    const isImage = SUPPORTED_IMAGE_TYPES.has(ct.split(';')[0].trim());
-    const isText = ct.startsWith('text/') || name.toLowerCase().endsWith('.hps');
+    const { name, contentType, size, isImage, isText } = classifyAttachment({
+      name: att.name,
+      contentType: att.contentType,
+      size: att.size,
+    });
 
     if (isImage) {
       if (size > IMAGE_MAX_BYTES) {
-        log('WARN', `Attachment skipped: ${name} (${ct}, ${Math.round(size / 1024)}KB) — exceeds 4MB image limit`);
+        log('WARN', `Attachment skipped: ${name} (${contentType}, ${Math.round(size / 1024)}KB) — exceeds 4MB image limit`);
         continue;
       }
       try {
         const buf = await fetch(att.url).then((r) => r.arrayBuffer());
-        imageParts.push({ type: 'image', image: buf, mediaType: ct.split(';')[0].trim() as ImagePart['mediaType'] });
-        log('INFO', `Attachment: ${name} (${ct}, ${Math.round(size / 1024)}KB) — included as image`);
+        imageParts.push({ type: 'image', image: buf, mediaType: contentType.split(';')[0].trim() as ImagePart['mediaType'] });
+        log('INFO', `Attachment: ${name} (${contentType}, ${Math.round(size / 1024)}KB) — included as image`);
       } catch (err) {
         log('WARN', `Attachment skipped: ${name} — fetch failed`, err);
       }
     } else if (isText) {
-      if (size > TEXT_MAX_BYTES) {
-        log('WARN', `Attachment skipped: ${name} (${ct}, ${Math.round(size / 1024)}KB) — exceeds 128KB text limit`);
-        continue;
-      }
-      try {
-        const text = await fetch(att.url).then((r) => r.text());
-        textParts.push({ type: 'text', text: `\`\`\`hps\n// ${name}\n${text}\n\`\`\`` });
-        log('INFO', `Attachment: ${name} (${ct}, ${Math.round(size / 1024)}KB) — included as text`);
-      } catch (err) {
-        log('WARN', `Attachment skipped: ${name} — fetch failed`, err);
-      }
+      // Defer the download; record only what moderation and persistence need.
+      textFiles.push({ name, url: att.url, contentType, size });
+      log('INFO', `Attachment: ${name} (${contentType}, ${Math.round(size / 1024)}KB) — queued for workspace`);
     } else {
-      log('WARN', `Attachment skipped: ${name} (${ct}) — unsupported type`);
+      log('WARN', `Attachment skipped: ${name} (${contentType}) — unsupported type`);
     }
   }
 
-  return { imageParts, textParts };
+  return { imageParts, textFiles };
 }
 
-/** Build a UserContent array from text + any extracted attachment parts. */
-function buildUserContent(text: string, { imageParts, textParts }: AttachmentParts): UserContent {
-  if (imageParts.length === 0 && textParts.length === 0) return text;
-  return [{ type: 'text', text }, ...imageParts, ...textParts];
+/**
+ * Download and persist queued text/script attachments into the thread's
+ * workspace, returning one compact reference-note text part per saved file.
+ * These tiny notes are what enter the conversation and moderation — never the
+ * full file body.
+ */
+async function persistTextAttachments(
+  threadId: string,
+  textFiles: TextAttachmentDescriptor[],
+): Promise<TextPart[]> {
+  const used = new Set<string>();
+  const noteParts: TextPart[] = [];
+  for (const att of textFiles) {
+    const note = await persistTextAttachment(threadId, att, used);
+    if (note) noteParts.push({ type: 'text', text: note });
+  }
+  return noteParts;
+}
+
+/** Build a UserContent array from text + image parts + attachment note parts. */
+function buildUserContent(text: string, imageParts: ImagePart[], noteParts: TextPart[] = []): UserContent {
+  if (imageParts.length === 0 && noteParts.length === 0) return text;
+  return [{ type: 'text', text }, ...imageParts, ...noteParts];
+}
+
+/**
+ * Body-free note parts for moderation — describe attached text files by name
+ * and size only, so the classifier can factor them in without ever seeing the
+ * (potentially huge) file body.
+ */
+function moderationNoteParts(textFiles: TextAttachmentDescriptor[]): TextPart[] {
+  return textFiles.map((att) => ({
+    type: 'text',
+    text: `[User attached file "${att.name}" (${Math.max(1, Math.round(att.size / 1024))} KB, ${att.contentType || 'text'})]`,
+  }));
 }
 
 export type ModerationOutcome = { action: 'allow' } | { action: 'block'; replyText: string };
@@ -161,7 +194,7 @@ export function isSimpleGreeting(text: string): boolean {
     .replace(/[^a-z\s]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
-  return /^(hi|hello|hey|hiya|yo|sup|hey there|hello there)$/.test(normalized);
+  return /^(hi|hello|hey|hiya|yo|sup|hey there|hello there|shalom|heya)$/.test(normalized);
 }
 
 interface MunshiEmoji {
@@ -261,7 +294,9 @@ export function startBot(token: string): void {
 
 export async function handleChannelMention(message: Message, botId: string): Promise<void> {
   // Munshi custom emoji messages are handled locally and never reach the LLM.
-  await handleMunshiEmoji(message);
+  if(await handleMunshiEmoji(message)) {
+    return;
+  };
 
   const channelName = (message.channel as { name?: string }).name ?? message.channelId;
   const game = resolveGame(message);
@@ -292,20 +327,28 @@ export async function handleChannelMention(message: Message, botId: string): Pro
 
   log('INFO', `User text after stripping mention: "${userText}"`);
 
-  // Extract attachments now so moderation can inspect them before we commit to a thread.
+  // Inspect attachments (images fetched inline; text/script files queued for the
+  // per-thread workspace and downloaded only after the thread exists).
   const attachmentParts = await extractAttachments(message);
-  const userContent = buildUserContent(userText, attachmentParts);
+  const hasTextFiles = attachmentParts.textFiles.length > 0;
   const hasContent =
-    userText.length > 0 || attachmentParts.imageParts.length > 0 || attachmentParts.textParts.length > 0;
+    userText.length > 0 || attachmentParts.imageParts.length > 0 || hasTextFiles;
   const simpleGreeting =
     isSimpleGreeting(userText) &&
     attachmentParts.imageParts.length === 0 &&
-    attachmentParts.textParts.length === 0;
+    !hasTextFiles;
 
   // Moderate BEFORE creating a thread — rate-limited/penalized users get an
-  // in-channel reply and never spawn a throwaway thread or reach the LLM.
+  // in-channel reply and never spawn a throwaway thread or reach the LLM. The
+  // classifier sees only text + images + body-free file notes, never the file
+  // body (which is not even downloaded yet).
   if (hasContent && !simpleGreeting) {
-    const outcome = await moderateAndMaybePenalize(message.author.id, userText, userContent);
+    const moderationContent = buildUserContent(
+      userText,
+      attachmentParts.imageParts,
+      moderationNoteParts(attachmentParts.textFiles),
+    );
+    const outcome = await moderateAndMaybePenalize(message.author.id, userText, moderationContent);
     if (outcome.action === 'block') {
       try {
         await message.reply(withUserMention(message.author.id, outcome.replyText));
@@ -328,6 +371,12 @@ export async function handleChannelMention(message: Message, botId: string): Pro
     return;
   }
 
+  // Now that the thread exists, persist any text/script uploads to its workspace
+  // and build the user content with compact reference notes (never file bodies).
+  const attachmentsRoot = hasTextFiles ? attachmentsRootFor(thread.id) : undefined;
+  const noteParts = hasTextFiles ? await persistTextAttachments(thread.id, attachmentParts.textFiles) : [];
+  const userContent = buildUserContent(userText, attachmentParts.imageParts, noteParts);
+
   // Initialise history before any fast response so follow-ups in the new thread
   // are tracked even when the first turn does not need the LLM.
   const initialMessages = hasContent
@@ -336,6 +385,7 @@ export async function handleChannelMention(message: Message, botId: string): Pro
   setSession(thread.id, {
     gameId: game.gameId,
     docsRoot: game.docsRoot,
+    attachmentsRoot,
     messages: initialMessages,
     evidenceLedger: emptyEvidenceLedger(),
   });
@@ -349,7 +399,7 @@ export async function handleChannelMention(message: Message, botId: string): Pro
   }
 
   // Load the compact system prompt. Documentation paths are discovered on demand.
-  const systemPrompt = loadSystemPrompt(game.skillDir, game.docsRoot);
+  const systemPrompt = loadSystemPrompt(game.skillDir, game.docsRoot, Boolean(attachmentsRoot));
   log('INFO', `Loaded system prompt from ${game.skillDir}/SKILL.md (${systemPrompt.length} chars)`);
 
   // Typing indicator while the agent runs
@@ -369,7 +419,7 @@ export async function handleChannelMention(message: Message, botId: string): Pro
       duplicateToolCallCount,
       forcedFinal,
       evidenceLedgerDelta,
-    } = await runAgent(systemPrompt, game.docsRoot, initialMessages, emptyEvidenceLedger());
+    } = await runAgent(systemPrompt, game.docsRoot, initialMessages, emptyEvidenceLedger(), attachmentsRoot);
     const session = getSession(thread.id);
     if (session) session.evidenceLedger = mergeEvidenceLedger(session.evidenceLedger, evidenceLedgerDelta);
     const renderedReply = renderMunshiHappyEmoji(message, reply);
@@ -396,11 +446,17 @@ export async function handleThreadMessage(message: Message): Promise<void> {
 
   const session = getSession(threadId)!;
   const attachmentParts = await extractAttachments(message);
-  const userContent = buildUserContent(message.content, attachmentParts);
+  const hasTextFiles = attachmentParts.textFiles.length > 0;
 
-  // Moderate before touching history or the LLM. On block, the offending message
-  // is NOT appended to conversation history (so it can't poison later context).
-  const outcome = await moderateAndMaybePenalize(message.author.id, message.content, userContent);
+  // Moderate before touching history, downloading file bodies, or the LLM. On
+  // block, the offending message is NOT appended to history (so it can't poison
+  // later context). The classifier sees only text + images + body-free notes.
+  const moderationContent = buildUserContent(
+    message.content,
+    attachmentParts.imageParts,
+    moderationNoteParts(attachmentParts.textFiles),
+  );
+  const outcome = await moderateAndMaybePenalize(message.author.id, message.content, moderationContent);
   if (outcome.action === 'block') {
     try {
       await message.reply(withUserMention(message.author.id, outcome.replyText));
@@ -410,9 +466,22 @@ export async function handleThreadMessage(message: Message): Promise<void> {
     return;
   }
 
-  appendUserMessage(threadId, userContent);
+  // Allowed — persist any text/script uploads into the thread workspace and add
+  // compact reference notes to the conversation (never the file body).
+  let noteParts: TextPart[] = [];
+  if (hasTextFiles) {
+    noteParts = await persistTextAttachments(threadId, attachmentParts.textFiles);
+    if (noteParts.length > 0 && !session.attachmentsRoot) {
+      setAttachmentsRoot(threadId, attachmentsRootFor(threadId));
+    }
+  }
+  appendUserMessage(threadId, buildUserContent(message.content, attachmentParts.imageParts, noteParts));
 
-  const systemPrompt = loadSystemPrompt(skillDirFromGameId(session.gameId), session.docsRoot);
+  const systemPrompt = loadSystemPrompt(
+    skillDirFromGameId(session.gameId),
+    session.docsRoot,
+    Boolean(session.attachmentsRoot),
+  );
 
   try {
     await (message.channel as unknown as TextChannel).sendTyping();
@@ -432,7 +501,7 @@ export async function handleThreadMessage(message: Message): Promise<void> {
       duplicateToolCallCount,
       forcedFinal,
       evidenceLedgerDelta,
-    } = await runAgent(systemPrompt, session.docsRoot, session.messages, session.evidenceLedger);
+    } = await runAgent(systemPrompt, session.docsRoot, session.messages, session.evidenceLedger, session.attachmentsRoot);
     session.evidenceLedger = mergeEvidenceLedger(session.evidenceLedger, evidenceLedgerDelta);
     const renderedReply = renderMunshiHappyEmoji(message, reply);
     const taggedReply = withUserMention(message.author.id, renderedReply);
@@ -484,7 +553,7 @@ Your replies render in Discord. Use ONLY Discord-supported markdown and keep it 
 - Keep spacing tight: at most ONE blank line between paragraphs or sections, never two or more. No trailing whitespace.
 - Do not wrap the whole message in a code block. Only put actual code in code blocks.`;
 
-export function loadSystemPrompt(skillDir: string, _docsRoot: string): string {
+export function loadSystemPrompt(skillDir: string, _docsRoot: string, hasAttachments = false): string {
   let base: string;
   try {
     base = readFileSync(`${skillDir}/SKILL.md`, 'utf-8');
@@ -493,9 +562,18 @@ export function loadSystemPrompt(skillDir: string, _docsRoot: string): string {
     base = 'You are a helpful HPL engine modding assistant.';
   }
 
+  const attachmentsSection = hasAttachments
+    ? `\n\n## Attached files\n` +
+      `The user uploaded one or more files to this conversation; a short note in the ` +
+      `message names each one. These are the user's own files, not the game corpus. They ` +
+      `can be very large, so never expect the full body inline: use list_attachments to see ` +
+      `them, search_attachments to locate relevant lines, and read_attachment (with ` +
+      `offset/limit) to read a slice. Prefer searching over reading a whole file.`
+    : '';
+
   // The complete corpus is available through neutral, paginated navigation.
   return (
-    `${BASE_INSTRUCTIONS}\n\n${base}`
+    `${BASE_INSTRUCTIONS}\n\n${base}${attachmentsSection}`
   );
 }
 

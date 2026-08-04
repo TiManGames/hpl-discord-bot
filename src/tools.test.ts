@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileTools } from './tools.js';
@@ -82,5 +83,51 @@ describe('neutral corpus tools', () => {
     expect(result).toContain('No matches found.');
     expect(result).toContain('scope: wiki');
     expect(ledger.searches[0].empty).toBe(true);
+  });
+});
+
+describe('attachment tools', () => {
+  // The docs `root` doubles as an "uploads" workspace here; the point is that
+  // attachment tools are rooted at whatever attachmentsRoot is passed, reusing
+  // the same sandboxed read/search helpers as the corpus tools.
+  const attTools = (attachmentsRoot?: string) =>
+    fileTools(root, emptyEvidenceLedger(), attachmentsRoot) as Record<string, { execute?: Function }>;
+  const runTool = async (tools: ReturnType<typeof attTools>, name: string, input: Record<string, unknown>) =>
+    (await tools[name].execute!(input, { toolCallId: 'test', messages: [] })) as string;
+
+  let hasRg = false;
+  try {
+    execFileSync('rg', ['--version'], { stdio: 'ignore' });
+    hasRg = true;
+  } catch {
+    hasRg = false;
+  }
+
+  it('are absent without an attachmentsRoot and present with one', () => {
+    expect(Object.keys(fileTools(root))).not.toContain('read_attachment');
+    expect(Object.keys(fileTools(root, emptyEvidenceLedger(), ''))).not.toContain('read_attachment');
+
+    const names = Object.keys(fileTools(root, emptyEvidenceLedger(), root));
+    expect(names).toContain('list_attachments');
+    expect(names).toContain('read_attachment');
+    expect(names).toContain('search_attachments');
+  });
+
+  it('read_attachment reads under the workspace and cannot escape it', async () => {
+    const tools = attTools(root);
+    expect(await runTool(tools, 'read_attachment', { path: 'hps_api.hps', offset: 1, limit: 1 })).toMatch(/^1\t/);
+    expect(await runTool(tools, 'read_attachment', { path: '../secret.env' })).toMatch(/traversal/i);
+  });
+
+  it('list_attachments lists files in the workspace', async () => {
+    const out = await runTool(attTools(root), 'list_attachments', {});
+    expect(out).toContain('hps_api.hps');
+  });
+
+  (hasRg ? it : it.skip)('search_attachments finds a line in an uploaded file', async () => {
+    const out = await runTool(attTools(root), 'search_attachments', {
+      query: 'Entity_CreateAtEntity', literal: true,
+    });
+    expect(out).toContain('Entity_CreateAtEntity');
   });
 });
