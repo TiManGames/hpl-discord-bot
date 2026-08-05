@@ -279,10 +279,14 @@ async function generateOnce(
                 modelParams: { thinking: { type: 'adaptive' } },
               },
             }
-          : undefined,
+          : {
+            'sap-ai': {
+              modelParams: {reasoning_effort: 'high'}
+            }
+          },
         // Disable the SDK's exponential backoff — it ignores SAP's x-retry-after
         // header. Network retries preserve this exact step; runAgent handles 429s.
-        maxRetries: 0,
+        maxRetries: 0
       }),
     );
     forceToolNextStep = false;

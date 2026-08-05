@@ -60,7 +60,8 @@ Use this checklist before editing or proposing HPL3 `.hps` behavior.
 
 ## Verify script is effiecent
 
-- Go over your script and verify the code and approaches are effiecent.  
+- Go over your script and verify the code and approaches are effiecent.
+- Peroform extensive code review on your own code  
 
 ## Debug when the callback fires but the result is invisible
 
