@@ -489,6 +489,31 @@ describe('thread author gating', () => {
     const stored = JSON.stringify(getSession('gated-thread')!.messages[0].content);
     expect(stored).not.toContain('<@bot-id>');
   });
+
+  it('greets (no agent/moderation call) when a thread message is only bot mentions', async () => {
+    // Regression: "<@bot> <@bot>" strips to empty text with no images/files. Sending
+    // that produced an empty content payload SAP rejects with a 400. Must short-circuit.
+    vi.mocked(runAgent).mockResolvedValue(agentResult);
+    const threadId = 'thread-empty-mention';
+    setSession(threadId, { gameId: 'hpl2', docsRoot: 'missing-test-docs', authorId: 'owner', messages: [] });
+    const send = vi.fn().mockResolvedValue(undefined);
+    const message = {
+      content: '<@bot-id> <@bot-id>',
+      channelId: threadId,
+      channel: { send, sendTyping: vi.fn().mockResolvedValue(undefined) },
+      author: { id: 'owner', tag: 'owner' },
+      mentions: { has: (id: string) => id === 'bot-id' },
+    } as unknown as Message;
+
+    await handleThreadMessage(message, 'bot-id');
+
+    expect(runAgent).not.toHaveBeenCalled();
+    expect(classifyMessage).not.toHaveBeenCalled();
+    expect(send).toHaveBeenCalledWith(`<@owner> ${SIMPLE_GREETING_RESPONSE}`);
+    // History gets the greeting, never an empty user message.
+    const contents = getSession(threadId)!.messages.map((m) => JSON.stringify(m.content));
+    expect(contents.some((c) => c.includes('""'))).toBe(false);
+  });
 });
 
 describe('moderation gate', () => {
@@ -577,6 +602,53 @@ describe('moderation gate', () => {
     expect(getSession(threadId)!.messages).toHaveLength(0);
   });
 
+  it('passes the user’s up-to-2 prior thread messages as moderation context', async () => {
+    vi.mocked(runAgent).mockResolvedValue({
+      text: 'ok', inputTokens: 1, uncachedInputTokens: 1, outputTokens: 1,
+      cacheReadTokens: 0, cacheWriteTokens: 0, stepCount: 1, toolCallCount: 0,
+      duplicateToolCallCount: 0, forcedFinal: false,
+      evidenceLedgerDelta: { references: [], searches: [] },
+    });
+    const threadId = 'thread-mod-context';
+    setSession(threadId, { gameId: 'hpl2', docsRoot: 'missing-test-docs', authorId: 'steerer', messages: [] });
+    const send = vi.fn().mockResolvedValue(undefined);
+    const makeMessage = (content: string) => ({
+      content, channelId: threadId,
+      channel: { send, sendTyping: vi.fn().mockResolvedValue(undefined) },
+      author: { id: 'steerer', tag: 'steerer' },
+      mentions: { has: () => false },
+    } as unknown as Message);
+
+    await handleThreadMessage(makeMessage('first message'), 'bot-id');
+    await handleThreadMessage(makeMessage('second message'), 'bot-id');
+    await handleThreadMessage(makeMessage('third message'), 'bot-id');
+
+    // First call: no prior context. Third call: the 2 immediately-prior messages.
+    expect(vi.mocked(classifyMessage).mock.calls[0][1]).toEqual([]);
+    expect(vi.mocked(classifyMessage).mock.calls[2][1]).toEqual(['first message', 'second message']);
+  });
+
+  it('counts a penalized message as context for the next moderation call', async () => {
+    // The steering messages are exactly the ones that get penalized, so they must
+    // still be visible to the classifier on the following turn.
+    vi.mocked(classifyMessage).mockResolvedValue({ penalty: true, category: 'off-topic', reason: 'derail' });
+    vi.mocked(addPenalty).mockResolvedValue({ _id: 'x', penaltyCount: 1, lastPenaltyAt: null, rateLimited: false });
+    const threadId = 'thread-penalized-context';
+    setSession(threadId, { gameId: 'hpl2', docsRoot: 'missing-test-docs', authorId: 'x', messages: [] });
+    const message = (content: string) => ({
+      content, channelId: threadId,
+      channel: { send: vi.fn().mockResolvedValue(undefined), sendTyping: vi.fn().mockResolvedValue(undefined) },
+      author: { id: 'x', tag: 'x' },
+      mentions: { has: () => false },
+      reply: vi.fn().mockResolvedValue(undefined),
+    } as unknown as Message);
+
+    await handleThreadMessage(message('derail one'), 'bot-id');
+    await handleThreadMessage(message('derail two'), 'bot-id');
+
+    expect(vi.mocked(classifyMessage).mock.calls[1][1]).toEqual(['derail one']);
+  });
+
   it('resets an expired-window user and lets the message through', async () => {
     vi.mocked(getPenalty).mockResolvedValue({
       _id: 'expired',
@@ -617,6 +689,36 @@ describe('moderation gate', () => {
     expect(resetPenalty).toHaveBeenCalledWith('expired');
     expect(runAgent).toHaveBeenCalledOnce();
     expect(send).toHaveBeenCalledWith('<@expired> Here you go.');
+  });
+
+  it('gives a flagged user the heightened-enforcement system prompt', async () => {
+    // A user with active penalties (but not rate limited) still gets answered —
+    // but the agent must run under the tighter, content-refusing guardrails.
+    vi.mocked(getPenalty).mockResolvedValue({
+      _id: 'flagged', penaltyCount: 2, lastPenaltyAt: null, rateLimited: false,
+    });
+    vi.mocked(runAgent).mockResolvedValue({
+      text: 'Here is the technical answer.', inputTokens: 1, uncachedInputTokens: 1, outputTokens: 1,
+      cacheReadTokens: 0, cacheWriteTokens: 0, stepCount: 1, toolCallCount: 0,
+      duplicateToolCallCount: 0, forcedFinal: false,
+      evidenceLedgerDelta: { references: [], searches: [] },
+    });
+    const thread = {
+      id: 'thread-flagged', name: 'hpl3-soma — flagged', send: vi.fn().mockResolvedValue(undefined),
+      sendTyping: vi.fn().mockResolvedValue(undefined),
+    };
+    const message = {
+      id: 'mf', content: '<@bot-id> how do I format a .lang file?',
+      channel: { name: 'soma-modding', id: 'soma-channel' }, channelId: 'soma-channel',
+      author: { id: 'flagged', username: 'flagged', tag: 'flagged' },
+      react: vi.fn().mockResolvedValue(undefined),
+      startThread: vi.fn().mockResolvedValue(thread),
+    } as unknown as Message;
+
+    await handleChannelMention(message, 'bot-id');
+
+    const systemPrompt = vi.mocked(runAgent).mock.calls[0][0];
+    expect(systemPrompt).toContain('Heightened scope enforcement');
   });
 });
 
@@ -726,6 +828,20 @@ describe('loadSystemPrompt', () => {
     expect(withAttachments).toContain('list_attachments');
     expect(withAttachments).toContain('search_attachments');
     expect(withAttachments).toContain('read_attachment');
+  });
+
+  it('tells the agent not to re-argue a refusal', () => {
+    const prompt = loadSystemPrompt('skills/hpl3-soma', 'skills/hpl3-soma/docs');
+    expect(prompt).toContain('Do not re-argue a refusal');
+  });
+
+  it('adds heightened enforcement only when the user has active penalties', () => {
+    expect(loadSystemPrompt('skills/hpl3-soma', 'skills/hpl3-soma/docs', false, 0)).not.toContain(
+      'Heightened scope enforcement',
+    );
+    const flagged = loadSystemPrompt('skills/hpl3-soma', 'skills/hpl3-soma/docs', false, 2);
+    expect(flagged).toContain('## Heightened scope enforcement (this user has been flagged)');
+    expect(flagged).toContain('ONE short');
   });
 });
 

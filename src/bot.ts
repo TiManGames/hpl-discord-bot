@@ -11,12 +11,13 @@ import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join, resolve } from 'path';
 import { resolveGame } from './channels.js';
-import { getSession, setSession, hasSession, setAttachmentsRoot, appendUserMessage, appendAssistantMessage } from './history.js';
+import { getSession, setSession, hasSession, setAttachmentsRoot, appendUserMessage, appendAssistantMessage, recentUserContext, recordUserContext } from './history.js';
 import { emptyEvidenceLedger, mergeEvidenceLedger } from './evidence.js';
 import { runAgent } from './agent.js';
 import {
   attachmentsRootFor,
   classifyAttachment,
+  fetchWithRetry,
   persistTextAttachment,
   type TextAttachmentDescriptor,
 } from './attachments.js';
@@ -63,7 +64,7 @@ async function extractAttachments(message: Message): Promise<AttachmentParts> {
         continue;
       }
       try {
-        const buf = await fetch(att.url).then((r) => r.arrayBuffer());
+        const buf = await fetchWithRetry(att.url).then((r) => r.arrayBuffer());
         imageParts.push({ type: 'image', image: buf, mediaType: contentType.split(';')[0].trim() as ImagePart['mediaType'] });
         log('INFO', `Attachment: ${name} (${contentType}, ${Math.round(size / 1024)}KB) — included as image`);
       } catch (err) {
@@ -143,6 +144,7 @@ export async function moderateAndMaybePenalize(
   userId: string,
   userText: string,
   userContent: UserContent,
+  priorContext: string[] = [],
 ): Promise<ModerationOutcome> {
   const now = Date.now();
   const record = await getPenalty(userId);
@@ -169,8 +171,8 @@ export async function moderateAndMaybePenalize(
     return { action: 'block', replyText: `Please refrain from bad language.${penaltySuffix(updated)}` };
   }
 
-  // Step C — LLM moderation classifier (text + attachments).
-  const verdict = await classifyMessage(userContent);
+  // Step C — LLM moderation classifier (text + attachments + prior-turn context).
+  const verdict = await classifyMessage(userContent, priorContext);
   if (verdict.penalty) {
     const updated = await addPenalty(userId, now);
     log('INFO', `Classifier penalty issued to ${userId} [${verdict.category}] (count now ${updated.penaltyCount})`);
@@ -451,8 +453,10 @@ export async function handleChannelMention(message: Message, botId: string): Pro
   }
 
   // Load the compact system prompt. Documentation paths are discovered on demand.
-  const systemPrompt = loadSystemPrompt(game.skillDir, game.docsRoot, Boolean(attachmentsRoot));
-  log('INFO', `Loaded system prompt from ${game.skillDir}/SKILL.md (${systemPrompt.length} chars)`);
+  // Pass the user's current penalty count so a flagged user gets tighter scope.
+  const { penaltyCount } = await getPenalty(message.author.id);
+  const systemPrompt = loadSystemPrompt(game.skillDir, game.docsRoot, Boolean(attachmentsRoot), penaltyCount);
+  log('INFO', `Loaded system prompt from ${game.skillDir}/SKILL.md (${systemPrompt.length} chars, penaltyCount=${penaltyCount})`);
 
   // Typing indicator while the agent runs
   try { await (thread as unknown as TextChannel).sendTyping(); } catch { /* ignore */ }
@@ -528,6 +532,23 @@ export async function handleThreadMessage(message: Message, botId: string): Prom
   const attachmentParts = await extractAttachments(message);
   const hasTextFiles = attachmentParts.textFiles.length > 0;
 
+  // A message that is only a bot mention (e.g. "<@bot> <@bot>") strips down to
+  // empty text with no images or files. Sending that to the model produces an
+  // empty content payload the SAP API rejects (400 "[] is not of type string").
+  // Answer with the greeting and skip the agent, mirroring the channel-mention path.
+  if (userText.length === 0 && attachmentParts.imageParts.length === 0 && !hasTextFiles) {
+    log('INFO', `Thread message in ${threadId} had no content after stripping mentions — greeting without the agent`);
+    appendAssistantMessage(threadId, SIMPLE_GREETING_RESPONSE);
+    try {
+      await (message.channel as unknown as TextChannel).send(
+        withUserMention(message.author.id, SIMPLE_GREETING_RESPONSE),
+      );
+    } catch (err) {
+      log('WARN', `Failed to send greeting in thread ${threadId}`, err);
+    }
+    return;
+  }
+
   // Moderate before touching history, downloading file bodies, or the LLM. On
   // block, the offending message is NOT appended to history (so it can't poison
   // later context). The classifier sees only text + images + body-free notes.
@@ -536,7 +557,12 @@ export async function handleThreadMessage(message: Message, botId: string): Prom
     attachmentParts.imageParts,
     moderationNoteParts(attachmentParts.textFiles),
   );
-  const outcome = await moderateAndMaybePenalize(message.author.id, userText, moderationContent);
+  // Give the classifier this user's up-to-2 prior messages so it can spot
+  // steering that builds across turns. Snapshot BEFORE recording the current one,
+  // then record it (even if penalized below) so it counts as context next time.
+  const priorContext = recentUserContext(threadId, message.author.id);
+  recordUserContext(threadId, message.author.id, userText);
+  const outcome = await moderateAndMaybePenalize(message.author.id, userText, moderationContent, priorContext);
   if (outcome.action === 'block') {
     try {
       await message.reply(withUserMention(message.author.id, outcome.replyText));
@@ -557,10 +583,14 @@ export async function handleThreadMessage(message: Message, botId: string): Prom
   }
   appendUserMessage(threadId, buildUserContent(userText, attachmentParts.imageParts, noteParts));
 
+  // Reflect the user's current standing (moderation above may have just added a
+  // penalty) so a flagged user gets the tighter-scope guardrails.
+  const { penaltyCount } = await getPenalty(message.author.id);
   const systemPrompt = loadSystemPrompt(
     skillDirFromGameId(session.gameId),
     session.docsRoot,
     Boolean(session.attachmentsRoot),
+    penaltyCount,
   );
 
   try {
@@ -620,6 +650,7 @@ const BASE_INSTRUCTIONS = `## Response rules (always apply)
 - Do not narrate research or address the user while calling tools. The application sends only the final tool-free answer to Discord.
 - Present the final response as the answer, code, or actionable steps rather than a research report. Keep research provenance implicit
 - Only answer questions relevant to HPL engine modding. If a question is unrelated, briefly decline and steer the user back to HPL modding.
+- Do not re-argue a refusal. State your scope ONCE, briefly, then stop re-explaining. If the user keeps pressing the same out-of-scope request after you have declined, do not keep restating it — give a single short final decline and do not elaborate further.
 - You cannot send entire full files or attachments of your own. If a user asks to do so, politely point they'll need to use a local Ai Agent tool (Like Claude Code or Codex) with a modding skill.
 - It is OK to summerize the conversation if the user asks for it.
 - If the user has an obscure modding request, do not turn it down automatically. Check the active game's documentation and give a grounded answer. If it is impossible, explain why and suggest alternatives.
@@ -646,7 +677,12 @@ Your replies render in Discord. Use ONLY Discord-supported markdown and keep it 
 - Keep spacing tight: at most ONE blank line between paragraphs or sections, never two or more. No trailing whitespace.
 - Do not wrap the whole message in a code block. Only put actual code in code blocks.`;
 
-export function loadSystemPrompt(skillDir: string, _docsRoot: string, hasAttachments = false): string {
+export function loadSystemPrompt(
+  skillDir: string,
+  _docsRoot: string,
+  hasAttachments = false,
+  penaltyCount = 0,
+): string {
   let base: string;
   try {
     base = readFileSync(`${skillDir}/SKILL.md`, 'utf-8');
@@ -664,9 +700,23 @@ export function loadSystemPrompt(skillDir: string, _docsRoot: string, hasAttachm
       `offset/limit) to read a slice. Prefer searching over reading a whole file.`
     : '';
 
+  // A user with active penalties has already been flagged for steering/off-topic
+  // pressure. Keep normal helpfulness, but stay brief and don't get drawn into
+  // re-arguing a refusal or answering a request that's clearly off-topic dressed
+  // up as modding.
+  const flaggedSection = penaltyCount > 0
+    ? `\n\n## Heightened scope enforcement (this user has been flagged)\n` +
+      `This user has recent moderation penalties for pushing off-topic or steering ` +
+      `requests. Still help with genuine HPL modding, but stay tight: keep replies short, ` +
+      `and don't be steered into content that is clearly off-topic just because it is ` +
+      `framed as modding. If they repeat a request you already declined, reply with ONE ` +
+      `short sentence declining and nothing else — do not re-explain your scope or offer ` +
+      `alternatives again.`
+    : '';
+
   // The complete corpus is available through neutral, paginated navigation.
   return (
-    `${BASE_INSTRUCTIONS}\n\n${base}${attachmentsSection}`
+    `${BASE_INSTRUCTIONS}\n\n${base}${attachmentsSection}${flaggedSection}`
   );
 }
 
