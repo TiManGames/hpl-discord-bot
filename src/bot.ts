@@ -147,22 +147,10 @@ export async function moderateAndMaybePenalize(
   priorContext: string[] = [],
 ): Promise<ModerationOutcome> {
   const now = Date.now();
-  const record = await getPenalty(userId);
 
   // Step A — rate-limit check first.
-  if (record.penaltyCount >= PENALTY_LIMIT) {
-    const { limited, remainingMs } = evaluateRateLimit(record, now);
-    if (limited) {
-      log('INFO', `User ${userId} is rate limited (${formatRemaining(remainingMs)} remaining)`);
-      return {
-        action: 'block',
-        replyText: `You are being rate limited. Please try again in ${formatRemaining(remainingMs)}.`,
-      };
-    }
-    // Window expired — reset and let the message through to normal evaluation.
-    await resetPenalty(userId);
-    log('INFO', `Rate-limit window expired for ${userId} — penalty count reset to 0`);
-  }
+  const rateLimit = await checkRateLimit(userId);
+  if (rateLimit.action === 'block') return rateLimit;
 
   // Step B — deterministic hard-word guard.
   if (containsHardWord(userText)) {
@@ -182,6 +170,32 @@ export async function moderateAndMaybePenalize(
     };
   }
 
+  return { action: 'allow' };
+}
+
+/**
+ * Rate-limit gate, isolated from the rest of moderation so it can run BEFORE any
+ * expensive or user-visible side effect (attachment fetch, thread creation, LLM
+ * calls). A rate-limited user is blocked with the remaining-time message; if
+ * their window has expired the count is reset and they are allowed through.
+ * Cheap enough (one DB read) to call redundantly from moderateAndMaybePenalize.
+ */
+export async function checkRateLimit(userId: string): Promise<ModerationOutcome> {
+  const now = Date.now();
+  const record = await getPenalty(userId);
+  if (record.penaltyCount >= PENALTY_LIMIT) {
+    const { limited, remainingMs } = evaluateRateLimit(record, now);
+    if (limited) {
+      log('INFO', `User ${userId} is rate limited (${formatRemaining(remainingMs)} remaining)`);
+      return {
+        action: 'block',
+        replyText: `You are being rate limited. Please try again in ${formatRemaining(remainingMs)}.`,
+      };
+    }
+    // Window expired — reset and let the message through to normal evaluation.
+    await resetPenalty(userId);
+    log('INFO', `Rate-limit window expired for ${userId} — penalty count reset to 0`);
+  }
   return { action: 'allow' };
 }
 
@@ -226,10 +240,28 @@ interface MunshiEmoji {
   raw: string;
 }
 
+const MUNSHI_EMOJI_RE = /<a?:munshi_[A-Za-z0-9_]+:(\d+)>/;
+const MUNSHI_EMOJI_RE_GLOBAL = /<a?:munshi_[A-Za-z0-9_]+:\d+>/g;
+
 export function findMunshiEmoji(content: string): MunshiEmoji | null {
-  const match = content.match(/<a?:munshi_[A-Za-z0-9_]+:(\d+)>/);
+  const match = (content ?? '').match(MUNSHI_EMOJI_RE);
   if (!match) return null;
   return { id: match[1], raw: match[0] };
+}
+
+/**
+ * True when the message is ONLY Munshi custom emoji(s) once the bot mention is
+ * stripped — e.g. "@bot :munshi_happy:". Those get the local emoji echo and no
+ * thread. A Munshi emoji accompanied by any other text is NOT munshi-only: it
+ * flows into the normal thread/LLM path, where the easter-egg instruction lives.
+ */
+export function isMunshiOnlyMessage(content: string, botId: string): boolean {
+  const withoutMention = (content ?? '')
+    .replace(new RegExp(`<@!?${botId}>`, 'g'), '')
+    .trim();
+  const withoutEmoji = withoutMention.replace(MUNSHI_EMOJI_RE_GLOBAL, '').trim();
+  // Had at least one Munshi emoji (stripping changed the string) and nothing else.
+  return withoutEmoji.length === 0 && withoutEmoji !== withoutMention;
 }
 
 export function withUserMention(userId: string, content: string): string {
@@ -344,11 +376,6 @@ export function startBot(token: string): void {
 }
 
 export async function handleChannelMention(message: Message, botId: string): Promise<void> {
-  // Munshi custom emoji messages are handled locally and never reach the LLM.
-  if(await handleMunshiEmoji(message)) {
-    return;
-  };
-
   const channelName = (message.channel as { name?: string }).name ?? message.channelId;
   const game = resolveGame(message);
   if (!game) {
@@ -362,6 +389,27 @@ export async function handleChannelMention(message: Message, botId: string): Pro
   }
 
   log('INFO', `Resolved channel "${channelName}" → game "${game.gameId}"`);
+
+  // Rate-limit gate FIRST — before any react, emoji echo, attachment fetch, or
+  // thread. A rate-limited user (even one spamming Munshi emoji) gets only the
+  // in-channel notice. Content messages are re-checked inside
+  // moderateAndMaybePenalize below; this read is cheap.
+  const rateLimit = await checkRateLimit(message.author.id);
+  if (rateLimit.action === 'block') {
+    try {
+      await message.reply(withUserMention(message.author.id, rateLimit.replyText));
+    } catch (err) {
+      log('WARN', `Failed to send rate-limit reply to message ${message.id}`, err);
+    }
+    return;
+  }
+
+  // A message that is ONLY Munshi emoji (after stripping the mention) is handled
+  // locally: react + echo the emoji, no thread, no LLM. Munshi emoji WITH text
+  // falls through to the normal thread/LLM path, where the easter-egg lives.
+  if (isMunshiOnlyMessage(message.content, botId) && (await handleMunshiEmoji(message))) {
+    return;
+  }
 
   // React with eyes to acknowledge
   try {
@@ -522,6 +570,18 @@ export async function handleThreadMessage(message: Message, botId: string): Prom
 
   log('INFO', `Thread reply from ${message.author.tag} in tracked thread ${threadId}`);
   log('INFO', `Thread user text: ${JSON.stringify(message.content)}`);
+
+  // Rate-limit gate before any reply (including the empty-mention greeting) or
+  // attachment fetch — a rate-limited user gets only the in-channel notice.
+  const rateLimit = await checkRateLimit(message.author.id);
+  if (rateLimit.action === 'block') {
+    try {
+      await message.reply(withUserMention(message.author.id, rateLimit.replyText));
+    } catch (err) {
+      log('WARN', `Failed to send rate-limit reply in thread ${threadId}`, err);
+    }
+    return;
+  }
 
   // Strip the @-mention (present when a non-author tags the bot) so it never
   // reaches moderation, history, or the LLM.

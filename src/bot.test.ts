@@ -33,6 +33,7 @@ import {
   handleChannelMention,
   handleMunshiEmoji,
   handleThreadMessage,
+  isMunshiOnlyMessage,
   isSimpleGreeting,
   loadSystemPrompt,
   normalizeSpacing,
@@ -514,6 +515,31 @@ describe('thread author gating', () => {
     const contents = getSession(threadId)!.messages.map((m) => JSON.stringify(m.content));
     expect(contents.some((c) => c.includes('""'))).toBe(false);
   });
+
+  it('blocks a rate-limited author in-thread before the greeting short-circuit', async () => {
+    vi.mocked(getPenalty).mockResolvedValue({
+      _id: 'owner', penaltyCount: PENALTY_LIMIT, lastPenaltyAt: Date.now(), rateLimited: true,
+    });
+    const threadId = 'thread-rl';
+    setSession(threadId, { gameId: 'hpl2', docsRoot: 'missing-test-docs', authorId: 'owner', messages: [] });
+    const reply = vi.fn().mockResolvedValue(undefined);
+    const send = vi.fn().mockResolvedValue(undefined);
+    const message = {
+      content: '<@bot-id>', // bare mention would otherwise hit the greeting short-circuit
+      channelId: threadId,
+      channel: { send, sendTyping: vi.fn().mockResolvedValue(undefined) },
+      author: { id: 'owner', tag: 'owner' },
+      mentions: { has: (id: string) => id === 'bot-id' },
+      reply,
+    } as unknown as Message;
+
+    await handleThreadMessage(message, 'bot-id');
+
+    expect(reply.mock.calls[0][0]).toContain('rate limited');
+    expect(send).not.toHaveBeenCalled(); // no greeting
+    expect(runAgent).not.toHaveBeenCalled();
+    expect(classifyMessage).not.toHaveBeenCalled();
+  });
 });
 
 describe('moderation gate', () => {
@@ -543,6 +569,36 @@ describe('moderation gate', () => {
     expect(reply.mock.calls[0][0]).toContain('rate limited');
     expect(startThread).not.toHaveBeenCalled();
     expect(runAgent).not.toHaveBeenCalled();
+  });
+
+  it('blocks a rate-limited user on a bare mention or greeting (no thread, no react)', async () => {
+    // Regression: rate-limit lived inside moderation, which was skipped for greetings
+    // and empty mentions — so those spawned a throwaway thread + greeting reply.
+    vi.mocked(getPenalty).mockResolvedValue({
+      _id: 'rl-user', penaltyCount: PENALTY_LIMIT, lastPenaltyAt: Date.now(), rateLimited: true,
+    });
+    for (const content of ['<@bot-id>', '<@bot-id> hi']) {
+      vi.clearAllMocks();
+      vi.mocked(getPenalty).mockResolvedValue({
+        _id: 'rl-user', penaltyCount: PENALTY_LIMIT, lastPenaltyAt: Date.now(), rateLimited: true,
+      });
+      const reply = vi.fn().mockResolvedValue(undefined);
+      const react = vi.fn().mockResolvedValue(undefined);
+      const startThread = vi.fn();
+      const message = {
+        id: 'm', content,
+        channel: { name: 'hpl2-modding', id: 'hpl2-channel' }, channelId: 'hpl2-channel',
+        author: { id: 'rl-user', username: 'spammer', tag: 'spammer' },
+        react, reply, startThread,
+      } as unknown as Message;
+
+      await handleChannelMention(message, 'bot-id');
+
+      expect(reply.mock.calls[0][0]).toContain('rate limited');
+      expect(startThread).not.toHaveBeenCalled();
+      expect(react).not.toHaveBeenCalled();
+      expect(classifyMessage).not.toHaveBeenCalled();
+    }
   });
 
   it('issues a penalty and blocks on a hard-word mention', async () => {
@@ -768,6 +824,89 @@ describe('Munshi emoji easter egg', () => {
     expect(await handleMunshiEmoji(message)).toBe(false);
     expect(react).not.toHaveBeenCalled();
     expect(reply).not.toHaveBeenCalled();
+    expect(runAgent).not.toHaveBeenCalled();
+  });
+
+  it('isMunshiOnlyMessage: true for emoji-only (with/without mention), false otherwise', () => {
+    expect(isMunshiOnlyMessage('<:munshi_happy:123>', 'bot-id')).toBe(true);
+    expect(isMunshiOnlyMessage('<@bot-id> <:munshi_happy:123>', 'bot-id')).toBe(true);
+    expect(isMunshiOnlyMessage('<@bot-id> <:munshi_happy:1> <:munshi_dance:2>', 'bot-id')).toBe(true);
+    // Emoji + text → not munshi-only (must go to the LLM easter-egg path).
+    expect(isMunshiOnlyMessage('<@bot-id> :munshi: how do lights work?', 'bot-id')).toBe(false);
+    expect(isMunshiOnlyMessage('<@bot-id> <:munshi_happy:1> hello', 'bot-id')).toBe(false);
+    // No Munshi emoji at all → false.
+    expect(isMunshiOnlyMessage('<@bot-id> hi', 'bot-id')).toBe(false);
+    expect(isMunshiOnlyMessage('', 'bot-id')).toBe(false);
+  });
+});
+
+describe('handleChannelMention — Munshi routing', () => {
+  it('emoji-only mention: echoes + reacts, no thread, no LLM', async () => {
+    const reply = vi.fn().mockResolvedValue(undefined);
+    const react = vi.fn().mockResolvedValue(undefined);
+    const startThread = vi.fn();
+    const message = {
+      id: 'm', content: '<@bot-id> <:munshi_happy:123456789012345678>',
+      channel: { name: 'hpl2-modding', id: 'hpl2-channel' }, channelId: 'hpl2-channel',
+      author: { id: 'fan', username: 'fan', tag: 'fan' },
+      react, reply, startThread,
+    } as unknown as Message;
+
+    await handleChannelMention(message, 'bot-id');
+
+    expect(reply).toHaveBeenCalledWith('<@fan> <:munshi_happy:123456789012345678>');
+    expect(startThread).not.toHaveBeenCalled();
+    expect(runAgent).not.toHaveBeenCalled();
+  });
+
+  it('emoji + text mention: starts a thread and calls the LLM (easter egg path)', async () => {
+    vi.mocked(runAgent).mockResolvedValue({
+      text: 'Lights use box lights. :munshi_happy:', inputTokens: 1, uncachedInputTokens: 1, outputTokens: 1,
+      cacheReadTokens: 0, cacheWriteTokens: 0, stepCount: 1, toolCallCount: 0,
+      duplicateToolCallCount: 0, forcedFinal: false,
+      evidenceLedgerDelta: { references: [], searches: [] },
+    });
+    const send = vi.fn().mockResolvedValue(undefined);
+    const threadReply = vi.fn().mockResolvedValue(undefined);
+    const thread = {
+      id: 'thread-munshi-text', name: 'hpl2 — fan', send,
+      sendTyping: vi.fn().mockResolvedValue(undefined),
+    };
+    const message = {
+      id: 'm', content: '<@bot-id> <:munshi_happy:1> how do lights work?',
+      channel: { name: 'hpl2-modding', id: 'hpl2-channel' }, channelId: 'hpl2-channel',
+      author: { id: 'fan', username: 'fan', tag: 'fan' },
+      react: vi.fn().mockResolvedValue(undefined),
+      reply: threadReply,
+      startThread: vi.fn().mockResolvedValue(thread),
+    } as unknown as Message;
+
+    await handleChannelMention(message, 'bot-id');
+
+    expect(runAgent).toHaveBeenCalledOnce();
+    // Emoji echo path must NOT fire (no direct emoji-only reply on the message).
+    expect(threadReply).not.toHaveBeenCalled();
+  });
+
+  it('rate-limited user sending Munshi emoji gets the rate-limit notice, no echo/thread', async () => {
+    vi.mocked(getPenalty).mockResolvedValue({
+      _id: 'fan', penaltyCount: PENALTY_LIMIT, lastPenaltyAt: Date.now(), rateLimited: true,
+    });
+    const reply = vi.fn().mockResolvedValue(undefined);
+    const react = vi.fn().mockResolvedValue(undefined);
+    const startThread = vi.fn();
+    const message = {
+      id: 'm', content: '<@bot-id> <:munshi_happy:123>',
+      channel: { name: 'hpl2-modding', id: 'hpl2-channel' }, channelId: 'hpl2-channel',
+      author: { id: 'fan', username: 'fan', tag: 'fan' },
+      react, reply, startThread,
+    } as unknown as Message;
+
+    await handleChannelMention(message, 'bot-id');
+
+    expect(reply.mock.calls[0][0]).toContain('rate limited');
+    expect(react).not.toHaveBeenCalled();
+    expect(startThread).not.toHaveBeenCalled();
     expect(runAgent).not.toHaveBeenCalled();
   });
 });
