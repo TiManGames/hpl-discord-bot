@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { extname, join, relative, sep } from 'path';
+import { isTransientNetwork } from './retry.js';
 
 // User-attached text/script files (e.g. .hps) can be many thousands of lines.
 // Inlining them into the prompt exhausts the model context, so instead we
@@ -11,11 +12,37 @@ export const ATTACHMENTS_BASE = join(tmpdir(), 'hpl-bot-attachments');
 export const TEXT_MAX_BYTES = 128 * 1024; // 128 KB — bounds temp-disk usage per file
 const SUPPORTED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 const MAX_FILENAME_LENGTH = 120;
+// Discord CDN fetches occasionally drop with a transient ECONNRESET/socket error.
+const ATTACHMENT_FETCH_RETRIES = 3;
 
 function log(level: 'INFO' | 'WARN', msg: string, extra?: unknown): void {
   const line = `[${new Date().toISOString()}] [${level}] ${msg}`;
   if (extra !== undefined) console[level === 'WARN' ? 'warn' : 'log'](line, extra);
   else console[level === 'WARN' ? 'warn' : 'log'](line);
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Fetch a URL, retrying on transient network failures (ECONNRESET, socket hang
+ * up, timeouts) with a short exponential backoff. Discord's CDN drops the
+ * occasional connection mid-download; a single blip should not silently discard
+ * a user's attachment. Non-transient errors (and an exhausted retry budget)
+ * propagate to the caller's existing try/catch.
+ */
+export async function fetchWithRetry(url: string, retries = ATTACHMENT_FETCH_RETRIES): Promise<Response> {
+  let attempt = 0;
+  while (true) {
+    try {
+      return await fetch(url);
+    } catch (err) {
+      if (!isTransientNetwork(err) || attempt >= retries) throw err;
+      attempt++;
+      const waitMs = 250 * 2 ** (attempt - 1);
+      log('WARN', `Transient fetch failure (attempt ${attempt}/${retries}) — retrying in ${waitMs}ms`, err);
+      await sleep(waitMs);
+    }
+  }
 }
 
 /** Absolute path of the per-thread attachments workspace. */
@@ -140,7 +167,7 @@ export async function persistTextAttachment(
   }
 
   try {
-    const text = await fetch(att.url).then((r) => r.text());
+    const text = await fetchWithRetry(att.url).then((r) => r.text());
     const root = attachmentsRootFor(threadId);
     mkdirSync(root, { recursive: true });
 

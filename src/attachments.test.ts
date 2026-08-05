@@ -8,11 +8,49 @@ import {
   classifyAttachment,
   cleanupAttachments,
   dedupeName,
+  fetchWithRetry,
   listAttachmentsDir,
   persistTextAttachment,
   sanitizeAttachmentFilename,
   TEXT_MAX_BYTES,
 } from './attachments.js';
+
+describe('fetchWithRetry', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('retries a transient ECONNRESET and succeeds', async () => {
+    const econnreset = Object.assign(new Error('fetch failed'), {
+      cause: Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }),
+    });
+    const ok = { ok: true } as Response;
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(econnreset)
+      .mockResolvedValueOnce(ok);
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(fetchWithRetry('https://cdn/x.png', 3)).resolves.toBe(ok);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('gives up after exhausting retries on persistent transient failure', async () => {
+    const econnreset = Object.assign(new Error('fetch failed'), {
+      cause: Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }),
+    });
+    const fetchMock = vi.fn().mockRejectedValue(econnreset);
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(fetchWithRetry('https://cdn/x.png', 2)).rejects.toThrow('fetch failed');
+    expect(fetchMock).toHaveBeenCalledTimes(3); // initial + 2 retries
+  });
+
+  it('does not retry a non-transient error', async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error('403 Forbidden'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(fetchWithRetry('https://cdn/x.png', 3)).rejects.toThrow('403 Forbidden');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe('sanitizeAttachmentFilename', () => {
   it('keeps a normal filename intact', () => {
