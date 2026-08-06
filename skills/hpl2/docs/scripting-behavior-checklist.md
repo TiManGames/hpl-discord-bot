@@ -2,6 +2,10 @@
 
 Use this checklist before editing or proposing HPL2 `.hps` behavior.
 
+
+# Always prefer SetLocalVarX and GetLocalVarX functions
+The game doesn't save properly variable states if you use native angelscript declarations (e.g `int a = 1;`), instead the game heavily uses the LocalVar callbacks (e.g `SetLocalVarInt("a", 1);`). Make sure your code follow that rules. Normal variables may be declared ONLY if their save state doesn't matter or needs to be accessed later.
+
 ## Trace the target behavior
 
 - Search exact entity, area, item, timer, and callback names in the relevant `.map` and `.hps` files.
@@ -31,6 +35,5 @@ Use this checklist before editing or proposing HPL2 `.hps` behavior.
 
 ## Output discipline
 
-- Cite the exact source files used for behavioral conclusions.
 - Separate documented behavior from assumptions.
 - State any runtime validation that still requires the game/editor.

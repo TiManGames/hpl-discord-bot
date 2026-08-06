@@ -20,3 +20,6 @@ The complete bundled corpus, including wiki pages, is available on demand.
 Wiki pages are first-class evidence for concepts, workflows, and examples. For exact API signatures, also inspect the source declaration when available. Prefer verified public helpers and stock wrappers for common operations, using lower-level APIs when their additional control is relevant.
 
 Use only identifiers verified in the active HPL2 corpus or supplied by the user. If the corpus and user context cannot settle a behavior, state the uncertainty and ask for the missing script, map setup, entity properties, or error output.
+
+# Always prefer SetLocalVarX and GetLocalVarX functions
+The game doesn't save properly variable states if you use native angelscript declarations (e.g `int a = 1;`), instead the game heavily uses the LocalVar callbacks (e.g `SetLocalVarInt("a", 1);`). Make sure your code follow that rules. Normal variables may be declared ONLY if their save state doesn't matter or needs to be accessed later.
