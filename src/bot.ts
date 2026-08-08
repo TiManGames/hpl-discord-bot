@@ -11,12 +11,13 @@ import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join, resolve } from 'path';
 import { resolveGame } from './channels.js';
-import { getSession, setSession, hasSession, setAttachmentsRoot, appendUserMessage, appendAssistantMessage, recentUserContext, recordUserContext } from './history.js';
-import { emptyEvidenceLedger, mergeEvidenceLedger } from './evidence.js';
+import { getSession, setSession, hasSession, setAttachmentsRoot, appendUserMessage, appendAssistantMessage, recentUserContext, recordUserContext, removeSession, mergeEvidence, trackedThreadIds } from './history.js';
+import { emptyEvidenceLedger } from './evidence.js';
 import { runAgent } from './agent.js';
 import {
   attachmentsRootFor,
   classifyAttachment,
+  cleanupAttachments,
   fetchWithRetry,
   persistTextAttachment,
   type TextAttachmentDescriptor,
@@ -331,8 +332,25 @@ export function startBot(token: string): void {
     ],
   });
 
-  client.once(Events.ClientReady, (c) => {
+  client.once(Events.ClientReady, async (c) => {
     log('INFO', `Bot ready — logged in as ${c.user.tag} (${c.user.id})`);
+    await reconcileTrackedThreads(c);
+  });
+
+  // A thread the bot tracks was deleted on Discord — drop its session and
+  // workspace immediately so we neither reply into a dead thread nor keep a
+  // stale record. ChannelDelete covers a parent text channel being removed
+  // (which takes its threads with it); its handler filters to tracked ids.
+  client.on(Events.ThreadDelete, (thread) => {
+    if (!hasSession(thread.id)) return;
+    log('INFO', `Thread ${thread.id} deleted on Discord — dropping tracked session`);
+    forgetThread(thread.id);
+  });
+
+  client.on(Events.ChannelDelete, (channel) => {
+    if (!hasSession(channel.id)) return;
+    log('INFO', `Channel ${channel.id} deleted on Discord — dropping tracked session`);
+    forgetThread(channel.id);
   });
 
   client.on(Events.MessageCreate, async (message) => {
@@ -373,6 +391,40 @@ export function startBot(token: string): void {
 
   log('INFO', 'Connecting to Discord…');
   client.login(token);
+}
+
+/** Drop a tracked thread everywhere: live Map, durable store, and its workspace. */
+function forgetThread(threadId: string): void {
+  removeSession(threadId);
+  cleanupAttachments(threadId);
+}
+
+/**
+ * At startup, reconcile restored sessions against Discord: any tracked thread
+ * that no longer exists (deleted while the bot was down) is forgotten. We only
+ * drop on a definitive "unknown channel" (10003) response — never on a transient
+ * fetch failure — so a network blip can't wipe live threads. Fetches run
+ * sequentially to stay clear of Discord rate limits; the tracked set is small.
+ */
+async function reconcileTrackedThreads(client: Client): Promise<void> {
+  const ids = trackedThreadIds();
+  if (ids.length === 0) return;
+  log('INFO', `Reconciling ${ids.length} restored thread(s) against Discord…`);
+  let dropped = 0;
+  for (const id of ids) {
+    try {
+      await client.channels.fetch(id);
+    } catch (err) {
+      if ((err as { code?: number }).code === 10003) {
+        log('INFO', `Tracked thread ${id} no longer exists on Discord — dropping`);
+        forgetThread(id);
+        dropped++;
+      } else {
+        log('WARN', `Could not verify tracked thread ${id} (keeping it) — ${(err as Error).message}`);
+      }
+    }
+  }
+  log('INFO', `Reconciliation done — dropped ${dropped}, kept ${ids.length - dropped}`);
 }
 
 export async function handleChannelMention(message: Message, botId: string): Promise<void> {
@@ -524,8 +576,7 @@ export async function handleChannelMention(message: Message, botId: string): Pro
       forcedFinal,
       evidenceLedgerDelta,
     } = await runAgent(systemPrompt, game.docsRoot, initialMessages, emptyEvidenceLedger(), attachmentsRoot);
-    const session = getSession(thread.id);
-    if (session) session.evidenceLedger = mergeEvidenceLedger(session.evidenceLedger, evidenceLedgerDelta);
+    mergeEvidence(thread.id, evidenceLedgerDelta);
     log('INFO', `Agent replied (${reply.length} chars, steps=${stepCount}, toolCalls=${toolCallCount}, duplicateToolCalls=${duplicateToolCallCount}, forcedFinal=${forcedFinal}, inputTokens=${inputTokens}, uncachedInputTokens=${uncachedInputTokens}, completionTokens=${outputTokens}, cacheReadTokens=${cacheReadTokens}, cacheWriteTokens=${cacheWriteTokens}) to thread ${thread.id}`);
 
     // The agent can return successfully but empty (SAP timed out mid-stream, the
@@ -673,7 +724,7 @@ export async function handleThreadMessage(message: Message, botId: string): Prom
       forcedFinal,
       evidenceLedgerDelta,
     } = await runAgent(systemPrompt, session.docsRoot, session.messages, session.evidenceLedger, session.attachmentsRoot);
-    session.evidenceLedger = mergeEvidenceLedger(session.evidenceLedger, evidenceLedgerDelta);
+    mergeEvidence(threadId, evidenceLedgerDelta);
     log('INFO', `Agent replied (${reply.length} chars, steps=${stepCount}, toolCalls=${toolCallCount}, duplicateToolCalls=${duplicateToolCallCount}, forcedFinal=${forcedFinal}, inputTokens=${inputTokens}, uncachedInputTokens=${uncachedInputTokens}, completionTokens=${outputTokens}, cacheReadTokens=${cacheReadTokens}, cacheWriteTokens=${cacheWriteTokens}) to thread ${threadId}`);
 
     // A successful-but-empty reply (SAP timeout mid-stream, no model text) would

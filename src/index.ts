@@ -1,6 +1,8 @@
 import 'dotenv/config';
 import { startBot } from './bot.js';
 import { initPenaltyStore } from './penalties.js';
+import { initThreadStore } from './threads.js';
+import { restoreSessions } from './history.js';
 
 const token = process.env.DISCORD_TOKEN;
 if (!token) {
@@ -40,5 +42,11 @@ if (!process.env.AICORE_RESOURCE_GROUP) {
 // Load the persistent penalty store before the client logs in, so the first
 // message can never race an uninitialised datastore.
 await initPenaltyStore();
+
+// Load persisted thread sessions and rebuild the in-memory Map before login, so
+// a restart resumes tracked threads instead of dropping them. Stale threads
+// (deleted on Discord while the bot was down) are reconciled after ClientReady.
+const restored = await initThreadStore().then(restoreSessions);
+console.log(`[${new Date().toISOString()}] [INFO] Restored ${restored} tracked thread(s) from disk`);
 
 startBot(token);

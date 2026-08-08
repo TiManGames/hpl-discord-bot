@@ -57,3 +57,13 @@ export function resolveGame(message: Message): GameInfo | null {
 
   return { gameId, skillDir, docsRoot };
 }
+
+/**
+ * Re-derive a game's docs root from its id, using the same layout as
+ * resolveGame. Used when restoring persisted sessions: docsRoot is an absolute
+ * path that must never be trusted from disk, so we recompute it from the stored
+ * gameId instead.
+ */
+export function docsRootForGame(gameId: string): string {
+  return join(SKILLS_ROOT, gameId, 'docs');
+}
