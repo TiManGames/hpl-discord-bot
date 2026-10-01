@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { isVerificationChallenge, normalizeInputUsage } from './agent.js';
+import type { ModelMessage } from 'ai';
+import { isVerificationChallenge, normalizeInputUsage, sanitizeModelMessages } from './agent.js';
 
 describe('normalizeInputUsage', () => {
   it('handles a provider total that includes cached input', () => {
@@ -88,5 +89,33 @@ describe('isVerificationChallenge', () => {
 
   it('does not force a tool for an ordinary follow-up', () => {
     expect(isVerificationChallenge('How do I enable an entity?')).toBe(false);
+  });
+});
+
+describe('sanitizeModelMessages', () => {
+  it('drops empty persisted turns that SAP would serialize as content arrays', () => {
+    const messages: ModelMessage[] = [
+      { role: 'user', content: 'valid question' },
+      { role: 'assistant', content: [{ type: 'text', text: 'valid answer' }] },
+      { role: 'user', content: '' },
+      { role: 'user', content: [] },
+    ];
+
+    expect(sanitizeModelMessages(messages)).toEqual(messages.slice(0, 2));
+  });
+
+  it('removes an empty leading text part but preserves an attachment note', () => {
+    const messages: ModelMessage[] = [{
+      role: 'user',
+      content: [
+        { type: 'text', text: '' },
+        { type: 'text', text: '[User attached file "HPL.log"]' },
+      ],
+    }];
+
+    expect(sanitizeModelMessages(messages)).toEqual([{
+      role: 'user',
+      content: [{ type: 'text', text: '[User attached file "HPL.log"]' }],
+    }]);
   });
 });

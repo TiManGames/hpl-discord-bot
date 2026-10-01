@@ -7,7 +7,7 @@ import { saveThread, deleteThread, type ThreadRecord } from './threads.js';
 export interface Session {
   gameId: string;
   docsRoot: string;
-  /** Discord user ID of whoever opened the thread; they may talk without tagging the bot. */
+  /** Discord user ID of whoever opened the thread, retained as thread metadata. */
   authorId?: string;
   /** Per-thread workspace holding user-attached files, once any have been saved. */
   attachmentsRoot?: string;

@@ -31,6 +31,12 @@ import {
   type PenaltyRecord,
 } from './penalties.js';
 import { containsHardWord, formatRemaining, classifyMessage } from './moderation.js';
+import {
+  beginUsageRequest, findUsageRequest, formatMonthlyLimitNotice, formatMonthlyUsage,
+  getMonthlyUsage, isMonthlyLimitReached, queueUserRequest, saveUsageSnapshot,
+  usageRequest, usageStoreHealthy, UsageTrackingError, USAGE_UNAVAILABLE_RESPONSE,
+  type UsageRequest,
+} from './usage.js';
 
 const IMAGE_MAX_BYTES = 4 * 1024 * 1024;  // 4 MB
 
@@ -105,7 +111,8 @@ async function persistTextAttachments(
 /** Build a UserContent array from text + image parts + attachment note parts. */
 function buildUserContent(text: string, imageParts: ImagePart[], noteParts: TextPart[] = []): UserContent {
   if (imageParts.length === 0 && noteParts.length === 0) return text;
-  return [{ type: 'text', text }, ...imageParts, ...noteParts];
+  const textParts: TextPart[] = text.length > 0 ? [{ type: 'text', text }] : [];
+  return [...textParts, ...imageParts, ...noteParts];
 }
 
 /**
@@ -161,6 +168,7 @@ export async function moderateAndMaybePenalize(
   }
 
   // Step C — LLM moderation classifier (text + attachments + prior-turn context).
+  if (!usageStoreHealthy()) throw new UsageTrackingError();
   const verdict = await classifyMessage(userContent, priorContext);
   if (verdict.penalty) {
     const updated = await addPenalty(userId, now);
@@ -209,6 +217,8 @@ export const SIMPLE_GREETING_RESPONSE = 'Hey! Ask me anything about HPL modding.
 // timeout, shutdown, network, rate-limit exhaustion), or returned no usable
 // text. This is a bot message, never the model's.
 export const AGENT_ERROR_RESPONSE = 'Sorry, I ran into an error. Please try again.';
+export const ATTACHMENT_ERROR_RESPONSE =
+  "I couldn't read that attachment. Please upload it again (text files must be 4 MB or smaller).";
 
 /**
  * Send a bot-authored error notice to a channel/thread, tagging the user. This
@@ -221,7 +231,8 @@ async function sendErrorReply(
   context: string,
 ): Promise<void> {
   try {
-    await channel.send(withUserMention(userId, AGENT_ERROR_RESPONSE));
+    await channel.send(withUserMention(userId,
+      usageStoreHealthy() ? AGENT_ERROR_RESPONSE : USAGE_UNAVAILABLE_RESPONSE));
   } catch (err) {
     log('ERROR', `Failed to deliver error notice for ${context}`, err);
   }
@@ -322,6 +333,24 @@ function log(level: 'INFO' | 'WARN' | 'ERROR', msg: string, extra?: unknown): vo
   }
 }
 
+/**
+ * A message invokes the bot only through an explicit @mention or a Discord
+ * reply whose referenced message was authored by the bot. `ignoreRepliedUser`
+ * is essential: Discord also includes the replied-to user in `mentions`, which
+ * would otherwise make replies to the bot look like typed mentions.
+ */
+export function isBotInvocation(message: Message, botId: string): boolean {
+  const explicitlyMentioned = message.mentions.has(botId, {
+    ignoreEveryone: true,
+    ignoreRepliedUser: true,
+    ignoreRoles: true,
+  });
+  const repliedToBot =
+    message.reference?.messageId !== undefined &&
+    message.mentions.repliedUser?.id === botId;
+  return explicitlyMentioned || repliedToBot;
+}
+
 export function startBot(token: string): void {
   const client = new Client({
     intents: [
@@ -359,18 +388,15 @@ export function startBot(token: string): void {
     log('INFO', `MessageCreate: author=${message.author.tag} channel=${message.channelId} isThread=${message.channel.isThread()}`);
 
     try {
-      // Handle replies inside tracked threads
+      // The same explicit invocation rule applies in channels and threads.
+      if (!isBotInvocation(message, client.user!.id)) return;
+
       if (message.channel.isThread()) {
         await handleThreadMessage(message, client.user!.id);
         return;
       }
 
-      // Handle @-mentions in regular channels
-      if (!message.mentions.has(client.user!)) {
-        return;
-      }
-
-      log('INFO', `Bot mentioned by ${message.author.tag} in channel ${(message.channel as { name?: string }).name ?? message.channelId}`);
+      log('INFO', `Bot invoked by ${message.author.tag} in channel ${(message.channel as { name?: string }).name ?? message.channelId}`);
       await handleChannelMention(message, client.user!.id);
     } catch (err) {
       // Last-resort guard for anything that escapes a handler's own error path
@@ -427,7 +453,82 @@ async function reconcileTrackedThreads(client: Client): Promise<void> {
   log('INFO', `Reconciliation done — dropped ${dropped}, kept ${ids.length - dropped}`);
 }
 
+interface UsageAdmission extends UsageRequest {
+  noticeChannel?: { send: (content: string) => Promise<unknown> };
+}
+
+export function isUsageCommand(content: string, botId: string): boolean {
+  return (content ?? '').replace(new RegExp(`<@!?${botId}>`, 'g'), '').trim().toLowerCase() === '!usage';
+}
+
+/** A local command, intentionally available before channel/session restrictions. */
+async function handleUsageCommand(message: Message, botId: string): Promise<boolean> {
+  if (!isUsageCommand(message.content, botId) || !isBotInvocation(message, botId)) return false;
+  let text: string;
+  try {
+    text = formatMonthlyUsage(await getMonthlyUsage(message.author.id));
+  } catch (err) {
+    log('ERROR', `Usage lookup failed for ${message.author.id}`, err);
+    text = USAGE_UNAVAILABLE_RESPONSE;
+  }
+  await message.reply(withUserMention(message.author.id, text));
+  return true;
+}
+
+async function withMonthlyAllowance(
+  message: Message,
+  operation: (admission: UsageAdmission) => Promise<void>,
+): Promise<void> {
+  await queueUserRequest(message.author.id, async () => {
+    try {
+      // Select the month when this request reaches the head of the user queue.
+      const admission: UsageAdmission = usageRequest(message.id, message.author.id);
+      if (await findUsageRequest(message.id)) return; // Re-delivered Discord event.
+      const usage = await getMonthlyUsage(admission.userId, admission.month);
+      if (isMonthlyLimitReached(usage)) {
+        await message.reply(withUserMention(admission.userId, formatMonthlyLimitNotice(usage)));
+        return;
+      }
+      await operation(admission);
+      // The handler has already sent the tracking error if an agent checkpoint
+      // failed. Avoid following it with a duplicate notice.
+      if (!usageStoreHealthy()) return;
+      const settled = await getMonthlyUsage(admission.userId, admission.month);
+      if (isMonthlyLimitReached(settled)) {
+        const text = withUserMention(admission.userId, formatMonthlyLimitNotice(settled));
+        if (admission.noticeChannel) await admission.noticeChannel.send(text);
+        else await message.reply(text);
+      }
+    } catch (err) {
+      if (!(err instanceof UsageTrackingError)) throw err;
+      log('ERROR', `Monthly usage accounting failed for message ${message.id}`, err);
+      await message.reply(withUserMention(message.author.id, USAGE_UNAVAILABLE_RESPONSE));
+    }
+  });
+}
+
+async function runMeteredAgent(
+  admission: UsageAdmission,
+  threadId: string,
+  channel: { send: (content: string) => Promise<unknown> },
+  ...args: [
+    systemPrompt: string, docsRoot: string, messages: Parameters<typeof runAgent>[2],
+    evidenceLedger?: Parameters<typeof runAgent>[3], attachmentsRoot?: string,
+  ]
+): ReturnType<typeof runAgent> {
+  admission.noticeChannel = channel;
+  await beginUsageRequest(admission, threadId);
+  return runAgent(...args, (snapshot) => saveUsageSnapshot(admission, snapshot));
+}
+
 export async function handleChannelMention(message: Message, botId: string): Promise<void> {
+  if (await handleUsageCommand(message, botId)) return;
+  // Ordinary questions in an unmapped channel retain their existing guidance.
+  if (!resolveGame(message)) return handleChannelMentionAllowed(message, botId);
+  await withMonthlyAllowance(message, (admission) => handleChannelMentionAllowed(message, botId, admission));
+}
+
+async function handleChannelMentionAllowed(message: Message, botId: string, admission?: UsageAdmission): Promise<void> {
   const channelName = (message.channel as { name?: string }).name ?? message.channelId;
   const game = resolveGame(message);
   if (!game) {
@@ -524,13 +625,16 @@ export async function handleChannelMention(message: Message, botId: string): Pro
 
   // Now that the thread exists, persist any text/script uploads to its workspace
   // and build the user content with compact reference notes (never file bodies).
-  const attachmentsRoot = hasTextFiles ? attachmentsRootFor(thread.id) : undefined;
+  let attachmentsRoot: string | undefined;
   const noteParts = hasTextFiles ? await persistTextAttachments(thread.id, attachmentParts.textFiles) : [];
+  if (noteParts.length > 0) attachmentsRoot = attachmentsRootFor(thread.id);
   const userContent = buildUserContent(userText, attachmentParts.imageParts, noteParts);
+  const hasUsableContent =
+    userText.length > 0 || attachmentParts.imageParts.length > 0 || noteParts.length > 0;
 
   // Initialise history before any fast response so follow-ups in the new thread
   // are tracked even when the first turn does not need the LLM.
-  const initialMessages = hasContent
+  const initialMessages = hasUsableContent
     ? [{ role: 'user' as const, content: userContent }]
     : [];
   setSession(thread.id, {
@@ -541,6 +645,16 @@ export async function handleChannelMention(message: Message, botId: string): Pro
     messages: initialMessages,
     evidenceLedger: emptyEvidenceLedger(),
   });
+
+  // A text descriptor can pass classification but still fail persistence (for
+  // example, an oversized HPL.log or a Discord CDN failure). Never turn that
+  // attachment-only message into empty AI content; SAP rejects it as
+  // `content: []`. Keep the thread alive so the user can retry the upload.
+  if (hasTextFiles && !hasUsableContent) {
+    await thread.send(withUserMention(message.author.id, ATTACHMENT_ERROR_RESPONSE));
+    log('WARN', `No attached text files could be persisted for new thread ${thread.id} — skipped agent call`);
+    return;
+  }
 
   if (!hasContent || simpleGreeting) {
     // Store the clean assistant text in history; tag the user only on the wire.
@@ -575,7 +689,8 @@ export async function handleChannelMention(message: Message, botId: string): Pro
       duplicateToolCallCount,
       forcedFinal,
       evidenceLedgerDelta,
-    } = await runAgent(systemPrompt, game.docsRoot, initialMessages, emptyEvidenceLedger(), attachmentsRoot);
+    } = await runMeteredAgent(admission!, thread.id, thread,
+      systemPrompt, game.docsRoot, initialMessages, emptyEvidenceLedger(), attachmentsRoot);
     mergeEvidence(thread.id, evidenceLedgerDelta);
     log('INFO', `Agent replied (${reply.length} chars, steps=${stepCount}, toolCalls=${toolCallCount}, duplicateToolCalls=${duplicateToolCallCount}, forcedFinal=${forcedFinal}, inputTokens=${inputTokens}, uncachedInputTokens=${uncachedInputTokens}, completionTokens=${outputTokens}, cacheReadTokens=${cacheReadTokens}, cacheWriteTokens=${cacheWriteTokens}) to thread ${thread.id}`);
 
@@ -600,6 +715,12 @@ export async function handleChannelMention(message: Message, botId: string): Pro
 }
 
 export async function handleThreadMessage(message: Message, botId: string): Promise<void> {
+  if (await handleUsageCommand(message, botId)) return;
+  if (!hasSession(message.channelId) || !isBotInvocation(message, botId)) return;
+  await withMonthlyAllowance(message, (admission) => handleThreadMessageAllowed(message, botId, admission));
+}
+
+async function handleThreadMessageAllowed(message: Message, botId: string, admission: UsageAdmission): Promise<void> {
   const threadId = message.channelId;
 
   if (!hasSession(threadId)) {
@@ -607,17 +728,12 @@ export async function handleThreadMessage(message: Message, botId: string): Prom
     return;
   }
 
-  const session = getSession(threadId)!;
-
-  // The thread author may talk freely; anyone else must @-mention the bot to be
-  // heard. This keeps unrelated cross-talk between other thread participants out
-  // of the conversation history and the LLM.
-  const isAuthor = session.authorId !== undefined && message.author.id === session.authorId;
-  const mentionsBot = message.mentions.has(botId);
-  if (!isAuthor && !mentionsBot) {
-    log('INFO', `Ignoring message from non-author ${message.author.tag} in thread ${threadId} (bot not tagged)`);
+  if (!isBotInvocation(message, botId)) {
+    log('INFO', `Ignoring message from ${message.author.tag} in thread ${threadId} (no explicit mention or bot reply)`);
     return;
   }
+
+  const session = getSession(threadId)!;
 
   log('INFO', `Thread reply from ${message.author.tag} in tracked thread ${threadId}`);
   log('INFO', `Thread user text: ${JSON.stringify(message.content)}`);
@@ -634,8 +750,8 @@ export async function handleThreadMessage(message: Message, botId: string): Prom
     return;
   }
 
-  // Strip the @-mention (present when a non-author tags the bot) so it never
-  // reaches moderation, history, or the LLM.
+  // Strip an explicit @-mention, when present, so it never reaches moderation,
+  // history, or the LLM. Direct replies need no content rewrite.
   const userText = message.content
     .replace(new RegExp(`<@!?${botId}>`, 'g'), '')
     .trim();
@@ -692,6 +808,24 @@ export async function handleThreadMessage(message: Message, botId: string): Prom
       setAttachmentsRoot(threadId, attachmentsRootFor(threadId));
     }
   }
+
+  if (
+    hasTextFiles &&
+    userText.length === 0 &&
+    attachmentParts.imageParts.length === 0 &&
+    noteParts.length === 0
+  ) {
+    try {
+      await (message.channel as unknown as TextChannel).send(
+        withUserMention(message.author.id, ATTACHMENT_ERROR_RESPONSE),
+      );
+    } catch (err) {
+      log('WARN', `Failed to send attachment error in thread ${threadId}`, err);
+    }
+    log('WARN', `No attached text files could be persisted in thread ${threadId} — skipped agent call`);
+    return;
+  }
+
   appendUserMessage(threadId, buildUserContent(userText, attachmentParts.imageParts, noteParts));
 
   // Reflect the user's current standing (moderation above may have just added a
@@ -723,7 +857,8 @@ export async function handleThreadMessage(message: Message, botId: string): Prom
       duplicateToolCallCount,
       forcedFinal,
       evidenceLedgerDelta,
-    } = await runAgent(systemPrompt, session.docsRoot, session.messages, session.evidenceLedger, session.attachmentsRoot);
+    } = await runMeteredAgent(admission, threadId, channel,
+      systemPrompt, session.docsRoot, session.messages, session.evidenceLedger, session.attachmentsRoot);
     mergeEvidence(threadId, evidenceLedgerDelta);
     log('INFO', `Agent replied (${reply.length} chars, steps=${stepCount}, toolCalls=${toolCallCount}, duplicateToolCalls=${duplicateToolCallCount}, forcedFinal=${forcedFinal}, inputTokens=${inputTokens}, uncachedInputTokens=${uncachedInputTokens}, completionTokens=${outputTokens}, cacheReadTokens=${cacheReadTokens}, cacheWriteTokens=${cacheWriteTokens}) to thread ${threadId}`);
 

@@ -9,8 +9,12 @@ import { isTransientNetwork } from './retry.js';
 // the relevant slices on demand through the attachment-scoped file tools.
 
 export const ATTACHMENTS_BASE = join(tmpdir(), 'hpl-bot-attachments');
-export const TEXT_MAX_BYTES = 128 * 1024; // 128 KB — bounds temp-disk usage per file
+// HPL.log routinely grows past 128 KB during a useful debugging session. The
+// body never enters model context (the agent searches/reads bounded slices), so
+// allow a few megabytes while still bounding per-file temp-disk usage.
+export const TEXT_MAX_BYTES = 4 * 1024 * 1024;
 const SUPPORTED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+const SUPPORTED_TEXT_EXTENSIONS = new Set(['.hps', '.lang', '.log', '.xml', '.txt']);
 const MAX_FILENAME_LENGTH = 120;
 // Discord CDN fetches occasionally drop with a transient ECONNRESET/socket error.
 const ATTACHMENT_FETCH_RETRIES = 3;
@@ -136,7 +140,7 @@ export function classifyAttachment(att: {
   const size = att.size ?? 0;
   const ct = contentType.split(';')[0].trim();
   const isImage = SUPPORTED_IMAGE_TYPES.has(ct);
-  const isText = contentType.startsWith('text/') || name.toLowerCase().endsWith('.hps');
+  const isText = contentType.startsWith('text/') || SUPPORTED_TEXT_EXTENSIONS.has(extname(name).toLowerCase());
   return { name, contentType, size, isImage, isText };
 }
 
@@ -161,7 +165,7 @@ export async function persistTextAttachment(
   if (att.size > TEXT_MAX_BYTES) {
     log(
       'WARN',
-      `Attachment skipped: ${att.name} (${att.contentType}, ${Math.round(att.size / 1024)}KB) — exceeds 128KB text limit`,
+      `Attachment skipped: ${att.name} (${att.contentType}, ${Math.round(att.size / 1024)}KB) — exceeds 4MB text limit`,
     );
     return null;
   }

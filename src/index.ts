@@ -3,6 +3,7 @@ import { startBot } from './bot.js';
 import { initPenaltyStore } from './penalties.js';
 import { initThreadStore } from './threads.js';
 import { restoreSessions } from './history.js';
+import { initUsageStore } from './usage.js';
 
 const token = process.env.DISCORD_TOKEN;
 if (!token) {
@@ -38,6 +39,9 @@ if (!process.env.AICORE_RESOURCE_GROUP) {
   );
   process.exit(1);
 }
+
+// Fail startup on invalid pricing/allowance or unavailable accounting storage.
+await initUsageStore();
 
 // Load the persistent penalty store before the client logs in, so the first
 // message can never race an uninitialised datastore.

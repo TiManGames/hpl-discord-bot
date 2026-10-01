@@ -133,6 +133,14 @@ describe('classifyAttachment', () => {
     expect(classifyAttachment({ name: 'a.hps', contentType: 'application/octet-stream', size: 10 }).isText).toBe(true);
   });
 
+  it('detects HPL.log even when Discord reports it as binary', () => {
+    expect(classifyAttachment({ name: 'HPL.log', contentType: 'application/octet-stream', size: 10 }).isText).toBe(true);
+  });
+
+  it('detects .lang files even when Discord reports them as binary', () => {
+    expect(classifyAttachment({ name: 'english.lang', contentType: 'application/octet-stream', size: 10 }).isText).toBe(true);
+  });
+
   it('marks unknown binary types as neither', () => {
     const meta = classifyAttachment({ name: 'a.zip', contentType: 'application/zip', size: 10 });
     expect(meta.isImage).toBe(false);

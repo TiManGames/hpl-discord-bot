@@ -10,6 +10,7 @@ import {
   DEFAULT_RETRY_AFTER_S,
 } from './retry.js';
 import { cacheMessageTail } from './cache.js';
+import { estimateRequestCost, type CostEstimate } from './pricing.js';
 import { findUnsupportedCodeIdentifiers } from './grounding.js';
 import { getCorpusIndex } from './corpus-index.js';
 import {
@@ -71,6 +72,7 @@ async function withNetworkRetry<T>(label: string, operation: () => Promise<T>): 
     try {
       return await operation();
     } catch (err) {
+      if (err instanceof UsageCallbackError) throw err;
       if (!isTransientNetwork(err) || retries >= MAX_NETWORK_RETRIES_PER_STEP) throw err;
       retries++;
       const waitMs = 1_000 * 2 ** (retries - 1);
@@ -153,6 +155,131 @@ export function isVerificationChallenge(value: string): boolean {
   return /\b(?:wrong|incorrect|false|lie|lied|made[ -]?up|hallucinat(?:e|ed|ion)|not true|doesn['’]?t exist|does not exist|are you sure|verify|check that)\b/i.test(value);
 }
 
+interface RequestUsage {
+  inputTokens: number;
+  uncachedInputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  unknownUsageCalls: number;
+  onUsage?: RequestUsageCallback;
+}
+
+export interface RequestUsageSnapshot {
+  modelId: string;
+  status: 'running' | 'completed' | 'failed';
+  inputTokens: number;
+  uncachedInputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  unknownUsageCalls: number;
+  estimate: CostEstimate;
+}
+
+export type RequestUsageCallback = (snapshot: RequestUsageSnapshot) => Promise<void>;
+
+/** Accounting failures must never be mistaken for retryable provider errors. */
+export class UsageCallbackError extends Error {
+  constructor(cause: unknown) {
+    super('Agent usage callback failed', { cause });
+    this.name = 'UsageCallbackError';
+  }
+}
+
+async function reportRequestUsage(request: RequestUsage, status: RequestUsageSnapshot['status']): Promise<void> {
+  if (!request.onUsage) return;
+  const { onUsage, ...tokens } = request;
+  try {
+    await onUsage({ ...tokens, modelId: MODEL_ID, status, estimate: estimateRequestCost(MODEL_ID, tokens) });
+  } catch (err) {
+    throw new UsageCallbackError(err);
+  }
+}
+
+function isKnownTokenCount(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+// Wrap each provider call, rather than each research run: successful calls made
+// before a whole-agent retry still belong to the same Discord request's cost.
+async function trackRequestUsage<T extends {
+  totalUsage: InputUsageLike & { outputTokens?: number };
+}>(request: RequestUsage, operation: () => Promise<T>): Promise<T> {
+  // A checkpoint before each provider attempt also prevents an already-running
+  // request from making another paid call after accounting has failed elsewhere.
+  await reportRequestUsage(request, 'running');
+  let result: T;
+  try {
+    result = await operation();
+  } catch (err) {
+    // A failed response does not tell us whether SAP already billed inference.
+    request.unknownUsageCalls++;
+    await reportRequestUsage(request, 'running');
+    throw err;
+  }
+
+  const usage = result.totalUsage;
+  const details = usage.inputTokenDetails;
+  if (
+    !isKnownTokenCount(usage.inputTokens) ||
+    !isKnownTokenCount(usage.outputTokens) ||
+    [details?.noCacheTokens, details?.cacheReadTokens, details?.cacheWriteTokens]
+      .some((value) => value !== undefined && !isKnownTokenCount(value))
+  ) {
+    request.unknownUsageCalls++;
+  }
+  const input = normalizeInputUsage({
+    inputTokens: isKnownTokenCount(usage.inputTokens) ? usage.inputTokens : undefined,
+    inputTokenDetails: {
+      noCacheTokens: isKnownTokenCount(details?.noCacheTokens) ? details.noCacheTokens : undefined,
+      cacheReadTokens: isKnownTokenCount(details?.cacheReadTokens) ? details.cacheReadTokens : undefined,
+      cacheWriteTokens: isKnownTokenCount(details?.cacheWriteTokens) ? details.cacheWriteTokens : undefined,
+    },
+  }, IS_ANTHROPIC_MODEL ? 'exclusive' : 'inclusive');
+  request.inputTokens += input.total;
+  request.uncachedInputTokens += input.uncached;
+  request.cacheReadTokens += input.cacheRead;
+  request.cacheWriteTokens += input.cacheWrite;
+  request.outputTokens += isKnownTokenCount(usage.outputTokens) ? usage.outputTokens : 0;
+  await reportRequestUsage(request, 'running');
+  return result;
+}
+
+/**
+ * Remove empty text messages/parts before handing history to the provider.
+ * Older persisted sessions can contain an empty user turn from a failed
+ * attachment upload; SAP serializes that as `content: []` and rejects the
+ * entire request. Non-text parts (images, tool calls/results) stay intact.
+ */
+export function sanitizeModelMessages(messages: ModelMessage[]): ModelMessage[] {
+  const sanitized: ModelMessage[] = [];
+
+  for (const message of messages) {
+    const content = (message as { content?: unknown }).content;
+    if (typeof content === 'string') {
+      if (content.trim().length > 0) sanitized.push(message);
+      continue;
+    }
+    if (!Array.isArray(content)) {
+      sanitized.push(message);
+      continue;
+    }
+
+    const parts = content.filter((part) => {
+      if (!part || typeof part !== 'object') return true;
+      const candidate = part as { type?: string; text?: unknown };
+      return candidate.type !== 'text' ||
+        (typeof candidate.text === 'string' && candidate.text.trim().length > 0);
+    });
+    if (parts.length > 0) {
+      sanitized.push({ ...message, content: parts } as ModelMessage);
+    }
+  }
+
+  return sanitized;
+}
+
 /**
  * Run the agent loop via the Vercel AI SDK + SAP AI Core.
  * Handles SAP's aggressive rate limiting by honouring the x-retry-after header
@@ -164,36 +291,68 @@ export async function runAgent(
   messages: ModelMessage[],
   evidenceLedger?: EvidenceLedger,
   attachmentsRoot?: string,
+  onUsage?: RequestUsageCallback,
 ): Promise<AgentResult> {
   let rateLimitRetries = 0;
   let authRetries = 0;
+  const requestUsage: RequestUsage = {
+    inputTokens: 0,
+    uncachedInputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    unknownUsageCalls: 0,
+    onUsage,
+  };
+  let status: RequestUsageSnapshot['status'] = 'failed';
 
-  while (true) {
-    try {
-      return await generateOnce(systemPrompt, docsRoot, messages, evidenceLedger, attachmentsRoot);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-
-      if (isRateLimit(err) && rateLimitRetries < MAX_RATE_LIMIT_RETRIES) {
-        rateLimitRetries++;
-        const waitS = retryAfterSeconds(err) ?? DEFAULT_RETRY_AFTER_S;
-        log(
-          `Rate limited (429). Waiting ${waitS}s as instructed by SAP ` +
-            `(retry ${rateLimitRetries}/${MAX_RATE_LIMIT_RETRIES})…`,
+  try {
+    while (true) {
+      try {
+        const result = await generateOnce(
+          systemPrompt, docsRoot, messages, requestUsage, evidenceLedger, attachmentsRoot,
         );
-        await sleep((waitS + 1) * 1000); // +1s safety margin
-        continue;
-      }
+        status = 'completed';
+        return result;
+      } catch (err) {
+        if (err instanceof UsageCallbackError) throw err;
+        const msg = err instanceof Error ? err.message : String(err);
 
-      if (isTransientAuth(err) && authRetries < 3) {
-        authRetries++;
-        log(`Auth/token fetch failed (retry ${authRetries}/3): ${msg} — retrying in 2s`);
-        await sleep(2000);
-        continue;
-      }
+        if (isRateLimit(err) && rateLimitRetries < MAX_RATE_LIMIT_RETRIES) {
+          rateLimitRetries++;
+          const waitS = retryAfterSeconds(err) ?? DEFAULT_RETRY_AFTER_S;
+          log(
+            `Rate limited (429). Waiting ${waitS}s as instructed by SAP ` +
+              `(retry ${rateLimitRetries}/${MAX_RATE_LIMIT_RETRIES})…`,
+          );
+          await sleep((waitS + 1) * 1000); // +1s safety margin
+          continue;
+        }
 
-      throw err;
+        if (isTransientAuth(err) && authRetries < 3) {
+          authRetries++;
+          log(`Auth/token fetch failed (retry ${authRetries}/3): ${msg} — retrying in 2s`);
+          await sleep(2000);
+          continue;
+        }
+
+        throw err;
+      }
     }
+  } finally {
+    const estimate = estimateRequestCost(MODEL_ID, requestUsage);
+    const cost = estimate.available
+      ? `estimatedCU=${estimate.capacityUnits.toFixed(8)}, estimatedEUR=${estimate.euros.toFixed(8)}`
+      : `cost unavailable (${estimate.reason})`;
+    log(
+      `Request cost — model=${MODEL_ID}, status=${status}, ` +
+        `usage=${requestUsage.unknownUsageCalls > 0 ? 'partial' : 'complete'}, ` +
+        `inputTokens=${requestUsage.inputTokens}, uncachedInputTokens=${requestUsage.uncachedInputTokens}, ` +
+        `outputTokens=${requestUsage.outputTokens}, cacheReadTokens=${requestUsage.cacheReadTokens}, ` +
+        `cacheWriteTokens=${requestUsage.cacheWriteTokens}, unknownUsageCalls=${requestUsage.unknownUsageCalls}, ` +
+        `${cost}, pricing=approximate, cachedInputCost=excluded, moderationCost=excluded`,
+    );
+    await reportRequestUsage(requestUsage, status);
   }
 }
 
@@ -201,6 +360,7 @@ async function generateOnce(
   systemPrompt: string,
   docsRoot: string,
   messages: ModelMessage[],
+  requestUsage: RequestUsage,
   evidenceLedger?: EvidenceLedger,
   attachmentsRoot?: string,
 ): Promise<AgentResult> {
@@ -213,18 +373,17 @@ async function generateOnce(
   let cacheReadTokens = 0;
   let cacheWriteTokens = 0;
   const seenToolCalls = new Set<string>();
+  const cleanMessages = sanitizeModelMessages(messages);
   const priorEvidence = formatEvidenceLedger(evidenceLedger);
-  const transcript: ModelMessage[] = priorEvidence
-    ? [{ role: 'system', content: priorEvidence }, ...messages]
-    : [...messages];
+  const transcript: ModelMessage[] = [...cleanMessages];
   const evidenceLedgerDelta = emptyEvidenceLedger();
   const tools = fileTools(docsRoot, evidenceLedgerDelta, attachmentsRoot);
   const corpusIdentifiers = knownCorpusIdentifiers(docsRoot);
-  const userText = messages
+  const userText = cleanMessages
     .filter((message) => message.role === 'user')
     .map(modelMessageText)
     .join('\n');
-  const lastUserMessage = [...messages].reverse().find((message) => message.role === 'user');
+  const lastUserMessage = [...cleanMessages].reverse().find((message) => message.role === 'user');
   let forceToolNextStep = isVerificationChallenge(
     lastUserMessage ? modelMessageText(lastUserMessage) : '',
   );
@@ -251,6 +410,11 @@ async function generateOnce(
     content: systemPrompt,
     providerOptions: { 'sap-ai': { cacheControl: { type: 'ephemeral' } } }, // 5m default TTL
   };
+  // Keep dynamic evidence after the stable cache boundary, using the SDK's
+  // dedicated system option so it never appears in conversation history.
+  const system: SystemModelMessage[] = priorEvidence
+    ? [systemMsg, { role: 'system', content: priorEvidence }]
+    : [systemMsg];
 
   // Run one model step at a time so the short continuation message gives SAP a
   // legal cache breakpoint after the complete tool transcript (tool messages
@@ -265,10 +429,11 @@ async function generateOnce(
 
     const requireToolThisStep = forceToolNextStep;
     const result = await withNetworkRetry(`agent step ${researchStep + 1}`, () =>
-      generateText({
+      trackRequestUsage(requestUsage, () => generateText({
         model,
         tools,
-        system: systemMsg,
+        system,
+        allowSystemInMessages: false,
         messages: cacheMessageTail(transcript),
         stopWhen: stepCountIs(1),
         toolChoice: requireToolThisStep ? 'required' : 'auto',
@@ -281,13 +446,13 @@ async function generateOnce(
             }
           : {
             'sap-ai': {
-              modelParams: {reasoning_effort: 'high'}
+              modelParams: {reasoning_effort: 'low'}
             }
           },
         // Disable the SDK's exponential backoff — it ignores SAP's x-retry-after
         // header. Network retries preserve this exact step; runAgent handles 429s.
         maxRetries: 0
-      }),
+      })),
     );
     forceToolNextStep = false;
 
@@ -396,9 +561,10 @@ async function generateOnce(
 
   log('Hit emergency step ceiling mid-research — forcing a final answer with tools disabled…');
   const finalResult = await withNetworkRetry('forced final answer', () =>
-    generateText({
+    trackRequestUsage(requestUsage, () => generateText({
       model,
-      system: systemMsg,
+      system,
+      allowSystemInMessages: false,
       messages: cacheMessageTail([
         ...transcript,
         {
@@ -417,7 +583,7 @@ async function generateOnce(
           }
         : undefined,
       maxRetries: 0,
-    }),
+    })),
   );
   const finalInput = normalizeInputUsage(
     finalResult.totalUsage,
